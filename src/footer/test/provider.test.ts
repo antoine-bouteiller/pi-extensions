@@ -36,49 +36,92 @@ async function flushPromises() {
   await Promise.resolve();
 }
 
+function gatewayResponse(profiles: unknown) {
+  return Promise.resolve(new Response(JSON.stringify(profiles), { status: 200 }));
+}
+
 describe("Anthropic quota provider", () => {
-  test("passes the abort signal and parses usage", async () => {
+  test("passes the abort signal and converts gateway fractions to percentages", async () => {
     const controller = new AbortController();
     let requestedUrl = "";
     let requestedInit: RequestInit | undefined;
     const fakeFetch = ((input: string | URL | Request, init?: RequestInit) => {
       requestedUrl = String(input);
       requestedInit = init;
-      return Promise.resolve(
-        new Response(
-          JSON.stringify({
-            five_hour: { utilization: 37.5 },
-            seven_day: { utilization: 62 },
-          }),
-          { status: 200 },
-        ),
-      );
+      return gatewayResponse({
+        profiles: [
+          {
+            id: "default",
+            isActive: true,
+            windows: [
+              { type: "five_hour", utilization: 0.375, resetsAt: Date.now() + 90 * 60_000 },
+              { type: "seven_day", utilization: 0.62 },
+              { type: "seven_day_fable", utilization: 0.02 },
+            ],
+          },
+        ],
+        activeProfile: "default",
+      });
     }) as typeof fetch;
 
-    const quota = await fetchAnthropicQuota(controller.signal, fakeFetch, "test-token");
+    const quota = await fetchAnthropicQuota("http://127.0.0.1:3456", controller.signal, fakeFetch);
 
-    expect(requestedUrl).toBe("https://api.anthropic.com/api/oauth/usage");
+    expect(requestedUrl).toBe("http://127.0.0.1:3456/v1/usage/quota/all");
     expect(requestedInit?.signal).toBe(controller.signal);
-    expect(requestedInit?.headers).toEqual({
-      Authorization: "Bearer test-token",
-      "anthropic-beta": "oauth-2025-04-20",
-    });
     expect(quota?.label).toBe("anthropic");
     expect(quota?.percent).toBe(37.5);
+    expect(quota?.detail).toContain("1h 30m");
     expect(quota?.detail).toContain("Weekly:");
     expect(quota?.detail).toContain("62.0%");
   });
 
-  test("returns null for unsuccessful or malformed usage responses", async () => {
-    const unsuccessful = (() =>
-      Promise.resolve(new Response(null, { status: 429 }))) as unknown as typeof fetch;
-    const malformed = (() =>
-      Promise.resolve(
-        new Response(JSON.stringify({ five_hour: { utilization: 10 } }), { status: 200 }),
-      )) as unknown as typeof fetch;
+  test("reads the active profile rather than the first one", async () => {
+    const fakeFetch = (() =>
+      gatewayResponse({
+        profiles: [
+          { id: "other", isActive: false, windows: [{ type: "five_hour", utilization: 0.1 }] },
+          {
+            id: "work",
+            isActive: true,
+            windows: [
+              { type: "five_hour", utilization: 0.5 },
+              { type: "seven_day", utilization: 0.25 },
+            ],
+          },
+        ],
+        activeProfile: "work",
+      })) as unknown as typeof fetch;
 
-    expect(await fetchAnthropicQuota(undefined, unsuccessful, "token")).toBeNull();
-    expect(await fetchAnthropicQuota(undefined, malformed, "token")).toBeNull();
+    expect((await fetchAnthropicQuota("http://gateway", undefined, fakeFetch))?.percent).toBe(50);
+  });
+
+  test("strips trailing slashes from the configured base URL", async () => {
+    let requestedUrl = "";
+    const fakeFetch = ((input: string | URL | Request) => {
+      requestedUrl = String(input);
+      return gatewayResponse({ profiles: [] });
+    }) as typeof fetch;
+
+    await fetchAnthropicQuota("http://127.0.0.1:3456/", undefined, fakeFetch);
+    expect(requestedUrl).toBe("http://127.0.0.1:3456/v1/usage/quota/all");
+  });
+
+  test("returns null without a base URL, and for unsuccessful or malformed responses", async () => {
+    const unusable = (() => {
+      throw new Error("should not be called");
+    }) as unknown as typeof fetch;
+    const unsuccessful = (() =>
+      Promise.resolve(new Response(null, { status: 404 }))) as unknown as typeof fetch;
+    const malformed = (() =>
+      gatewayResponse({
+        profiles: [{ isActive: true, windows: [{ type: "five_hour", utilization: 0.1 }] }],
+      })) as unknown as typeof fetch;
+    const empty = (() => gatewayResponse({ profiles: [] })) as unknown as typeof fetch;
+
+    expect(await fetchAnthropicQuota("", undefined, unusable)).toBeNull();
+    expect(await fetchAnthropicQuota("http://gateway", undefined, unsuccessful)).toBeNull();
+    expect(await fetchAnthropicQuota("http://gateway", undefined, malformed)).toBeNull();
+    expect(await fetchAnthropicQuota("http://gateway", undefined, empty)).toBeNull();
   });
 
   test("derives Azure quota only from valid token headers", () => {
@@ -113,7 +156,7 @@ describe("Anthropic quota polling lifecycle", () => {
       },
     });
 
-    poller.start();
+    poller.start("http://gateway");
     expect(requests).toHaveLength(1);
     expect(timers.size).toBe(1);
     timers.tick();
@@ -130,6 +173,7 @@ describe("Anthropic quota polling lifecycle", () => {
   test("aborts stopped generations and ignores their late results", async () => {
     const timers = fakeTimers();
     const requests: Array<{
+      baseUrl: string;
       signal: AbortSignal;
       result: ReturnType<typeof deferred<ProviderQuota | null>>;
     }> = [];
@@ -138,21 +182,22 @@ describe("Anthropic quota polling lifecycle", () => {
       refreshMs: 10,
       schedule: (callback) => timers.schedule(callback),
       cancel: (timer) => timers.cancel(timer),
-      fetchQuota: (signal) => {
+      fetchQuota: (baseUrl, signal) => {
         const result = deferred<ProviderQuota | null>();
-        requests.push({ signal, result });
+        requests.push({ baseUrl, signal, result });
         return result.promise;
       },
     });
 
-    poller.start();
+    poller.start("http://gateway");
     const first = requests[0]!;
-    poller.start();
+    poller.start("http://gateway");
     const second = requests[1]!;
     expect(first.signal.aborted).toBeTrue();
     expect(second.signal.aborted).toBeFalse();
     expect(timers.size).toBe(1);
 
+    expect(second.baseUrl).toBe("http://gateway");
     second.result.resolve({ label: "anthropic", percent: 20 });
     await flushPromises();
     first.result.resolve({ label: "anthropic", percent: 90 });

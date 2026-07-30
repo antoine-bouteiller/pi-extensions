@@ -150,7 +150,8 @@ export default function footer(pi: ExtensionAPI, dependencies: FooterDependencie
     providerQuota = null;
     install(ctx);
     if (ctx.mode !== "tui") refreshModel(ctx);
-    if (ctx.mode === "tui" && ctx.model?.provider === "anthropic") anthropicQuota.start();
+    if (ctx.mode === "tui" && ctx.model?.provider === "anthropic")
+      anthropicQuota.start(ctx.model.baseUrl);
   });
   pi.on("model_select", (event, ctx) => {
     modelInfo = {
@@ -164,7 +165,8 @@ export default function footer(pi: ExtensionAPI, dependencies: FooterDependencie
     anthropicQuota.stop();
     refreshModel(ctx);
     void refreshGit();
-    if (ctx.mode === "tui" && event.model.provider === "anthropic") anthropicQuota.start();
+    if (ctx.mode === "tui" && event.model.provider === "anthropic")
+      anthropicQuota.start(event.model.baseUrl);
   });
   pi.on("thinking_level_select", (event) => {
     modelInfo = { ...modelInfo, thinking: event.level };

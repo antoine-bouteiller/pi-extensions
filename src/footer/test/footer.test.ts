@@ -68,7 +68,12 @@ describe("footer quota lifecycle", () => {
     return {
       mode,
       cwd: "/project",
-      model: { provider, id: `${provider}-model`, contextWindow: 100_000 },
+      model: {
+        provider,
+        id: `${provider}-model`,
+        contextWindow: 100_000,
+        baseUrl: "http://127.0.0.1:3456",
+      },
       getContextUsage: () => null,
       ui: {
         setHeader() {},
@@ -82,7 +87,7 @@ describe("footer quota lifecycle", () => {
     const { pi, emit } = createFakePi();
     const signals: AbortSignal[] = [];
     footer(pi, {
-      fetchAnthropicQuota: (signal) => {
+      fetchAnthropicQuota: (_baseUrl, signal) => {
         signals.push(signal);
         return new Promise(() => undefined);
       },
@@ -97,9 +102,11 @@ describe("footer quota lifecycle", () => {
 
   test("aborts quota requests on model changes and shutdown", async () => {
     const { pi, emit } = createFakePi();
+    const baseUrls: string[] = [];
     const signals: AbortSignal[] = [];
     footer(pi, {
-      fetchAnthropicQuota: (signal) => {
+      fetchAnthropicQuota: (baseUrl, signal) => {
+        baseUrls.push(baseUrl);
         signals.push(signal);
         return new Promise(() => undefined);
       },
@@ -115,6 +122,7 @@ describe("footer quota lifecycle", () => {
     ctx.model = { ...ctx.model, provider: "anthropic", id: "another-anthropic-model" };
     await emit("model_select", { model: ctx.model }, ctx);
     expect(signals).toHaveLength(2);
+    expect(baseUrls).toEqual(["http://127.0.0.1:3456", "http://127.0.0.1:3456"]);
     await emit("session_shutdown", {}, ctx);
     expect(signals[1]!.aborted).toBeTrue();
   });

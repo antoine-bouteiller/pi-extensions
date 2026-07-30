@@ -1,7 +1,10 @@
 import type { ProviderQuota } from "./state";
 import { progressBar } from "./render";
 
-export type QuotaFetcher = (signal: AbortSignal) => Promise<ProviderQuota | null>;
+export type QuotaFetcher = (
+  baseUrl: string,
+  signal: AbortSignal,
+) => Promise<ProviderQuota | null>;
 
 type TimerHandle = ReturnType<typeof setInterval>;
 
@@ -22,6 +25,7 @@ export class AnthropicQuotaPoller {
   private generation = 0;
   private timer: TimerHandle | undefined;
   private request: AbortController | undefined;
+  private baseUrl = "";
 
   constructor(
     onQuota: (quota: ProviderQuota | null) => void,
@@ -29,13 +33,15 @@ export class AnthropicQuotaPoller {
   ) {
     this.onQuota = onQuota;
     this.refreshMs = options.refreshMs;
-    this.fetchQuota = options.fetchQuota ?? ((signal) => fetchAnthropicQuota(signal));
+    this.fetchQuota =
+      options.fetchQuota ?? ((baseUrl, signal) => fetchAnthropicQuota(baseUrl, signal));
     this.schedule = options.schedule ?? setInterval;
     this.cancel = options.cancel ?? clearInterval;
   }
 
-  start() {
+  start(baseUrl: string) {
     this.stop();
+    this.baseUrl = baseUrl;
     const generation = this.generation;
     void this.refresh(generation);
     this.timer = this.schedule(() => void this.refresh(generation), this.refreshMs);
@@ -54,7 +60,7 @@ export class AnthropicQuotaPoller {
     const request = new AbortController();
     this.request = request;
     try {
-      const quota = await this.fetchQuota(request.signal);
+      const quota = await this.fetchQuota(this.baseUrl, request.signal);
       if (generation === this.generation && !request.signal.aborted) this.onQuota(quota);
     } catch {
       // A stopped poll normally rejects when its AbortSignal is handled by fetch.
@@ -64,38 +70,66 @@ export class AnthropicQuotaPoller {
   }
 }
 
+/** One usage window as reported by the gateway, with `utilization` as a 0..1 fraction. */
+interface GatewayQuotaWindow {
+  type?: string;
+  utilization?: number;
+  resetsAt?: number;
+}
+
+interface GatewayQuotaProfile {
+  id?: string;
+  isActive?: boolean;
+  windows?: GatewayQuotaWindow[];
+}
+
+interface GatewayQuotaResponse {
+  profiles?: GatewayQuotaProfile[];
+  activeProfile?: string;
+}
+
+function activeProfile(usage: GatewayQuotaResponse): GatewayQuotaProfile | undefined {
+  const profiles = usage.profiles ?? [];
+  return (
+    profiles.find((profile) => profile.isActive) ??
+    profiles.find((profile) => profile.id === usage.activeProfile) ??
+    profiles[0]
+  );
+}
+
+function formatReset(resetsAt: number | undefined): string {
+  if (typeof resetsAt !== "number") return "";
+  const minutes = Math.max(0, Math.round((resetsAt - Date.now()) / 60_000));
+  return minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`;
+}
+
+/**
+ * Reads quota from the gateway the anthropic provider is pointed at, which owns the
+ * subscription credentials. Upstream `/api/oauth/usage` is not reachable through it.
+ */
 export async function fetchAnthropicQuota(
+  baseUrl: string,
   signal?: AbortSignal,
   fetchImpl: typeof fetch = globalThis.fetch,
-  token = process.env.ANTHROPIC_OAUTH_TOKEN,
 ): Promise<ProviderQuota | null> {
-  if (!token) return null;
+  if (!baseUrl) return null;
   try {
-    const response = await fetchImpl("https://api.anthropic.com/api/oauth/usage", {
-      signal,
-      headers: { Authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20" },
-    });
+    const endpoint = `${baseUrl.replace(/\/+$/, "")}/v1/usage/quota/all`;
+    const response = await fetchImpl(endpoint, { signal });
     if (!response.ok) return null;
-    const usage = (await response.json()) as {
-      five_hour?: { utilization?: number; resets_at?: string };
-      seven_day?: { utilization?: number };
-    };
-    const current = usage.five_hour?.utilization;
-    const weekly = usage.seven_day?.utilization;
-    if (typeof current !== "number" || typeof weekly !== "number") return null;
-    const resetAt = usage.five_hour?.resets_at;
-    const minutes = resetAt
-      ? Math.max(0, Math.round((Date.parse(resetAt) - Date.now()) / 60_000))
-      : 0;
-    const duration = resetAt
-      ? minutes >= 60
-        ? `${Math.floor(minutes / 60)}h ${minutes % 60}m`
-        : `${minutes}m`
-      : "";
+    const profile = activeProfile((await response.json()) as GatewayQuotaResponse);
+    if (!profile) return null;
+    const windows = profile.windows ?? [];
+    const session = windows.find((window) => window.type === "five_hour");
+    const weekly = windows.find((window) => window.type === "seven_day");
+    if (typeof session?.utilization !== "number" || typeof weekly?.utilization !== "number")
+      return null;
+    const sessionPercent = session.utilization * 100;
+    const weeklyPercent = weekly.utilization * 100;
     return {
       label: "anthropic",
-      percent: current,
-      detail: `${duration}  Weekly: ${progressBar(weekly, 10)} ${weekly.toFixed(1)}%`,
+      percent: sessionPercent,
+      detail: `${formatReset(session.resetsAt)}  Weekly: ${progressBar(weeklyPercent, 10)} ${weeklyPercent.toFixed(1)}%`,
     };
   } catch {
     return null;
