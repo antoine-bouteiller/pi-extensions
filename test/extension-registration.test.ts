@@ -8,9 +8,7 @@ import claudeCode from "../src/claude-code/index.js";
 import commentChecker from "../src/comment-checker/index.js";
 import footer from "../src/footer/index.js";
 import hashline from "../src/hashline/index.js";
-import herdrAgentState from "../src/herdr-agent-state.js";
 import mcp from "../src/mcp/index.js";
-import rtk from "../src/rtk.js";
 import rules from "../src/rules/index.js";
 import safeRm from "../src/safe-rm/index.js";
 import safetyGuard from "../src/safety-guard/index.js";
@@ -23,9 +21,7 @@ const entrypoints = {
   commentChecker,
   footer,
   hashline,
-  herdrAgentState,
   mcp,
-  rtk,
   rules,
   safeRm,
   safetyGuard,
@@ -103,51 +99,5 @@ describe("extension entrypoints", () => {
     expect(fixture.state.handlers.has("session_shutdown")).toBeTrue();
     expect(fixture.state.handlers.has("tool_call")).toBeTrue();
     expect(fixture.state.handlers.has("tool_result")).toBeTrue();
-  });
-});
-
-describe("managed integrations", () => {
-  test("rtk registers a rewrite handler and delegates command rewriting", async () => {
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const fixture = createFakePi({
-      exec: async (command, args) => {
-        calls.push({ command, args });
-        if (args[0] === "--version") {
-          return { stdout: "rtk 0.23.0\n", stderr: "", code: 0 };
-        }
-        return { stdout: "rtk git status\n", stderr: "", code: 0 };
-      },
-    });
-
-    await rtk(fixture.pi);
-    const event = { toolName: "bash", input: { command: "git status" } };
-    await fixture.emit("tool_call", event, { signal: undefined });
-
-    expect(event.input.command).toBe("rtk git status");
-    expect(calls).toEqual([
-      { command: "rtk", args: ["--version"] },
-      { command: "rtk", args: ["rewrite", "git status"] },
-    ]);
-  });
-
-  test("herdr remains a no-op when its managed environment is disabled", async () => {
-    const modulePath = fileURLToPath(new URL("../src/herdr-agent-state.ts", import.meta.url));
-    const script = `
-      const { default: extension } = await import(${JSON.stringify(modulePath)});
-      extension(new Proxy({}, { get() { throw new Error("disabled integration accessed Pi"); } }));
-    `;
-    const child = Bun.spawn([process.execPath, "--eval", script], {
-      env: {
-        ...process.env,
-        HERDR_ENV: "0",
-        HERDR_SOCKET_PATH: "",
-        HERDR_PANE_ID: "",
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
-    const exitCode = await child.exited;
-    expect(exitCode).toBe(0);
   });
 });
