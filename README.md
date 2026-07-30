@@ -1,10 +1,18 @@
 # Pi extensions
 
-First-party extensions for [Pi](https://github.com/earendil-works/pi), developed as a single Bun workspace.
+First-party extensions for [Pi](https://github.com/earendil-works/pi), developed as a single Bun workspace and distributed as one installable Pi package.
 
-`src/` is Pi's global extension directory: it is linked to `~/.pi/agent/extensions`, so Pi loads this source tree in place. Pi auto-loads top-level `src/*.ts` files and direct child `src/*/index.ts` entrypoints; everything else must live deeper, or in a directory without an `index.ts`.
+## Installation
+
+```bash
+pi install git:github.com/antoine-bouteiller/pi-extensions
+```
+
+`package.json` declares a `pi` manifest pointing at `extension.ts`, a single entrypoint that composes every extension under `src/*/index.ts` (see [Extensions](#extensions)) and registers them on one `ExtensionAPI` instance. Installing this repository through `pi install` therefore adds exactly one extension, not one per directory. `src/rtk.ts` and `src/herdr-agent-state.ts` are managed integrations (see below) and are intentionally excluded from that bundle.
 
 ## Development
+
+For local development, `src/` is Pi's global extension directory: it is linked to `~/.pi/agent/extensions`, so Pi loads this source tree in place instead of the packaged `extension.ts` bundle. Pi auto-loads top-level `src/*.ts` files and direct child `src/*/index.ts` entrypoints; everything else must live deeper, or in a directory without an `index.ts`.
 
 ```bash
 bun install --frozen-lockfile
@@ -16,6 +24,7 @@ bun run check
 ## Layout
 
 ```text
+extension.ts               packaged entrypoint: composes every extension below into one
 src/<name>/index.ts        extension entrypoint
 src/<name>/*.ts            implementation modules
 src/<name>/test/           colocated tests
