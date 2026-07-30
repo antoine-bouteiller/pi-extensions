@@ -24,7 +24,12 @@ import {
   startOAuthCallback,
   type OpenUrl,
 } from "./oauth.js";
-import type { McpServerMap, McpServerStatus, ServerConfig } from "./types.js";
+import type {
+  McpServerMap,
+  McpServerStatus,
+  OAuthConfig,
+  ServerConfig,
+} from "./types.js";
 
 const CONNECT_TIMEOUT_MS = 30_000;
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -166,6 +171,24 @@ function isAuthorizationFailure(error: unknown): boolean {
     (error instanceof Error &&
       /unauthori[sz]ed|mcp-auth|authentication is required/i.test(error.message))
   );
+}
+
+function isOAuthChallenge(error: unknown): boolean {
+  return (
+    error instanceof UnauthorizedError ||
+    (error instanceof StreamableHTTPError && error.code === 401)
+  );
+}
+
+/**
+ * URL-only HTTP servers may advertise OAuth through their 401 challenge. Custom
+ * headers opt out of implicit discovery, while an explicit oauth block always wins.
+ */
+function oauthConfigFor(config: ServerConfig): OAuthConfig | undefined {
+  if (config.type !== "http") return undefined;
+  if (config.oauth !== undefined) return config.oauth;
+  if (config.headers && Object.keys(config.headers).length > 0) return undefined;
+  return {};
 }
 
 function isLegacyTransportCandidate(error: unknown): boolean {
@@ -311,10 +334,7 @@ export class McpManager {
   oauthServers(): readonly string[] {
     return [...this.runtimes.values()]
       .filter(
-        (runtime) =>
-          runtime.status !== "disabled" &&
-          runtime.config.type === "http" &&
-          runtime.config.oauth !== undefined,
+        (runtime) => runtime.status !== "disabled" && oauthConfigFor(runtime.config) !== undefined,
       )
       .map((runtime) => runtime.name)
       .sort((left, right) => left.localeCompare(right));
@@ -511,8 +531,9 @@ export class McpManager {
         if (!isAuthorizationFailure(error) && runtime.status !== "needs-auth") throw error;
       }
     }
-    if (runtime.config.type !== "http" || !runtime.config.oauth) {
-      throw new Error(`MCP server ${JSON.stringify(server)} does not have OAuth configured`);
+    const oauthConfig = oauthConfigFor(runtime.config);
+    if (runtime.config.type !== "http" || !oauthConfig) {
+      throw new Error(`MCP server ${JSON.stringify(server)} does not support OAuth`);
     }
     if (runtime.connection) return;
 
@@ -520,15 +541,15 @@ export class McpManager {
     const signal = combineSignals(this.lifecycle.signal, operation.signal, options.signal);
     const state = createOAuthState();
     const callback = await startOAuthCallback({
-      port: oauthCallbackPort(runtime.config.oauth),
-      redirectUri: runtime.config.oauth.redirectUri,
+      port: oauthCallbackPort(oauthConfig),
+      redirectUri: oauthConfig.redirectUri,
       expectedState: state,
       signal,
     });
     const provider = new KeychainOAuthProvider({
       serverName: runtime.name,
       serverUrl: runtime.config.url,
-      config: runtime.config.oauth,
+      config: oauthConfig,
       store: this.credentialStore,
       interactive: true,
       state,
@@ -664,21 +685,17 @@ export class McpManager {
     if (runtime.config.type === undefined) throw new Error("Disabled MCP server has no transport");
     const timeout = AbortSignal.timeout(this.connectTimeoutMs);
     const signal = combineSignals(this.lifecycle.signal, timeout, overrideSignal);
-    const provider =
+    let provider =
       overrideProvider ??
       (runtime.config.type === "http" && runtime.config.oauth
-        ? new KeychainOAuthProvider({
-            serverName: runtime.name,
-            serverUrl: runtime.config.url,
-            config: runtime.config.oauth,
-            store: this.credentialStore,
-          })
+        ? this.createOAuthProvider(runtime, runtime.config.oauth)
         : undefined);
 
     if (runtime.config.type === "stdio") {
       return this.connectTransport(runtime, "stdio", provider, signal, retainAuthorization);
     }
 
+    let failure: unknown;
     try {
       return await this.connectTransport(
         runtime,
@@ -688,15 +705,46 @@ export class McpManager {
         retainAuthorization,
       );
     } catch (error) {
-      if (
-        error instanceof PendingAuthorization ||
-        isAbort(error, signal) ||
-        !isLegacyTransportCandidate(error)
-      ) {
-        throw error;
-      }
-      return this.connectTransport(runtime, "sse", provider, signal, retainAuthorization);
+      failure = error;
     }
+
+    // Keep public/anonymous HTTP servers independent of the credential store.
+    // Only attach an implicit OAuth provider after the endpoint returns 401.
+    const implicitOAuth =
+      runtime.config.oauth === undefined ? oauthConfigFor(runtime.config) : undefined;
+    if (!provider && implicitOAuth && isOAuthChallenge(failure)) {
+      provider = this.createOAuthProvider(runtime, implicitOAuth);
+      try {
+        return await this.connectTransport(
+          runtime,
+          "streamable-http",
+          provider,
+          signal,
+          retainAuthorization,
+        );
+      } catch (error) {
+        failure = error;
+      }
+    }
+
+    if (
+      failure instanceof PendingAuthorization ||
+      isAbort(failure, signal) ||
+      !isLegacyTransportCandidate(failure)
+    ) {
+      throw failure;
+    }
+    return this.connectTransport(runtime, "sse", provider, signal, retainAuthorization);
+  }
+
+  private createOAuthProvider(runtime: ServerRuntime, config: OAuthConfig): KeychainOAuthProvider {
+    if (runtime.config.type !== "http") throw new Error("OAuth requires an HTTP server");
+    return new KeychainOAuthProvider({
+      serverName: runtime.name,
+      serverUrl: runtime.config.url,
+      config,
+      store: this.credentialStore,
+    });
   }
 
   private async connectTransport(

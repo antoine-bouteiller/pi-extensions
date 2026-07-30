@@ -53,7 +53,7 @@ test/utils/                shared typed fakes, imported as #test-utils/*
 | `sub-agents`      | Session-scoped subagents in isolated child Pi processes ([details](src/sub-agents/README.md))                |
 | `webfetch`        | Fetches a URL and returns markdown, plain text, or raw HTML                                                  |
 
-`mcp/` is backed only by `~/.config/mcp/mcp.json`. It supports stdio and HTTP/SSE tools plus automatic loopback OAuth through `/mcp-auth`, with reusable credentials stored in the macOS Keychain, and opens no connections during startup.
+`mcp/` is backed only by `~/.config/mcp/mcp.json`. It supports stdio and HTTP/SSE tools plus automatic loopback OAuth through `/mcp-auth`, with reusable credentials stored in the macOS Keychain, and opens no connections during startup. URL-only HTTP servers such as Linear (`https://mcp.linear.app/mcp`) auto-detect OAuth after a 401 challenge, so they do not need an empty `"oauth": {}` block. Custom HTTP headers suppress this implicit detection unless `oauth` is explicitly configured.
 
 `rules/` injects unscoped rules statically; path-scoped rules are injected after matching file-tool results.
 

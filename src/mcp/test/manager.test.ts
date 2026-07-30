@@ -134,17 +134,24 @@ describe("MCP manager", () => {
     const fixture = harness({
       config: {
         local: { type: "stdio", command: "fixture" },
-        remote: { type: "http", url: "https://example.test/mcp", oauth: {} },
+        linear: { type: "http", url: "https://mcp.linear.app/mcp" },
+        headers: {
+          type: "http",
+          url: "https://example.test/mcp",
+          headers: { Authorization: "Bearer token" },
+        },
+        explicit: {
+          type: "http",
+          url: "https://example.test/mcp",
+          headers: { "X-Tenant": "one" },
+          oauth: {},
+        },
         off: { disabled: true },
       },
     });
 
-    expect(fixture.manager.status()).toEqual([
-      { name: "local", status: "disconnected" },
-      { name: "remote", status: "disconnected" },
-      { name: "off", status: "disabled" },
-    ]);
-    expect(fixture.manager.oauthServers()).toEqual(["remote"]);
+    expect(fixture.manager.status()).toHaveLength(5);
+    expect(fixture.manager.oauthServers()).toEqual(["explicit", "linear"]);
     expect(fixture.calls.clients).toBe(0);
     expect(fixture.calls.connects).toEqual([]);
     expect(fixture.calls.keychainReads).toBe(0);
@@ -184,16 +191,75 @@ describe("MCP manager", () => {
       expect(fixture.calls.connects).toEqual(["streamable-http", "sse"]);
     }
 
-    for (const error of [new UnauthorizedError(), new StreamableHTTPError(500, "broken")]) {
-      const blocked = harness({
-        config: { remote: { type: "http", url: "https://example.test/mcp" } },
-        connect: async () => {
-          throw error;
+    const unauthorized = harness({
+      config: { remote: { type: "http", url: "https://example.test/mcp" } },
+      connect: async () => {
+        throw new UnauthorizedError();
+      },
+    });
+    await expect(unauthorized.manager.list("remote")).rejects.toThrow();
+    expect(unauthorized.calls.connects).toEqual(["streamable-http", "streamable-http"]);
+
+    const broken = harness({
+      config: { remote: { type: "http", url: "https://example.test/mcp" } },
+      connect: async () => {
+        throw new StreamableHTTPError(500, "broken");
+      },
+    });
+    await expect(broken.manager.list("remote")).rejects.toThrow();
+    expect(broken.calls.connects).toEqual(["streamable-http"]);
+  });
+
+  test("defers implicit OAuth until an HTTP 401 challenge", async () => {
+    let attempts = 0;
+    const fixture = harness({
+      config: { linear: { type: "http", url: "https://mcp.linear.app/mcp" } },
+      connect: async (_transport, provider) => {
+        attempts += 1;
+        if (attempts === 1) {
+          expect(provider).toBeUndefined();
+          expect(fixture.calls.keychainReads).toBe(0);
+          throw new StreamableHTTPError(401, "OAuth required");
+        }
+        expect(provider).toBeDefined();
+        expect(fixture.calls.keychainReads).toBe(0);
+        await provider!.tokens();
+      },
+    });
+
+    await fixture.manager.list("linear");
+    expect(fixture.calls.connects).toEqual(["streamable-http", "streamable-http"]);
+    expect(fixture.calls.keychainReads).toBe(1);
+  });
+
+  test("allows explicit authentication for a URL-only HTTP server", async () => {
+    const fixture = harness({
+      config: { linear: { type: "http", url: "https://mcp.linear.app/mcp" } },
+    });
+
+    await fixture.manager.connect("linear");
+    await fixture.manager.authenticate("linear");
+    expect(fixture.manager.status()).toEqual([{ name: "linear", status: "connected" }]);
+  });
+
+  test("does not infer OAuth when custom HTTP headers are configured", async () => {
+    const fixture = harness({
+      config: {
+        remote: {
+          type: "http",
+          url: "https://example.test/mcp",
+          headers: { Authorization: "Bearer token" },
         },
-      });
-      await expect(blocked.manager.list("remote")).rejects.toThrow();
-      expect(blocked.calls.connects).toEqual(["streamable-http"]);
-    }
+      },
+      connect: async () => {
+        throw new StreamableHTTPError(401, "invalid token");
+      },
+    });
+
+    expect(fixture.manager.oauthServers()).toEqual([]);
+    await expect(fixture.manager.list("remote")).rejects.toThrow();
+    expect(fixture.calls.connects).toEqual(["streamable-http"]);
+    expect(fixture.calls.keychainReads).toBe(0);
   });
 
   test("loads every page, sanitizes names, searches, describes, and calls scoped tools", async () => {
