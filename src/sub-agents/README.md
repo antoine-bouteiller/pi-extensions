@@ -1,0 +1,108 @@
+# pi-codex-subagents
+
+Codex-shaped, session-scoped subagents for [Pi](https://github.com/earendil-works/pi). Spawn isolated child Pi processes, receive their final responses automatically, steer active work, and inspect sessions in a live overlay.
+
+Requires Pi 0.80.4 or newer and Node.js 22.19 or newer.
+
+## Deployment
+
+This extension is maintained in the [`pi-extensions`](../..) repository; it is not an npm package. The repository's `src/` directory is linked to `~/.pi/agent/extensions`, so Pi loads this source tree in place and there is no separate `pi install` step. Dependencies for all extensions are managed from the repository root workspace.
+
+## Tools
+
+| Tool                  | Purpose                                                                |
+| --------------------- | ---------------------------------------------------------------------- |
+| `spawn_agent`         | Spawn a fresh-context child Pi process                                 |
+| `wait_agent`          | Block for one completion and return its final text                     |
+| `wait_all_agents`     | Block until every selected agent finishes                              |
+| `list_agents`         | List current-session agents, or explicitly include historical sessions |
+| `read_agent_response` | Read an agent's latest final raw text response                         |
+| `send_message`        | Steer a running agent or start another turn when settled               |
+| `interrupt_agent`     | Abort the current turn while preserving its session for later messages |
+
+Agent names are unique within their parent session. The same task name can exist safely in different Pi sessions. Read and control tools are always scoped to the current parent session; only `list_agents(include_all: true)` crosses session boundaries, and that view is read-only.
+
+## Agent templates
+
+Templates are user-defined Markdown files in:
+
+```text
+~/.pi/agent/pi-codex-subagents/agents/*.md
+```
+
+No templates are installed automatically. Example:
+
+```md
+---
+name: reviewer
+description: Focused read-only code review agent
+provider: openai-codex
+model: gpt-5.6-sol
+thinking: high
+tools: read,bash,grep,find,ls
+skills: web-investigate
+extensions: @scope/pi-extra-tools, ~/.pi/agent/extensions/local-helper.ts
+hint: Give this reviewer exact file paths and a narrow scope.
+---
+
+You are a focused review subagent. Return concise findings with file paths.
+```
+
+`provider` and `model` are an optional pair. When both are present, Pi launches that exact provider/model combination. If either is absent, the child inherits the parent agent's provider and model. `thinking` is also optional and otherwise inherits the parent. Template `tools` override inherited tool names.
+
+`skills` may contain skill names or paths. `extensions` may contain local files/directories or npm package names already installed by Pi. Package names are resolved from project-local packages first and then Pi's global npm directory. Missing packages are never installed automatically.
+
+When a template loads extensions but omits `tools`, the child uses Pi's normal tool activation so tools registered by those extensions are available. Set template `tools` when you want an explicit allowlist. Without configured extensions, omitted template tools inherit the parent's active tool names as before.
+
+Automatic extension, skill, prompt-template, and context-file discovery is disabled in children. `AGENTS.md` and `CLAUDE.md` files are never loaded. Each child replaces Pi's default coding prompt with the contents of `~/.pi/agent/pi-codex-subagents/SYSTEM.md`, while only explicitly configured skills and extensions load. This file is created with a minimal subagent prompt when the extension first loads and can be edited directly. If the inherited parent model comes from an extension-registered provider, add that provider extension to the selected template; otherwise the isolated child cannot resolve the provider.
+
+## Configuration
+
+Optional configuration lives at:
+
+```text
+~/.pi/agent/pi-codex-subagents/config.json
+```
+
+```json
+{
+  "storageDir": "~/.local/state/pi-codex-subagents/runs",
+  "retentionDays": 7,
+  "defaults": {
+    "skills": ["web-investigate"],
+    "extensions": ["@scope/pi-extra-tools"]
+  }
+}
+```
+
+`storageDir` accepts an absolute path, `~/...`, or a path relative to the package configuration directory. By default runs are stored in `~/.pi/agent/pi-codex-subagents/runs`. `retentionDays` defaults to `7`; expired runs and oversized tool outputs are removed when the extension loads. Set it to `0` to disable automatic cleanup. Runtime sockets remain in the operating system temporary directory and are removed when agents stop.
+
+Configuration is read when agents spawn, while cleanup runs when the extension loads. Restart Pi after changing `storageDir` or `retentionDays` so storage lookup and cleanup use the same configuration throughout the process.
+
+Template skills and extensions override configured defaults. Skills explicitly requested by the parent are added to configured template/default skills. Tool selection belongs to the template or is inherited from the parent.
+
+## Completion delivery
+
+A child completion or failure is delivered automatically to its parent session after the child reaches final status. If the parent is active, the result joins the current run; if the parent is idle, it starts a continuation turn. Continue independent work instead of waiting. Use `wait_agent` or `wait_all_agents` only when the next action depends on those responses and no useful work remains meanwhile; an active wait receives the result directly without a duplicate automatic message.
+
+## Commands and TUI
+
+While agents are starting or running, a compact one-line indicator appears above the editor. It shows the task name for one active agent or a count for multiple agents and points to `/subagents`. The indicator disappears when no agents are active.
+
+`/subagents` and `/agents` browse agents in the current session. Press Tab to switch to the read-only all-sessions view. `/subagent <task-name>` opens one current-session agent directly.
+
+The overlay uses the child working directory for tool rendering and synchronizes in-progress output when opened midway through a run. Use Left/Right to switch between agents in the current browser scope.
+
+Child RPC processes are terminated after completion, failure, or interruption so settled agents do not keep consuming memory. `send_message` starts a fresh child process with the persisted session and continues from there. On startup, the extension also reconciles and terminates validated owned children left behind by an earlier extension process.
+
+## Output limits
+
+Automatic completions, wait tools, and response tools follow Pi's standard 50 KB / 2,000-line output limit. Oversized output is truncated and the complete text is written beside the runtime data; the returned notice includes a path that can be read with Pi's `read` tool.
+
+## Environment
+
+`PI_SUBAGENT_PI_BIN` overrides the Pi executable used for child processes. Normally children use the same Pi installation as the parent.
+
+## License
+
+MIT

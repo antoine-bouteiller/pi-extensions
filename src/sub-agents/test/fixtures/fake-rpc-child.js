@@ -1,0 +1,67 @@
+#!/usr/bin/env node
+
+import * as fs from "node:fs";
+import * as readline from "node:readline";
+
+const sessionIndex = process.argv.indexOf("--session");
+const sessionFile = sessionIndex >= 0 ? process.argv[sessionIndex + 1] : undefined;
+
+function record(value) {
+  if (sessionFile)
+    fs.appendFileSync(sessionFile, `${JSON.stringify({ pid: process.pid, ...value })}\n`);
+}
+
+function send(value) {
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+
+record({ type: "started", args: process.argv.slice(2) });
+const input = readline.createInterface({ input: process.stdin });
+input.on("line", (line) => {
+  const command = JSON.parse(line);
+  if (command.type === "get_state") {
+    const delay = Number(process.env.PI_SUBAGENT_TEST_GET_STATE_DELAY_MS || 0);
+    if (delay > 0)
+      setTimeout(() => send({ type: "response", id: command.id, success: true, data: {} }), delay);
+    else send({ type: "response", id: command.id, success: true, data: {} });
+    return;
+  }
+  if (command.type === "prompt") {
+    record({ type: "prompt", message: command.message });
+    if (String(command.message).startsWith("reject")) {
+      send({ type: "response", id: command.id, success: false, error: "fake prompt rejection" });
+      return;
+    }
+    send({ type: "response", id: command.id, success: true, data: {} });
+    send({ type: "agent_start" });
+    if (String(command.message).startsWith("hold")) return;
+    if (String(command.message).startsWith("crash")) {
+      setTimeout(() => process.exit(23), 20);
+      return;
+    }
+    const message = String(command.message);
+    setTimeout(
+      () => {
+        const failing = message.startsWith("fail");
+        const response = message.startsWith("large")
+          ? "x".repeat(60 * 1024)
+          : `response:${message}`;
+        send({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: response }],
+            stopReason: failing ? "error" : "stop",
+            ...(failing ? { errorMessage: "fake failure" } : {}),
+          },
+        });
+        send({ type: "agent_settled" });
+      },
+      message.startsWith("slow") ? 200 : 50,
+    );
+    return;
+  }
+  if (command.type === "steer" || command.type === "abort") {
+    send({ type: "response", id: command.id, success: true, data: {} });
+  }
+});
