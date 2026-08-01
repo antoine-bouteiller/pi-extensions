@@ -35,6 +35,8 @@ interface FooterDependencies {
 }
 
 export default function footer(pi: ExtensionAPI, dependencies: FooterDependencies = {}) {
+  if (process.env.PI_SUBAGENT_OWNER_TOKEN !== undefined) return;
+
   let title = "pi";
   let modelInfo: ModelInfoState = emptyModelInfoState();
   let gitInfo: GitInfoState = emptyGitInfoState();

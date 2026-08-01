@@ -8,11 +8,59 @@ import { join } from "node:path";
 import { Type } from "typebox";
 import { loadGlobalMcpConfig } from "./config.js";
 import { boundGatewayOutput } from "./output.js";
+import type {
+  McpGatewayPolicy,
+  McpPolicyRequest,
+  McpToolAnnotations,
+} from "./types.js";
+export type {
+  McpGatewayPolicy,
+  McpPolicyOperation,
+  McpPolicyRequest,
+  McpToolAnnotations,
+} from "./types.js";
 
 const SEARCH_RESULT_LIMIT = 30;
 const SEARCH_FETCH_LIMIT = SEARCH_RESULT_LIMIT + 1;
 const LIST_RESULT_LIMIT = 30;
 const STATUS_KEY = "mcp";
+
+const READONLY_DBX_TOOLS = new Set([
+  "dbx_list_connections",
+  "dbx_list_tables",
+  "dbx_describe_table",
+  "dbx_get_schema_context",
+]);
+
+export const unrestrictedMcpPolicy: McpGatewayPolicy = {
+  name: "unrestricted",
+  allows: () => true,
+};
+
+export const readonlyMcpPolicy: McpGatewayPolicy = {
+  name: "read-only",
+  allows(request: Readonly<McpPolicyRequest>): boolean {
+    if (
+      request.annotations.readOnlyHint === true &&
+      request.annotations.destructiveHint !== true
+    ) {
+      return true;
+    }
+    return (
+      request.server === "dbx" &&
+      Object.keys(request.annotations).length === 0 &&
+      READONLY_DBX_TOOLS.has(request.remoteName)
+    );
+  },
+};
+
+export function mcpPolicyFromEnvironment(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): McpGatewayPolicy {
+  return environment.PI_SUBAGENT_READONLY === "1"
+    ? readonlyMcpPolicy
+    : unrestrictedMcpPolicy;
+}
 
 const McpGatewayParameters = Type.Object({
   tool: Type.Optional(Type.String({ description: "Exposed MCP tool name to call." })),
@@ -39,6 +87,7 @@ export interface McpToolSummary {
   name: string;
   server?: string;
   description?: string;
+  annotations?: McpToolAnnotations;
 }
 
 export interface McpToolDescription extends McpToolSummary {
@@ -85,7 +134,10 @@ export interface McpGatewayDependencies<TConfig = unknown> {
     config: TConfig,
     callbacks: McpManagerCallbacks,
     pi: ExtensionAPI,
+    policy: McpGatewayPolicy,
   ): McpGatewayManager | Promise<McpGatewayManager>;
+  /** Defaults to unrestricted. Production selects this from PI_SUBAGENT_READONLY. */
+  policy?: McpGatewayPolicy;
 }
 
 async function textResult(text: string, details?: unknown): Promise<AgentToolResult<unknown>> {
@@ -128,6 +180,19 @@ function compactDescription(description: string | undefined): string {
   return singleLine.length <= 160 ? singleLine : `${singleLine.slice(0, 157)}...`;
 }
 
+function formatAnnotations(annotations: McpToolAnnotations | undefined): string {
+  if (!annotations) return "";
+  const hints = [
+    annotations.readOnlyHint === true ? "read-only" : undefined,
+    annotations.readOnlyHint === false ? "not read-only" : undefined,
+    annotations.destructiveHint === true ? "destructive" : undefined,
+    annotations.destructiveHint === false ? "non-destructive" : undefined,
+    annotations.idempotentHint === true ? "idempotent" : undefined,
+    annotations.openWorldHint === true ? "open-world" : undefined,
+  ].filter((hint): hint is string => hint !== undefined);
+  return hints.length > 0 ? ` [${hints.join(", ")}]` : "";
+}
+
 function formatTools(tools: readonly McpToolSummary[], heading: string): string {
   const sorted = [...tools].sort(compareNames);
   if (sorted.length === 0) return `${heading}\n(no tools found)`;
@@ -135,7 +200,7 @@ function formatTools(tools: readonly McpToolSummary[], heading: string): string 
     heading,
     ...sorted.map((tool) => {
       const description = compactDescription(tool.description);
-      return `- ${tool.name}${description ? ` — ${description}` : ""}`;
+      return `- ${tool.name}${formatAnnotations(tool.annotations)}${description ? ` — ${description}` : ""}`;
     }),
     "",
     'Call with: mcp({ tool: "<tool-name>", args: { ... } })',
@@ -240,7 +305,7 @@ export function createMcpExtension<TConfig>(dependencies: McpGatewayDependencies
           });
           const summary = compactDescription(description.description);
           const lines = [
-            description.name,
+            `${description.name}${formatAnnotations(description.annotations)}`,
             ...(description.server ? [`Server: ${description.server}`] : []),
             ...(summary ? [summary] : []),
             `Input schema: ${JSON.stringify(description.inputSchema ?? {})}`,
@@ -249,6 +314,7 @@ export function createMcpExtension<TConfig>(dependencies: McpGatewayDependencies
           return textResult(lines.join("\n"), {
             tool: description.name,
             server: description.server,
+            annotations: description.annotations,
           });
         }
 
@@ -264,7 +330,11 @@ export function createMcpExtension<TConfig>(dependencies: McpGatewayDependencies
             query: params.search,
             regex: params.regex ?? false,
             server: params.server,
-            tools: capped.map((tool) => ({ name: tool.name, server: tool.server })),
+            tools: capped.map((tool) => ({
+              name: tool.name,
+              server: tool.server,
+              annotations: tool.annotations,
+            })),
             resultsTruncated: matches.length > capped.length,
           });
         }
@@ -280,7 +350,11 @@ export function createMcpExtension<TConfig>(dependencies: McpGatewayDependencies
             ),
             {
               server: params.server,
-              tools: capped.map((tool) => ({ name: tool.name, server: tool.server })),
+              tools: capped.map((tool) => ({
+                name: tool.name,
+                server: tool.server,
+                annotations: tool.annotations,
+              })),
               resultsTruncated: sorted.length > capped.length,
             },
           );
@@ -367,6 +441,7 @@ export function createMcpExtension<TConfig>(dependencies: McpGatewayDependencies
             },
           },
           pi,
+          dependencies.policy ?? unrestrictedMcpPolicy,
         );
 
         if (generation !== lifecycleGeneration) {
@@ -402,7 +477,8 @@ const productionDependencies: McpGatewayDependencies<
 > = {
   configPath: globalConfigPath,
   loadConfig: loadGlobalMcpConfig,
-  async createManager(config, callbacks, pi) {
+  policy: mcpPolicyFromEnvironment(),
+  async createManager(config, callbacks, pi, policy) {
     // Keep the manager behind the session lifecycle boundary: importing this entrypoint and
     // registering the gateway must not initialize MCP SDK transports or native OAuth storage.
     const managerModulePath = "./manager.js";
@@ -412,11 +488,13 @@ const productionDependencies: McpGatewayDependencies<
         options: {
           onStatusChange(update: McpStatusUpdate): void;
           openUrl(url: string, signal?: AbortSignal): Promise<void>;
+          policy: McpGatewayPolicy;
         },
       ) => McpGatewayManager;
     };
     return new Manager(config, {
       onStatusChange: callbacks.onStatusChange,
+      policy,
       async openUrl(url: string, signal?: AbortSignal) {
         const result = await pi.exec("/usr/bin/open", [url], { signal });
         if (result.code !== 0) {

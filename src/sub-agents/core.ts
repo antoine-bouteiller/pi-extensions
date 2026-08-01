@@ -5,7 +5,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import {
   inspectProcess,
   ownershipMatches,
@@ -13,15 +13,22 @@ import {
   processOwnerIsActive,
   type ProcessSnapshot,
 } from "./process-ownership.js";
+import {
+  persistedProfileColor,
+  resolveAgentConfig,
+  type AgentProfileName,
+  type AvailableModel,
+  type ThinkingLevel,
+} from "./profiles.js";
 import { consumeFirstMatchingMailboxEvent, RpcJsonlDecoder } from "./rpc.js";
+
+export type { ThinkingLevel } from "./profiles.js";
 
 export { consumeFirstMatchingMailboxEvent, RpcJsonlDecoder } from "./rpc.js";
 
 export const PACKAGE_BASENAME = "pi-codex-subagents";
 export const SUBAGENT_DIR = path.join(getAgentDir(), PACKAGE_BASENAME);
 const CONFIG_PATH = path.join(SUBAGENT_DIR, "config.json");
-const SYSTEM_PROMPT_PATH = path.join(SUBAGENT_DIR, "SYSTEM.md");
-const AGENTS_DIR = path.join(SUBAGENT_DIR, "agents");
 const TEMP_ROOT = path.join(
   process.env.PI_SUBAGENT_TEMP_DIR || os.tmpdir(),
   PACKAGE_BASENAME,
@@ -32,37 +39,13 @@ const SOCKET_DIR = path.join(TEMP_ROOT, "sockets");
 
 export const DEFAULT_STARTUP_TIMEOUT_MS = 15_000;
 export const DEFAULT_RETENTION_DAYS = 7;
-export const DEFAULT_THINKING = "high";
-export const DEFAULT_TOOLS = "read,bash,grep,find,ls";
-const DEFAULT_SUBAGENT_SYSTEM_PROMPT =
-  "You are a subagent working for a main agent. Work only on the assigned task and follow its scope precisely.";
-
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const FINAL_STATUSES = new Set<AgentRuntimeStatus>(["completed", "failed", "interrupted"]);
 
-export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export type AgentRuntimeStatus = "starting" | "running" | "completed" | "failed" | "interrupted";
 
 export interface SubagentConfig {
   storageDir?: string;
   retentionDays?: number;
-  defaults?: {
-    skills?: string[];
-    extensions?: string[];
-  };
-}
-
-export interface AgentDefinition {
-  name: string;
-  description?: string;
-  hint?: string;
-  provider?: string;
-  model?: string;
-  thinking?: ThinkingLevel;
-  tools?: string;
-  skills?: string[];
-  extensions?: string[];
-  prompt?: string;
 }
 
 export interface ChildProcessOwnership {
@@ -80,16 +63,17 @@ export interface AgentInfo {
   canonicalName: string;
   parentSessionId: string;
   parentSessionFile?: string;
+  profile?: string;
   agentType?: string;
   provider: string;
   modelId: string;
   model: string;
   thinking?: ThinkingLevel;
+  allowedTools?: string[];
+  prompt?: string;
+  color?: ThemeColor;
+  isReadonly?: boolean;
   tools?: string;
-  skills?: string[];
-  skillPaths?: string[];
-  extensions?: string[];
-  extensionPaths?: string[];
   cwd: string;
   sessionFile: string;
   infoFile: string;
@@ -112,6 +96,9 @@ export interface AgentListEntry {
   agent_status: AgentRuntimeStatus;
   last_task_message: string | null;
   parent_session_id?: string;
+  profile?: string;
+  color: ThemeColor;
+  is_readonly?: boolean;
 }
 
 export interface AgentResponseEntry {
@@ -120,21 +107,20 @@ export interface AgentResponseEntry {
   finalResponse?: string;
   error?: string;
   last_task_message: string | null;
+  profile?: string;
+  color: ThemeColor;
+  is_readonly?: boolean;
 }
 
 export interface SpawnAgentParams {
   task_name: string;
   message: string;
-  agent_type?: string;
-  skills?: string[];
-  loadedSkillPaths?: Record<string, string>;
+  agent_type: AgentProfileName;
   cwd: string;
   parentSessionId: string;
   parentSessionFile?: string;
-  inheritedProvider: string;
-  inheritedModelId: string;
-  inheritedThinking?: ThinkingLevel;
-  inheritedTools?: string;
+  availableModels: readonly AvailableModel[];
+  parentModel: AvailableModel;
 }
 
 interface PendingRequest {
@@ -169,12 +155,18 @@ export interface AgentCompletionEvent {
   finalResponse?: string;
   error?: string;
   createdAt: number;
+  profile?: string;
+  color: ThemeColor;
+  isReadonly?: boolean;
 }
 
 export interface AgentActivityEvent {
   parentSessionId: string;
   agentName: string;
   active: boolean;
+  profile?: string;
+  color: ThemeColor;
+  isReadonly?: boolean;
 }
 
 export interface AgentManagerOptions {
@@ -213,35 +205,9 @@ function expandHome(value: string): string {
       : value;
 }
 
-function stringList(value: unknown): string[] | undefined {
-  const entries = Array.isArray(value)
-    ? value.filter((entry): entry is string => typeof entry === "string")
-    : typeof value === "string"
-      ? value.split(",")
-      : [];
-  const normalized = entries.map((entry) => entry.trim()).filter(Boolean);
-  return normalized.length ? normalized : undefined;
-}
-
-function isThinkingLevel(value: unknown): value is ThinkingLevel {
-  return typeof value === "string" && (THINKING_LEVELS as readonly string[]).includes(value);
-}
-
 function normalizeConfig(value: unknown): SubagentConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const raw = value as Record<string, unknown>;
-  const defaultsRaw =
-    raw.defaults && typeof raw.defaults === "object" && !Array.isArray(raw.defaults)
-      ? (raw.defaults as Record<string, unknown>)
-      : undefined;
-  const defaults = defaultsRaw
-    ? {
-        ...(stringList(defaultsRaw.skills) ? { skills: stringList(defaultsRaw.skills) } : {}),
-        ...(stringList(defaultsRaw.extensions)
-          ? { extensions: stringList(defaultsRaw.extensions) }
-          : {}),
-      }
-    : undefined;
   const retentionDays =
     typeof raw.retentionDays === "number" &&
     Number.isFinite(raw.retentionDays) &&
@@ -253,7 +219,6 @@ function normalizeConfig(value: unknown): SubagentConfig {
       ? { storageDir: raw.storageDir.trim() }
       : {}),
     ...(retentionDays !== undefined ? { retentionDays } : {}),
-    ...(defaults && Object.keys(defaults).length ? { defaults } : {}),
   };
 }
 
@@ -280,28 +245,7 @@ function ensurePrivateDir(directory: string, enforceMode = false): void {
   if (process.platform !== "win32" && (enforceMode || !existed)) fs.chmodSync(directory, 0o700);
 }
 
-function ensureSystemPromptFile(): void {
-  if (fs.existsSync(SYSTEM_PROMPT_PATH)) return;
-  try {
-    fs.writeFileSync(SYSTEM_PROMPT_PATH, DEFAULT_SUBAGENT_SYSTEM_PROMPT, {
-      flag: "wx",
-      mode: 0o600,
-    });
-  } catch (error: any) {
-    if (error?.code !== "EEXIST") throw error;
-  }
-}
-
-function readSystemPrompt(): string {
-  ensureSystemPromptFile();
-  const prompt = fs.readFileSync(SYSTEM_PROMPT_PATH, "utf8");
-  if (!prompt.trim()) throw new Error(`Subagent system prompt is empty: ${SYSTEM_PROMPT_PATH}`);
-  return prompt;
-}
-
 function ensureBaseDirs(): void {
-  fs.mkdirSync(AGENTS_DIR, { recursive: true });
-  ensureSystemPromptFile();
   ensurePrivateDir(getRunsDir(), !loadSubagentConfig().storageDir);
   ensurePrivateDir(SOCKET_DIR, true);
 }
@@ -586,182 +530,6 @@ export function getAgent(name: string, parentSessionId: string): AgentInfo | nul
   return readScopeInfos(parentSessionId).find((info) => info.taskName === taskName) ?? null;
 }
 
-export function parseAgentDefinitionText(text: string, fallbackName: string): AgentDefinition {
-  const match = text.match(/^---\s*\n([\s\S]*?)\n---\s*\n?/);
-  const attrs: Record<string, string> = {};
-  if (match) {
-    for (const line of match[1].split(/\r?\n/)) {
-      const entry = line.match(/^([A-Za-z0-9_-]+):\s*(.*?)\s*$/);
-      if (entry) attrs[entry[1]] = entry[2].replace(/^['"]|['"]$/g, "");
-    }
-  }
-  return {
-    name: attrs.name || fallbackName,
-    description: attrs.description,
-    hint: attrs.hint || attrs.caller_hint,
-    provider: attrs.provider,
-    model: attrs.model,
-    thinking: isThinkingLevel(attrs.thinking) ? attrs.thinking : undefined,
-    tools: attrs.tools,
-    skills: stringList(attrs.skills),
-    extensions: stringList(attrs.extensions),
-    prompt: (match ? text.slice(match[0].length) : text).trim() || undefined,
-  };
-}
-
-export function listAgentDefinitions(): AgentDefinition[] {
-  ensureBaseDirs();
-  const definitions: AgentDefinition[] = [];
-  for (const name of fs.readdirSync(AGENTS_DIR)) {
-    if (!name.endsWith(".md")) continue;
-    try {
-      definitions.push(
-        parseAgentDefinitionText(
-          fs.readFileSync(path.join(AGENTS_DIR, name), "utf8"),
-          name.replace(/\.md$/, ""),
-        ),
-      );
-    } catch {}
-  }
-  return definitions.sort((a, b) => a.name.localeCompare(b.name));
-}
-
-export function getAgentDefinition(name?: string): AgentDefinition | undefined {
-  return name ? listAgentDefinitions().find((definition) => definition.name === name) : undefined;
-}
-
-export function getAgentDefinitionsDescription(): string {
-  const definitions = listAgentDefinitions();
-  if (!definitions.length) return `No agent templates found. Add markdown files to ${AGENTS_DIR}.`;
-  return definitions
-    .map((definition) => {
-      let line = `- \`${definition.name}\`${definition.description ? ` — ${definition.description}` : ""}`;
-      if (definition.provider && definition.model)
-        line += ` — model: ${definition.provider}/${definition.model}`;
-      if (definition.thinking) line += ` — thinking: ${definition.thinking}`;
-      if (definition.extensions?.length)
-        line += ` — extensions: ${definition.extensions.join(", ")}`;
-      return definition.hint ? `${line}\n  Caller hint: ${definition.hint}` : line;
-    })
-    .join("\n");
-}
-
-function normalizeTools(tools: string | undefined): string {
-  if (tools === undefined) return DEFAULT_TOOLS;
-  return tools
-    .split(",")
-    .map((tool) => tool.trim())
-    .filter(Boolean)
-    .join(",");
-}
-
-function normalizeList(values?: string[]): string[] | undefined {
-  const normalized = Array.from(
-    new Set((values ?? []).map((value) => value.trim()).filter(Boolean)),
-  );
-  return normalized.length ? normalized : undefined;
-}
-
-function findNearestSkillDirs(cwd: string): string[] {
-  const directories: string[] = [];
-  let current = cwd;
-  while (true) {
-    directories.push(path.join(current, CONFIG_DIR_NAME, "skills"));
-    directories.push(path.join(current, ".agents", "skills"));
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  return directories;
-}
-
-function parseSkillName(content: string): string | undefined {
-  const match = content.match(/^---\s*\n([\s\S]*?)\n---/);
-  const frontmatter = match?.[1] ?? content.slice(0, 2048);
-  return frontmatter.match(/^name:\s*["']?([^"'\n]+)["']?\s*$/m)?.[1]?.trim();
-}
-
-function resolveSkillPath(skill: string, cwd: string): string {
-  const expanded = expandHome(skill);
-  if (path.isAbsolute(expanded) || expanded.startsWith(".")) {
-    const candidate = path.resolve(cwd, expanded);
-    if (fs.existsSync(candidate)) return candidate;
-    throw new Error(`Skill path not found: ${skill}`);
-  }
-  const npmRoot = path.join(getAgentDir(), "npm", "node_modules");
-  const roots = [
-    path.join(getAgentDir(), "skills"),
-    path.join(os.homedir(), ".agents", "skills"),
-    ...findNearestSkillDirs(cwd),
-    npmRoot,
-  ];
-  for (const root of roots) {
-    const directDirectory = path.join(root, skill);
-    if (fs.existsSync(path.join(directDirectory, "SKILL.md"))) return directDirectory;
-    const directMarkdown = path.join(root, `${skill}.md`);
-    if (fs.existsSync(directMarkdown)) return directMarkdown;
-  }
-  const stack = fs.existsSync(npmRoot) ? [npmRoot] : [];
-  while (stack.length) {
-    const directory = stack.pop()!;
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(directory, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    const skillFile = path.join(directory, "SKILL.md");
-    if (fs.existsSync(skillFile)) {
-      try {
-        if (parseSkillName(fs.readFileSync(skillFile, "utf8")) === skill) return directory;
-      } catch {}
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      if (entry.name === "node_modules" && directory !== npmRoot) continue;
-      stack.push(path.join(directory, entry.name));
-    }
-  }
-  throw new Error(`Skill not found: ${skill}`);
-}
-
-function resolveSkillPaths(
-  skills: string[] | undefined,
-  cwd: string,
-  loadedSkillPaths?: Record<string, string>,
-): string[] | undefined {
-  return skills?.map((skill) => loadedSkillPaths?.[skill] ?? resolveSkillPath(skill, cwd));
-}
-
-function looksLikePath(value: string): boolean {
-  return value === "~" || value.startsWith("~/") || value.startsWith(".") || path.isAbsolute(value);
-}
-
-function resolveExtensionPath(extension: string, cwd: string): string {
-  if (looksLikePath(extension)) {
-    const expanded = expandHome(extension);
-    const resolved = path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
-    if (!fs.existsSync(resolved)) throw new Error(`Extension path not found: ${extension}`);
-    return resolved;
-  }
-  const candidates = [
-    path.join(cwd, CONFIG_DIR_NAME, "npm", "node_modules", extension),
-    path.join(getAgentDir(), "npm", "node_modules", extension),
-  ];
-  const resolved = candidates.find((candidate) => fs.existsSync(candidate));
-  if (!resolved)
-    throw new Error(
-      `Installed extension package not found: ${extension}. Install it with pi install first.`,
-    );
-  return resolved;
-}
-
-function resolveExtensionPaths(
-  extensions: string[] | undefined,
-  cwd: string,
-): string[] | undefined {
-  return extensions?.map((extension) => resolveExtensionPath(extension, cwd));
-}
 
 export interface PeekMarker {
   pid: number;
@@ -1005,6 +773,18 @@ function previewText(text: string | undefined, maxLength = 180): string | null {
     : `${normalized.slice(0, Math.max(0, maxLength - 1))}…`;
 }
 
+function agentMetadata(info: AgentInfo): {
+  profile?: string;
+  color: ThemeColor;
+  isReadonly?: boolean;
+} {
+  return {
+    ...(info.profile ? { profile: info.profile } : {}),
+    color: persistedProfileColor(info.profile, info.color),
+    ...(info.isReadonly !== undefined ? { isReadonly: info.isReadonly } : {}),
+  };
+}
+
 function getPiCommand(override?: AgentManagerOptions["piCommand"]): {
   command: string;
   prefixArgs: string[];
@@ -1056,6 +836,7 @@ export class AgentManager {
         parentSessionId: info.parentSessionId,
         agentName: info.canonicalName,
         active: info.status === "starting" || info.status === "running",
+        ...agentMetadata(info),
       });
     } catch {}
   }
@@ -1172,28 +953,19 @@ export class AgentManager {
     }
   }
 
-  async spawnAgent(params: SpawnAgentParams): Promise<{ task_name: string; nickname: null }> {
+  async spawnAgent(params: SpawnAgentParams): Promise<{
+    task_name: string;
+    nickname: null;
+    profile: string;
+    color: ThemeColor;
+    is_readonly: boolean;
+  }> {
     await this.reconciliation;
     const taskName = normalizeTaskName(params.task_name);
-    const definition = getAgentDefinition(params.agent_type);
-    if (params.agent_type && !definition)
-      throw new Error(`Agent template not found: ${params.agent_type}`);
-    const provider =
-      definition?.provider && definition.model ? definition.provider : params.inheritedProvider;
-    const modelId =
-      definition?.provider && definition.model ? definition.model : params.inheritedModelId;
-    const config = loadSubagentConfig();
-    readSystemPrompt();
-    const configuredSkills = definition?.skills ?? config.defaults?.skills;
-    const skills = normalizeList([...(configuredSkills ?? []), ...(params.skills ?? [])]);
-    const extensions = normalizeList(definition?.extensions ?? config.defaults?.extensions);
-    const tools =
-      definition?.tools !== undefined
-        ? normalizeTools(definition.tools)
-        : extensions?.length
-          ? undefined
-          : normalizeTools(params.inheritedTools);
-    const thinking = definition?.thinking ?? params.inheritedThinking ?? DEFAULT_THINKING;
+    const resolved = resolveAgentConfig(params.agent_type, {
+      availableModels: params.availableModels,
+      parentModel: params.parentModel,
+    });
     const cwd = path.resolve(params.cwd);
     const directory = scopeDir(params.parentSessionId);
     ensurePrivateDir(directory, true);
@@ -1238,16 +1010,16 @@ export class AgentManager {
         canonicalName: `/${taskName}`,
         parentSessionId: params.parentSessionId,
         parentSessionFile: params.parentSessionFile,
-        agentType: params.agent_type,
-        provider,
-        modelId,
-        model: `${provider}:${modelId}`,
-        thinking,
-        tools,
-        skills,
-        skillPaths: resolveSkillPaths(skills, cwd, params.loadedSkillPaths),
-        extensions,
-        extensionPaths: resolveExtensionPaths(extensions, cwd),
+        profile: resolved.key,
+        agentType: resolved.key,
+        provider: resolved.provider,
+        modelId: resolved.modelId,
+        model: `${resolved.provider}:${resolved.modelId}`,
+        thinking: resolved.thinking,
+        allowedTools: [...resolved.allowedTools],
+        prompt: resolved.prompt,
+        color: resolved.color,
+        isReadonly: resolved.isReadonly,
         cwd,
         sessionFile: path.join(directory, `${id}.jsonl`),
         infoFile: path.join(directory, `${id}.info.json`),
@@ -1265,9 +1037,14 @@ export class AgentManager {
       const targets = this.defaultWaitAllTargets.get(params.parentSessionId) ?? new Set<string>();
       targets.add(info.canonicalName);
       this.defaultWaitAllTargets.set(params.parentSessionId, targets);
-      const prompt = [definition?.prompt, params.message].filter(Boolean).join("\n\n");
-      await this.startLiveAgent(info, prompt, params.message);
-      return { task_name: info.canonicalName, nickname: null };
+      await this.startLiveAgent(info, params.message, params.message);
+      return {
+        task_name: info.canonicalName,
+        nickname: null,
+        profile: resolved.key,
+        color: resolved.color,
+        is_readonly: resolved.isReadonly,
+      };
     } finally {
       if (lock !== undefined) releaseTaskLock(lockFile, lock, lockToken);
     }
@@ -1278,7 +1055,6 @@ export class AgentManager {
     initialMessage?: string,
     displayMessage?: string,
   ): Promise<LiveAgent> {
-    readSystemPrompt();
     if (info.status !== "starting" && info.status !== "running") {
       this.notifyStatusChange({ ...info, status: "starting", lastActivity: Date.now() });
     }
@@ -1290,14 +1066,18 @@ export class AgentManager {
       ...launch.prefixArgs,
       "--mode",
       "rpc",
-      "--no-extensions",
       "--no-skills",
       "--no-prompt-templates",
       "--no-context-files",
-      "--system-prompt",
-      SYSTEM_PROMPT_PATH,
       "--append-system-prompt",
-      "",
+      [
+        info.prompt,
+        info.isReadonly
+          ? "This subagent role is read-only. Do not modify local or remote state. The configured tool allowlist remains the local capability boundary."
+          : undefined,
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
       "--provider",
       info.provider,
       "--model",
@@ -1306,22 +1086,26 @@ export class AgentManager {
       info.sessionFile,
     ];
     if (info.thinking) args.push("--thinking", info.thinking);
-    if (info.tools !== undefined) {
-      if (info.tools) args.push("--tools", info.tools);
+    const tools = info.allowedTools?.join(",") ?? info.tools;
+    if (tools !== undefined) {
+      if (tools) args.push("--tools", tools);
       else args.push("--no-builtin-tools");
     }
-    for (const extensionPath of info.extensionPaths ?? []) args.push("--extension", extensionPath);
-    for (const skillPath of info.skillPaths ?? []) args.push("--skill", skillPath);
     const childToken = randomUUID();
     logger.info("spawn", "starting child pi", { command: launch.command, args, cwd: info.cwd });
+    const childEnv = { ...process.env, ...this.options.childEnv };
+    delete childEnv.PI_SESSION_ID;
+    delete childEnv.PI_SESSION_FILE;
+    delete childEnv.PI_PROVIDER;
+    delete childEnv.PI_MODEL;
+    delete childEnv.PI_REASONING_LEVEL;
+    childEnv.PI_SUBAGENT_OWNER_TOKEN = childToken;
+    childEnv.PI_SUBAGENT_PROFILE = info.profile ?? "";
+    childEnv.PI_SUBAGENT_READONLY = info.isReadonly ? "1" : "0";
     const proc = spawn(launch.command, args, {
       cwd: info.cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        ...this.options.childEnv,
-        PI_SUBAGENT_OWNER_TOKEN: childToken,
-      },
+      env: childEnv,
       detached: process.platform !== "win32",
     });
     let resolveExit!: () => void;
@@ -1625,6 +1409,7 @@ export class AgentManager {
       status: "completed",
       finalResponse: live.info.finalResponse,
       createdAt: Date.now(),
+      ...agentMetadata(live.info),
     });
   }
 
@@ -1645,6 +1430,7 @@ export class AgentManager {
       status: "failed",
       error,
       createdAt: Date.now(),
+      ...agentMetadata(live.info),
     });
   }
 
@@ -1692,6 +1478,9 @@ export class AgentManager {
         agent_status: info.status,
         last_task_message: previewText(info.lastTaskMessage),
         ...(includeAll ? { parent_session_id: info.parentSessionId } : {}),
+        ...(info.profile ? { profile: info.profile } : {}),
+        color: persistedProfileColor(info.profile, info.color),
+        ...(info.isReadonly !== undefined ? { is_readonly: info.isReadonly } : {}),
       }));
   }
 
@@ -1712,6 +1501,9 @@ export class AgentManager {
       ...(info.finalResponse !== undefined ? { finalResponse: info.finalResponse } : {}),
       ...(info.error ? { error: info.error } : {}),
       last_task_message: previewText(info.lastTaskMessage),
+      ...(info.profile ? { profile: info.profile } : {}),
+      color: persistedProfileColor(info.profile, info.color),
+      ...(info.isReadonly !== undefined ? { is_readonly: info.isReadonly } : {}),
     };
   }
 
@@ -1764,6 +1556,7 @@ export class AgentManager {
             finalResponse: finalInfo.finalResponse,
             error: finalInfo.error,
             createdAt: Date.now(),
+            ...agentMetadata(finalInfo),
           },
         };
       }
@@ -1926,6 +1719,7 @@ export class AgentManager {
         agentName: info.canonicalName,
         status: "interrupted",
         createdAt: Date.now(),
+        ...agentMetadata(info),
       },
       false,
     );

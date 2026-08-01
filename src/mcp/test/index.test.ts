@@ -2,6 +2,9 @@ import { describe, expect, test } from "bun:test";
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import {
   createMcpExtension,
+  mcpPolicyFromEnvironment,
+  readonlyMcpPolicy,
+  unrestrictedMcpPolicy,
   type McpGatewayDependencies,
   type McpGatewayManager,
   type McpManagerCallbacks,
@@ -51,15 +54,31 @@ function createHarness(overrides: Partial<McpGatewayManager> = {}) {
     async list(server: string, options?: McpOperationOptions) {
       calls.push({ method: "list", values: [server, options] });
       return [
-        { name: `${server}_z`, description: "Last" },
-        { name: `${server}_a`, description: "First" },
+        {
+          name: `${server}_z`,
+          description: "Last",
+          annotations: { readOnlyHint: false, destructiveHint: true },
+        },
+        {
+          name: `${server}_a`,
+          description: "First",
+          annotations: { readOnlyHint: true, destructiveHint: false },
+        },
       ];
     },
     async search(query: string, options?: McpSearchOptions) {
       calls.push({ method: "search", values: [query, options] });
       return [
-        { name: "z_tool", description: "Last" },
-        { name: "a_tool", description: "First" },
+        {
+          name: "z_tool",
+          description: "Last",
+          annotations: { readOnlyHint: false, destructiveHint: true },
+        },
+        {
+          name: "a_tool",
+          description: "First",
+          annotations: { readOnlyHint: true, destructiveHint: false },
+        },
       ];
     },
     async describe(tool: string, options?: McpOperationOptions): Promise<McpToolDescription> {
@@ -69,6 +88,7 @@ function createHarness(overrides: Partial<McpGatewayManager> = {}) {
         server: options?.server ?? "resolved",
         description: "A useful tool",
         inputSchema: { type: "object" },
+        annotations: { readOnlyHint: true, destructiveHint: false },
       };
     },
     async call(tool: string, args: Record<string, unknown>, options?: McpOperationOptions) {
@@ -165,6 +185,69 @@ function callsFor(harness: ReturnType<typeof createHarness>, method: string): Re
   return harness.calls.filter((call) => call.method === method);
 }
 
+describe("MCP gateway policy selection", () => {
+  test("enables read-only policy only for PI_SUBAGENT_READONLY=1", () => {
+    expect(mcpPolicyFromEnvironment({ PI_SUBAGENT_READONLY: "1" })).toBe(readonlyMcpPolicy);
+    expect(mcpPolicyFromEnvironment({ PI_SUBAGENT_READONLY: "0" })).toBe(
+      unrestrictedMcpPolicy,
+    );
+    expect(mcpPolicyFromEnvironment({})).toBe(unrestrictedMcpPolicy);
+    expect(mcpPolicyFromEnvironment({ PI_SUBAGENT_READONLY: "true" })).toBe(
+      unrestrictedMcpPolicy,
+    );
+  });
+
+  test("allows annotated safe reads and exact DBX exceptions only", () => {
+    const request = {
+      server: "linear",
+      remoteName: "get_issue",
+      exposedName: "linear_get_issue",
+      operation: "call" as const,
+      annotations: { readOnlyHint: true, destructiveHint: false },
+    };
+    expect(readonlyMcpPolicy.allows(request)).toBeTrue();
+    expect(
+      readonlyMcpPolicy.allows({
+        ...request,
+        annotations: { readOnlyHint: true, destructiveHint: true },
+      }),
+    ).toBeFalse();
+    expect(
+      readonlyMcpPolicy.allows({
+        ...request,
+        server: "dbx",
+        remoteName: "dbx_list_tables",
+        annotations: {},
+      }),
+    ).toBeTrue();
+    expect(
+      readonlyMcpPolicy.allows({
+        ...request,
+        server: "dbx",
+        remoteName: "list_tables",
+        exposedName: "dbx_list_tables",
+        annotations: {},
+      }),
+    ).toBeFalse();
+    expect(
+      readonlyMcpPolicy.allows({
+        ...request,
+        server: "dbx",
+        remoteName: "dbx_execute_sql",
+        annotations: {},
+      }),
+    ).toBeFalse();
+    expect(
+      readonlyMcpPolicy.allows({
+        ...request,
+        server: "dbx",
+        remoteName: "dbx_list_tables",
+        annotations: { readOnlyHint: false },
+      }),
+    ).toBeFalse();
+  });
+});
+
 describe("MCP gateway registration and lifecycle", () => {
   test("registers one gateway tool and the MCP auth command immediately", () => {
     const harness = createHarness();
@@ -184,6 +267,19 @@ describe("MCP gateway registration and lifecycle", () => {
     expect(harness.loadCount()).toBe(1);
     expect(harness.callbacks()).toBeDefined();
     expect(harness.calls).toEqual([]);
+  });
+
+  test("passes its configured policy into each process-local manager", async () => {
+    const harness = createHarness();
+    let receivedPolicy: unknown;
+    harness.dependencies.policy = readonlyMcpPolicy;
+    harness.dependencies.createManager = (_config, _callbacks, _pi, policy) => {
+      receivedPolicy = policy;
+      return harness.manager;
+    };
+
+    await harness.start();
+    expect(receivedPolicy).toBe(readonlyMcpPolicy);
   });
 
   test("manager status callbacks show only connected count", async () => {
@@ -282,6 +378,15 @@ describe("MCP gateway registration and lifecycle", () => {
       type: "text",
       text: expect.stringContaining('mcp({ tool: "find_issue", args: { ... } })'),
     });
+    expect(result.content[0]).toEqual({
+      type: "text",
+      text: expect.stringContaining("[read-only, non-destructive]"),
+    });
+    expect(result.details).toEqual(
+      expect.objectContaining({
+        annotations: { readOnlyHint: true, destructiveHint: false },
+      }),
+    );
   });
 
   test("search delegates regex, scope, signal, and cap then sorts results", async () => {

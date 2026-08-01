@@ -25,8 +25,11 @@ import {
   type OpenUrl,
 } from "./oauth.js";
 import type {
+  McpGatewayPolicy,
+  McpPolicyOperation,
   McpServerMap,
   McpServerStatus,
+  McpToolAnnotations,
   OAuthConfig,
   ServerConfig,
 } from "./types.js";
@@ -40,6 +43,7 @@ interface ToolMetadata {
   remoteName: string;
   description?: string;
   inputSchema: Record<string, unknown>;
+  annotations: McpToolAnnotations;
 }
 
 interface ClientLike {
@@ -57,6 +61,13 @@ interface ClientLike {
       name: string;
       description?: string;
       inputSchema: Record<string, unknown>;
+      annotations?: {
+        title?: unknown;
+        readOnlyHint?: unknown;
+        destructiveHint?: unknown;
+        idempotentHint?: unknown;
+        openWorldHint?: unknown;
+      };
     }>;
     nextCursor?: string;
   }>;
@@ -106,6 +117,7 @@ export interface McpManagerOptions {
   ) => Transport;
   connectTimeoutMs?: number;
   requestTimeoutMs?: number;
+  policy?: McpGatewayPolicy;
 }
 
 class PendingAuthorization extends Error {
@@ -202,6 +214,31 @@ function isLegacyTransportCandidate(error: unknown): boolean {
 export function sanitizeToolPart(value: string): string {
   const sanitized = value.replace(/[^A-Za-z0-9_-]/g, "_");
   return sanitized || "_";
+}
+
+function normalizeAnnotations(value: {
+  title?: unknown;
+  readOnlyHint?: unknown;
+  destructiveHint?: unknown;
+  idempotentHint?: unknown;
+  openWorldHint?: unknown;
+} | undefined): McpToolAnnotations {
+  if (!value) return {};
+  return {
+    ...(typeof value.title === "string" ? { title: value.title } : {}),
+    ...(typeof value.readOnlyHint === "boolean"
+      ? { readOnlyHint: value.readOnlyHint }
+      : {}),
+    ...(typeof value.destructiveHint === "boolean"
+      ? { destructiveHint: value.destructiveHint }
+      : {}),
+    ...(typeof value.idempotentHint === "boolean"
+      ? { idempotentHint: value.idempotentHint }
+      : {}),
+    ...(typeof value.openWorldHint === "boolean"
+      ? { openWorldHint: value.openWorldHint }
+      : {}),
+  };
 }
 
 function inheritedEnvironment(
@@ -395,8 +432,10 @@ export class McpManager {
     server: string,
     options: { signal?: AbortSignal } = {},
   ): Promise<readonly ToolMetadata[]> {
-    const connection = (await this.connect(server, options)) as ConnectedServer;
-    return connection.tools.map((tool) => ({ ...tool }));
+    const tools = await this.toolsForServer(server, options.signal);
+    return tools
+      .filter((tool) => this.isAllowed(tool, "list"))
+      .map((tool) => ({ ...tool, annotations: { ...tool.annotations } }));
   }
 
   async search(
@@ -407,9 +446,11 @@ export class McpManager {
       ? [this.runtime(options.server)]
       : [...this.runtimes.values()].filter((runtime) => runtime.status !== "disabled");
     const settled = await Promise.allSettled(
-      runtimes.map((runtime) => this.list(runtime.name, { signal: options.signal })),
+      runtimes.map((runtime) => this.toolsForServer(runtime.name, options.signal)),
     );
-    const tools = settled.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
+    const tools = settled
+      .flatMap((result) => (result.status === "fulfilled" ? result.value : []))
+      .filter((tool) => this.isAllowed(tool, "search"));
     if (tools.length === 0) {
       const firstFailure = settled.find(
         (result): result is PromiseRejectedResult => result.status === "rejected",
@@ -443,14 +484,16 @@ export class McpManager {
     }
     return matches
       .sort((left, right) => left.name.localeCompare(right.name))
-      .slice(0, options.limit ?? 30);
+      .slice(0, options.limit ?? 30)
+      .map((tool) => ({ ...tool, annotations: { ...tool.annotations } }));
   }
 
   async describe(
     tool: string,
     options: { server?: string; signal?: AbortSignal } = {},
   ): Promise<ToolMetadata> {
-    return { ...(await this.resolveTool(tool, options)) };
+    const metadata = await this.resolveTool(tool, options, "describe");
+    return { ...metadata, annotations: { ...metadata.annotations } };
   }
 
   async call(
@@ -458,7 +501,7 @@ export class McpManager {
     args: Record<string, unknown>,
     options: { server?: string; signal?: AbortSignal } = {},
   ): Promise<AgentToolResult<unknown>> {
-    const metadata = await this.resolveTool(tool, options);
+    const metadata = await this.resolveTool(tool, options, "call");
     const runtime = this.runtime(metadata.server);
     let result: unknown;
     try {
@@ -637,13 +680,14 @@ export class McpManager {
   private async resolveTool(
     requested: string,
     options: { server?: string; signal?: AbortSignal },
+    operation: "describe" | "call",
   ): Promise<ToolMetadata> {
     if (options.server) {
-      const tools = await this.list(options.server, { signal: options.signal });
+      const tools = await this.toolsForServer(options.server, options.signal);
       const matches = tools.filter(
         (tool) => tool.name === requested || tool.remoteName === requested,
       );
-      if (matches.length === 1) return matches[0]!;
+      if (matches.length === 1) return this.requireAllowed(matches[0]!, operation);
       if (matches.length > 1) throw new Error(`Ambiguous MCP tool ${JSON.stringify(requested)}`);
       throw new Error(`MCP tool ${JSON.stringify(requested)} was not found on ${options.server}`);
     }
@@ -659,21 +703,73 @@ export class McpManager {
       if (targets.length > 1) {
         throw new Error(`MCP server-name collision while resolving ${JSON.stringify(requested)}`);
       }
-      const tools = await this.list(targets[0]!.runtime.name, { signal: options.signal });
+      const tools = await this.toolsForServer(targets[0]!.runtime.name, options.signal);
       const match = tools.find((tool) => tool.name === requested);
-      if (match) return match;
+      if (match) return this.requireAllowed(match, operation);
       throw new Error(`Unknown MCP tool ${JSON.stringify(requested)}`);
     }
 
-    const all = await this.search("", { signal: options.signal, limit: Number.MAX_SAFE_INTEGER });
-    const matches = all.filter((tool) => tool.name === requested || tool.remoteName === requested);
-    if (matches.length === 1) return matches[0]!;
+    const runtimes = [...this.runtimes.values()].filter(
+      (runtime) => runtime.status !== "disabled",
+    );
+    const settled = await Promise.allSettled(
+      runtimes.map((runtime) => this.toolsForServer(runtime.name, options.signal)),
+    );
+    const all = settled.flatMap((result) =>
+      result.status === "fulfilled" ? result.value : [],
+    );
+    if (all.length === 0) {
+      const firstFailure = settled.find(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      if (firstFailure) throw firstFailure.reason;
+    }
+    const matches = all.filter(
+      (tool) => tool.name === requested || tool.remoteName === requested,
+    );
+    if (matches.length === 1) return this.requireAllowed(matches[0]!, operation);
     if (matches.length > 1) {
       throw new Error(
         `Ambiguous MCP tool ${JSON.stringify(requested)}; use its exposed server-prefixed name`,
       );
     }
     throw new Error(`Unknown MCP tool ${JSON.stringify(requested)}`);
+  }
+
+  private async toolsForServer(server: string, signal?: AbortSignal): Promise<ToolMetadata[]> {
+    const connection = (await this.connect(server, { signal })) as ConnectedServer;
+    return connection.tools;
+  }
+
+  private isAllowed(tool: ToolMetadata, operation: McpPolicyOperation): boolean {
+    const policy = this.options.policy;
+    if (!policy) return true;
+    try {
+      return policy.allows({
+        server: tool.server,
+        remoteName: tool.remoteName,
+        exposedName: tool.name,
+        annotations: { ...tool.annotations },
+        operation,
+      });
+    } catch {
+      return false;
+    }
+  }
+
+  private requireAllowed(
+    tool: ToolMetadata,
+    operation: "describe" | "call",
+  ): ToolMetadata {
+    if (this.isAllowed(tool, operation)) return tool;
+    const policyName = (this.options.policy?.name ?? "configured")
+      .replace(/[\r\n]/g, " ")
+      .slice(0, 80);
+    const remoteName = JSON.stringify(tool.remoteName.slice(0, 128));
+    const server = JSON.stringify(tool.server.slice(0, 128));
+    throw new Error(
+      `MCP tool ${remoteName} on server ${server} is denied by the ${policyName} policy`,
+    );
   }
 
   private async establish(
@@ -806,6 +902,7 @@ export class McpManager {
           remoteName: tool.name,
           description: tool.description,
           inputSchema: tool.inputSchema,
+          annotations: normalizeAnnotations(tool.annotations),
         });
       }
       cursor = page.nextCursor;

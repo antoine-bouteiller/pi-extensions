@@ -23,7 +23,6 @@ const {
   getRunsDir,
   getSocketPath,
   parentScopeKey,
-  parseAgentDefinitionText,
   taskStorageKey,
 } = await import("../core.js");
 const { SubagentPeekOverlay } = await import("../peek.js");
@@ -53,32 +52,6 @@ describe("session-scoped identities", () => {
   test("separates parent sessions and formerly colliding task names", () => {
     expect(parentScopeKey("parent-a")).not.toBe(parentScopeKey("parent-b"));
     expect(taskStorageKey("review/api")).not.toBe(taskStorageKey("review__api"));
-  });
-});
-
-describe("agent templates", () => {
-  test("parses optional routing and extension fields", () => {
-    const definition = parseAgentDefinitionText(
-      `---
-name: reviewer
-provider: openai-codex
-model: gpt-5.6-sol
-thinking: high
-extensions: @scope/tools, ~/.pi/helper.ts
-skills: web-investigate
----
-Review the requested files.`,
-      "fallback",
-    );
-    expect(definition).toMatchObject({
-      name: "reviewer",
-      provider: "openai-codex",
-      model: "gpt-5.6-sol",
-      thinking: "high",
-      extensions: ["@scope/tools", "~/.pi/helper.ts"],
-      skills: ["web-investigate"],
-      prompt: "Review the requested files.",
-    });
   });
 });
 
@@ -272,18 +245,87 @@ function pidAlive(pid: number): boolean {
   }
 }
 
+const AVAILABLE_MODELS = [
+  { provider: "openai", id: "gpt-5.6-luna" },
+  { provider: "openai", id: "gpt-5.6-sol" },
+  { provider: "anthropic", id: "claude-haiku-4-5" },
+  { provider: "anthropic", id: "claude-sonnet-5" },
+  { provider: "anthropic", id: "claude-opus-5" },
+];
+
 function spawnParams(parentSessionId: string, task_name: string, message: string) {
   return {
     task_name,
     message,
+    agent_type: "implementer" as const,
     cwd: TEST_AGENT_DIR,
     parentSessionId,
-    inheritedProvider: "test",
-    inheritedModelId: "fake",
+    availableModels: AVAILABLE_MODELS,
+    parentModel: { provider: "openai", id: "gpt-5.6-sol" },
   };
 }
 
 describe("child process lifecycle", () => {
+  processTest("resolves profiles before creating task artifacts", async () => {
+    const parentSessionId = "unavailable-profile-model";
+    const scope = path.join(getRunsDir(), parentScopeKey(parentSessionId));
+    fs.rmSync(scope, { recursive: true, force: true });
+    const manager = createAgentManager();
+    try {
+      await expect(
+        manager.spawnAgent({
+          ...spawnParams(parentSessionId, "worker", "must not start"),
+          availableModels: AVAILABLE_MODELS.filter((model) => model.id !== "claude-sonnet-5"),
+        }),
+      ).rejects.toThrow("not authenticated or available");
+      expect(fs.existsSync(scope)).toBe(false);
+    } finally {
+      await manager.shutdown();
+    }
+  });
+
+  processTest("passes read-only profile metadata without changing the task message", async () => {
+    const parentSessionId = "readonly-profile-metadata";
+    const scope = path.join(getRunsDir(), parentScopeKey(parentSessionId));
+    fs.rmSync(scope, { recursive: true, force: true });
+    const manager = createAgentManager();
+    try {
+      await manager.spawnAgent({
+        ...spawnParams(parentSessionId, "worker", "inspect exactly this"),
+        agent_type: "scout",
+      });
+      const info = manager.getAgentInfo("worker", parentSessionId);
+      expect(info).toMatchObject({
+        profile: "scout",
+        color: "accent",
+        isReadonly: true,
+        provider: "openai",
+        modelId: "gpt-5.6-luna",
+      });
+      await waitUntil(() => manager.getAgentInfo("worker", parentSessionId).status === "completed");
+      const records = fs
+        .readFileSync(info.sessionFile, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(records.find((record) => record.type === "prompt")?.message).toBe(
+        "inspect exactly this",
+      );
+      const start = records.find((record) => record.type === "started");
+      expect(start.env).toMatchObject({
+        PI_SUBAGENT_PROFILE: "scout",
+        PI_SUBAGENT_READONLY: "1",
+      });
+      expect(start.args[start.args.indexOf("--append-system-prompt") + 1]).toContain(
+        "This subagent role is read-only.",
+      );
+      expect(start.args[start.args.indexOf("--tools") + 1]).toContain("fff-multi-grep");
+    } finally {
+      await manager.shutdown();
+      fs.rmSync(scope, { recursive: true, force: true });
+    }
+  });
+
   processTest(
     "reclaims a fresh lock whose PID identity no longer owns it, even with retention disabled",
     async () => {
@@ -447,7 +489,6 @@ describe("child process lifecycle", () => {
 
   processTest("hibernates after settle and lazily restarts the persisted session", async () => {
     fs.rmSync(path.join(TEST_AGENT_DIR, "pi-codex-subagents", "config.json"), { force: true });
-    fs.rmSync(path.join(TEST_AGENT_DIR, "pi-codex-subagents", "SYSTEM.md"), { force: true });
     const parentSessionId = "lifecycle-settle";
     fs.rmSync(path.join(getRunsDir(), parentScopeKey(parentSessionId)), {
       recursive: true,
@@ -487,26 +528,36 @@ describe("child process lifecycle", () => {
         .map((line) => JSON.parse(line));
       const starts = sessionRecords.filter((entry) => entry.type === "started");
       expect(new Set(starts.map((entry) => entry.pid)).size).toBe(2);
-      const systemPromptIndex = starts[0].args.indexOf("--system-prompt");
-      const systemPromptPath = starts[0].args[systemPromptIndex + 1];
-      expect(path.isAbsolute(systemPromptPath)).toBe(true);
-      expect(fs.readFileSync(systemPromptPath, "utf8")).toBe(
-        "You are a subagent working for a main agent. Work only on the assigned task and follow its scope precisely.",
-      );
       for (const start of starts) {
         expect(start.args).toContain("--no-context-files");
+        expect(start.args).toContain("--no-skills");
+        expect(start.args).toContain("--no-prompt-templates");
+        expect(start.args).not.toContain("--no-extensions");
+        expect(start.args).not.toContain("--extension");
+        expect(start.args).not.toContain("--system-prompt");
+        expect(start.args[start.args.indexOf("--append-system-prompt") + 1]).toContain(
+          "You are an implementation subagent.",
+        );
         expect(
           start.args.slice(
-            start.args.indexOf("--system-prompt"),
-            start.args.indexOf("--system-prompt") + 2,
+            start.args.indexOf("--provider"),
+            start.args.indexOf("--provider") + 4,
           ),
-        ).toEqual(["--system-prompt", systemPromptPath]);
-        expect(
-          start.args.slice(
-            start.args.indexOf("--append-system-prompt"),
-            start.args.indexOf("--append-system-prompt") + 2,
-          ),
-        ).toEqual(["--append-system-prompt", ""]);
+        ).toEqual(["--provider", "anthropic", "--model", "claude-sonnet-5"]);
+        expect(start.args[start.args.indexOf("--thinking") + 1]).toBe("high");
+        expect(start.args[start.args.indexOf("--tools") + 1]).toBe(
+          "read,bash,edit,write,grep,find,ls,hashline_read,hashline_write,safe_rm",
+        );
+        expect(start.env).toMatchObject({
+          PI_SUBAGENT_PROFILE: "implementer",
+          PI_SUBAGENT_READONLY: "0",
+        });
+        expect(start.env.PI_SUBAGENT_OWNER_TOKEN).toBeString();
+        expect(start.env).not.toHaveProperty("PI_SESSION_ID");
+        expect(start.env).not.toHaveProperty("PI_SESSION_FILE");
+        expect(start.env).not.toHaveProperty("PI_PROVIDER");
+        expect(start.env).not.toHaveProperty("PI_MODEL");
+        expect(start.env).not.toHaveProperty("PI_REASONING_LEVEL");
       }
     } finally {
       await manager.shutdown();
@@ -519,20 +570,15 @@ describe("child process lifecycle", () => {
 
   processTest("hibernates after failure while preserving the error", async () => {
     const parentSessionId = "lifecycle-failure";
-    const systemPromptFile = path.join(TEST_AGENT_DIR, "pi-codex-subagents", "SYSTEM.md");
-    const customSystemPrompt = "Use the custom subagent instructions.";
     fs.rmSync(path.join(getRunsDir(), parentScopeKey(parentSessionId)), {
       recursive: true,
       force: true,
     });
-    fs.mkdirSync(path.dirname(systemPromptFile), { recursive: true });
-    fs.writeFileSync(systemPromptFile, customSystemPrompt);
     const manager = createAgentManager();
     try {
       await manager.spawnAgent(spawnParams(parentSessionId, "worker", "fail now"));
       const started = manager.getAgentInfo("worker", parentSessionId);
       const pid = started.childProcess!.pid;
-      expect(fs.readFileSync(systemPromptFile, "utf8")).toBe(customSystemPrompt);
       await waitUntil(() => {
         const info = manager.getAgentInfo("worker", parentSessionId);
         return info.status === "failed" && !info.childProcess;
@@ -546,32 +592,9 @@ describe("child process lifecycle", () => {
         recursive: true,
         force: true,
       });
-      fs.rmSync(systemPromptFile, { force: true });
     }
   });
 
-  processTest(
-    "rejects an empty configured system prompt instead of falling back to Pi's default",
-    async () => {
-      const parentSessionId = "empty-system-prompt";
-      const systemPromptFile = path.join(TEST_AGENT_DIR, "pi-codex-subagents", "SYSTEM.md");
-      fs.mkdirSync(path.dirname(systemPromptFile), { recursive: true });
-      fs.writeFileSync(systemPromptFile, "\n");
-      const manager = createAgentManager();
-      try {
-        await expect(
-          manager.spawnAgent(spawnParams(parentSessionId, "worker", "first")),
-        ).rejects.toThrow("Subagent system prompt is empty");
-      } finally {
-        await manager.shutdown();
-        fs.rmSync(path.join(getRunsDir(), parentScopeKey(parentSessionId)), {
-          recursive: true,
-          force: true,
-        });
-        fs.rmSync(systemPromptFile, { force: true });
-      }
-    },
-  );
 
   processTest("accepts Darwin process ownership when ps cannot expose the token", async () => {
     if (process.platform !== "darwin") return;
@@ -842,6 +865,7 @@ describe("extension completion delivery and TUI", () => {
         cwd: TEST_AGENT_DIR,
         mode: "tui",
         model: { provider: "test", id: "fake" },
+        modelRegistry: { getAvailable: () => AVAILABLE_MODELS },
         sessionManager: {
           getSessionId: () => parentSessionId,
           getSessionFile: () => path.join(TEST_AGENT_DIR, "parent.jsonl"),
@@ -866,12 +890,21 @@ describe("extension completion delivery and TUI", () => {
         expect(commands.has("subagent")).toBe(true);
         expect(commands.has("subagents")).toBe(true);
         expect(renderers.has("pi-codex-subagent-completion")).toBe(true);
+        expect(tools.get("spawn_agent").parameters.required).toContain("agent_type");
+        expect(tools.get("spawn_agent").parameters.properties.skills).toBeUndefined();
+        expect(tools.get("spawn_agent").parameters.properties.agent_type.enum).toEqual([
+          "scout",
+          "librarian",
+          "implementer",
+          "reviewer",
+        ]);
 
         await tools.get("spawn_agent").execute(
           "spawn-1",
           {
             task_name: "x".repeat(200),
             message: "slow finish",
+            agent_type: "implementer",
           },
           undefined,
           undefined,
@@ -879,11 +912,40 @@ describe("extension completion delivery and TUI", () => {
         );
 
         expect(widget).toBeFunction();
-        const theme = { fg: (_color: string, text: string) => text };
+        const colorCalls: string[] = [];
+        const theme = {
+          fg: (color: string, text: string) => {
+            colorCalls.push(color);
+            return text;
+          },
+          bold: (text: string) => text,
+        };
         const lines = widget({}, theme).render(40);
         expect(lines).toHaveLength(1);
         expect(visibleWidth(lines[0])).toBeLessThanOrEqual(40);
         expect(lines[0]).toContain("/subagents");
+        expect(colorCalls).toContain("success");
+        colorCalls.length = 0;
+        tools.get("spawn_agent").renderCall(
+          { task_name: "research", agent_type: "librarian" },
+          theme,
+        );
+        expect(colorCalls).toContain("mdLink");
+        colorCalls.length = 0;
+        renderers.get("pi-codex-subagent-completion")(
+          {
+            details: {
+              agent_name: "/research",
+              status: "completed",
+              profile: "librarian",
+              color: "mdLink",
+            },
+          },
+          { expanded: false },
+          theme,
+        );
+        expect(colorCalls).toContain("mdLink");
+        expect(colorCalls).toContain("success");
 
         await waitUntil(() => sentMessages.length === 1);
         expect(widget).toBeUndefined();
@@ -895,6 +957,7 @@ describe("extension completion delivery and TUI", () => {
           {
             task_name: "large-output",
             message: "large response",
+            agent_type: "implementer",
           },
           undefined,
           undefined,
@@ -906,6 +969,26 @@ describe("extension completion delivery and TUI", () => {
         expect(large.content).toContain("Output truncated");
         expect(large.details.fullOutputPath).toBeString();
         expect(fs.existsSync(large.details.fullOutputPath)).toBe(true);
+
+        await tools.get("spawn_agent").execute(
+          "spawn-3",
+          { task_name: "hold-scout", message: "hold scout", agent_type: "scout" },
+          undefined,
+          undefined,
+          ctx,
+        );
+        await tools.get("spawn_agent").execute(
+          "spawn-4",
+          { task_name: "hold-library", message: "hold library", agent_type: "librarian" },
+          undefined,
+          undefined,
+          ctx,
+        );
+        colorCalls.length = 0;
+        const multiple = widget({}, theme).render(32);
+        expect(multiple.every((line: string) => visibleWidth(line) <= 32)).toBe(true);
+        expect(colorCalls).toContain("accent");
+        expect(colorCalls).toContain("mdLink");
       } finally {
         await emit("session_shutdown", { reason: "quit" });
         fs.rmSync(scope, { recursive: true, force: true });
@@ -922,6 +1005,9 @@ describe("subagent peek overlay", () => {
       taskName: "a-very-long-agent-name",
       canonicalName: "/a-very-long-agent-name",
       parentSessionId: "peek-parent",
+      profile: "reviewer",
+      color: "warning" as const,
+      isReadonly: true,
       provider: "test",
       modelId: "a-very-long-model-name",
       model: "test:a-very-long-model-name",
@@ -955,6 +1041,24 @@ describe("subagent peek overlay", () => {
       expect(internals.scrollOffset).toBe(18);
       expect(rendered[1]).toContain("line-18");
       expect(rendered[12]).toContain("line-29");
+    } finally {
+      overlay.dispose();
+    }
+  });
+
+  test("renders profile identity separately from semantic status color", () => {
+    const overlay = createOverlay();
+    try {
+      const colors: string[] = [];
+      (overlay as any).theme = {
+        fg(color: string, text: string) {
+          colors.push(color);
+          return text;
+        },
+      };
+      overlay.render(40);
+      expect(colors).toContain("warning");
+      expect(colors).toContain("success");
     } finally {
       overlay.dispose();
     }

@@ -10,7 +10,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { KeychainCredentialError, type CredentialStore } from "../keychain.js";
+import { readonlyMcpPolicy } from "../index.js";
 import { McpManager } from "../manager.js";
+import type { McpGatewayPolicy } from "../types.js";
 
 class FakeTransport {
   onclose?: () => void;
@@ -37,6 +39,13 @@ interface FakePage {
     name: string;
     description?: string;
     inputSchema: Record<string, unknown>;
+    annotations?: {
+      title?: unknown;
+      readOnlyHint?: unknown;
+      destructiveHint?: unknown;
+      idempotentHint?: unknown;
+      openWorldHint?: unknown;
+    };
   }>;
   nextCursor?: string;
 }
@@ -50,6 +59,7 @@ function harness(
     callResult?: unknown;
     openUrl?: (url: string, signal?: AbortSignal) => Promise<void>;
     credentialStore?: CredentialStore;
+    policy?: McpGatewayPolicy;
   } = {},
 ) {
   const calls = {
@@ -77,6 +87,7 @@ function harness(
     options.config ?? { local: { type: "stdio", command: "fixture" } },
     {
       openUrl: options.openUrl ?? (async () => undefined),
+      policy: options.policy,
       credentialStore: options.credentialStore ?? {
         async get() {
           calls.keychainReads += 1;
@@ -267,11 +278,31 @@ describe("MCP manager", () => {
       config: { "my server": { type: "stdio", command: "fixture" } },
       pages: {
         root: {
-          tools: [{ name: "first.tool", description: "Alpha", inputSchema: { type: "object" } }],
+          tools: [
+            {
+              name: "first.tool",
+              description: "Alpha",
+              inputSchema: { type: "object" },
+              annotations: {
+                title: "First",
+                readOnlyHint: true,
+                destructiveHint: false,
+                idempotentHint: true,
+                openWorldHint: false,
+              },
+            },
+          ],
           nextCursor: "two",
         },
         two: {
-          tools: [{ name: "second-tool", description: "Beta", inputSchema: { type: "object" } }],
+          tools: [
+            {
+              name: "second-tool",
+              description: "Beta",
+              inputSchema: { type: "object" },
+              annotations: { readOnlyHint: false, destructiveHint: true },
+            },
+          ],
         },
       },
       callResult: {
@@ -291,7 +322,16 @@ describe("MCP manager", () => {
     ]);
     expect(fixture.calls.lists).toEqual([undefined, "two"]);
     expect((await fixture.manager.search("beta"))[0]?.name).toBe("my_server_second-tool");
-    expect((await fixture.manager.describe("my_server_first_tool")).remoteName).toBe("first.tool");
+    const described = await fixture.manager.describe("my_server_first_tool");
+    expect(described.remoteName).toBe("first.tool");
+    expect(described.annotations).toEqual({
+      title: "First",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    });
+    expect(listed[1]?.annotations).toEqual({ readOnlyHint: false, destructiveHint: true });
 
     const result = await fixture.manager.call(
       "second-tool",
@@ -305,6 +345,150 @@ describe("MCP manager", () => {
       { type: "text", text: "embedded" },
       { type: "text", text: '{\n  "answer": 42\n}' },
     ]);
+  });
+
+  test("read-only policy filters annotated tools across discovery, description, and calls", async () => {
+    const fixture = harness({
+      config: { linear: { type: "stdio", command: "fixture" } },
+      policy: readonlyMcpPolicy,
+      pages: {
+        root: {
+          tools: [
+            {
+              name: "get_issue",
+              inputSchema: { type: "object" },
+              annotations: { readOnlyHint: true, destructiveHint: false },
+            },
+            {
+              name: "create_issue",
+              inputSchema: { type: "object" },
+              annotations: { readOnlyHint: false, destructiveHint: false },
+            },
+            {
+              name: "dangerous_read",
+              inputSchema: { type: "object" },
+              annotations: { readOnlyHint: true, destructiveHint: true },
+            },
+            { name: "mystery", inputSchema: { type: "object" } },
+          ],
+        },
+      },
+    });
+
+    expect((await fixture.manager.list("linear")).map((tool) => tool.remoteName)).toEqual([
+      "get_issue",
+    ]);
+    expect((await fixture.manager.search("", { server: "linear" })).map((tool) => tool.remoteName))
+      .toEqual(["get_issue"]);
+    expect((await fixture.manager.describe("get_issue", { server: "linear" })).annotations)
+      .toEqual({ readOnlyHint: true, destructiveHint: false });
+    await fixture.manager.call("linear_get_issue", {});
+
+    for (const denied of ["create_issue", "dangerous_read", "mystery"]) {
+      await expect(
+        fixture.manager.describe(denied, { server: "linear" }),
+      ).rejects.toThrow("read-only policy");
+      await expect(fixture.manager.call(denied, {}, { server: "linear" })).rejects.toThrow(
+        `MCP tool "${denied}" on server "linear"`,
+      );
+    }
+    expect(fixture.calls.toolCalls.map((call) => call.name)).toEqual(["get_issue"]);
+  });
+
+  test("read-only policy allows only the four exact unannotated DBX metadata tools", async () => {
+    const allowed = [
+      "dbx_list_connections",
+      "dbx_list_tables",
+      "dbx_describe_table",
+      "dbx_get_schema_context",
+    ];
+    const denied = [
+      "dbx_execute_sql",
+      "dbx_execute_redis",
+      "dbx_open_ui",
+      "dbx_add_connection",
+      "dbx_remove_connection",
+    ];
+    const fixture = harness({
+      config: { dbx: { type: "stdio", command: "fixture" } },
+      policy: readonlyMcpPolicy,
+      pages: {
+        root: {
+          tools: [...allowed, ...denied].map((name) => ({
+            name,
+            inputSchema: { type: "object" },
+          })),
+        },
+      },
+    });
+
+    expect((await fixture.manager.list("dbx")).map((tool) => tool.remoteName)).toEqual(allowed);
+    expect((await fixture.manager.search("dbx_", { server: "dbx" })).map((tool) => tool.remoteName))
+      .toEqual([...allowed].sort());
+    for (const tool of allowed) {
+      expect((await fixture.manager.describe(tool, { server: "dbx" })).remoteName).toBe(tool);
+      await fixture.manager.call(tool, {}, { server: "dbx" });
+    }
+    for (const tool of denied) {
+      await expect(fixture.manager.describe(tool, { server: "dbx" })).rejects.toThrow(
+        "read-only policy",
+      );
+      await expect(fixture.manager.call(tool, {}, { server: "dbx" })).rejects.toThrow(
+        "read-only policy",
+      );
+    }
+    expect(fixture.calls.toolCalls.map((call) => call.name)).toEqual(allowed);
+
+    const impersonator = harness({
+      config: { other: { type: "stdio", command: "fixture" } },
+      policy: readonlyMcpPolicy,
+      pages: {
+        root: {
+          tools: [{ name: "dbx_list_tables", inputSchema: { type: "object" } }],
+        },
+      },
+    });
+    expect(await impersonator.manager.list("other")).toEqual([]);
+    await expect(impersonator.manager.call("other_dbx_list_tables", {})).rejects.toThrow(
+      "read-only policy",
+    );
+  });
+
+  test("passes the requested operation and canonical names to policy callbacks", async () => {
+    const requests: Array<{
+      operation: string;
+      server: string;
+      remoteName: string;
+      exposedName: string;
+    }> = [];
+    const fixture = harness({
+      policy: {
+        name: "recording",
+        allows(request) {
+          requests.push({
+            operation: request.operation,
+            server: request.server,
+            remoteName: request.remoteName,
+            exposedName: request.exposedName,
+          });
+          return true;
+        },
+      },
+    });
+
+    await fixture.manager.list("local");
+    await fixture.manager.search("echo", { server: "local" });
+    await fixture.manager.describe("echo", { server: "local" });
+    await fixture.manager.call("local_echo", {});
+
+    expect(requests).toEqual(
+      ["list", "search", "describe", "call"].map((operation) => ({
+        operation,
+        server: "local",
+        remoteName: "echo",
+        exposedName: "local_echo",
+      })),
+    );
   });
 
   test("reports sanitized collisions, repeated cursors, invalid regex, and MCP errors", async () => {

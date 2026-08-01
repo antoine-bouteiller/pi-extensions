@@ -1,3 +1,28 @@
+export interface McpToolAnnotations {
+  title?: string;
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+}
+
+export type McpPolicyOperation = "list" | "search" | "describe" | "call";
+
+export interface McpPolicyRequest {
+  /** Configured MCP server name, before exposed-name sanitization. */
+  server: string;
+  remoteName: string;
+  exposedName: string;
+  annotations: Readonly<McpToolAnnotations>;
+  operation: McpPolicyOperation;
+}
+
+export interface McpGatewayPolicy {
+  /** A short, non-sensitive label used in bounded denial errors. */
+  name: string;
+  allows(request: Readonly<McpPolicyRequest>): boolean;
+}
+
 export type McpServerStatus =
   | "disconnected"
   | "connecting"

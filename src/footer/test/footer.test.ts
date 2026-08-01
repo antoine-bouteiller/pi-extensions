@@ -1,8 +1,55 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createFakePi } from "#test-utils/fake-pi";
 import footer from "../index";
 import { columns, formatTokens, progressBar } from "../render";
 import { emptyGitInfoState, emptyModelInfoState } from "../state";
+
+const originalOwnerToken = process.env.PI_SUBAGENT_OWNER_TOKEN;
+
+beforeEach(() => {
+  delete process.env.PI_SUBAGENT_OWNER_TOKEN;
+});
+
+afterEach(() => {
+  if (originalOwnerToken === undefined) delete process.env.PI_SUBAGENT_OWNER_TOKEN;
+  else process.env.PI_SUBAGENT_OWNER_TOKEN = originalOwnerToken;
+});
+
+describe("footer registration", () => {
+  test("does no work and registers no handlers in a subagent", () => {
+    process.env.PI_SUBAGENT_OWNER_TOKEN = "owner-token";
+    const { pi, state } = createFakePi();
+    let dependencyReads = 0;
+    const dependencies = {
+      get fetchAnthropicQuota() {
+        dependencyReads += 1;
+        return async () => null;
+      },
+    };
+
+    footer(pi, dependencies);
+
+    expect(dependencyReads).toBe(0);
+    expect(state.handlers.size).toBe(0);
+  });
+
+  test("registers the normal main-session lifecycle handlers", () => {
+    const { pi, state } = createFakePi();
+
+    footer(pi);
+
+    expect([...state.handlers.keys()]).toEqual([
+      "session_start",
+      "model_select",
+      "thinking_level_select",
+      "turn_end",
+      "agent_settled",
+      "after_provider_response",
+      "resources_discover",
+      "session_shutdown",
+    ]);
+  });
+});
 
 describe("footer formatting", () => {
   test("formats token counts and bounded progress bars", () => {

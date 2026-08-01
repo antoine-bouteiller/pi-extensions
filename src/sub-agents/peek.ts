@@ -17,6 +17,7 @@ import {
 import * as fs from "node:fs";
 import * as net from "node:net";
 import { getSocketPath, isPeekActive, type AgentInfo } from "./core.js";
+import { persistedProfileColor } from "./profiles.js";
 
 // oxlint-disable-next-line no-control-regex -- OSC 133 terminal markers contain ESC and BEL.
 const OSC133_PROMPT_MARKER_RE = /\x1b\]133;[ABC]\x07/g;
@@ -401,7 +402,7 @@ export class SubagentPeekOverlay {
       const leftWidth = innerWidth - statusWidth;
       const left = truncateToWidth(`${title}${modelTag}`, leftWidth, "");
       headerContent =
-        this.theme.fg("accent", left) +
+        this.theme.fg(persistedProfileColor(this.info.profile, this.info.color), left) +
         this.theme.fg("border", "─".repeat(Math.max(0, leftWidth - visibleWidth(left)))) +
         this.theme.fg(statusColor as any, statusText);
     } else {

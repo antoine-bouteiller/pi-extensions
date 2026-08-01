@@ -15,7 +15,22 @@ function send(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
-record({ type: "started", args: process.argv.slice(2) });
+record({
+  type: "started",
+  args: process.argv.slice(2),
+  env: Object.fromEntries(
+    [
+      "PI_SESSION_ID",
+      "PI_SESSION_FILE",
+      "PI_PROVIDER",
+      "PI_MODEL",
+      "PI_REASONING_LEVEL",
+      "PI_SUBAGENT_OWNER_TOKEN",
+      "PI_SUBAGENT_PROFILE",
+      "PI_SUBAGENT_READONLY",
+    ].flatMap((key) => (process.env[key] === undefined ? [] : [[key, process.env[key]]])),
+  ),
+});
 const input = readline.createInterface({ input: process.stdin });
 input.on("line", (line) => {
   const command = JSON.parse(line);

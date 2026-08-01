@@ -1,21 +1,27 @@
-import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
   formatSize,
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { Text, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
   AgentManager,
-  getAgentDefinitionsDescription,
   type AgentCompletionEvent,
   type AgentInfo,
   type AgentManagerOptions,
-  type ThinkingLevel,
   writeFullToolOutput,
 } from "./core.js";
+import {
+  AGENT_PROFILE_NAMES,
+  configuredProfileColor,
+  getAgentProfilesDescription,
+  persistedProfileColor,
+  type AgentProfileName,
+} from "./profiles.js";
 import { SubagentPeekOverlay } from "./peek.js";
 
 function textResult(text: string, details?: any) {
@@ -86,10 +92,8 @@ function runtimeLabel(info: AgentInfo): string {
 export default function (pi: ExtensionAPI, managerOptions: AgentManagerOptions = {}) {
   const widgetKey = "pi-codex-subagents";
   const completionMessageType = "pi-codex-subagent-completion";
-  let cachedSkills: Array<{ name: string; description: string; filePath: string }> = [];
-  let cachedSkillsSignature = "";
   let activeContext: any;
-  const activeAgents = new Set<string>();
+  const activeAgents = new Map<string, { profile?: string; color: ThemeColor }>();
 
   const isCurrentSession = (parentId: string) => {
     try {
@@ -101,13 +105,11 @@ export default function (pi: ExtensionAPI, managerOptions: AgentManagerOptions =
 
   const refreshAgentWidget = () => {
     if (!activeContext || activeContext.mode !== "tui") return;
-    const running = [...activeAgents];
+    const running = [...activeAgents.entries()];
     if (!running.length) {
       activeContext.ui.setWidget(widgetKey, undefined);
       return;
     }
-    const label =
-      running.length === 1 ? `${running[0]} running` : `${running.length} subagents running`;
     activeContext.ui.setWidget(widgetKey, (_tui: any, theme: Theme) => ({
       render(width: number) {
         const marker = "◌ ";
@@ -115,11 +117,24 @@ export default function (pi: ExtensionAPI, managerOptions: AgentManagerOptions =
         if (width <= visibleWidth(marker) + visibleWidth(suffix)) {
           return [truncateToWidth(theme.fg("dim", "/subagents"), width, "")];
         }
+        const [name, metadata] = running[0];
+        const label =
+          running.length === 1
+            ? theme.fg(
+                metadata.color,
+                `${metadata.profile ? `[${metadata.profile}] ` : ""}${name} running`,
+              )
+            : running
+                .map(([agentName, agent]) =>
+                  theme.fg(
+                    agent.color,
+                    `${agent.profile ? `[${agent.profile}] ` : ""}${agentName}`,
+                  ),
+                )
+                .join(theme.fg("dim", " · "));
         const available = width - visibleWidth(marker) - visibleWidth(suffix);
         const clippedLabel = truncateToWidth(label, available, "…");
-        return [
-          theme.fg("accent", marker) + theme.fg("text", clippedLabel) + theme.fg("dim", suffix),
-        ];
+        return [theme.fg("accent", marker) + clippedLabel + theme.fg("dim", suffix)];
       },
       invalidate() {},
     }));
@@ -133,6 +148,9 @@ export default function (pi: ExtensionAPI, managerOptions: AgentManagerOptions =
         status: event.status,
         ...(event.finalResponse !== undefined ? { final_response: event.finalResponse } : {}),
         ...(event.error ? { error: event.error } : {}),
+        ...(event.profile ? { profile: event.profile } : {}),
+        color: event.color,
+        ...(event.isReadonly !== undefined ? { is_readonly: event.isReadonly } : {}),
       },
       null,
       2,
@@ -146,6 +164,9 @@ export default function (pi: ExtensionAPI, managerOptions: AgentManagerOptions =
         details: {
           agent_name: event.agentName,
           status: event.status,
+          ...(event.profile ? { profile: event.profile } : {}),
+          color: event.color,
+          ...(event.isReadonly !== undefined ? { is_readonly: event.isReadonly } : {}),
           ...(bounded.fullOutputPath ? { fullOutputPath: bounded.fullOutputPath } : {}),
         },
       },
@@ -157,22 +178,41 @@ export default function (pi: ExtensionAPI, managerOptions: AgentManagerOptions =
     ...managerOptions,
     onActivityChange: (event) => {
       if (!isCurrentSession(event.parentSessionId)) return;
-      if (event.active) activeAgents.add(event.agentName);
+      if (event.active)
+        activeAgents.set(event.agentName, { profile: event.profile, color: event.color });
       else activeAgents.delete(event.agentName);
       refreshAgentWidget();
     },
     onUnclaimedCompletion: deliverCompletion,
   });
 
+  const colorForTarget = (target: string): ThemeColor => {
+    if (!activeContext) return "muted";
+    try {
+      const info = manager.getAgentInfo(cleanTarget(target), parentSessionId(activeContext));
+      return persistedProfileColor(info.profile, info.color);
+    } catch {
+      return "muted";
+    }
+  };
+
+  const coloredTargets = (targets: string[], theme: Theme): string =>
+    targets.map((target) => theme.fg(colorForTarget(target), target)).join(",");
+
   pi.registerMessageRenderer(
     completionMessageType,
     (message: any, { expanded }: any, theme: Theme) => {
       const status = message.details?.status;
-      const color = status === "completed" ? "success" : status === "failed" ? "error" : "warning";
-      let text = theme.fg(
-        color,
-        `${status === "completed" ? "✓" : "✗"} ${message.details?.agent_name || "subagent"} ${status || "finished"}`,
+      const statusColor =
+        status === "completed" ? "success" : status === "failed" ? "error" : "warning";
+      const identityColor = persistedProfileColor(
+        message.details?.profile,
+        message.details?.color,
       );
+      let text =
+        theme.fg(statusColor, `${status === "completed" ? "✓" : "✗"} `) +
+        theme.fg(identityColor, message.details?.agent_name || "subagent") +
+        theme.fg(statusColor, ` ${status || "finished"}`);
       if (expanded && typeof message.content === "string")
         text += `\n${theme.fg("dim", message.content)}`;
       return new Text(text, 0, 0);
@@ -183,17 +223,12 @@ export default function (pi: ExtensionAPI, managerOptions: AgentManagerOptions =
     name: "spawn_agent",
     label: "Spawn Agent",
     get description() {
-      return `Spawn a fresh-context Pi subagent for a concrete task. Automatic extension, skill, and prompt-template discovery is disabled. Agent templates may explicitly configure a provider/model pair, thinking level, tools, skills, and extensions. Omitted template settings inherit from the parent where applicable.
+      return `Spawn a fresh-context Pi subagent using a required source-defined profile. Children rediscover configured global and project extensions normally while skills, prompt templates, and context files remain isolated. Each profile fixes its model, thinking level, prompt, read-only metadata, and model-callable tool boundary.
 
 Returns after the child accepts its initial task. Continue with independent work instead of waiting; the child's final response will be delivered automatically when ready. Use \`wait_agent\` or \`wait_all_agents\` only when your next action depends on the subagent response and you have no useful work to do meanwhile.
 
-\`agent_type\` is optional. Omit it for a generic subagent. Use a template only when the task matches it.
-
-Available agent templates:
-${getAgentDefinitionsDescription()}
-
-Available parent skills that may be added by name:
-${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${skill.description}`).join("\n") : "No model-invocable skills are loaded in the parent session."}`;
+Available agent profiles:
+${getAgentProfilesDescription()}`;
     },
     parameters: Type.Object({
       task_name: Type.String({
@@ -201,17 +236,9 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
           "Task name for the new agent. Use letters, digits, underscores, dashes, and optional slash path separators.",
       }),
       message: Type.String({ description: "Initial task for the new agent." }),
-      agent_type: Type.Optional(
-        Type.String({
-          description: "Optional agent template name from ~/.pi/agent/pi-codex-subagents/agents/.",
-        }),
-      ),
-      skills: Type.Optional(
-        Type.Array(Type.String(), {
-          description:
-            "Additional skill names from the loaded parent skills listed in this tool description.",
-        }),
-      ),
+      agent_type: StringEnum(AGENT_PROFILE_NAMES, {
+        description: "Required source-defined agent profile.",
+      }),
     }),
     async execute(
       _toolCallId: string,
@@ -223,31 +250,22 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
       const currentModel = ctx.model;
       if (!currentModel?.provider || !currentModel?.id)
         throw new Error("spawn_agent failed: the parent has no active provider/model pair.");
-      const requestedSkills: string[] = params.skills ?? [];
-      const loadedSkillPaths = Object.fromEntries(
-        cachedSkills.map((skill) => [skill.name, skill.filePath]),
-      );
-      const unavailableSkills = requestedSkills.filter(
-        (skill) => !Object.hasOwn(loadedSkillPaths, skill),
-      );
-      if (unavailableSkills.length)
-        throw new Error(
-          `spawn_agent failed: skills are not loaded in the parent session: ${unavailableSkills.join(", ")}`,
-        );
+      const availableModels = ctx.modelRegistry?.getAvailable?.();
+      if (!Array.isArray(availableModels))
+        throw new Error("spawn_agent failed: authenticated model availability is unavailable.");
       try {
         const result = await manager.spawnAgent({
           task_name: params.task_name,
           message: params.message,
-          agent_type: params.agent_type,
-          skills: requestedSkills,
-          loadedSkillPaths,
+          agent_type: params.agent_type as AgentProfileName,
           cwd: ctx.cwd,
           parentSessionId: parentSessionId(ctx),
           parentSessionFile: ctx.sessionManager.getSessionFile?.(),
-          inheritedProvider: currentModel.provider,
-          inheritedModelId: currentModel.id,
-          inheritedThinking: pi.getThinkingLevel() as ThinkingLevel,
-          inheritedTools: pi.getActiveTools().join(","),
+          availableModels: availableModels.map((model: any) => ({
+            provider: String(model.provider),
+            id: String(model.id),
+          })),
+          parentModel: { provider: currentModel.provider, id: currentModel.id },
         });
         return textResult(`Spawned ${result.task_name}.`, result);
       } catch (error) {
@@ -259,8 +277,11 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
     renderCall(args: any, theme: Theme) {
       return new Text(
         theme.fg("toolTitle", theme.bold("spawn_agent ")) +
-          theme.fg("accent", args.task_name || "?") +
-          theme.fg("dim", args.agent_type ? ` [${args.agent_type}]` : ""),
+          theme.fg("text", args.task_name || "?") +
+          theme.fg(
+            configuredProfileColor(args.agent_type),
+            args.agent_type ? ` [${args.agent_type}]` : "",
+          ),
         0,
         0,
       );
@@ -268,7 +289,15 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
     renderResult(result: any, _options: any, theme: Theme) {
       if (result.isError)
         return new Text(theme.fg("error", `✗ ${result.content?.[0]?.text || "failed"}`), 0, 0);
-      return new Text(theme.fg("success", `✓ ${result.details?.task_name || "spawned"}`), 0, 0);
+      return new Text(
+        theme.fg("success", "✓ ") +
+          theme.fg(
+            persistedProfileColor(result.details?.profile, result.details?.color),
+            result.details?.task_name || "spawned",
+          ),
+        0,
+        0,
+      );
     },
   };
 
@@ -279,33 +308,9 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
     if (activeContext !== ctx) return;
     for (const entry of manager.listAgents(undefined, parentSessionId(ctx))) {
       if (entry.agent_status === "starting" || entry.agent_status === "running")
-        activeAgents.add(entry.agent_name);
+        activeAgents.set(entry.agent_name, { profile: entry.profile, color: entry.color });
     }
     refreshAgentWidget();
-  });
-
-  pi.on("before_agent_start", async (event: any) => {
-    const skills = event?.systemPromptOptions?.skills;
-    const nextSkills = Array.isArray(skills)
-      ? skills
-          .filter(
-            (skill: any) =>
-              !skill?.disableModelInvocation &&
-              typeof skill?.name === "string" &&
-              typeof skill?.filePath === "string",
-          )
-          .map((skill: any) => ({
-            name: skill.name,
-            description: String(skill.description || ""),
-            filePath: skill.filePath,
-          }))
-      : [];
-    const signature = JSON.stringify(nextSkills);
-    if (signature !== cachedSkillsSignature) {
-      cachedSkills = nextSkills;
-      cachedSkillsSignature = signature;
-      pi.registerTool(spawnAgentTool);
-    }
   });
 
   pi.on("session_shutdown", async () => {
@@ -343,7 +348,10 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
           parseTargets(params.targets),
           signal,
         );
-        return boundedTextResult(JSON.stringify(result, null, 2), { message: result.message });
+        return boundedTextResult(JSON.stringify(result, null, 2), {
+          message: result.message,
+          event: result.event,
+        });
       } catch (error) {
         if (signal?.aborted) throw error;
         throw new Error(
@@ -352,17 +360,27 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
       }
     },
     renderCall(args: any, theme: Theme) {
-      const targets =
-        Array.isArray(args.targets) && args.targets.length ? args.targets.join(",") : "any";
+      const targets = Array.isArray(args.targets) && args.targets.length ? args.targets : [];
       return new Text(
-        theme.fg("toolTitle", theme.bold("wait_agent ")) + theme.fg("accent", targets),
+        theme.fg("toolTitle", theme.bold("wait_agent ")) +
+          (targets.length ? coloredTargets(targets, theme) : theme.fg("muted", "any")),
         0,
         0,
       );
     },
     renderResult(result: any, _options: any, theme: Theme) {
       if (result.isError) return new Text(theme.fg("error", "✗ wait failed"), 0, 0);
-      return new Text(theme.fg("success", result.details?.message || "done"), 0, 0);
+      const event = result.details?.event;
+      if (!event) return new Text(theme.fg("success", result.details?.message || "done"), 0, 0);
+      const statusColor =
+        event.status === "completed" ? "success" : event.status === "failed" ? "error" : "warning";
+      return new Text(
+        theme.fg(statusColor, event.status === "completed" ? "✓ " : "✗ ") +
+          theme.fg(persistedProfileColor(event.profile, event.color), event.agentName) +
+          theme.fg(statusColor, ` ${event.status}`),
+        0,
+        0,
+      );
     },
   });
 
@@ -392,7 +410,10 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
           parseTargets(params.targets),
           signal,
         );
-        return boundedTextResult(JSON.stringify(result, null, 2), { message: result.message });
+        return boundedTextResult(JSON.stringify(result, null, 2), {
+          message: result.message,
+          responses: result.responses,
+        });
       } catch (error) {
         if (signal?.aborted) throw error;
         throw new Error(
@@ -401,10 +422,10 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
       }
     },
     renderCall(args: any, theme: Theme) {
-      const targets =
-        Array.isArray(args.targets) && args.targets.length ? args.targets.join(",") : "all";
+      const targets = Array.isArray(args.targets) && args.targets.length ? args.targets : [];
       return new Text(
-        theme.fg("toolTitle", theme.bold("wait_all_agents ")) + theme.fg("accent", targets),
+        theme.fg("toolTitle", theme.bold("wait_all_agents ")) +
+          (targets.length ? coloredTargets(targets, theme) : theme.fg("muted", "all")),
         0,
         0,
       );
@@ -480,6 +501,9 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
         return boundedTextResult(JSON.stringify(result, null, 2), {
           agent_name: result.agent_name,
           status: result.status,
+          profile: result.profile,
+          color: result.color,
+          is_readonly: result.is_readonly,
         });
       } catch (error) {
         throw new Error(
@@ -490,14 +514,22 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
     renderCall(args: any, theme: Theme) {
       return new Text(
         theme.fg("toolTitle", theme.bold("read_agent_response ")) +
-          theme.fg("accent", args.target || "?"),
+          theme.fg(colorForTarget(args.target || ""), args.target || "?"),
         0,
         0,
       );
     },
     renderResult(result: any, _options: any, theme: Theme) {
       if (result.isError) return new Text(theme.fg("error", "✗ read failed"), 0, 0);
-      return new Text(theme.fg("success", `✓ ${result.details?.agent_name || "response"}`), 0, 0);
+      return new Text(
+        theme.fg("success", "✓ ") +
+          theme.fg(
+            persistedProfileColor(result.details?.profile, result.details?.color),
+            result.details?.agent_name || "response",
+          ),
+        0,
+        0,
+      );
     },
   });
 
@@ -523,11 +555,18 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
           cleanTarget(params.target),
           params.message,
         );
+        const info = manager.getAgentInfo(cleanTarget(params.target), parentSessionId(ctx));
         return textResult(
           result.delivery === "steer"
             ? "Message steered into the running agent."
             : "Message started a new agent turn.",
-          { target: params.target, ...result },
+          {
+            target: params.target,
+            ...result,
+            profile: info.profile,
+            color: persistedProfileColor(info.profile, info.color),
+            is_readonly: info.isReadonly,
+          },
         );
       } catch (error) {
         throw new Error(
@@ -537,7 +576,8 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
     },
     renderCall(args: any, theme: Theme) {
       return new Text(
-        theme.fg("toolTitle", theme.bold("send_message ")) + theme.fg("accent", args.target || "?"),
+        theme.fg("toolTitle", theme.bold("send_message ")) +
+          theme.fg(colorForTarget(args.target || ""), args.target || "?"),
         0,
         0,
       );
@@ -545,7 +585,11 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
     renderResult(result: any, _options: any, theme: Theme) {
       if (result.isError) return new Text(theme.fg("error", "✗ send failed"), 0, 0);
       return new Text(
-        theme.fg("success", result.details?.delivery === "steer" ? "✓ steered" : "✓ started"),
+        theme.fg("success", result.details?.delivery === "steer" ? "✓ steered " : "✓ started ") +
+          theme.fg(
+            persistedProfileColor(result.details?.profile, result.details?.color),
+            result.details?.target || "agent",
+          ),
         0,
         0,
       );
@@ -568,11 +612,17 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
       ctx: any,
     ) {
       try {
-        const result = await manager.interruptAgent(
-          parentSessionId(ctx),
-          cleanTarget(params.target),
-        );
-        return textResult("Interrupt request handled.", result);
+        const sessionId = parentSessionId(ctx);
+        const target = cleanTarget(params.target);
+        const result = await manager.interruptAgent(sessionId, target);
+        const info = manager.getAgentInfo(target, sessionId);
+        return textResult("Interrupt request handled.", {
+          ...result,
+          target: params.target,
+          profile: info.profile,
+          color: persistedProfileColor(info.profile, info.color),
+          is_readonly: info.isReadonly,
+        });
       } catch (error) {
         throw new Error(
           `interrupt_agent failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -582,7 +632,7 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
     renderCall(args: any, theme: Theme) {
       return new Text(
         theme.fg("toolTitle", theme.bold("interrupt_agent ")) +
-          theme.fg("accent", args.target || "?"),
+          theme.fg(colorForTarget(args.target || ""), args.target || "?"),
         0,
         0,
       );
@@ -590,7 +640,12 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
     renderResult(result: any, _options: any, theme: Theme) {
       if (result.isError) return new Text(theme.fg("error", "✗ interrupt failed"), 0, 0);
       return new Text(
-        theme.fg("warning", `↯ previous: ${result.details?.previous_status || "unknown"}`),
+        theme.fg("warning", "↯ ") +
+          theme.fg(
+            persistedProfileColor(result.details?.profile, result.details?.color),
+            result.details?.target || "agent",
+          ) +
+          theme.fg("warning", ` previous: ${result.details?.previous_status || "unknown"}`),
         0,
         0,
       );
@@ -704,7 +759,7 @@ ${cachedSkills.length ? cachedSkills.map((skill) => `- \`${skill.name}\` — ${s
             const parent = showAll ? ` ${sessionId.slice(-8)}` : "";
             lines.push(
               pointer +
-                fg(index === selected ? "accent" : "text", name) +
+                fg(persistedProfileColor(info.profile, info.color), name) +
                 " " +
                 fg(
                   entry.agent_status === "failed"

@@ -22,64 +22,59 @@ This extension is maintained in the [`pi-extensions`](../..) repository; it is n
 
 Agent names are unique within their parent session. The same task name can exist safely in different Pi sessions. Read and control tools are always scoped to the current parent session; only `list_agents(include_all: true)` crosses session boundaries, and that view is read-only.
 
-## Agent templates
+## Source-defined agent profiles
 
-Templates are user-defined Markdown files in:
+Agent profiles live only in [`profiles.ts`](./profiles.ts). `agent_type` is required. User JSON/Markdown agents, omitted generic agent types, and caller-added skills are intentionally unsupported. The built-in profiles are `scout`, `librarian`, `implementer`, and `reviewer`; adding another profile requires one registry entry using this generic contract:
 
-```text
-~/.pi/agent/pi-codex-subagents/agents/*.md
+```ts
+type AgentConfig = {
+  allowedTools: readonly string[];
+  model: string | ((context: ModelSelectorContext) => string);
+  prompt: string;
+  isReadonly: boolean;
+  description?: string;
+  thinking?: ThinkingLevel;
+  color?: ThemeColor;
+};
+
+const example: AgentConfig = {
+  allowedTools: ["read", "webfetch", "mcp"],
+  model: ({ parentModel }) =>
+    parentModel.provider === "anthropic" ? "gpt-5.6-sol" : "claude-opus-5",
+  prompt: "Research the assigned question and cite the evidence.",
+  isReadonly: true,
+  description: "Cited research",
+  thinking: "high",
+  color: "mdLink",
+};
 ```
 
-No templates are installed automatically. Example:
+The first four fields are required. `description` defaults to the registry key, `thinking` to `high`, and `color` to `accent`. Built-ins currently select only the configured OpenAI and Anthropic models.
 
-```md
----
-name: reviewer
-description: Focused read-only code review agent
-provider: openai-codex
-model: gpt-5.6-sol
-thinking: high
-tools: read,bash,grep,find,ls
-skills: web-investigate
-extensions: @scope/pi-extra-tools, ~/.pi/agent/extensions/local-helper.ts
-hint: Give this reviewer exact file paths and a narrow scope.
----
+Model selectors are exact. A bare ID such as `claude-sonnet-5` selects that exact authenticated ID, preferring its canonical `openai` or `anthropic` provider, then official OAuth/cloud variants, then other authenticated non-Google providers deterministically. A qualified selector such as `anthropic/claude-sonnet-5` requires that exact pair. Selector functions receive an immutable authenticated-model snapshot and the parent provider/model, and return one of the same exact selector strings. Spawning fails before run artifacts are created when a profile or selected model is unavailable.
 
-You are a focused review subagent. Return concise findings with file paths.
-```
+Children rediscover normally configured global and project extensions on every launch and restart. Temporary extensions supplied only through a parent CLI/factory invocation are not guaranteed because Pi does not expose an exact loaded-extension list. `allowedTools` is always passed as the strict model-callable tool boundary. Names for an extension that is not installed, such as optional FFF tools, are harmless; they become usable when that extension registers them.
 
-`provider` and `model` are an optional pair. When both are present, Pi launches that exact provider/model combination. If either is absent, the child inherits the parent agent's provider and model. `thinking` is also optional and otherwise inherits the parent. Template `tools` override inherited tool names.
+Skills, prompt templates, context files, `AGENTS.md`, and `CLAUDE.md` remain isolated. Children start fresh sessions with Pi's normal system prompt plus the profile prompt. Conversation and parent context are never copied. The normalized profile, provider/model, thinking level, prompt, tools, color, and read-only metadata are persisted, so a hibernated child restarts deterministically while rediscovering extensions afresh.
 
-`skills` may contain skill names or paths. `extensions` may contain local files/directories or npm package names already installed by Pi. Package names are resolved from project-local packages first and then Pi's global npm directory. Missing packages are never installed automatically.
+`isReadonly` adds generic prompt guidance and selects the MCP gateway policy; it is metadata, not a local filesystem or shell sandbox. It does not inspect `bash` commands or rewrite `allowedTools`. In read-only mode MCP permits tools annotated `readOnlyHint: true` and not destructive, plus the four unannotated DBX metadata operations `dbx_list_connections`, `dbx_list_tables`, `dbx_describe_table`, and `dbx_get_schema_context`. Other unannotated, mutating, or destructive MCP operations are hidden and denied. False mode is unrestricted; the implementer profile does not allow MCP at all.
 
-When a template loads extensions but omits `tools`, the child uses Pi's normal tool activation so tools registered by those extensions are available. Set template `tools` when you want an explicit allowlist. Without configured extensions, omitted template tools inherit the parent's active tool names as before.
-
-Automatic extension, skill, prompt-template, and context-file discovery is disabled in children. `AGENTS.md` and `CLAUDE.md` files are never loaded. Each child replaces Pi's default coding prompt with the contents of `~/.pi/agent/pi-codex-subagents/SYSTEM.md`, while only explicitly configured skills and extensions load. This file is created with a minimal subagent prompt when the extension first loads and can be edited directly. If the inherited parent model comes from an extension-registered provider, add that provider extension to the selected template; otherwise the isolated child cannot resolve the provider.
+Every child receives `PI_SUBAGENT_OWNER_TOKEN`, `PI_SUBAGENT_PROFILE`, and `PI_SUBAGENT_READONLY` (`1` or `0`). Parent session/provider/model environment variables are removed. The owner token also makes the custom footer return before registering handlers, polling quotas, or fetching Git state. Profile identity uses theme-aware colors across spawn, completion, activity, browser, and peek surfaces while lifecycle status retains independent semantic colors.
 
 ## Configuration
 
-Optional configuration lives at:
-
-```text
-~/.pi/agent/pi-codex-subagents/config.json
-```
+Optional storage configuration lives at `~/.pi/agent/pi-codex-subagents/config.json`:
 
 ```json
 {
   "storageDir": "~/.local/state/pi-codex-subagents/runs",
-  "retentionDays": 7,
-  "defaults": {
-    "skills": ["web-investigate"],
-    "extensions": ["@scope/pi-extra-tools"]
-  }
+  "retentionDays": 7
 }
 ```
 
-`storageDir` accepts an absolute path, `~/...`, or a path relative to the package configuration directory. By default runs are stored in `~/.pi/agent/pi-codex-subagents/runs`. `retentionDays` defaults to `7`; expired runs and oversized tool outputs are removed when the extension loads. Set it to `0` to disable automatic cleanup. Runtime sockets remain in the operating system temporary directory and are removed when agents stop.
+`storageDir` accepts an absolute path, `~/...`, or a path relative to the package configuration directory. By default runs are stored in `~/.pi/agent/pi-codex-subagents/runs`. `retentionDays` defaults to `7`; expired runs and oversized tool outputs are removed when the extension loads. Set it to `0` to disable automatic cleanup. Runtime sockets remain in the operating system temporary directory and are removed when agents stop. Legacy `defaults` keys are ignored.
 
 Configuration is read when agents spawn, while cleanup runs when the extension loads. Restart Pi after changing `storageDir` or `retentionDays` so storage lookup and cleanup use the same configuration throughout the process.
-
-Template skills and extensions override configured defaults. Skills explicitly requested by the parent are added to configured template/default skills. Tool selection belongs to the template or is inherited from the parent.
 
 ## Completion delivery
 
