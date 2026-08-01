@@ -26,7 +26,10 @@ const state: SidebarState = {
   quota: {
     label: "anthropic",
     percent: 42.3,
-    detail: "2h 14m · Weekly 18.0%",
+    windows: [
+      { label: "Session", percent: 42.3, resetsIn: "2h 14m" },
+      { label: "Weekly", percent: 18, resetsIn: "4d 6h" },
+    ],
   },
   extensionStatuses: ["index ready"],
 };
@@ -55,6 +58,37 @@ describe("footer sidebar rendering", () => {
     expect(text).toContain("feature/sidebar");
     expect(text).toContain("4 files changed");
     expect(text).toContain("╭─ ✦ QUOTA");
+  });
+
+  test("renders session and weekly quota as matching bars with their time left", () => {
+    const lines = renderSidebarLines(state, theme, 44, 36, 0).map(stripAnsi);
+    const quotaIndex = lines.findIndex((line) => line.includes("QUOTA"));
+    const [session, sessionMeter, weekly, weeklyMeter] = lines.slice(quotaIndex + 1, quotaIndex + 5);
+
+    expect(session).toContain("Session");
+    expect(session).toContain("42.3%");
+    expect(sessionMeter).toMatch(/■+·+ +2h 14m/);
+    expect(weekly).toContain("Weekly");
+    expect(weekly).toContain("18.0%");
+    expect(weeklyMeter).toMatch(/■+·+ +4d 6h/);
+    expect(sessionMeter!.indexOf("2h 14m") + "2h 14m".length).toBe(
+      weeklyMeter!.indexOf("4d 6h") + "4d 6h".length,
+    );
+  });
+
+  test("falls back to a single labelled bar when the provider reports no windows", () => {
+    const text = stripAnsi(
+      renderSidebarLines(
+        { ...state, quota: { label: "azure", percent: 71 } },
+        theme,
+        44,
+        36,
+        0,
+      ).join("\n"),
+    );
+
+    expect(text).toContain("Azure");
+    expect(text).toContain("71.0%");
   });
 
   test("pulses only the working Agent jewel", () => {

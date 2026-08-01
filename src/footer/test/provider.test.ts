@@ -55,7 +55,7 @@ describe("Anthropic quota provider", () => {
             isActive: true,
             windows: [
               { type: "five_hour", utilization: 0.375, resetsAt: Date.now() + 90 * 60_000 },
-              { type: "seven_day", utilization: 0.62 },
+              { type: "seven_day", utilization: 0.62, resetsAt: Date.now() + 102 * 60 * 60_000 },
               { type: "seven_day_fable", utilization: 0.02 },
             ],
           },
@@ -73,6 +73,11 @@ describe("Anthropic quota provider", () => {
     expect(quota?.detail).toContain("1h 30m");
     expect(quota?.detail).toContain("Weekly:");
     expect(quota?.detail).toContain("62.0%");
+    expect(quota?.windows?.map((window) => window.label)).toEqual(["Session", "Weekly"]);
+    expect(quota?.windows?.[0]?.percent).toBeCloseTo(37.5);
+    expect(quota?.windows?.[0]?.resetsIn).toBe("1h 30m");
+    expect(quota?.windows?.[1]?.percent).toBeCloseTo(62);
+    expect(quota?.windows?.[1]?.resetsIn).toBe("4d 6h");
   });
 
   test("reads the active profile rather than the first one", async () => {

@@ -1,7 +1,14 @@
+export interface QuotaWindow {
+  label: string;
+  percent: number;
+  resetsIn?: string;
+}
+
 export interface ProviderQuota {
   label: string;
   percent: number;
   detail?: string;
+  windows?: readonly QuotaWindow[];
 }
 
 export interface ModelInfoState {

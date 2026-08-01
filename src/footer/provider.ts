@@ -1,4 +1,4 @@
-import type { ProviderQuota } from "./state";
+import type { ProviderQuota, QuotaWindow } from "./state";
 import { progressBar } from "./render";
 
 export type QuotaFetcher = (
@@ -100,7 +100,15 @@ function activeProfile(usage: GatewayQuotaResponse): GatewayQuotaProfile | undef
 function formatReset(resetsAt: number | undefined): string {
   if (typeof resetsAt !== "number") return "";
   const minutes = Math.max(0, Math.round((resetsAt - Date.now()) / 60_000));
-  return minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`;
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ${minutes % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
+function quotaWindow(label: string, percent: number, resetsAt: number | undefined): QuotaWindow {
+  const resetsIn = formatReset(resetsAt);
+  return resetsIn ? { label, percent, resetsIn } : { label, percent };
 }
 
 /**
@@ -130,6 +138,10 @@ export async function fetchAnthropicQuota(
       label: "anthropic",
       percent: sessionPercent,
       detail: `${formatReset(session.resetsAt)}  Weekly: ${progressBar(weeklyPercent, 10)} ${weeklyPercent.toFixed(1)}%`,
+      windows: [
+        quotaWindow("Session", sessionPercent, session.resetsAt),
+        quotaWindow("Weekly", weeklyPercent, weekly.resetsAt),
+      ],
     };
   } catch {
     return null;

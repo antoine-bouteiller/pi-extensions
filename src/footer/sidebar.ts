@@ -2,7 +2,7 @@ import { basename } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component, OverlayHandle } from "@earendil-works/pi-tui";
 import { getCapabilities, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { GitInfoState, ModelInfoState, ProviderQuota } from "./state";
+import type { GitInfoState, ModelInfoState, ProviderQuota, QuotaWindow } from "./state";
 import { formatDirectory, formatTokens } from "./render";
 import { createSplitPaneController, type SplitPaneController } from "./split-pane";
 
@@ -171,17 +171,37 @@ function workspaceRows(state: SidebarState, theme: SidebarTheme) {
   return rows;
 }
 
+function quotaPercent(percent: number) {
+  return Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : 0;
+}
+
+function quotaRole(percent: number): PaletteRole {
+  return percent >= 90 ? "error" : percent >= 70 ? "warning" : "context";
+}
+
+function quotaWindowRows(window: QuotaWindow, width: number, theme: SidebarTheme) {
+  const percent = quotaPercent(window.percent);
+  const role = quotaRole(percent);
+  const resetsIn = sanitize(window.resetsIn ?? "");
+  const meterWidth = Math.max(1, Math.min(12, width - (resetsIn ? visibleWidth(resetsIn) + 1 : 0)));
+  const filled = Math.max(0, Math.min(meterWidth, Math.round((percent / 100) * meterWidth)));
+  const meter = `${paint(theme, role, "■".repeat(filled))}${paint(theme, "dim", "·".repeat(meterWidth - filled))}`;
+  const header = spaced(
+    paint(theme, role, sanitize(window.label)),
+    paint(theme, role, `${percent.toFixed(1)}%`),
+    width,
+  );
+  if (!resetsIn) return [header, meter];
+  const gap = " ".repeat(Math.max(1, width - meterWidth - visibleWidth(resetsIn)));
+  return [header, truncateToWidth(`${meter}${gap}${paint(theme, "muted", resetsIn)}`, width, "")];
+}
+
 function quotaRows(quota: ProviderQuota, width: number, theme: SidebarTheme) {
-  const percent = Number.isFinite(quota.percent) ? Math.max(0, Math.min(100, quota.percent)) : 0;
-  const role: PaletteRole = percent >= 90 ? "error" : percent >= 70 ? "warning" : "context";
-  const meterWidth = Math.max(1, Math.min(12, width - 2));
-  const filled = Math.round((percent / 100) * meterWidth);
-  const label = quota.label === "anthropic" ? "Session" : "Azure";
-  const rows = [
-    spaced(paint(theme, role, label), paint(theme, role, `${percent.toFixed(1)}%`), width),
-    `${paint(theme, role, "■".repeat(filled))}${paint(theme, "dim", "·".repeat(meterWidth - filled))}`,
-  ];
-  if (quota.detail) rows.push(paint(theme, "muted", sanitize(quota.detail)));
+  const windows: readonly QuotaWindow[] = quota.windows?.length
+    ? quota.windows
+    : [{ label: quota.label === "anthropic" ? "Session" : "Azure", percent: quota.percent }];
+  const rows = windows.flatMap((window) => quotaWindowRows(window, width, theme));
+  if (!quota.windows?.length && quota.detail) rows.push(paint(theme, "muted", sanitize(quota.detail)));
   return rows;
 }
 
@@ -228,7 +248,7 @@ export function renderSidebarLines(
       dropRank: 30,
     },
     ...(state.quota
-      ? [{ name: "quota", rows: panel("QUOTA", quotaRows(state.quota, rowWidth, theme), panelWidth, theme, "context"), required: false, dropRank: 20 }]
+      ? [{ name: "quota", rows: panel("QUOTA", quotaRows(state.quota, rowWidth, theme), panelWidth, theme, quotaRole(quotaPercent(state.quota.percent))), required: false, dropRank: 20 }]
       : []),
   ];
   const statuses = statusRows(state.extensionStatuses, theme);
