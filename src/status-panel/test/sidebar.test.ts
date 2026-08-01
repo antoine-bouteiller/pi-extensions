@@ -50,7 +50,7 @@ function stripAnsi(text: string) {
   return text.replace(ANSI_PATTERN, "");
 }
 
-describe("footer sidebar rendering", () => {
+describe("sidebar rendering", () => {
   test("renders the Atelier-style information hierarchy", () => {
     const lines = renderSidebarLines(state, theme, 44, 36, 0);
     const text = stripAnsi(lines.join("\n"));

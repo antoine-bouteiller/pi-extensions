@@ -6,12 +6,12 @@ import askUser from "../src/ask-user/index.js";
 import backgroundPoll from "../src/background-poll/index.js";
 import claudeCode from "../src/claude-code/index.js";
 import commentChecker from "../src/comment-checker/index.js";
-import footer from "../src/footer/index.js";
 import hashline from "../src/hashline/index.js";
 import mcp from "../src/mcp/index.js";
 import rules from "../src/rules/index.js";
 import safeRm from "../src/safe-rm/index.js";
 import safetyGuard from "../src/safety-guard/index.js";
+import statusPanel from "../src/status-panel/index.js";
 import { createFakePi } from "#test-utils/fake-pi";
 
 const entrypoints = {
@@ -19,12 +19,12 @@ const entrypoints = {
   backgroundPoll,
   claudeCode,
   commentChecker,
-  footer,
   hashline,
   mcp,
   rules,
   safeRm,
   safetyGuard,
+  statusPanel,
 };
 
 // Bun runs every test file in a single process. Importing sub-agents here would populate the
@@ -77,12 +77,12 @@ describe("extension entrypoints", () => {
       backgroundPoll,
       claudeCode,
       commentChecker,
-      footer,
       hashline,
       mcp,
       rules,
       safeRm,
       safetyGuard,
+      statusPanel,
     ]) {
       entrypoint(fixture.pi);
     }

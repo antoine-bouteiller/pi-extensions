@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createFakePi } from "#test-utils/fake-pi";
-import footer from "../index";
+import statusPanel from "../index";
 import { columns, formatTokens, progressBar } from "../render";
 import { emptyGitInfoState, emptyModelInfoState } from "../state";
 
@@ -15,7 +15,7 @@ afterEach(() => {
   else process.env.PI_SUBAGENT_OWNER_TOKEN = originalOwnerToken;
 });
 
-describe("footer registration", () => {
+describe("status panel registration", () => {
   test("does no work and registers no handlers in a subagent", () => {
     process.env.PI_SUBAGENT_OWNER_TOKEN = "owner-token";
     const { pi, state } = createFakePi();
@@ -27,7 +27,7 @@ describe("footer registration", () => {
       },
     };
 
-    footer(pi, dependencies);
+    statusPanel(pi, dependencies);
 
     expect(dependencyReads).toBe(0);
     expect(state.handlers.size).toBe(0);
@@ -36,7 +36,7 @@ describe("footer registration", () => {
   test("registers the normal main-session lifecycle handlers", () => {
     const { pi, state } = createFakePi();
 
-    footer(pi);
+    statusPanel(pi);
 
     expect([...state.handlers.keys()]).toEqual([
       "session_start",
@@ -51,7 +51,7 @@ describe("footer registration", () => {
   });
 });
 
-describe("footer formatting", () => {
+describe("status panel formatting", () => {
   test("formats token counts and bounded progress bars", () => {
     expect(formatTokens(999)).toBe("999");
     expect(formatTokens(12_400)).toBe("12k");
@@ -120,7 +120,7 @@ describe("footer formatting", () => {
       getContextUsage: () => ({ tokens: 12_345, contextWindow: 200_000, percent: 6.2 }),
       ui,
     };
-    footer(pi);
+    statusPanel(pi);
     await emit("session_start", {}, ctx);
 
     expect(renderFooter?.(80)).toEqual([]);
@@ -140,7 +140,7 @@ describe("footer formatting", () => {
   });
 });
 
-describe("footer quota lifecycle", () => {
+describe("status panel quota lifecycle", () => {
   function context(mode: "tui" | "rpc", provider = "anthropic") {
     return {
       mode,
@@ -163,7 +163,7 @@ describe("footer quota lifecycle", () => {
   test("does not request Anthropic quota outside TUI mode", async () => {
     const { pi, emit } = createFakePi();
     const signals: AbortSignal[] = [];
-    footer(pi, {
+    statusPanel(pi, {
       fetchAnthropicQuota: (_baseUrl, signal) => {
         signals.push(signal);
         return new Promise(() => undefined);
@@ -181,7 +181,7 @@ describe("footer quota lifecycle", () => {
     const { pi, emit } = createFakePi();
     const baseUrls: string[] = [];
     const signals: AbortSignal[] = [];
-    footer(pi, {
+    statusPanel(pi, {
       fetchAnthropicQuota: (baseUrl, signal) => {
         baseUrls.push(baseUrl);
         signals.push(signal);

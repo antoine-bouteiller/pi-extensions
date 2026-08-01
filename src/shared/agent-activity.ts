@@ -30,5 +30,5 @@ export function createAgentActivityStore(): AgentActivityStore {
   };
 }
 
-/** Extensions load once per process, so sub-agents and the footer share this instance. */
+/** Extensions load once per process, so sub-agents and the status panel share this instance. */
 export const runningAgents = createAgentActivityStore();

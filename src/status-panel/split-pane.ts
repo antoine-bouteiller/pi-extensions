@@ -74,9 +74,9 @@ export function createSplitPaneController(options: SplitPaneOptions = {}): Split
 
   return {
     attach(nextTui) {
-      if (disposed) throw new Error("Cannot attach a disposed footer sidebar");
+      if (disposed) throw new Error("Cannot attach a disposed status panel");
       if (tui === nextTui) return;
-      if (tui) throw new Error("Footer sidebar is already attached to another TUI");
+      if (tui) throw new Error("Status panel is already attached to another TUI");
       tui = nextTui;
       originalRender = nextTui.render;
       const previousRender = nextTui.render;

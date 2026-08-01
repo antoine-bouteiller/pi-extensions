@@ -4,7 +4,7 @@ import { fetchGitInfo } from "../git";
 
 const success = (stdout: string) => ({ stdout, stderr: "", code: 0, killed: false });
 
-describe("footer git state", () => {
+describe("status panel git state", () => {
   test("reports the current branch and porcelain entry count", async () => {
     const calls: string[][] = [];
     const outputs = [success("true\n"), success("feature/footer\n"), success(" M one\n?? two\n")];

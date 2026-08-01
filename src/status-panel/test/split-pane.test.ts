@@ -21,7 +21,7 @@ function fakeTui() {
   };
 }
 
-describe("footer sidebar split pane", () => {
+describe("status panel split pane", () => {
   test("reserves space while preserving a usable main pane", () => {
     const { tui } = fakeTui();
     const split = createSplitPaneController();

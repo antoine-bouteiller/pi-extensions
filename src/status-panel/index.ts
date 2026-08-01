@@ -14,11 +14,11 @@ import { runningAgents } from "../shared/agent-activity";
 
 const ANTHROPIC_QUOTA_REFRESH_MS = 15_000;
 
-interface FooterDependencies {
+interface StatusPanelDependencies {
   fetchAnthropicQuota?: QuotaFetcher;
 }
 
-export default function footer(pi: ExtensionAPI, dependencies: FooterDependencies = {}) {
+export default function statusPanel(pi: ExtensionAPI, dependencies: StatusPanelDependencies = {}) {
   if (process.env.PI_SUBAGENT_OWNER_TOKEN !== undefined) return;
 
   let modelInfo: ModelInfoState = emptyModelInfoState();
