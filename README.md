@@ -43,7 +43,7 @@ test/utils/                shared typed fakes, imported as #test-utils/*
 | `background-poll` | Polls a shell command in the background and wakes the agent when it succeeds                                 |
 | `claude-code`     | Converts global and trusted-project `.claude/commands/` files into temporary Pi skills                       |
 | `comment-checker` | Runs the `comment-checker` binary after successful writes and edits, appending warnings to the tool result   |
-| `footer`          | Renders the status footer: model, token usage, git state, and provider quota                                 |
+| `footer`          | Renders a docked status sidebar with model, context usage, git state, and provider quota                     |
 | `hashline`        | Content-hash anchored file reads and writes that reject stale edits                                          |
 | `mcp`             | One deliberately narrow, lazy MCP gateway (see below)                                                        |
 | `meridian-session-affinity` | Adds Pi's current session ID to Meridian requests so SDK sessions resume across client-side tool loops |

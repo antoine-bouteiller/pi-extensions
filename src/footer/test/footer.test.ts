@@ -42,10 +42,10 @@ describe("footer registration", () => {
       "session_start",
       "model_select",
       "thinking_level_select",
+      "agent_start",
       "turn_end",
       "agent_settled",
       "after_provider_response",
-      "resources_discover",
       "session_shutdown",
     ]);
   });
@@ -70,16 +70,25 @@ describe("footer formatting", () => {
     expect(emptyGitInfoState()).toEqual({ branch: null, changedFiles: 0, pullRequest: null });
   });
 
-  test("keeps complete footer output within narrow widths", async () => {
+  test("moves footer information into a bounded right sidebar", async () => {
     const { pi, emit } = createFakePi();
     let renderFooter: ((width: number) => string[]) | undefined;
-    const tui = { requestRender() {}, invalidate() {}, render: () => [], children: [] };
-    const theme = { fg: (_color: string, value: string) => value };
+    let renderSidebar: ((width: number) => string[]) | undefined;
+    let hiddenOverlays = 0;
+    const tui = {
+      requestRender() {},
+      render: (_width: number) => [],
+      terminal: { columns: 120, rows: 30 },
+    };
+    const theme = {
+      fg: (_color: string, value: string) => value,
+      bold: (value: string) => value,
+    };
     const footerData = {
       getExtensionStatuses: () => new Map([["long-status", "a very long extension status"]]),
+      onBranchChange: () => () => undefined,
     };
     const ui = {
-      setHeader() {},
       setFooter(factory?: (...args: unknown[]) => { render(width: number): string[] }) {
         if (!factory) {
           renderFooter = undefined;
@@ -87,6 +96,20 @@ describe("footer formatting", () => {
         }
         const component = factory(tui, theme, footerData);
         renderFooter = (width) => component.render(width);
+      },
+      custom(
+        factory: (...args: unknown[]) => { render(width: number): string[] },
+        options: { onHandle?: (handle: { hide(): void }) => void },
+      ) {
+        return new Promise<void>((resolve) => {
+          const component = factory(tui, theme, {}, resolve);
+          renderSidebar = (width) => component.render(width);
+          options.onHandle?.({
+            hide() {
+              hiddenOverlays += 1;
+            },
+          });
+        });
       },
       setTitle() {},
     };
@@ -100,13 +123,20 @@ describe("footer formatting", () => {
     footer(pi);
     await emit("session_start", {}, ctx);
 
-    expect(renderFooter).toBeDefined();
-    for (const width of [1, 2, 4, 8, 12]) {
-      const lines = renderFooter!(width);
-      expect(lines.length).toBeGreaterThan(0);
+    expect(renderFooter?.(80)).toEqual([]);
+    tui.terminal.columns = 80;
+    expect(renderFooter?.(80).join("\n")).toContain("Context:");
+    tui.terminal.columns = 120;
+    expect(renderSidebar).toBeDefined();
+    for (const width of [28, 36, 44]) {
+      const lines = renderSidebar!(width);
+      expect(lines).toHaveLength(30);
       expect(lines.every((line) => Bun.stringWidth(line) <= width)).toBeTrue();
     }
+    expect(renderSidebar!(44).join("\n")).toContain("AGENT");
+    expect(renderSidebar!(44).join("\n")).toContain("CONTEXT");
     await emit("session_shutdown", {}, ctx);
+    expect(hiddenOverlays).toBe(1);
   });
 });
 

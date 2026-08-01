@@ -3,30 +3,13 @@ import type {
   ExtensionContext,
   ReadonlyFooterDataProvider,
 } from "@earendil-works/pi-coding-agent";
-import { getCapabilities, hyperlink, truncateToWidth } from "@earendil-works/pi-tui";
-import {
-  emptyGitInfoState,
-  emptyModelInfoState,
-  type GitInfoState,
-  type ModelInfoState,
-  type ProviderQuota,
-} from "./state";
-import {
-  center,
-  columns,
-  DashboardTui,
-  formatDirectory,
-  formatTokens,
-  gradientText,
-  hideThemesSection,
-  progressBar,
-  progressLine,
-  TITLE_LINES,
-  BOLD,
-  RESET,
-} from "./render";
+import { truncateToWidth } from "@earendil-works/pi-tui";
+import { emptyGitInfoState, emptyModelInfoState, type GitInfoState, type ModelInfoState, type ProviderQuota } from "./state";
+import { columns, formatDirectory, formatTokens, progressBar, progressLine } from "./render";
 import { fetchGitInfo } from "./git";
 import { AnthropicQuotaPoller, quotaFromHeaders, type QuotaFetcher } from "./provider";
+import { createSidebarController, type SidebarController, type SidebarState } from "./sidebar";
+import { MIN_MAIN_WIDTH, MIN_SIDEBAR_WIDTH } from "./split-pane";
 
 const ANTHROPIC_QUOTA_REFRESH_MS = 15_000;
 
@@ -37,13 +20,13 @@ interface FooterDependencies {
 export default function footer(pi: ExtensionAPI, dependencies: FooterDependencies = {}) {
   if (process.env.PI_SUBAGENT_OWNER_TOKEN !== undefined) return;
 
-  let title = "pi";
   let modelInfo: ModelInfoState = emptyModelInfoState();
   let gitInfo: GitInfoState = emptyGitInfoState();
   let providerQuota: ProviderQuota | null = null;
-  let activeTui: DashboardTui | undefined;
+  let activity: SidebarState["activity"] = "ready";
+  let sidebar: SidebarController | undefined;
+  let footerData: ReadonlyFooterDataProvider | undefined;
   let requestRender: (() => void) | undefined;
-  let themeRemovalTimers: Array<ReturnType<typeof setTimeout>> = [];
   const anthropicQuota = new AnthropicQuotaPoller(
     (quota) => {
       providerQuota = quota;
@@ -74,82 +57,95 @@ export default function footer(pi: ExtensionAPI, dependencies: FooterDependencie
     };
     requestRender?.();
   }
-  function scheduleThemeRemoval(tui: DashboardTui) {
-    for (const timer of themeRemovalTimers) clearTimeout(timer);
-    themeRemovalTimers = [0, 50, 250, 1_000].map((delay) =>
-      setTimeout(() => {
-        if (hideThemesSection(tui)) tui.requestRender(true);
-      }, delay),
-    );
+
+  function extensionStatuses() {
+    return Array.from(footerData?.getExtensionStatuses().entries() ?? [])
+      .sort(([left], [right]) => left.localeCompare(right))
+      .flatMap(([, text]) => text.split("\n"));
   }
+
   function install(ctx: ExtensionContext) {
     if (ctx.mode !== "tui") return;
-    ctx.ui.setHeader((tui) => {
-      activeTui = tui;
-      requestRender = () => tui.requestRender();
-      scheduleThemeRemoval(tui);
+    sidebar?.dispose();
+    footerData = undefined;
+    ctx.ui.setFooter((tui, theme, data: ReadonlyFooterDataProvider) => {
+      footerData = data;
+      const unsubscribe = data.onBranchChange?.(() => {
+        void refreshGit();
+        tui.requestRender();
+      });
       return {
         render(width: number) {
-          const art = TITLE_LINES.map((line, row) =>
-            center(gradientText(line, row * 0.045), width),
-          );
-          return ["", ...art, center(`${BOLD}${gradientText(title, 0.18)}${RESET}`, width), ""];
-        },
-        invalidate() {},
-      };
-    });
-    ctx.ui.setFooter((tui, theme, footerData: ReadonlyFooterDataProvider) => {
-      requestRender = () => tui.requestRender();
-      return {
-        invalidate() {},
-        render(width: number) {
+          if (tui.terminal.columns >= MIN_MAIN_WIDTH + MIN_SIDEBAR_WIDTH) return [];
           const directory = theme.fg("text", formatDirectory(ctx.cwd));
-          const fileLabel = gitInfo.changedFiles === 1 ? "file" : "files";
-          let git = gitInfo.branch
-            ? `${gitInfo.branch} · ${gitInfo.changedFiles} ${fileLabel} changed`
-            : "";
-          if (gitInfo.pullRequest) {
-            const prLabel = `PR #${gitInfo.pullRequest.number}`;
-            git += ` · ${getCapabilities().hyperlinks ? hyperlink(prLabel, gitInfo.pullRequest.url) : prLabel}`;
-          }
-          const contextPercent = modelInfo.contextPercent ?? 0;
-          const contextWindow =
-            modelInfo.contextWindow > 0 ? formatTokens(modelInfo.contextWindow) : "?";
-          const contextTokens = formatTokens(modelInfo.contextTokens ?? 0);
-          const context = `Context: ${progressBar(contextPercent, 10)} ${contextTokens}/${contextWindow} (${Math.round(contextPercent)}%)`;
-          const model = `${modelInfo.modelId} · ${modelInfo.thinking}`;
-          const limit = providerQuota
-            ? progressLine(
-                providerQuota.label === "anthropic" ? "Session" : "Azure",
-                providerQuota.percent,
-                providerQuota.detail ?? "",
-              )
-            : "";
+          const model = theme.fg("muted", `${modelInfo.modelId} · ${modelInfo.thinking}`);
+          const percent = modelInfo.contextPercent ?? 0;
+          const tokens = formatTokens(modelInfo.contextTokens ?? 0);
+          const window = modelInfo.contextWindow > 0 ? formatTokens(modelInfo.contextWindow) : "?";
+          const context = `Context: ${progressBar(percent, 8)} ${tokens}/${window} (${Math.round(percent)}%)`;
           const lines = [
-            columns(directory, theme.fg("muted", model), width),
-            truncateToWidth(theme.fg("muted", limit ? `${context}  ${limit}` : context), width),
+            columns(directory, model, width),
+            truncateToWidth(theme.fg("muted", context), width),
           ];
-          if (git) lines.push(truncateToWidth(theme.fg("muted", git), width));
-          const statusLines = Array.from(footerData.getExtensionStatuses().entries())
-            .sort(([a], [b]) => a.localeCompare(b))
-            .flatMap(([, text]) => text.split("\n"));
-          for (const statusLine of statusLines)
-            lines.push(truncateToWidth(statusLine, width, theme.fg("dim", "...")));
+          if (gitInfo.branch) {
+            const fileLabel = gitInfo.changedFiles === 1 ? "file" : "files";
+            lines.push(
+              truncateToWidth(
+                theme.fg(
+                  "muted",
+                  `${gitInfo.branch} · ${gitInfo.changedFiles} ${fileLabel} changed`,
+                ),
+                width,
+              ),
+            );
+          }
+          if (providerQuota) {
+            const label = providerQuota.label === "anthropic" ? "Session" : "Azure";
+            lines.push(
+              truncateToWidth(
+                theme.fg(
+                  "muted",
+                  progressLine(label, providerQuota.percent, providerQuota.detail ?? "", 8),
+                ),
+                width,
+              ),
+            );
+          }
+          for (const status of extensionStatuses()) lines.push(truncateToWidth(status, width));
           return lines;
         },
+        invalidate() {},
+        dispose() {
+          unsubscribe?.();
+          if (footerData === data) footerData = undefined;
+        },
       };
     });
-    ctx.ui.setTitle(`pi · ${title}`);
+    sidebar = createSidebarController({
+      ctx,
+      getState: () => ({
+        activity,
+        cwd: ctx.cwd,
+        model: modelInfo,
+        git: gitInfo,
+        quota: providerQuota,
+        extensionStatuses: extensionStatuses(),
+      }),
+      onError: () => undefined,
+    });
+    requestRender = () => sidebar?.requestRender();
+    sidebar.show();
+    ctx.ui.setTitle(`pi · ${formatDirectory(ctx.cwd)}`);
     refreshModel(ctx);
     void refreshGit();
   }
 
   pi.on("session_start", (_event, ctx) => {
     anthropicQuota.stop();
-    title = formatDirectory(ctx.cwd);
     modelInfo = emptyModelInfoState();
     gitInfo = emptyGitInfoState();
     providerQuota = null;
+    activity = "ready";
     install(ctx);
     if (ctx.mode !== "tui") refreshModel(ctx);
     if (ctx.mode === "tui" && ctx.model?.provider === "anthropic")
@@ -174,11 +170,18 @@ export default function footer(pi: ExtensionAPI, dependencies: FooterDependencie
     modelInfo = { ...modelInfo, thinking: event.level };
     requestRender?.();
   });
+  pi.on("agent_start", () => {
+    activity = "working";
+    requestRender?.();
+  });
   pi.on("turn_end", (_event, ctx) => {
     refreshModel(ctx);
     void refreshGit();
   });
-  pi.on("agent_settled", (_event, ctx) => refreshModel(ctx));
+  pi.on("agent_settled", (_event, ctx) => {
+    activity = "ready";
+    refreshModel(ctx);
+  });
   pi.on("after_provider_response", (event) => {
     const quota = quotaFromHeaders(modelInfo.provider, event.headers);
     if (quota) {
@@ -186,18 +189,12 @@ export default function footer(pi: ExtensionAPI, dependencies: FooterDependencie
       requestRender?.();
     }
   });
-  pi.on("resources_discover", () => {
-    if (activeTui) scheduleThemeRemoval(activeTui);
-  });
   pi.on("session_shutdown", (_event, ctx) => {
     anthropicQuota.stop();
-    for (const timer of themeRemovalTimers) clearTimeout(timer);
-    themeRemovalTimers = [];
-    activeTui = undefined;
+    sidebar?.dispose();
+    sidebar = undefined;
+    footerData = undefined;
     requestRender = undefined;
-    if (ctx.mode === "tui") {
-      ctx.ui.setHeader(undefined);
-      ctx.ui.setFooter(undefined);
-    }
+    if (ctx.mode === "tui") ctx.ui.setFooter(undefined);
   });
 }
