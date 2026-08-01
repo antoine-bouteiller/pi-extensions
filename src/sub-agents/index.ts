@@ -23,6 +23,7 @@ import {
   type AgentProfileName,
 } from "./profiles.js";
 import { SubagentPeekOverlay } from "./peek.js";
+import { runningAgents } from "../shared/agent-activity.js";
 
 function textResult(text: string, details?: any) {
   return { content: [{ type: "text" as const, text }], details };
@@ -104,6 +105,9 @@ export default function (pi: ExtensionAPI, managerOptions: AgentManagerOptions =
   };
 
   const refreshAgentWidget = () => {
+    runningAgents.publish(
+      [...activeAgents.entries()].map(([name, metadata]) => ({ name, ...metadata })),
+    );
     if (!activeContext || activeContext.mode !== "tui") return;
     const running = [...activeAgents.entries()];
     if (!running.length) {
@@ -317,6 +321,7 @@ ${getAgentProfilesDescription()}`;
     if (activeContext?.mode === "tui") activeContext.ui.setWidget(widgetKey, undefined);
     activeContext = undefined;
     activeAgents.clear();
+    refreshAgentWidget();
     await manager.shutdown();
   });
 

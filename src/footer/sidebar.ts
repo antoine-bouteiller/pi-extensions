@@ -3,6 +3,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component, OverlayHandle } from "@earendil-works/pi-tui";
 import { getCapabilities, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { GitInfoState, ModelInfoState, ProviderQuota, QuotaWindow } from "./state";
+import type { RunningAgent } from "../shared/agent-activity";
 import { formatDirectory, formatTokens } from "./render";
 import { createSplitPaneController, type SplitPaneController } from "./split-pane";
 
@@ -17,8 +18,11 @@ export interface SidebarState {
   model: ModelInfoState;
   git: GitInfoState;
   quota: ProviderQuota | null;
+  agents: readonly RunningAgent[];
   extensionStatuses: readonly string[];
 }
+
+const MAX_AGENT_ROWS = 5;
 
 type PaletteRole = "accent" | "primary" | "muted" | "dim" | "ready" | "working" | "context" | "warning" | "error";
 type Rgb = readonly [number, number, number];
@@ -151,6 +155,29 @@ function contextRows(state: SidebarState, width: number, theme: SidebarTheme) {
   return [spaced(paint(theme, role, usage), paint(theme, role, percent), width), meter];
 }
 
+function subagentRow(agent: RunningAgent, width: number, theme: SidebarTheme) {
+  const marker = "▸ ";
+  const profile = truncateToWidth(sanitize(agent.profile ?? ""), Math.floor(width * 0.4), "…");
+  const nameWidth = width - visibleWidth(marker) - (profile ? visibleWidth(profile) + 1 : 0);
+  const name = truncateToWidth(sanitize(agent.name), Math.max(0, nameWidth), "…");
+  const gap = " ".repeat(
+    Math.max(profile ? 1 : 0, width - visibleWidth(marker) - visibleWidth(name) - visibleWidth(profile)),
+  );
+  return truncateToWidth(
+    `${paint(theme, "dim", marker)}${theme.fg(agent.color, name)}${gap}${paint(theme, "muted", profile)}`,
+    width,
+    "",
+  );
+}
+
+function subagentRows(agents: readonly RunningAgent[], width: number, theme: SidebarTheme) {
+  const shown = agents.slice(0, MAX_AGENT_ROWS);
+  const rows = shown.map((agent) => subagentRow(agent, width, theme));
+  if (agents.length > shown.length)
+    rows.push(paint(theme, "dim", `+${agents.length - shown.length} more`));
+  return rows;
+}
+
 function workspaceRows(state: SidebarState, theme: SidebarTheme) {
   const project = basename(state.cwd) || formatDirectory(state.cwd);
   const rows = [paint(theme, "primary", sanitize(project)), paint(theme, "muted", formatDirectory(state.cwd))];
@@ -241,6 +268,22 @@ export function renderSidebarLines(
       required: true,
       dropRank: Number.POSITIVE_INFINITY,
     },
+    ...(state.agents.length > 0
+      ? [
+          {
+            name: "subagents",
+            rows: panel(
+              "SUBAGENTS",
+              subagentRows(state.agents, rowWidth, theme),
+              panelWidth,
+              theme,
+              "accent",
+            ),
+            required: false,
+            dropRank: 40,
+          },
+        ]
+      : []),
     {
       name: "workspace",
       rows: panel("WORKSPACE", workspaceRows(state, theme), panelWidth, theme, "accent"),

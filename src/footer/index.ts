@@ -10,6 +10,7 @@ import { fetchGitInfo } from "./git";
 import { AnthropicQuotaPoller, quotaFromHeaders, type QuotaFetcher } from "./provider";
 import { createSidebarController, type SidebarController, type SidebarState } from "./sidebar";
 import { MIN_MAIN_WIDTH, MIN_SIDEBAR_WIDTH } from "./split-pane";
+import { runningAgents } from "../shared/agent-activity";
 
 const ANTHROPIC_QUOTA_REFRESH_MS = 15_000;
 
@@ -27,6 +28,7 @@ export default function footer(pi: ExtensionAPI, dependencies: FooterDependencie
   let sidebar: SidebarController | undefined;
   let footerData: ReadonlyFooterDataProvider | undefined;
   let requestRender: (() => void) | undefined;
+  runningAgents.subscribe(() => requestRender?.());
   const anthropicQuota = new AnthropicQuotaPoller(
     (quota) => {
       providerQuota = quota;
@@ -129,6 +131,7 @@ export default function footer(pi: ExtensionAPI, dependencies: FooterDependencie
         model: modelInfo,
         git: gitInfo,
         quota: providerQuota,
+        agents: runningAgents.list(),
         extensionStatuses: extensionStatuses(),
       }),
       onError: () => undefined,

@@ -31,8 +31,18 @@ const state: SidebarState = {
       { label: "Weekly", percent: 18, resetsIn: "4d 6h" },
     ],
   },
+  agents: [],
   extensionStatuses: ["index ready"],
 };
+
+const withAgents = (count: number): SidebarState => ({
+  ...state,
+  agents: Array.from({ length: count }, (_, index) => ({
+    name: `/scout-${index}`,
+    profile: "scout",
+    color: "accent" as const,
+  })),
+});
 
 const ANSI_PATTERN = new RegExp(String.raw`\u001b\[[0-?]*[ -/]*[@-~]`, "g");
 
@@ -98,6 +108,34 @@ describe("footer sidebar rendering", () => {
     expect(first).toContain("╭─ ✦ AGENT");
     expect(second).toContain("╭─ ✧ AGENT");
     expect(second).toContain("╭─ ✦ CONTEXT");
+  });
+
+  test("lists running subagents and hides the panel when none are running", () => {
+    const text = stripAnsi(renderSidebarLines(withAgents(2), theme, 44, 36, 0).join("\n"));
+
+    expect(text).toContain("╭─ ✦ SUBAGENTS");
+    expect(text).toContain("▸ /scout-0");
+    expect(text).toContain("▸ /scout-1");
+    expect(text).toContain("scout");
+    expect(stripAnsi(renderSidebarLines(state, theme, 44, 36, 0).join("\n"))).not.toContain(
+      "SUBAGENTS",
+    );
+  });
+
+  test("caps the subagent list so a large fan-out cannot crowd out other panels", () => {
+    const text = stripAnsi(renderSidebarLines(withAgents(9), theme, 44, 40, 0).join("\n"));
+
+    expect(text).toContain("▸ /scout-4");
+    expect(text).not.toContain("▸ /scout-5");
+    expect(text).toContain("+4 more");
+  });
+
+  test("keeps running subagents visible after other optional panels are dropped", () => {
+    const text = stripAnsi(renderSidebarLines(withAgents(2), theme, 44, 20, 0).join("\n"));
+
+    expect(text).toContain("SUBAGENTS");
+    expect(text).not.toContain("QUOTA");
+    expect(text).not.toContain("STATUS");
   });
 
   test("drops optional panels as terminal height contracts", () => {
