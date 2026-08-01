@@ -90,6 +90,20 @@ function runtimeLabel(info: AgentInfo): string {
   return formatDuration(end - start);
 }
 
+const DELEGATION_GUIDANCE = `
+
+## Subagent delegation
+
+Subagents are available through \`spawn_agent\`. Prefer delegating over doing context-heavy work yourself, and spawn generously:
+
+- Delegate by default for read-heavy work: codebase exploration, "where is X handled", library and API research, log or test-output triage, and pre-implementation reconnaissance. A \`scout\` or \`librarian\` run costs one short report instead of dozens of tool results in your own context.
+- Parallelize. Independent questions should become several agents spawned in the same response, not a sequence of your own searches.
+- Do not block. \`spawn_agent\` returns as soon as the child accepts its task and completions arrive on their own, so keep working; reach for \`wait_agent\`/\`wait_all_agents\` only when your next step depends on a result and no useful work remains.
+- Hand scoped implementation work to \`implementer\`, and use \`reviewer\` for a fresh-context check of a plan or a finished change.
+- Write self-contained tasks. Children share none of your conversation, so state the goal, the relevant paths, and the shape of the answer you want back.
+
+Keep work in your own context when it is a couple of tool calls, when it depends on conversation history that is expensive to restate, or when the user is waiting on one quick answer. Available profiles: ${AGENT_PROFILE_NAMES.join(", ")}.`;
+
 export default function (pi: ExtensionAPI, managerOptions: AgentManagerOptions = {}) {
   const widgetKey = "pi-codex-subagents";
   const completionMessageType = "pi-codex-subagent-completion";
@@ -315,6 +329,11 @@ ${getAgentProfilesDescription()}`;
         activeAgents.set(entry.agent_name, { profile: entry.profile, color: entry.color });
     }
     refreshAgentWidget();
+  });
+
+  pi.on("before_agent_start", (event: any) => {
+    if (process.env.PI_SUBAGENT_OWNER_TOKEN !== undefined) return;
+    return { systemPrompt: event.systemPrompt + DELEGATION_GUIDANCE };
   });
 
   pi.on("session_shutdown", async () => {

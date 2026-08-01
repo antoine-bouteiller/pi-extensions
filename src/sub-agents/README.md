@@ -80,6 +80,10 @@ Configuration is read when agents spawn, while cleanup runs when the extension l
 
 A child completion or failure is delivered automatically to its parent session after the child reaches final status. If the parent is active, the result joins the current run; if the parent is idle, it starts a continuation turn. Continue independent work instead of waiting. Use `wait_agent` or `wait_all_agents` only when the next action depends on those responses and no useful work remains meanwhile; an active wait receives the result directly without a duplicate automatic message.
 
+## Delegation guidance
+
+The extension appends a short delegation section to the parent system prompt on every `before_agent_start`. It encourages spawning subagents generously for read-heavy exploration and research, parallelizing independent questions, not blocking on waits, and writing self-contained tasks, while noting the cases that belong in the parent's own context. The block is skipped when `PI_SUBAGENT_OWNER_TOKEN` is set, so children never receive it; no profile grants `spawn_agent`, so subagents cannot spawn further agents.
+
 ## Commands and TUI
 
 While agents are starting or running, a compact one-line indicator appears above the editor. It shows the task name for one active agent or a count for multiple agents and points to `/subagents`. The indicator disappears when no agents are active.
