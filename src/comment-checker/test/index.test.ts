@@ -85,6 +85,24 @@ describe('comment checker', () => {
     expect(result).toBeUndefined()
   })
 
+  test('silently ignores a missing comment-checker binary', async () => {
+    const fixture = createFakePi()
+    commentChecker(fixture.pi, async () => ({ exitCode: undefined, stderr: '', stdout: '' }))
+
+    const [result] = await fixture.emit(
+      'tool_result',
+      {
+        content: [{ text: 'Wrote src/main.ts', type: 'text' }],
+        input: { content: 'const value = 1;\n', path: 'src/main.ts' },
+        isError: false,
+        toolName: 'write',
+      },
+      context
+    )
+
+    expect(result).toBeUndefined()
+  })
+
   test('ignores failed and unrelated tool results', async () => {
     let calls = 0
     const fixture = createFakePi()
