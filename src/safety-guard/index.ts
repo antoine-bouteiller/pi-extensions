@@ -1,14 +1,20 @@
-import { isToolCallEventType, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
+import {
+  isToolCallEventType,
+  type ExtensionAPI,
+  type ExtensionContext,
+  type ToolCallEvent,
+  type ToolCallEventResult,
+} from '@earendil-works/pi-coding-agent'
+import { NodeFileSystem } from '@effect/platform-node'
+import { Effect, Layer, ManagedRuntime, Match } from 'effect'
+import { type FileSystem } from 'effect/FileSystem'
+import { type PlatformError } from 'effect/PlatformError'
 
-import { isProtectedPath } from '../shared/protected_paths'
-import { createStatusChannel } from '../shared/status_bar'
-import { ALL_PATTERNS, COMMAND_EXCERPT_CONTEXT_LINES, COMMAND_EXCERPT_MAX_LENGTH, SAFETY_STATUS_KEY } from './constants'
-
-const status = createStatusChannel(SAFETY_STATUS_KEY, {
-  icon: '🛡️',
-  priority: 10,
-  tone: 'success',
-})
+import { makeEventHandler } from '../effect/runtime.js'
+import { Pi, piLayer, Ui } from '../effect/services.js'
+import { resolveProtectedPathEffect } from '../shared/protected_paths.js'
+import { StatusBar, StatusBarLive } from '../shared/services.js'
+import { ALL_PATTERNS, COMMAND_EXCERPT_CONTEXT_LINES, COMMAND_EXCERPT_MAX_LENGTH, SAFETY_STATUS_KEY } from './constants.js'
 
 const commandExcerpt = (command: string, pattern: RegExp): string => {
   const lines = command.split(/\r?\n/)
@@ -29,90 +35,136 @@ const commandExcerpt = (command: string, pattern: RegExp): string => {
     .join('\n')
 }
 
-interface ConfirmRiskOptions {
-  pi: ExtensionAPI
+type GuardDecision =
+  | { readonly _tag: 'Allow' }
+  | { readonly _tag: 'Block'; readonly reason: string; readonly notifyLabel?: string }
+  | { readonly _tag: 'Confirm'; readonly label: string; readonly message: string }
+
+const decideForCommand = (command: string): GuardDecision => {
+  for (const rule of ALL_PATTERNS) {
+    if (!rule.pattern.test(command)) {
+      continue
+    }
+    if (rule.severity === 'critical') {
+      return {
+        _tag: 'Block',
+        notifyLabel: rule.label,
+        reason: `CRITICAL (best-effort command policy): ${rule.label} — recognized command blocked`,
+      }
+    }
+    return {
+      _tag: 'Confirm',
+      label: rule.label,
+      message: `Category: ${rule.category}\n\n${commandExcerpt(command, rule.pattern)}`,
+    }
+  }
+  return { _tag: 'Allow' }
+}
+
+const decideForProtectedTarget = (
+  operation: 'edit' | 'read' | 'write',
+  path: string,
+  cwd: string
+): Effect.Effect<GuardDecision, PlatformError, FileSystem> =>
+  Effect.gen(function* () {
+    const resolution = yield* resolveProtectedPathEffect(path, cwd)
+    if (!resolution.protected) {
+      return { _tag: 'Allow' }
+    }
+    return { _tag: 'Confirm', label: `Protected file ${operation}`, message: `${operation} ${path}` }
+  })
+
+const confirmRisk = ({ label, message }: { label: string; message: string }): Effect.Effect<ToolCallEventResult | undefined, never, Pi | Ui> =>
+  Effect.gen(function* () {
+    const ui = yield* Ui
+    if (!(yield* ui.hasUI)) {
+      return { block: true, reason: `${label} blocked (non-interactive mode)` }
+    }
+
+    const pi = yield* Pi
+    pi.events.emit('herdr:blocked', { active: true, label })
+    return yield* Effect.ensuring(
+      Effect.gen(function* () {
+        const allowed = yield* ui.confirm(`⚠️ ${label}`, `${message}\n\nAllow this operation?`)
+        return allowed ? undefined : { block: true, reason: `${label} — blocked by user` }
+      }),
+      Effect.sync(() => {
+        pi.events.emit('herdr:blocked', { active: false })
+      })
+    )
+  })
+
+const runDecision = (decision: GuardDecision): Effect.Effect<ToolCallEventResult | undefined, never, Pi | Ui> =>
+  Match.valueTags(decision, {
+    Allow: () => Effect.succeed(undefined),
+    Block: (block) =>
+      Effect.gen(function* () {
+        if (block.notifyLabel !== undefined) {
+          const ui = yield* Ui
+          if (yield* ui.hasUI) {
+            yield* ui.notify(`🚫 Blocked: ${block.notifyLabel}`, 'error')
+          }
+        }
+        return { block: true, reason: block.reason }
+      }),
+    Confirm: (confirm) => confirmRisk(confirm),
+  })
+
+const extractCommand = (event: ToolCallEvent): string | undefined => {
+  if (isToolCallEventType('bash', event)) {
+    return event.input.command
+  }
+  if (event.toolName === 'background_poll') {
+    const { command } = event.input as { command?: unknown }
+    return typeof command === 'string' ? command : undefined
+  }
+  return undefined
+}
+
+const extractProtectedTarget = (event: ToolCallEvent): { operation: 'edit' | 'read' | 'write'; path: string } | undefined => {
+  if (isToolCallEventType('read', event)) {
+    return { operation: 'read', path: event.input.path }
+  }
+  if (isToolCallEventType('write', event)) {
+    return { operation: 'write', path: event.input.path }
+  }
+  if (isToolCallEventType('edit', event)) {
+    return { operation: 'edit', path: event.input.path }
+  }
+  return undefined
+}
+
+const handleToolCall = (
+  event: ToolCallEvent,
   ctx: ExtensionContext
-  label: string
-  message: string
-}
+): Effect.Effect<ToolCallEventResult | undefined, PlatformError, Pi | Ui | FileSystem> =>
+  Effect.gen(function* () {
+    const command = extractCommand(event)
+    if (command !== undefined) {
+      return yield* runDecision(decideForCommand(command))
+    }
 
-const confirmRisk = async ({ pi, ctx, label, message }: ConfirmRiskOptions): Promise<{ block: true; reason: string } | undefined> => {
-  if (!ctx.hasUI) {
-    return { block: true, reason: `${label} blocked (non-interactive mode)` }
-  }
+    const target = extractProtectedTarget(event)
+    if (target === undefined) {
+      return undefined
+    }
 
-  pi.events.emit('herdr:blocked', { active: true, label })
-  try {
-    const allowed = await ctx.ui.confirm(`⚠️ ${label}`, `${message}\n\nAllow this operation?`)
-    return allowed ? undefined : { block: true, reason: `${label} — blocked by user` }
-  } finally {
-    pi.events.emit('herdr:blocked', { active: false })
-  }
-}
+    const decision = yield* decideForProtectedTarget(target.operation, target.path, ctx.cwd)
+    return yield* runDecision(decision)
+  })
 
 export default function safetyGuard(pi: ExtensionAPI) {
-  // Biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Rule dispatch is intentionally centralized
-  pi.on('tool_call', async (event, ctx) => {
-    let command: string | undefined
-    if (isToolCallEventType('bash', event)) {
-      ;({ command } = event.input)
-    } else if (event.toolName === 'background_poll') {
-      const { command: rawCommand } = event.input as { command?: unknown }
-      if (typeof rawCommand === 'string') {
-        command = rawCommand
-      }
-    }
+  const runtime = ManagedRuntime.make(Layer.mergeAll(piLayer(pi), StatusBarLive, NodeFileSystem.layer))
 
-    if (command !== undefined) {
-      // This scanner catches common command spellings for UX and policy
-      // Guidance. It is intentionally not presented as a shell parser or
-      // Sandbox; destructive custom tools must enforce safety themselves.
-      for (const rule of ALL_PATTERNS) {
-        if (!rule.pattern.test(command)) {
-          continue
-        }
-        if (rule.severity === 'critical') {
-          if (ctx.hasUI) {
-            ctx.ui.notify(`🚫 Blocked: ${rule.label}`, 'error')
-          }
-          return {
-            block: true,
-            reason: `CRITICAL (best-effort command policy): ${rule.label} — recognized command blocked`,
-          }
-        }
+  pi.on('tool_call', makeEventHandler(runtime)(handleToolCall))
 
-        return confirmRisk({
-          ctx,
-          label: rule.label,
-          message: `Category: ${rule.category}\n\n${commandExcerpt(command, rule.pattern)}`,
-          pi,
-        })
-      }
-      return undefined
-    }
-
-    let protectedOperation: 'edit' | 'read' | 'write' | undefined
-    let protectedPath: string | undefined
-    if (isToolCallEventType('read', event)) {
-      protectedOperation = 'read'
-      protectedPath = event.input.path
-    } else if (isToolCallEventType('write', event)) {
-      protectedOperation = 'write'
-      protectedPath = event.input.path
-    } else if (isToolCallEventType('edit', event)) {
-      protectedOperation = 'edit'
-      protectedPath = event.input.path
-    }
-
-    if (protectedOperation === undefined || protectedPath === undefined || !(await isProtectedPath(protectedPath, ctx.cwd))) {
-      return undefined
-    }
-
-    const label = `Protected file ${protectedOperation}`
-    return confirmRisk({ ctx, label, message: `${protectedOperation} ${protectedPath}`, pi })
-  })
-
-  pi.on('session_start', async (_event, ctx) => {
-    status.set(ctx, { text: 'cmd-guard' })
-  })
+  pi.on(
+    'session_start',
+    makeEventHandler(runtime)((_event, _ctx) =>
+      Effect.gen(function* () {
+        const statusBar = yield* StatusBar
+        yield* statusBar.channel(SAFETY_STATUS_KEY, { icon: '🛡️', priority: 10, tone: 'success' }).set({ text: 'cmd-guard' })
+      })
+    )
+  )
 }
