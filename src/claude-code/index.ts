@@ -1,8 +1,29 @@
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { extname, join, relative, sep } from 'node:path'
 
-import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { type ExtensionAPI, type ExtensionContext, type SessionShutdownEvent } from '@earendil-works/pi-coding-agent'
+import { NodeFileSystem } from '@effect/platform-node'
+import { Context, Effect, Exit, Layer, ManagedRuntime, Option, Ref, Scope, Semaphore } from 'effect'
+import { FileSystem } from 'effect/FileSystem'
+import { type PlatformError } from 'effect/PlatformError'
+
+import { makeEventHandler } from '../effect/runtime.js'
+
+/*
+ * Not re-exported from the package root (only from its internal `core/extensions` entry point),
+ * so this mirrors the declared shape structurally rather than deep-importing an internal path.
+ */
+interface ResourcesDiscoverEvent {
+  type: 'resources_discover'
+  cwd: string
+  reason: 'startup' | 'reload'
+}
+
+interface ResourcesDiscoverResult {
+  skillPaths?: string[]
+  promptPaths?: string[]
+  themePaths?: string[]
+}
 
 interface MarkdownFile {
   path: string
@@ -24,58 +45,47 @@ const compareText = (left: string, right: string): number => {
   return 0
 }
 
-const discoverMarkdownFiles = async (root: string): Promise<MarkdownFile[]> => {
-  const files: MarkdownFile[] = []
-  const visitedDirectories = new Set<string>()
+/**
+ * Discovery walks a symlink-tolerant tree, so every risky step (`realPath`, `readDirectory`,
+ * `stat`) is swallowed to an `Option` rather than failing the whole scan: a missing directory, a
+ * broken symlink, or a permission error just prunes that branch, matching the original try/catch
+ * skip-and-continue behaviour. Cycle detection dedupes on the canonical directory path.
+ */
+const walkCommandDirectory = (root: string, directory: string, visited: Set<string>): Effect.Effect<MarkdownFile[], never, FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem
+    const canonicalDirectory = yield* Effect.option(fs.realPath(directory))
+    if (Option.isNone(canonicalDirectory) || visited.has(canonicalDirectory.value)) {
+      return []
+    }
+    visited.add(canonicalDirectory.value)
 
-  const walk = async (directory: string): Promise<void> => {
-    let canonicalDirectory: string
-    try {
-      canonicalDirectory = await realpath(directory)
-    } catch {
-      return
+    const entryNames = yield* Effect.option(fs.readDirectory(directory))
+    if (Option.isNone(entryNames)) {
+      return []
     }
 
-    if (visitedDirectories.has(canonicalDirectory)) {
-      return
-    }
-    visitedDirectories.add(canonicalDirectory)
-
-    let entries
-    try {
-      entries = await readdir(directory, { withFileTypes: true })
-    } catch {
-      return
-    }
-
-    entries.sort((left, right) => left.name.localeCompare(right.name))
-
-    for (const entry of entries) {
-      const path = join(directory, entry.name)
-      let isDirectory = entry.isDirectory()
-      let isFile = entry.isFile()
-
-      if (entry.isSymbolicLink()) {
-        try {
-          const target = await stat(path)
-          isDirectory = target.isDirectory()
-          isFile = target.isFile()
-        } catch {
-          continue
-        }
+    const files: MarkdownFile[] = []
+    for (const name of entryNames.value.toSorted((left, right) => left.localeCompare(right))) {
+      const entryPath = join(directory, name)
+      /*
+       * `stat` (not `lstat`) already follows symlinks to their real type, so a symlinked file or
+       * directory needs no separate branch; a broken symlink simply fails here and is skipped.
+       */
+      const info = yield* Effect.option(fs.stat(entryPath))
+      if (Option.isNone(info)) {
+        continue
       }
-
-      if (isDirectory) {
-        await walk(path)
-      } else if (isFile && extname(entry.name) === '.md') {
-        files.push({ path, relativePath: relative(root, path).split(sep).join('/') })
+      if (info.value.type === 'Directory') {
+        files.push(...(yield* walkCommandDirectory(root, entryPath, visited)))
+      } else if (info.value.type === 'File' && extname(name) === '.md') {
+        files.push({ path: entryPath, relativePath: relative(root, entryPath).split(sep).join('/') })
       }
     }
-  }
+    return files
+  })
 
-  await walk(root)
-  return files
-}
+const discoverMarkdownFiles = (root: string): Effect.Effect<MarkdownFile[], never, FileSystem> => walkCommandDirectory(root, root, new Set())
 
 const unquote = (value: string): string => value.replaceAll(/^["']|["']$/g, '')
 
@@ -149,10 +159,120 @@ const formatCommandSkill = (name: string, command: CommandFrontmatter): string =
   return `---\nname: ${name}\ndescription: ${JSON.stringify(command.description)}\n---\n\n${argumentCompatibility}${command.body}`
 }
 
+const buildCommandMap = (
+  event: ResourcesDiscoverEvent,
+  ctx: ExtensionContext,
+  environment: ClaudeCodeEnvironment
+): Effect.Effect<Map<string, MarkdownFile>, never, FileSystem> =>
+  Effect.gen(function* () {
+    /*
+     * An identical relative command path denotes the same Claude command, so the project
+     * definition intentionally replaces the user definition. Distinct paths that happen to
+     * normalize to the same skill name are retained and disambiguated in resolveCommandNames.
+     */
+    const commandsByLogicalName = new Map<string, MarkdownFile>()
+    for (const command of yield* discoverMarkdownFiles(join(environment.homeDirectory, '.claude', 'commands'))) {
+      commandsByLogicalName.set(commandLogicalName(command.relativePath), command)
+    }
+    if (ctx.isProjectTrusted()) {
+      for (const command of yield* discoverMarkdownFiles(join(event.cwd, '.claude', 'commands'))) {
+        commandsByLogicalName.set(commandLogicalName(command.relativePath), command)
+      }
+    }
+    return commandsByLogicalName
+  })
+
+const writeCommandSkills = (
+  skillDirectory: string,
+  commandsByLogicalName: Map<string, MarkdownFile>
+): Effect.Effect<void, PlatformError, FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem
+    yield* Effect.forEach(
+      resolveCommandNames(commandsByLogicalName),
+      ({ command, name }) =>
+        Effect.gen(function* () {
+          const destination = join(skillDirectory, name)
+          yield* fs.makeDirectory(destination, { recursive: true })
+          const parsed = parseCommandFrontmatter(yield* fs.readFileString(command.path))
+          yield* fs.writeFileString(join(destination, 'SKILL.md'), formatCommandSkill(name, parsed))
+        }),
+      { concurrency: 'unbounded' }
+    )
+  })
+
+interface DiscoveryStateShape {
+  readonly mutex: Semaphore.Semaphore
+  readonly activeSkillScope: Ref.Ref<Option.Option<Scope.Closeable>>
+}
+
+class DiscoveryState extends Context.Service<DiscoveryState, DiscoveryStateShape>()('@claude-code/DiscoveryState') {}
+
+const DiscoveryStateLive: Layer.Layer<DiscoveryState> = Layer.effect(DiscoveryState)(
+  Effect.gen(function* () {
+    return {
+      activeSkillScope: yield* Ref.make<Option.Option<Scope.Closeable>>(Option.none()),
+      mutex: yield* Semaphore.make(1),
+    }
+  })
+)
+
+const releaseActiveSkillDirectory = (state: DiscoveryStateShape): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const current = yield* Ref.getAndSet(state.activeSkillScope, Option.none())
+    if (Option.isSome(current)) {
+      yield* Scope.close(current.value, Exit.void)
+    }
+  })
+
 export interface ClaudeCodeEnvironment {
   homeDirectory: string
   temporaryDirectory: string
 }
+
+/**
+ * Two different error policies, kept explicit rather than accidental: discovery below is fully
+ * swallowed (`buildCommandMap`/`walkCommandDirectory` never fail), while a write failure here
+ * must clean up the just-created directory and then rethrow -- `Effect.onError` runs the cleanup
+ * only on failure and preserves the original failure afterwards, matching the try/catch/rm/throw
+ * this replaces.
+ */
+const discoverResources = (
+  event: ResourcesDiscoverEvent,
+  ctx: ExtensionContext,
+  environment: ClaudeCodeEnvironment
+): Effect.Effect<ResourcesDiscoverResult | undefined, PlatformError, FileSystem | DiscoveryState> =>
+  Effect.gen(function* () {
+    const state = yield* DiscoveryState
+    return yield* state.mutex.withPermits(1)(
+      Effect.gen(function* () {
+        yield* releaseActiveSkillDirectory(state)
+
+        const commandsByLogicalName = yield* buildCommandMap(event, ctx, environment)
+        if (commandsByLogicalName.size === 0) {
+          return undefined
+        }
+
+        const fs = yield* FileSystem
+        const resourceScope = yield* Scope.make()
+        const skillDirectory = yield* Effect.acquireRelease(
+          fs.makeTempDirectory({ directory: environment.temporaryDirectory, prefix: 'pi-claude-command-skills-' }),
+          (directory) => fs.remove(directory, { force: true, recursive: true }).pipe(Effect.orDie)
+        ).pipe(Effect.provideService(Scope.Scope, resourceScope))
+
+        yield* writeCommandSkills(skillDirectory, commandsByLogicalName).pipe(Effect.onError(() => Scope.close(resourceScope, Exit.void)))
+
+        yield* Ref.set(state.activeSkillScope, Option.some(resourceScope))
+        return { skillPaths: [skillDirectory] }
+      })
+    )
+  })
+
+const shutdownDiscoveryResources = (_event: SessionShutdownEvent, _ctx: ExtensionContext): Effect.Effect<void, never, DiscoveryState> =>
+  Effect.gen(function* () {
+    const state = yield* DiscoveryState
+    yield* state.mutex.withPermits(1)(releaseActiveSkillDirectory(state))
+  })
 
 export default function claudeCodeExtension(
   pi: ExtensionAPI,
@@ -161,69 +281,11 @@ export default function claudeCodeExtension(
     temporaryDirectory: tmpdir(),
   }
 ) {
-  let generatedSkillDirectory: string | undefined
-  let discoveryQueue: Promise<void> = Promise.resolve()
+  const runtime = ManagedRuntime.make(Layer.mergeAll(DiscoveryStateLive, NodeFileSystem.layer))
 
-  const serializeDiscovery = <Result>(operation: () => Promise<Result>): Promise<Result> => {
-    const result = discoveryQueue.then(operation)
-    discoveryQueue = result.then(
-      () => undefined,
-      () => undefined
-    )
-    return result
-  }
-
-  const cleanup = async (): Promise<void> => {
-    if (!generatedSkillDirectory) {
-      return
-    }
-    const directory = generatedSkillDirectory
-    generatedSkillDirectory = undefined
-    await rm(directory, { force: true, recursive: true })
-  }
-
-  pi.on('resources_discover', (event, ctx) =>
-    serializeDiscovery(async () => {
-      await cleanup()
-
-      // An identical relative command path denotes the same Claude command, so the
-      // Project definition intentionally replaces the user definition. Distinct paths
-      // That happen to normalize to the same skill name are retained and disambiguated.
-      const commandsByLogicalName = new Map<string, MarkdownFile>()
-      for (const command of await discoverMarkdownFiles(join(environment.homeDirectory, '.claude', 'commands'))) {
-        commandsByLogicalName.set(commandLogicalName(command.relativePath), command)
-      }
-
-      if (ctx.isProjectTrusted()) {
-        for (const command of await discoverMarkdownFiles(join(event.cwd, '.claude', 'commands'))) {
-          commandsByLogicalName.set(commandLogicalName(command.relativePath), command)
-        }
-      }
-
-      if (commandsByLogicalName.size === 0) {
-        return undefined
-      }
-
-      const skillDirectory = await mkdtemp(join(environment.temporaryDirectory, 'pi-claude-command-skills-'))
-
-      try {
-        await Promise.all(
-          resolveCommandNames(commandsByLogicalName).map(async ({ name, command }) => {
-            const destination = join(skillDirectory, name)
-            await mkdir(destination, { recursive: true })
-            const parsed = parseCommandFrontmatter(await readFile(command.path, 'utf8'))
-            await writeFile(join(destination, 'SKILL.md'), formatCommandSkill(name, parsed), 'utf8')
-          })
-        )
-      } catch (error) {
-        await rm(skillDirectory, { force: true, recursive: true })
-        throw error
-      }
-
-      generatedSkillDirectory = skillDirectory
-      return { skillPaths: [skillDirectory] }
-    })
+  pi.on(
+    'resources_discover',
+    makeEventHandler(runtime)((event, ctx) => discoverResources(event, ctx, environment))
   )
-
-  pi.on('session_shutdown', () => serializeDiscovery(cleanup))
+  pi.on('session_shutdown', makeEventHandler(runtime)(shutdownDiscoveryResources))
 }
