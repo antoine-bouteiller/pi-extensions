@@ -1,15 +1,20 @@
 import { describe, expect, test } from 'bun:test'
 
 import { type AgentToolResult } from '@earendil-works/pi-coding-agent'
+import { Effect, Layer } from 'effect'
+import { FetchHttpClient, type HttpClient } from 'effect/unstable/http'
 
-import { asTool } from '#test-utils/casts'
+import { asError, asNarrowed, asTool } from '#test-utils/casts'
 import { createFakePi } from '#test-utils/fake_pi'
 
 import { createWebfetchExtension, type WebfetchDetails, type WebfetchFetch, type WebfetchInput } from '../index.js'
 
-const createHarness = (fetch: WebfetchFetch, saveFullOutput?: (content: string) => Promise<string>) => {
+const stubHttpClient = (fetchImpl: WebfetchFetch): Layer.Layer<HttpClient.HttpClient> =>
+  Layer.mergeAll(FetchHttpClient.layer, Layer.succeed(FetchHttpClient.Fetch)(asNarrowed<typeof fetch, WebfetchFetch>(fetchImpl)))
+
+const createHarness = (fetchImpl: WebfetchFetch, saveFullOutput?: (content: string) => Effect.Effect<string, unknown>) => {
   const fixture = createFakePi()
-  createWebfetchExtension({ fetch, saveFullOutput })(fixture.pi)
+  createWebfetchExtension({ httpClient: stubHttpClient(fetchImpl), saveFullOutput })(fixture.pi)
   const tool = fixture.state.tools.get('webfetch')
 
   const execute = async (
@@ -35,6 +40,22 @@ const createHarness = (fetch: WebfetchFetch, saveFullOutput?: (content: string) 
 const text = (result: AgentToolResult<unknown>): string => {
   const [content] = result.content
   return content?.type === 'text' ? content.text : ''
+}
+
+/** A `ReadableStream` body has no `Content-Length`, unlike the string-body doubles above. */
+const streamedResponse = (chunkBytes: number, chunkCount: number, init: ResponseInit = {}): Response => {
+  let sent = 0
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (sent >= chunkCount) {
+        controller.close()
+        return
+      }
+      sent += 1
+      controller.enqueue(new Uint8Array(chunkBytes))
+    },
+  })
+  return new Response(stream, init)
 }
 
 describe('webfetch', () => {
@@ -141,7 +162,7 @@ describe('webfetch', () => {
     expect(calls).toBe(0)
   })
 
-  test('rejects responses larger than the download limit', async () => {
+  test('rejects responses larger than the download limit declared up front', async () => {
     const harness = createHarness(
       async () =>
         new Response('ignored', {
@@ -152,15 +173,70 @@ describe('webfetch', () => {
     expect(harness.execute({ url: 'https://example.com/large' })).rejects.toThrow('download limit')
   })
 
+  test('cancels a no-Content-Length stream once it crosses the download limit mid-stream', async () => {
+    let cancelledAfterChunks = -1
+    let fetchAborted = false
+    const harness = createHarness(async (_url, init) => {
+      init?.signal?.addEventListener('abort', () => {
+        fetchAborted = true
+      })
+      let sent = 0
+      const total = 100
+      const chunkBytes = 100 * 1024
+      const stream = new ReadableStream<Uint8Array>({
+        cancel() {
+          cancelledAfterChunks = sent
+        },
+        pull(controller) {
+          if (sent >= total || init?.signal?.aborted) {
+            controller.close()
+            return
+          }
+          sent += 1
+          controller.enqueue(new Uint8Array(chunkBytes))
+        },
+      })
+      return new Response(stream)
+    })
+
+    const rejection = await harness.execute({ url: 'https://example.com/huge' }).then(
+      () => undefined,
+      (error: unknown) => error
+    )
+
+    expect(asError(rejection).message).toContain('download limit')
+    // 5 MiB / 100 KiB chunks = chunk 53 is where the running total first exceeds the cap (Bun's
+    // ReadableStream pulls one chunk ahead of what `Stream.runForEach` has consumed).
+    expect(cancelledAfterChunks).toBe(53)
+    expect(fetchAborted).toBeTrue()
+  })
+
+  test('rejects with an exact message when the request exceeds its timeout', async () => {
+    const harness = createHarness(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+        })
+    )
+
+    const rejection = await harness.execute({ timeout: 0.05, url: 'https://example.com/slow' }).then(
+      () => undefined,
+      (error: unknown) => error
+    )
+
+    expect(asError(rejection).message).toBe('webfetch timed out after 1s')
+  })
+
   test('truncates large model output and saves the complete text', async () => {
     const complete = `${'a'.repeat(60 * 1024)}\nlast line`
     let saved = ''
     const harness = createHarness(
       async () => new Response(complete, { headers: { 'content-type': 'text/plain' } }),
-      async (content) => {
-        saved = content
-        return '/tmp/pi-webfetch-test/output.txt'
-      }
+      (content) =>
+        Effect.sync(() => {
+          saved = content
+          return '/tmp/pi-webfetch-test/output.txt'
+        })
     )
 
     const result = await harness.execute({ url: 'https://example.com/large.txt' })
@@ -174,7 +250,7 @@ describe('webfetch', () => {
     })
   })
 
-  test('propagates cancellation as a concise tool error', async () => {
+  test('propagates cancellation as a concise, exact tool error, distinct from a timeout', async () => {
     const harness = createHarness(
       (_url, init) =>
         new Promise<Response>((_resolve, reject) => {
@@ -188,6 +264,21 @@ describe('webfetch', () => {
 
     controller.abort()
 
-    expect(pending).rejects.toThrow('webfetch was cancelled')
+    const rejection = await pending.then(
+      () => undefined,
+      (error: unknown) => error
+    )
+
+    expect(asError(rejection).message).toBe('webfetch was cancelled')
+  })
+})
+
+describe('webfetch streaming (unbounded)', () => {
+  test('accepts a no-Content-Length stream that stays under the download limit', async () => {
+    const harness = createHarness(async () => streamedResponse(1024, 10, { headers: { 'content-type': 'text/plain' } }))
+
+    const result = await harness.execute({ url: 'https://example.com/ok' })
+
+    expect(result.details.downloadedBytes).toBe(1024 * 10)
   })
 })
