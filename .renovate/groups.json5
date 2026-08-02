@@ -6,5 +6,10 @@
       groupName: 'oxc',
       matchPackageNames: ['oxlint', 'oxfmt', 'oxlint-tsgolint'],
     },
+    {
+      description: 'Pi Coding Agent Group',
+      groupName: 'pi-agent',
+      matchPackageNames: ['@earendil-works/*'],
+    },
   ],
 }
