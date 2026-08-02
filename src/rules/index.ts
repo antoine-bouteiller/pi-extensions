@@ -1,11 +1,23 @@
 import { createHash } from 'node:crypto'
-import { type Dirent } from 'node:fs'
-import { readFile, readdir, realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
-import { type ExtensionAPI, type ToolResultEvent } from '@earendil-works/pi-coding-agent'
+import {
+  type BeforeAgentStartEvent,
+  type BeforeAgentStartEventResult,
+  type ExtensionAPI,
+  type ExtensionContext,
+  type SessionCompactEvent,
+  type SessionStartEvent,
+  type SessionTreeEvent,
+  type ToolResultEvent,
+} from '@earendil-works/pi-coding-agent'
+import { NodeFileSystem } from '@effect/platform-node'
+import { Context, Deferred, Effect, HashSet, Layer, ManagedRuntime, Ref } from 'effect'
+import { FileSystem } from 'effect/FileSystem'
+import { type PlatformError } from 'effect/PlatformError'
 
+import { makeEventHandler } from '../effect/runtime.js'
 import { isRecord } from '../shared/records.js'
 
 const RULE_DIRECTORIES = ['.claude/rules', '.agents/rules'] as const
@@ -53,115 +65,82 @@ const isWithin = (child: string, parent: string): boolean => {
   return pathFromParent === '' || (!pathFromParent.startsWith(`..${sep}`) && pathFromParent !== '..' && !isAbsolute(pathFromParent))
 }
 
-interface ResolvedEntry {
-  path: string
-  canonicalPath: string
-  isDirectory: boolean
-  isFile: boolean
-}
+/**
+ * Every fs call below is caught narrowly at its own call site, mirroring the pre-Effect code's
+ * per-operation try/catch. Only `PlatformError` is swallowed here; a defect (an unexpected throw
+ * that is not a filesystem error) still propagates through the fiber instead of being silently
+ * treated as "file missing".
+ */
+const orSkip = <Value>(effect: Effect.Effect<Value, PlatformError, FileSystem>): Effect.Effect<Value | undefined, never, FileSystem> =>
+  effect.pipe(Effect.catch(() => Effect.succeed(undefined)))
 
-const resolveEntry = async (directory: string, entry: Dirent, canonicalBoundary: string | undefined): Promise<ResolvedEntry | undefined> => {
-  const path = join(directory, entry.name)
-  let isDirectory = entry.isDirectory()
-  let isFile = entry.isFile()
-  let canonicalPath = path
+const discoverRuleFilesEffect = (root: string, containmentRoot?: string): Effect.Effect<RuleFile[], never, FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem
+    const files: RuleFile[] = []
+    const visitedDirectories = new Set<string>()
 
-  if (entry.isSymbolicLink()) {
-    try {
-      canonicalPath = await realpath(path)
-      if (canonicalBoundary && !isWithin(canonicalPath, canonicalBoundary)) {
-        return undefined
-      }
-      const target = await stat(path)
-      isDirectory = target.isDirectory()
-      isFile = target.isFile()
-    } catch {
-      return undefined
-    }
-  }
-
-  return { canonicalPath, isDirectory, isFile, path }
-}
-
-const registerRuleFile = async (options: { root: string; path: string; canonicalBoundary: string | undefined; files: RuleFile[] }): Promise<void> => {
-  const { root, path, canonicalBoundary, files } = options
-  let canonicalPath: string
-  try {
-    canonicalPath = await realpath(path)
-  } catch {
-    return
-  }
-  if (canonicalBoundary && !isWithin(canonicalPath, canonicalBoundary)) {
-    return
-  }
-  files.push({
-    path,
-    realPath: canonicalPath,
-    relativePath: normalizePath(relative(root, path)),
-  })
-}
-
-const discoverRuleFiles = async (root: string, containmentRoot?: string): Promise<RuleFile[]> => {
-  let canonicalRoot: string
-  let canonicalBoundary: string | undefined
-  try {
-    canonicalRoot = await realpath(root)
-    canonicalBoundary = containmentRoot ? await realpath(containmentRoot) : undefined
-    const rootStat = await stat(canonicalRoot)
-    if (!rootStat.isDirectory()) {
-      return []
-    }
-    if (canonicalBoundary && !isWithin(canonicalRoot, canonicalBoundary)) {
-      return []
-    }
-  } catch {
-    return []
-  }
-
-  const files: RuleFile[] = []
-  const visitedDirectories = new Set<string>()
-
-  const walk = async (directory: string, depth: number): Promise<void> => {
-    let canonicalDirectory: string
-    try {
-      canonicalDirectory = await realpath(directory)
-    } catch {
-      return
-    }
-
-    if ((canonicalBoundary && !isWithin(canonicalDirectory, canonicalBoundary)) || visitedDirectories.has(canonicalDirectory)) {
-      return
-    }
-    visitedDirectories.add(canonicalDirectory)
-
-    let entries
-    try {
-      entries = await readdir(directory, { withFileTypes: true })
-    } catch {
-      return
-    }
-    entries.sort((left, right) => left.name.localeCompare(right.name))
-
-    for (const entry of entries) {
-      const resolved = await resolveEntry(directory, entry, canonicalBoundary)
-      if (!resolved) {
-        continue
-      }
-      const { path, isDirectory, isFile } = resolved
-
-      if (isDirectory) {
-        if (depth < MAX_SCAN_DEPTH && !EXCLUDED_DIRECTORIES.has(entry.name)) {
-          await walk(path, depth + 1)
+    const registerRuleFile = (path: string, containmentBoundary: string | undefined): Effect.Effect<void, never, FileSystem> =>
+      Effect.gen(function* () {
+        const canonicalPath = yield* orSkip(fs.realPath(path))
+        if (canonicalPath === undefined || (containmentBoundary && !isWithin(canonicalPath, containmentBoundary))) {
+          return
         }
-      } else if (isFile && RULE_EXTENSIONS.has(extname(entry.name))) {
-        await registerRuleFile({ canonicalBoundary, files, path, root })
-      }
-    }
-  }
+        files.push({ path, realPath: canonicalPath, relativePath: normalizePath(relative(root, path)) })
+      })
 
-  await walk(root, 0)
-  return files
-}
+    const walk = (directory: string, depth: number, containmentBoundary: string | undefined): Effect.Effect<void, never, FileSystem> =>
+      Effect.gen(function* () {
+        const canonicalDirectory = yield* orSkip(fs.realPath(directory))
+        if (
+          canonicalDirectory === undefined ||
+          (containmentBoundary && !isWithin(canonicalDirectory, containmentBoundary)) ||
+          visitedDirectories.has(canonicalDirectory)
+        ) {
+          return
+        }
+        visitedDirectories.add(canonicalDirectory)
+
+        const names = yield* orSkip(fs.readDirectory(directory))
+        if (names === undefined) {
+          return
+        }
+        const sorted = names.toSorted((left, right) => left.localeCompare(right))
+
+        for (const name of sorted) {
+          const path = join(directory, name)
+          const info = yield* orSkip(fs.stat(path))
+          if (info === undefined) {
+            continue
+          }
+          if (info.type === 'Directory') {
+            if (depth < MAX_SCAN_DEPTH && !EXCLUDED_DIRECTORIES.has(name)) {
+              yield* walk(path, depth + 1, containmentBoundary)
+            }
+          } else if (info.type === 'File' && RULE_EXTENSIONS.has(extname(name))) {
+            yield* registerRuleFile(path, containmentBoundary)
+          }
+        }
+      })
+
+    const rootResolution = yield* orSkip(
+      Effect.gen(function* () {
+        const canonicalRoot = yield* fs.realPath(root)
+        const canonicalBoundary = containmentRoot ? yield* fs.realPath(containmentRoot) : undefined
+        const rootInfo = yield* fs.stat(canonicalRoot)
+        if (rootInfo.type !== 'Directory' || (canonicalBoundary && !isWithin(canonicalRoot, canonicalBoundary))) {
+          return undefined
+        }
+        return { canonicalBoundary }
+      })
+    )
+    if (!rootResolution) {
+      return []
+    }
+
+    yield* walk(root, 0, rootResolution.canonicalBoundary)
+    return files
+  })
 
 const stripComment = (value: string): string => {
   let quote: '"' | "'" | undefined
@@ -378,13 +357,18 @@ export const parseRuleFrontmatter = (content: string): RuleFrontmatter => {
   }
 }
 
-const contentHash = (content: string): string => createHash('sha256').update(content).digest('hex')
+const contentHashEffect = (content: string): Effect.Effect<string> => Effect.sync(() => createHash('sha256').update(content).digest('hex'))
 
-const readRules = async (root: string, displayRoot: string, containmentRoot?: string): Promise<Rule[]> => {
-  const rules: Rule[] = []
-  for (const file of await discoverRuleFiles(root, containmentRoot)) {
-    try {
-      const content = await readFile(file.path, 'utf8')
+const readRulesEffect = (root: string, displayRoot: string, containmentRoot?: string): Effect.Effect<Rule[], never, FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem
+    const files = yield* discoverRuleFilesEffect(root, containmentRoot)
+    const rules: Rule[] = []
+    for (const file of files) {
+      const content = yield* orSkip(fs.readFileString(file.path, 'utf8'))
+      if (content === undefined) {
+        continue
+      }
       const parsed = parseRuleFrontmatter(content)
       if (parsed.diagnostic || !parsed.body.trim()) {
         continue
@@ -392,42 +376,40 @@ const readRules = async (root: string, displayRoot: string, containmentRoot?: st
       rules.push({
         alwaysApply: parsed.alwaysApply,
         body: parsed.body.trim(),
-        contentHash: contentHash(content),
+        contentHash: yield* contentHashEffect(content),
         displayPath: `${displayRoot}/${file.relativePath}`,
         paths: parsed.paths,
         realPath: file.realPath,
       })
-    } catch {
-      // An unreadable or malformed rule must not prevent other rules from loading.
     }
-  }
-  return rules
-}
+    return rules
+  })
 
-const discoverRules = async (cwd: string, trusted: boolean, homeDirectory: string): Promise<Rule[]> => {
-  const groups: Rule[][] = []
-  // Global guidance comes first so the shared prompt budget cannot starve it;
-  // Project guidance remains later in the prompt and can refine it.
-  for (const directory of RULE_DIRECTORIES) {
-    groups.push(await readRules(join(homeDirectory, directory), `~/${directory}`))
-  }
-  if (trusted) {
+const discoverRulesEffect = (cwd: string, trusted: boolean, homeDirectory: string): Effect.Effect<Rule[], never, FileSystem> =>
+  Effect.gen(function* () {
+    const groups: Rule[][] = []
+    // Global guidance comes first so the shared prompt budget cannot starve it;
+    // Project guidance remains later in the prompt and can refine it.
     for (const directory of RULE_DIRECTORIES) {
-      groups.push(await readRules(join(cwd, directory), directory, cwd))
+      groups.push(yield* readRulesEffect(join(homeDirectory, directory), `~/${directory}`))
     }
-  }
+    if (trusted) {
+      for (const directory of RULE_DIRECTORIES) {
+        groups.push(yield* readRulesEffect(join(cwd, directory), directory, cwd))
+      }
+    }
 
-  const rules: Rule[] = []
-  const seen = new Set<string>()
-  for (const rule of groups.flat()) {
-    if (seen.has(rule.realPath)) {
-      continue
+    const rules: Rule[] = []
+    const seen = new Set<string>()
+    for (const rule of groups.flat()) {
+      if (seen.has(rule.realPath)) {
+        continue
+      }
+      seen.add(rule.realPath)
+      rules.push(rule)
     }
-    seen.add(rule.realPath)
-    rules.push(rule)
-  }
-  return rules
-}
+    return rules
+  })
 
 const truncateBody = (rule: Rule, maxChars: number): string => {
   if (rule.body.length <= maxChars) {
@@ -567,76 +549,134 @@ export const extractToolPaths = (event: ToolResultEvent, cwd: string): string[] 
   return [...paths]
 }
 
-export default function rulesExtension(pi: ExtensionAPI, environment: RulesEnvironment = { homeDirectory: homedir() }) {
-  const dynamicInjections = new Set<string>()
-  let activeDiscovery: { key: string; promise: Promise<Rule[]> } | undefined
+interface DiscoverySlot {
+  key: string
+  deferred: Deferred.Deferred<Rule[]>
+}
 
-  const refresh = async (cwd: string, trusted: boolean): Promise<Rule[]> => {
+interface RulesStateShape {
+  readonly dynamicInjections: Ref.Ref<HashSet.HashSet<string>>
+  readonly activeDiscovery: Ref.Ref<DiscoverySlot | undefined>
+}
+
+class RulesState extends Context.Service<RulesState, RulesStateShape>()('@rules/State') {}
+
+const RulesStateLive: Layer.Layer<RulesState> = Layer.effect(RulesState)(
+  Effect.gen(function* () {
+    return {
+      activeDiscovery: yield* Ref.make<DiscoverySlot | undefined>(undefined),
+      dynamicInjections: yield* Ref.make(HashSet.empty<string>()),
+    }
+  })
+)
+
+/**
+ * `activeDiscovery` only coalesces concurrent scans that share a (cwd, trusted) key; it is cleared
+ * the moment that scan settles. There is no persistent discovery cache, so every later call rescans
+ * and rehashes — editing a rule file makes it immediately eligible for reinjection under its new
+ * hash, with no session lifecycle event required.
+ */
+const refresh = (cwd: string, trusted: boolean, homeDirectory: string): Effect.Effect<Rule[], never, RulesState | FileSystem> =>
+  Effect.gen(function* () {
+    const state = yield* RulesState
     const key = `${cwd}\0${trusted}`
-    if (activeDiscovery?.key === key) {
-      return activeDiscovery.promise
-    }
 
-    const promise = discoverRules(cwd, trusted, environment.homeDirectory)
-    activeDiscovery = { key, promise }
-    try {
-      return await promise
-    } finally {
-      if (activeDiscovery?.promise === promise) {
-        activeDiscovery = undefined
+    const { created, slot } = yield* Ref.modify(
+      state.activeDiscovery,
+      (existing): readonly [{ created: boolean; slot: DiscoverySlot }, DiscoverySlot] => {
+        if (existing?.key === key) {
+          return [{ created: false, slot: existing }, existing]
+        }
+        const newSlot: DiscoverySlot = { deferred: Deferred.makeUnsafe<Rule[]>(), key }
+        return [{ created: true, slot: newSlot }, newSlot]
       }
-    }
-  }
+    )
 
-  pi.on('session_start', () => {
-    dynamicInjections.clear()
-  })
-
-  pi.on('session_compact', () => {
-    dynamicInjections.clear()
-  })
-
-  pi.on('session_tree', () => {
-    dynamicInjections.clear()
-  })
-
-  pi.on('before_agent_start', async (event, ctx) => {
-    const rules = await refresh(ctx.cwd, ctx.isProjectTrusted())
-    const staticRules = rules.filter((rule) => rule.alwaysApply || rule.paths.length === 0)
-    const formatted = formatRules(staticRules, '\n\n## Rules\n\n')
-    let addition = formatted.block
-    const scopedRules = rules.filter((rule) => !rule.alwaysApply && rule.paths.length > 0)
-    addition += formatRulePointers(scopedRules, MAX_BLOCK_CHARS - addition.length)
-    return addition ? { systemPrompt: event.systemPrompt + addition } : undefined
-  })
-
-  pi.on('tool_result', async (event, ctx) => {
-    const targetPaths = extractToolPaths(event, ctx.cwd)
-    if (targetPaths.length === 0) {
-      return undefined
-    }
-
-    const rules = await refresh(ctx.cwd, ctx.isProjectTrusted())
-    const pendingTargetsByRule = new Map<Rule, string[]>()
-    for (const rule of rules) {
-      if (rule.alwaysApply || rule.paths.length === 0) {
-        continue
-      }
-      const pendingTargets = targetPaths.filter(
-        (target) => matchesRule(rule, target, ctx.cwd) && !dynamicInjections.has(`${target}\0${rule.realPath}\0${rule.contentHash}`)
+    if (created) {
+      yield* Effect.forkDetach(
+        Effect.gen(function* () {
+          const exit = yield* Effect.exit(discoverRulesEffect(cwd, trusted, homeDirectory))
+          yield* Deferred.done(slot.deferred, exit)
+          yield* Ref.update(state.activeDiscovery, (existing) => (existing === slot ? undefined : existing))
+        })
       )
-      if (pendingTargets.length > 0) {
-        pendingTargetsByRule.set(rule, pendingTargets)
-      }
     }
 
-    const displayTarget = normalizePath(relative(ctx.cwd, targetPaths[0] ?? ctx.cwd))
-    const formatted = formatRules([...pendingTargetsByRule.keys()], `\n\nAdditional rules matched for ${displayTarget}:\n\n`)
-    for (const rule of formatted.emitted) {
-      for (const target of pendingTargetsByRule.get(rule) ?? []) {
-        dynamicInjections.add(`${target}\0${rule.realPath}\0${rule.contentHash}`)
-      }
-    }
-    return formatted.block ? { content: [...event.content, { text: formatted.block, type: 'text' }] } : undefined
+    return yield* Deferred.await(slot.deferred)
   })
+
+const clearDynamicInjections = (
+  _event: SessionStartEvent | SessionCompactEvent | SessionTreeEvent,
+  _ctx: ExtensionContext
+): Effect.Effect<void, never, RulesState> =>
+  Effect.gen(function* () {
+    const state = yield* RulesState
+    yield* Ref.set(state.dynamicInjections, HashSet.empty<string>())
+  })
+
+export default function rulesExtension(pi: ExtensionAPI, environment: RulesEnvironment = { homeDirectory: homedir() }) {
+  const runtime = ManagedRuntime.make(Layer.mergeAll(RulesStateLive, NodeFileSystem.layer))
+
+  const beforeAgentStart = (
+    event: BeforeAgentStartEvent,
+    ctx: ExtensionContext
+  ): Effect.Effect<BeforeAgentStartEventResult | undefined, never, RulesState | FileSystem> =>
+    Effect.gen(function* () {
+      const rules = yield* refresh(ctx.cwd, ctx.isProjectTrusted(), environment.homeDirectory)
+      const staticRules = rules.filter((rule) => rule.alwaysApply || rule.paths.length === 0)
+      const formatted = formatRules(staticRules, '\n\n## Rules\n\n')
+      let addition = formatted.block
+      const scopedRules = rules.filter((rule) => !rule.alwaysApply && rule.paths.length > 0)
+      addition += formatRulePointers(scopedRules, MAX_BLOCK_CHARS - addition.length)
+      return addition ? { systemPrompt: event.systemPrompt + addition } : undefined
+    })
+
+  const toolResult = (
+    event: ToolResultEvent,
+    ctx: ExtensionContext
+  ): Effect.Effect<{ content: ToolResultEvent['content'] } | undefined, never, RulesState | FileSystem> =>
+    Effect.gen(function* () {
+      const targetPaths = extractToolPaths(event, ctx.cwd)
+      if (targetPaths.length === 0) {
+        return undefined
+      }
+
+      const state = yield* RulesState
+      const rules = yield* refresh(ctx.cwd, ctx.isProjectTrusted(), environment.homeDirectory)
+      const dynamicInjections = yield* Ref.get(state.dynamicInjections)
+
+      const pendingTargetsByRule = new Map<Rule, string[]>()
+      for (const rule of rules) {
+        if (rule.alwaysApply || rule.paths.length === 0) {
+          continue
+        }
+        const pendingTargets = targetPaths.filter(
+          (target) => matchesRule(rule, target, ctx.cwd) && !HashSet.has(dynamicInjections, `${target}\0${rule.realPath}\0${rule.contentHash}`)
+        )
+        if (pendingTargets.length > 0) {
+          pendingTargetsByRule.set(rule, pendingTargets)
+        }
+      }
+
+      const displayTarget = normalizePath(relative(ctx.cwd, targetPaths[0] ?? ctx.cwd))
+      const formatted = formatRules([...pendingTargetsByRule.keys()], `\n\nAdditional rules matched for ${displayTarget}:\n\n`)
+      if (formatted.emitted.length > 0) {
+        yield* Ref.update(state.dynamicInjections, (current) => {
+          let next = current
+          for (const rule of formatted.emitted) {
+            for (const target of pendingTargetsByRule.get(rule) ?? []) {
+              next = HashSet.add(next, `${target}\0${rule.realPath}\0${rule.contentHash}`)
+            }
+          }
+          return next
+        })
+      }
+      return formatted.block ? { content: [...event.content, { text: formatted.block, type: 'text' as const }] } : undefined
+    })
+
+  pi.on('session_start', makeEventHandler(runtime)(clearDynamicInjections))
+  pi.on('session_compact', makeEventHandler(runtime)(clearDynamicInjections))
+  pi.on('session_tree', makeEventHandler(runtime)(clearDynamicInjections))
+  pi.on('before_agent_start', makeEventHandler(runtime)(beforeAgentStart))
+  pi.on('tool_result', makeEventHandler(runtime)(toolResult))
 }
