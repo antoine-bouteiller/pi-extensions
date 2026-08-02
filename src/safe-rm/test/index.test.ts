@@ -2,18 +2,22 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createFakePi } from "#test-utils/fake-pi";
+import { createFakePi } from "#test-utils/fake_pi";
 import safeRm from "../index";
 
-type Tool = {
+interface SafeRmResult {
+  details: { removed: string[]; missing: string[] };
+}
+
+interface Tool {
   execute: (
     toolCallId: string,
     params: { paths: string[]; recursive?: boolean },
     signal: AbortSignal | undefined,
     onUpdate: undefined,
     ctx: { cwd: string },
-  ) => Promise<any>;
-};
+  ) => Promise<SafeRmResult>;
+}
 
 const temporaryDirectories: string[] = [];
 afterEach(async () => {
@@ -22,18 +26,18 @@ afterEach(async () => {
   );
 });
 
-function setup(): Tool {
+const setup = (): Tool => {
   const { pi, state } = createFakePi();
   safeRm(pi);
   return state.tools.get("safe_rm") as unknown as Tool;
-}
+};
 
-async function workspace() {
+const workspace = async () => {
   const root = await mkdtemp(join(tmpdir(), "safe-rm-test-"));
   temporaryDirectories.push(root);
   const cwd = join(root, "project");
   await mkdir(cwd);
-  return { root, cwd };
+  return { cwd, root };
 }
 
 describe("safe rm", () => {
@@ -51,7 +55,7 @@ describe("safe rm", () => {
       { cwd },
     );
 
-    expect(result.details).toEqual({ removed: ["file.txt", "build"], missing: [] });
+    expect(result.details).toEqual({ missing: [], removed: ["file.txt", "build"] });
     expect(await Bun.file(join(cwd, "file.txt")).exists()).toBeFalse();
     expect(await Bun.file(join(cwd, "build", "output.txt")).exists()).toBeFalse();
   });

@@ -1,5 +1,5 @@
 /**
- * ask_user - Lets the model ask a single multiple-choice question.
+ * Ask_user - Lets the model ask a single multiple-choice question.
  *
  * - 2 to 5 model-provided options, plus an always-present "Write my own answer" option
  * - Popup UI: arrow keys or number keys to pick, Enter to confirm
@@ -7,7 +7,7 @@
  * - Esc on the options dismisses the question (the model is told you declined)
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import  { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   Editor,
   Key,
@@ -33,24 +33,24 @@ const MIN_OPTIONS = 2;
 const MAX_OPTIONS = 5;
 
 const OptionSchema = Type.Object({
-  label: Type.String({
-    description: ASK_USER_PARAMETER_DESCRIPTIONS.optionLabel,
-  }),
   description: Type.Optional(
     Type.String({
       description: ASK_USER_PARAMETER_DESCRIPTIONS.optionDescription,
     }),
   ),
+  label: Type.String({
+    description: ASK_USER_PARAMETER_DESCRIPTIONS.optionLabel,
+  }),
 });
 
 const AskUserParams = Type.Object({
+  options: Type.Array(OptionSchema, {
+    description: ASK_USER_PARAMETER_DESCRIPTIONS.options,
+    maxItems: MAX_OPTIONS,
+    minItems: MIN_OPTIONS,
+  }),
   question: Type.String({
     description: ASK_USER_PARAMETER_DESCRIPTIONS.question,
-  }),
-  options: Type.Array(OptionSchema, {
-    minItems: MIN_OPTIONS,
-    maxItems: MAX_OPTIONS,
-    description: ASK_USER_PARAMETER_DESCRIPTIONS.options,
   }),
 });
 
@@ -59,16 +59,18 @@ export type AskUserInput = Static<typeof AskUserParams>;
 interface AskUserDetails {
   question: string;
   options: string[];
-  answer: string | null;
+  answer: string | undefined;
   wasCustom: boolean;
   cancelled: boolean;
 }
 
-type SelectionResult = {
-  answer: string;
-  wasCustom: boolean;
-  index?: number;
-} | null;
+type SelectionResult =
+  | {
+      answer: string;
+      wasCustom: boolean;
+      index?: number;
+    }
+  | undefined;
 
 interface DisplayOption {
   label: string;
@@ -78,22 +80,16 @@ interface DisplayOption {
 
 export default function askUser(pi: ExtensionAPI) {
   pi.registerTool({
-    name: "ask_user",
-    label: "Ask User",
     description: ASK_USER_TOOL_DESCRIPTION,
-    promptSnippet: ASK_USER_PROMPT_SNIPPET,
-    promptGuidelines: ASK_USER_PROMPT_GUIDELINES,
-    parameters: AskUserParams,
-
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const reply = (text: string, answer: string | null = null, wasCustom = false) => ({
-        content: [{ type: "text" as const, text }],
+      const reply = (text: string, answer: string | undefined = undefined, wasCustom = false) => ({
+        content: [{ text, type: "text" as const }],
         details: {
-          question: params.question,
-          options: params.options.map((o) => o.label),
           answer,
+          cancelled: answer === undefined,
+          options: params.options.map((option) => option.label),
+          question: params.question,
           wasCustom,
-          cancelled: answer === null,
         } satisfies AskUserDetails,
       });
 
@@ -113,7 +109,7 @@ export default function askUser(pi: ExtensionAPI) {
 
       const allOptions: DisplayOption[] = [
         ...params.options,
-        { label: "Write my own answer…", isOther: true },
+        { isOther: true, label: "Write my own answer…" },
       ];
 
       const showQuestion = (uiSignal: AbortSignal | undefined) =>
@@ -125,28 +121,28 @@ export default function askUser(pi: ExtensionAPI) {
 
           let settled = false;
 
-          function finish(result: SelectionResult) {
-            if (settled) return;
+          const finish = (result: SelectionResult) => {
+            if (settled) {return;}
             settled = true;
             uiSignal?.removeEventListener("abort", cancel);
             done(result);
-          }
+          };
 
-          function cancel() {
-            finish(null);
-          }
+          const cancel = () => {
+            finish(undefined);
+          };
 
           uiSignal?.addEventListener("abort", cancel, { once: true });
-          if (uiSignal?.aborted) queueMicrotask(cancel);
+          if (uiSignal?.aborted) {queueMicrotask(cancel);}
 
           const editorTheme: EditorTheme = {
-            borderColor: (s) => theme.fg("accent", s),
+            borderColor: (text) => theme.fg("accent", text),
             selectList: {
-              selectedPrefix: (t) => theme.fg("accent", t),
-              selectedText: (t) => theme.fg("accent", t),
-              description: (t) => theme.fg("muted", t),
-              scrollInfo: (t) => theme.fg("dim", t),
-              noMatch: (t) => theme.fg("warning", t),
+              description: (text) => theme.fg("muted", text),
+              noMatch: (text) => theme.fg("warning", text),
+              scrollInfo: (text) => theme.fg("dim", text),
+              selectedPrefix: (text) => theme.fg("accent", text),
+              selectedText: (text) => theme.fg("accent", text),
             },
           };
           const editor = new Editor(tui, editorTheme);
@@ -162,13 +158,13 @@ export default function askUser(pi: ExtensionAPI) {
             }
           };
 
-          function refresh() {
+          const refresh = () => {
             cachedLines = undefined;
             cachedWidth = undefined;
             tui.requestRender();
-          }
+          };
 
-          function selectOption(index: number) {
+          const selectOption = (index: number) => {
             const selected = allOptions[index];
             if (selected.isOther) {
               optionIndex = index;
@@ -177,13 +173,13 @@ export default function askUser(pi: ExtensionAPI) {
             } else {
               finish({
                 answer: selected.label,
-                wasCustom: false,
                 index: index + 1,
+                wasCustom: false,
               });
             }
-          }
+          };
 
-          function handleInput(data: string) {
+          const handleInput = (data: string) => {
             if (editMode) {
               if (matchesKey(data, Key.escape)) {
                 editMode = false;
@@ -219,16 +215,16 @@ export default function askUser(pi: ExtensionAPI) {
             }
 
             if (matchesKey(data, Key.escape)) {
-              finish(null);
+              finish(undefined);
             }
-          }
+          };
 
-          function render(width: number): string[] {
+          const render = (width: number): string[] => {
             const renderWidth = Math.max(1, Math.floor(width));
-            if (cachedLines && cachedWidth === renderWidth) return cachedLines;
+            if (cachedLines && cachedWidth === renderWidth) {return cachedLines;}
 
             const lines: string[] = [];
-            const add = (s: string) => lines.push(truncateToWidth(s, renderWidth));
+            const add = (line: string) => lines.push(truncateToWidth(line, renderWidth));
             const addWrapped = (text: string, indent: string, style: (value: string) => string) => {
               const safeIndent = visibleWidth(indent) < renderWidth ? indent : "";
               const contentWidth = Math.max(1, renderWidth - visibleWidth(safeIndent));
@@ -243,14 +239,20 @@ export default function askUser(pi: ExtensionAPI) {
             addWrapped(params.question, " ", (line) => theme.fg("text", theme.bold(line)));
             lines.push("");
 
-            for (let i = 0; i < allOptions.length; i++) {
-              const opt = allOptions[i];
-              const selected = i === optionIndex;
+            for (let index = 0; index < allOptions.length; index++) {
+              const opt = allOptions[index];
+              const selected = index === optionIndex;
               const prefix = selected ? theme.fg("accent", " ❯ ") : "   ";
-              const marker = opt.isOther ? "✎" : `${i + 1}.`;
+              const marker = opt.isOther ? "✎" : `${index + 1}.`;
               const label = `${marker} ${opt.label}`;
-              const color =
-                selected || (opt.isOther && editMode) ? "accent" : opt.isOther ? "muted" : "text";
+              let color: "accent" | "muted" | "text";
+              if (selected || (opt.isOther && editMode)) {
+                color = "accent";
+              } else if (opt.isOther) {
+                color = "muted";
+              } else {
+                color = "text";
+              }
 
               addWrapped(label, prefix, (line) => theme.fg(color, line));
 
@@ -285,10 +287,13 @@ export default function askUser(pi: ExtensionAPI) {
             cachedLines = lines;
             cachedWidth = renderWidth;
             return lines;
-          }
+          };
 
           let focused = false;
           return {
+            dispose: () => {
+              uiSignal?.removeEventListener("abort", cancel);
+            },
             get focused() {
               return focused;
             },
@@ -298,16 +303,13 @@ export default function askUser(pi: ExtensionAPI) {
               cachedLines = undefined;
               cachedWidth = undefined;
             },
-            render,
+            handleInput,
             invalidate: () => {
               cachedLines = undefined;
               cachedWidth = undefined;
             },
-            handleInput,
-            dispose: () => {
-              uiSignal?.removeEventListener("abort", cancel);
-            },
-          } satisfies Component & Focusable & { dispose(): void };
+            render,
+          } satisfies Component & Focusable & { dispose: () => void };
         });
 
       const result = await showQuestion(signal ?? undefined);
@@ -320,8 +322,8 @@ export default function askUser(pi: ExtensionAPI) {
       if (result.wasCustom) {
         return reply(
           buildAskUserResultMessage({
-            kind: "custom",
             answer: result.answer,
+            kind: "custom",
           }),
           result.answer,
           true,
@@ -330,33 +332,36 @@ export default function askUser(pi: ExtensionAPI) {
 
       return reply(
         buildAskUserResultMessage({
-          kind: "selected",
           answer: result.answer,
           index: result.index,
+          kind: "selected",
         }),
         result.answer,
       );
     },
-
+    label: "Ask User",
+    name: "ask_user",
+    parameters: AskUserParams,
+    promptGuidelines: ASK_USER_PROMPT_GUIDELINES,
+    promptSnippet: ASK_USER_PROMPT_SNIPPET,
     renderCall(args, theme, _context) {
       let text = theme.fg("toolTitle", theme.bold("ask_user "));
       text += theme.fg("muted", typeof args.question === "string" ? args.question : "");
       const opts = Array.isArray(args.options) ? (args.options as DisplayOption[]) : [];
       if (opts.length > 0) {
-        const numbered = opts.map((o, i) => `${i + 1}. ${o.label}`);
+        const numbered = opts.map((option, index) => `${index + 1}. ${option.label}`);
         text += `\n${theme.fg("dim", `  ${numbered.join("  ")}`)}`;
       }
       return new Text(text, 0, 0);
     },
-
     renderResult(result, _options, theme, _context) {
       const details = result.details as AskUserDetails | undefined;
       if (!details) {
-        const first = result.content[0];
+        const [first] = result.content;
         return new Text(first?.type === "text" ? first.text : "", 0, 0);
       }
 
-      if (details.cancelled || details.answer === null) {
+      if (details.cancelled || details.answer === undefined) {
         return new Text(theme.fg("warning", "✗ dismissed"), 0, 0);
       }
 

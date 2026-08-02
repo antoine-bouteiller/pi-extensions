@@ -1,15 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import type { TUI } from "@earendil-works/pi-tui";
+import  { type TUI } from "@earendil-works/pi-tui";
 import {
   createSplitPaneController,
   DEFAULT_SIDEBAR_WIDTH,
   MIN_MAIN_WIDTH,
   MIN_SIDEBAR_WIDTH,
-} from "../split-pane";
+} from "../split_pane";
 
-function fakeTui() {
+const fakeTui = () => {
   let renders = 0;
   return {
+    renderCount: () => renders,
     tui: {
       render: (width: number) => [`main:${width}`],
       requestRender: () => {
@@ -17,9 +18,8 @@ function fakeTui() {
       },
       terminal: { columns: 120 },
     } as unknown as TUI,
-    renderCount: () => renders,
   };
-}
+};
 
 describe("status panel split pane", () => {
   test("reserves space while preserving a usable main pane", () => {

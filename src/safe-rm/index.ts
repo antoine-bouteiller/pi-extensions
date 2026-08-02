@@ -2,20 +2,20 @@ import { lstat, readdir, realpath, rm as remove } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import { assertUnprotectedPath } from "../shared/protected-paths";
+import { assertUnprotectedPath } from "../shared/protected_paths";
 
 const MAX_TARGETS = 50;
 
 const SafeRmParams = Type.Object({
   paths: Type.Array(
     Type.String({
-      minLength: 1,
       description: "Literal file or directory path. Globs and shell expansion are not supported.",
+      minLength: 1,
     }),
     {
-      minItems: 1,
-      maxItems: MAX_TARGETS,
       description: "Paths to remove after every target passes validation.",
+      maxItems: MAX_TARGETS,
+      minItems: 1,
     },
   ),
   recursive: Type.Optional(
@@ -44,7 +44,7 @@ interface SafeRmDetails {
   missing: string[];
 }
 
-function isDescendant(root: string, candidate: string): boolean {
+const isDescendant = (root: string, candidate: string): boolean => {
   const pathFromRoot = relative(root, candidate);
   return (
     pathFromRoot !== "" &&
@@ -52,49 +52,45 @@ function isDescendant(root: string, candidate: string): boolean {
     !pathFromRoot.startsWith(`..${sep}`) &&
     !isAbsolute(pathFromRoot)
   );
-}
+};
 
-function isWithinOrEqual(root: string, candidate: string): boolean {
-  return root === candidate || isDescendant(root, candidate);
-}
+const isWithinOrEqual = (root: string, candidate: string): boolean =>
+  root === candidate || isDescendant(root, candidate);
 
-function isMissing(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: unknown }).code === "ENOENT"
-  );
-}
+const isMissing = (error: unknown): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  "code" in error &&
+  (error as { code?: unknown }).code === "ENOENT";
 
-function normalizeInput(path: string): string {
+const normalizeInput = (path: string): string => {
   const normalized = path.startsWith("@") ? path.slice(1) : path;
   if (!normalized || normalized.startsWith("~") || normalized.includes("\0")) {
     throw new Error(`Invalid literal deletion path: ${JSON.stringify(path)}`);
   }
   return normalized;
-}
+};
 
-function rejectMetadataPath(absolutePath: string): void {
+const rejectMetadataPath = (absolutePath: string): void => {
   if (absolutePath.split(sep).some((component) => component.toLowerCase() === ".git")) {
     throw new Error(`Refusing to remove Git metadata: ${absolutePath}`);
   }
-}
+};
 
-function throwIfCancelled(signal: AbortSignal | undefined): void {
-  if (signal?.aborted) throw new Error("Deletion was cancelled");
-}
+const throwIfCancelled = (signal: AbortSignal | undefined): void => {
+  if (signal?.aborted) {throw new Error("Deletion was cancelled");}
+};
 
 /**
  * Recursive removal must not turn a harmless-looking parent directory into
  * a way to erase credentials or a nested Git repository. Symlink entries are
  * checked by canonical policy but never traversed.
  */
-async function inspectDirectoryTree(
+const inspectDirectoryTree = async (
   directory: string,
   cwd: string,
   signal: AbortSignal | undefined,
-): Promise<void> {
+): Promise<void> => {
   throwIfCancelled(signal);
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     throwIfCancelled(signal);
@@ -108,15 +104,23 @@ async function inspectDirectoryTree(
       await inspectDirectoryTree(child, cwd, signal);
     }
   }
+};
+
+interface ValidateTargetOptions {
+  input: string;
+  cwd: string;
+  roots: AllowedRoot[];
+  recursive: boolean;
+  signal: AbortSignal | undefined;
 }
 
-async function validateTarget(
-  input: string,
-  cwd: string,
-  roots: AllowedRoot[],
-  recursive: boolean,
-  signal: AbortSignal | undefined,
-): Promise<ValidatedTarget> {
+const validateTarget = async ({
+  input,
+  cwd,
+  roots,
+  recursive,
+  signal,
+}: ValidateTargetOptions): Promise<ValidatedTarget> => {
   throwIfCancelled(signal);
   const normalizedInput = normalizeInput(input);
   const absolute = resolve(cwd, normalizedInput);
@@ -132,7 +136,7 @@ async function validateTarget(
   try {
     stats = await lstat(absolute);
   } catch (error) {
-    if (isMissing(error)) return { input, absolute, missing: true, directory: false };
+    if (isMissing(error)) {return { absolute, directory: false, input, missing: true };}
     throw error;
   }
 
@@ -145,17 +149,24 @@ async function validateTarget(
   if (directory && !recursive) {
     throw new Error(`Directory deletion requires recursive: true: ${input}`);
   }
-  if (directory) await inspectDirectoryTree(absolute, cwd, signal);
+  if (directory) {await inspectDirectoryTree(absolute, cwd, signal);}
 
-  return { input, absolute, missing: false, directory };
+  return { absolute, directory, input, missing: false };
+};
+
+interface RevalidateTargetOptions {
+  target: ValidatedTarget;
+  roots: AllowedRoot[];
+  cwd: string;
+  signal: AbortSignal | undefined;
 }
 
-async function revalidateTarget(
-  target: ValidatedTarget,
-  roots: AllowedRoot[],
-  cwd: string,
-  signal: AbortSignal | undefined,
-): Promise<void> {
+const revalidateTarget = async ({
+  target,
+  roots,
+  cwd,
+  signal,
+}: RevalidateTargetOptions): Promise<void> => {
   throwIfCancelled(signal);
   await assertUnprotectedPath(target.absolute, cwd, "remove");
   const canonicalParent = await realpath(dirname(target.absolute));
@@ -168,14 +179,12 @@ async function revalidateTarget(
   if (directory !== target.directory) {
     throw new Error(`Deletion target changed after validation: ${target.input}`);
   }
-  if (directory) await inspectDirectoryTree(target.absolute, cwd, signal);
-}
+  if (directory) {await inspectDirectoryTree(target.absolute, cwd, signal);}
+};
 
-function rejectOverlappingTargets(targets: ValidatedTarget[]): void {
-  for (let index = 0; index < targets.length; index += 1) {
-    for (let otherIndex = index + 1; otherIndex < targets.length; otherIndex += 1) {
-      const first = targets[index]!;
-      const second = targets[otherIndex]!;
+const rejectOverlappingTargets = (targets: ValidatedTarget[]): void => {
+  for (const [index, first] of targets.entries()) {
+    for (const second of targets.slice(index + 1)) {
       if (
         first.absolute === second.absolute ||
         isDescendant(first.absolute, second.absolute) ||
@@ -187,36 +196,27 @@ function rejectOverlappingTargets(targets: ValidatedTarget[]): void {
       }
     }
   }
-}
+};
 
 export default function safeRm(pi: ExtensionAPI) {
   pi.registerTool({
-    name: "safe_rm",
-    label: "Safe Remove",
     description:
       "Safely remove literal paths without shell rm. Every target is validated before deletion: targets must be below the working directory or /tmp, parent symlinks cannot escape those roots, credentials and Git repositories are protected even inside recursive targets, and directories require recursive=true.",
-    promptSnippet: "Remove files or directories through validated literal paths",
-    promptGuidelines: [
-      "Use safe_rm for file and directory deletion. A best-effort shell scanner blocks recognized rm, rmdir, unlink, find deletion, and xargs rm commands, but safe_rm is the security-enforcing path.",
-      "Set recursive=true only when intentionally removing directories. safe_rm validates all paths before deleting any of them.",
-    ],
-    parameters: SafeRmParams,
-
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       throwIfCancelled(signal);
 
       const cwd = resolve(ctx.cwd);
       const roots: AllowedRoot[] = [
-        { lexical: cwd, canonical: await realpath(cwd) },
-        { lexical: resolve("/tmp"), canonical: await realpath("/tmp") },
+        { canonical: await realpath(cwd), lexical: cwd },
+        { canonical: await realpath("/tmp"), lexical: resolve("/tmp") },
       ];
       const recursive = params.recursive ?? false;
       const targets = await Promise.all(
-        params.paths.map((path) => validateTarget(path, cwd, roots, recursive, signal)),
+        params.paths.map((path) => validateTarget({ cwd, input: path, recursive, roots, signal })),
       );
       rejectOverlappingTargets(targets);
 
-      const details: SafeRmDetails = { removed: [], missing: [] };
+      const details: SafeRmDetails = { missing: [], removed: [] };
       for (const target of targets) {
         if (target.missing) {
           details.missing.push(target.input);
@@ -225,8 +225,8 @@ export default function safeRm(pi: ExtensionAPI) {
         throwIfCancelled(signal);
 
         await withFileMutationQueue(target.absolute, async () => {
-          await revalidateTarget(target, roots, cwd, signal);
-          await remove(target.absolute, { recursive: target.directory, force: false });
+          await revalidateTarget({ cwd, roots, signal, target });
+          await remove(target.absolute, { force: false, recursive: target.directory });
         });
         details.removed.push(target.input);
       }
@@ -238,9 +238,17 @@ export default function safeRm(pi: ExtensionAPI) {
           : "Already missing: none",
       ];
       return {
-        content: [{ type: "text", text: lines.join("\n") }],
+        content: [{ text: lines.join("\n"), type: "text" }],
         details,
       };
     },
+    label: "Safe Remove",
+    name: "safe_rm",
+    parameters: SafeRmParams,
+    promptGuidelines: [
+      "Use safe_rm for file and directory deletion. A best-effort shell scanner blocks recognized rm, rmdir, unlink, find deletion, and xargs rm commands, but safe_rm is the security-enforcing path.",
+      "Set recursive=true only when intentionally removing directories. safe_rm validates all paths before deleting any of them.",
+    ],
+    promptSnippet: "Remove files or directories through validated literal paths",
   });
 }

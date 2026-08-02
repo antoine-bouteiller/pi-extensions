@@ -1,15 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { createAgentActivityStore, type RunningAgent } from "../agent-activity";
+import { createAgentActivityStore, type RunningAgent } from "../agent_activity";
 
 describe("agent activity store", () => {
   test("publishes a snapshot that later mutations cannot change", () => {
     const store = createAgentActivityStore();
-    const published: RunningAgent[] = [{ name: "/scout", color: "accent" }];
+    const published: RunningAgent[] = [{ color: "accent", name: "/scout" }];
 
     store.publish(published);
-    published.push({ name: "/reviewer", color: "warning" });
+    published.push({ color: "warning", name: "/reviewer" });
 
-    expect(store.list()).toEqual([{ name: "/scout", color: "accent" }]);
+    expect(store.list()).toEqual([{ color: "accent", name: "/scout" }]);
   });
 
   test("notifies subscribers until they unsubscribe", () => {
@@ -17,12 +17,12 @@ describe("agent activity store", () => {
     let notifications = 0;
     const unsubscribe = store.subscribe(() => notifications++);
 
-    store.publish([{ name: "/scout", color: "accent" }]);
+    store.publish([{ color: "accent", name: "/scout" }]);
     store.publish([]);
     unsubscribe();
-    store.publish([{ name: "/scout", color: "accent" }]);
+    store.publish([{ color: "accent", name: "/scout" }]);
 
     expect(notifications).toBe(2);
-    expect(store.list()).toEqual([{ name: "/scout", color: "accent" }]);
+    expect(store.list()).toEqual([{ color: "accent", name: "/scout" }]);
   });
 });

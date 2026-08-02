@@ -9,10 +9,10 @@ export class RpcJsonlDecoder {
     const lines: string[] = [];
     while (true) {
       const index = this.buffer.indexOf("\n");
-      if (index === -1) break;
+      if (index === -1) {break;}
       let line = this.buffer.slice(0, index);
       this.buffer = this.buffer.slice(index + 1);
-      if (line.endsWith("\r")) line = line.slice(0, -1);
+      if (line.endsWith("\r")) {line = line.slice(0, -1);}
       lines.push(line);
     }
     return lines;
@@ -20,7 +20,7 @@ export class RpcJsonlDecoder {
 
   end(): string[] {
     this.buffer += this.decoder.end();
-    if (!this.buffer) return [];
+    if (!this.buffer) {return [];}
     const line = this.buffer.endsWith("\r") ? this.buffer.slice(0, -1) : this.buffer;
     this.buffer = "";
     return [line];
@@ -32,15 +32,15 @@ export interface MailboxEvent {
   agentName: string;
 }
 
-export function consumeFirstMatchingMailboxEvent<T extends MailboxEvent>(
-  events: T[],
+export const consumeFirstMatchingMailboxEvent = <TEvent extends MailboxEvent>(
+  events: TEvent[],
   parentSessionId: string,
   targets?: Set<string>,
-): T | undefined {
+): TEvent | undefined => {
   const index = events.findIndex(
     (event) =>
       event.parentSessionId === parentSessionId && (!targets || targets.has(event.agentName)),
   );
-  if (index === -1) return undefined;
+  if (index === -1) {return undefined;}
   return events.splice(index, 1)[0];
-}
+};

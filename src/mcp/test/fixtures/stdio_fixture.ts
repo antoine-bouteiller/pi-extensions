@@ -11,11 +11,11 @@ server.registerTool(
     inputSchema: { value: z.string() },
   },
   async ({ value }) => ({
-    content: [{ type: "text", text: `fixture:${value}` }],
+    content: [{ text: `fixture:${value}`, type: "text" }],
     structuredContent: { echoed: value },
   }),
 );
 
 const marker = process.env.PI_MCP_FIXTURE_PID;
-if (marker) await writeFile(marker, String(process.pid), { mode: 0o600 });
+if (marker) {await writeFile(marker, String(process.pid), { mode: 0o600 });}
 await server.connect(new StdioServerTransport());

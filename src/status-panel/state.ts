@@ -15,9 +15,9 @@ export interface ModelInfoState {
   provider: string;
   modelId: string;
   thinking: string;
-  contextTokens: number | null;
+  contextTokens: number | undefined;
   contextWindow: number;
-  contextPercent: number | null;
+  contextPercent: number | undefined;
 }
 
 export interface PullRequestInfo {
@@ -26,26 +26,22 @@ export interface PullRequestInfo {
 }
 
 export interface GitInfoState {
-  branch: string | null;
+  branch: string | undefined;
   changedFiles: number;
-  pullRequest: PullRequestInfo | null;
+  pullRequest: PullRequestInfo | undefined;
 }
 
-export function emptyModelInfoState(): ModelInfoState {
-  return {
-    provider: "",
-    modelId: "no-model",
-    thinking: "off",
-    contextTokens: null,
-    contextWindow: 0,
-    contextPercent: null,
-  };
-}
+export const emptyModelInfoState = (): ModelInfoState => ({
+  contextPercent: undefined,
+  contextTokens: undefined,
+  contextWindow: 0,
+  modelId: "no-model",
+  provider: "",
+  thinking: "off",
+});
 
-export function emptyGitInfoState(): GitInfoState {
-  return {
-    branch: null,
-    changedFiles: 0,
-    pullRequest: null,
-  };
-}
+export const emptyGitInfoState = (): GitInfoState => ({
+  branch: undefined,
+  changedFiles: 0,
+  pullRequest: undefined,
+});

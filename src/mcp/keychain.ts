@@ -41,15 +41,15 @@ export interface OAuthCredentialPayload {
 
 /** Async boundary consumed by the OAuth provider; tests can supply an in-memory store. */
 export interface CredentialStore {
-  get(serverName: string, serverUrl: string): Promise<OAuthCredentialPayload | undefined>;
-  set(serverName: string, credential: OAuthCredentialPayload): Promise<void>;
-  delete(serverName: string): Promise<void>;
+  get: (serverName: string, serverUrl: string) => Promise<OAuthCredentialPayload | undefined>;
+  set: (serverName: string, credential: OAuthCredentialPayload) => Promise<void>;
+  delete: (serverName: string) => Promise<void>;
 }
 
 interface KeyringEntry {
-  getPassword(): string | null | Promise<string | null>;
-  setPassword(password: string): void | Promise<void>;
-  deletePassword(): void | Promise<void>;
+  getPassword: () => string | null | Promise<string | null>;
+  setPassword: (password: string) => void | Promise<void>;
+  deletePassword: () => void | Promise<void>;
 }
 
 interface KeyringModule {
@@ -63,58 +63,61 @@ export interface KeychainCredentialStoreOptions {
   loadKeyring?: KeyringLoader;
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+const isObject = (value: unknown): value is Record<string, unknown> => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {return false;}
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
-}
+};
 
-function isJsonValue(value: unknown): value is JsonValue {
-  if (value === null || ["boolean", "string"].includes(typeof value)) return true;
-  if (typeof value === "number") return Number.isFinite(value);
-  if (Array.isArray(value)) return value.every(isJsonValue);
-  if (!isObject(value)) return false;
+const isJsonValue = (value: unknown): value is JsonValue => {
+  if (value === null || ["boolean", "string"].includes(typeof value)) {return true;}
+  if (typeof value === "number") {return Number.isFinite(value);}
+  if (Array.isArray(value)) {return value.every(isJsonValue);}
+  if (!isObject(value)) {return false;}
   return Object.values(value).every(isJsonValue);
-}
+};
 
-function malformed(serverName: string): Error {
-  return new KeychainCredentialError(
+const malformed = (serverName: string): Error =>
+  new KeychainCredentialError(
     `Stored OAuth credential for MCP server ${JSON.stringify(serverName)} is malformed; ` +
       "delete it and authenticate again.",
   );
-}
 
-function requireString(value: Record<string, unknown>, field: string, serverName: string): string {
+const requireString = (
+  value: Record<string, unknown>,
+  field: string,
+  serverName: string,
+): string => {
   const result = value[field];
-  if (typeof result !== "string" || result.length === 0) throw malformed(serverName);
+  if (typeof result !== "string" || result.length === 0) {throw malformed(serverName);}
   return result;
-}
+};
 
-function optionalString(value: Record<string, unknown>, field: string, serverName: string): void {
-  if (value[field] !== undefined && typeof value[field] !== "string") throw malformed(serverName);
-}
+const optionalString = (value: Record<string, unknown>, field: string, serverName: string): void => {
+  if (value[field] !== undefined && typeof value[field] !== "string") {throw malformed(serverName);}
+};
 
-function optionalNumber(value: Record<string, unknown>, field: string, serverName: string): void {
+const optionalNumber = (value: Record<string, unknown>, field: string, serverName: string): void => {
   if (
     value[field] !== undefined &&
     (typeof value[field] !== "number" || !Number.isFinite(value[field]))
   ) {
     throw malformed(serverName);
   }
-}
+};
 
-function validateTokens(value: unknown, serverName: string): OAuthTokens {
-  if (!isObject(value) || !isJsonValue(value)) throw malformed(serverName);
+const validateTokens = (value: unknown, serverName: string): OAuthTokens => {
+  if (!isObject(value) || !isJsonValue(value)) {throw malformed(serverName);}
   requireString(value, "access_token", serverName);
   requireString(value, "token_type", serverName);
   optionalString(value, "refresh_token", serverName);
   optionalString(value, "scope", serverName);
   optionalNumber(value, "expires_in", serverName);
   return value as OAuthTokens;
-}
+};
 
-function validateClientInformation(value: unknown, serverName: string): OAuthClientInformation {
-  if (!isObject(value) || !isJsonValue(value)) throw malformed(serverName);
+const validateClientInformation = (value: unknown, serverName: string): OAuthClientInformation => {
+  if (!isObject(value) || !isJsonValue(value)) {throw malformed(serverName);}
   requireString(value, "client_id", serverName);
   for (const field of [
     "client_secret",
@@ -127,13 +130,13 @@ function validateClientInformation(value: unknown, serverName: string): OAuthCli
   optionalNumber(value, "client_id_issued_at", serverName);
   optionalNumber(value, "client_secret_expires_at", serverName);
   return value as OAuthClientInformation;
-}
+};
 
-export function validateCredentialPayload(
+export const validateCredentialPayload = (
   value: unknown,
   serverName: string,
-): OAuthCredentialPayload {
-  if (!isObject(value)) throw malformed(serverName);
+): OAuthCredentialPayload => {
+  if (!isObject(value)) {throw malformed(serverName);}
   for (const field of Object.keys(value)) {
     if (!new Set(["serverUrl", "tokens", "clientInformation"]).has(field)) {
       throw malformed(serverName);
@@ -146,21 +149,20 @@ export function validateCredentialPayload(
     value.clientInformation === undefined
       ? undefined
       : validateClientInformation(value.clientInformation, serverName);
-  if (tokens === undefined && clientInformation === undefined) throw malformed(serverName);
+  if (tokens === undefined && clientInformation === undefined) {throw malformed(serverName);}
 
   return {
     serverUrl,
     ...(tokens === undefined ? {} : { tokens }),
     ...(clientInformation === undefined ? {} : { clientInformation }),
   };
-}
+};
 
-export function keychainAccount(serverName: string): string {
-  return createHash("sha256").update(serverName, "utf8").digest("hex");
-}
+export const keychainAccount = (serverName: string): string =>
+  createHash("sha256").update(serverName, "utf8").digest("hex");
 
-function isMissingCredential(error: unknown): boolean {
-  if (typeof error !== "object" || error === null) return false;
+const isMissingCredential = (error: unknown): boolean => {
+  if (typeof error !== "object" || error === null) {return false;}
   const code = "code" in error && typeof error.code === "string" ? error.code : "";
   const name = "name" in error && typeof error.name === "string" ? error.name : "";
   const message =
@@ -172,21 +174,20 @@ function isMissingCredential(error: unknown): boolean {
     message.includes("no matching entry") ||
     message.includes("item not found")
   );
-}
+};
 
-function operationError(operation: string, serverName: string): Error {
-  return new KeychainCredentialError(
+const operationError = (operation: string, serverName: string): Error =>
+  new KeychainCredentialError(
     `macOS Keychain OAuth credential ${operation} failed for MCP server ` +
       `${JSON.stringify(serverName)}. Ensure Keychain is available and unlocked, then retry.`,
   );
-}
 
-async function loadProductionKeyring(): Promise<KeyringModule> {
+const loadProductionKeyring = async (): Promise<KeyringModule> => {
   // Keep this specifier indirect so merely loading the MCP extension does not initialize
-  // the native keyring package (and so the package can be installed in the dependency step).
+  // The native keyring package (and so the package can be installed in the dependency step).
   const packageName = "@napi-rs/keyring";
   return (await import(packageName)) as KeyringModule;
-}
+};
 
 export class KeychainCredentialStore implements CredentialStore {
   readonly serviceName: string;
@@ -205,13 +206,14 @@ export class KeychainCredentialStore implements CredentialStore {
   async get(serverName: string, serverUrl: string): Promise<OAuthCredentialPayload | undefined> {
     let serialized: string | null;
     try {
-      serialized = await (await this.entry(serverName)).getPassword();
+      const entry = await this.entry(serverName);
+      serialized = await entry.getPassword();
     } catch (error) {
-      if (isMissingCredential(error)) return undefined;
+      if (isMissingCredential(error)) {return undefined;}
       throw operationError("lookup", serverName);
     }
-    if (serialized === null) return undefined;
-    if (typeof serialized !== "string") throw malformed(serverName);
+    if (serialized === null) {return undefined;}
+    if (typeof serialized !== "string") {throw malformed(serverName);}
 
     let parsed: unknown;
     try {
@@ -226,7 +228,8 @@ export class KeychainCredentialStore implements CredentialStore {
   async set(serverName: string, credential: OAuthCredentialPayload): Promise<void> {
     const validated = validateCredentialPayload(credential, serverName);
     try {
-      await (await this.entry(serverName)).setPassword(JSON.stringify(validated));
+      const entry = await this.entry(serverName);
+      await entry.setPassword(JSON.stringify(validated));
     } catch {
       throw operationError("write", serverName);
     }
@@ -234,16 +237,15 @@ export class KeychainCredentialStore implements CredentialStore {
 
   async delete(serverName: string): Promise<void> {
     try {
-      await (await this.entry(serverName)).deletePassword();
+      const entry = await this.entry(serverName);
+      await entry.deletePassword();
     } catch (error) {
-      if (isMissingCredential(error)) return;
+      if (isMissingCredential(error)) {return;}
       throw operationError("deletion", serverName);
     }
   }
 }
 
-export function createKeychainCredentialStore(
+export const createKeychainCredentialStore = (
   options: KeychainCredentialStoreOptions = {},
-): CredentialStore {
-  return new KeychainCredentialStore(options);
-}
+): CredentialStore => new KeychainCredentialStore(options);

@@ -1,10 +1,10 @@
 /** Model-facing schema descriptions for the ask_user question and answer options. */
 export const ASK_USER_PARAMETER_DESCRIPTIONS = {
-  optionLabel: "Short display label for this option",
   optionDescription: "Optional one-line description shown below the label",
-  question: "The question to ask the user",
+  optionLabel: "Short display label for this option",
   options:
     "Between 2 and 5 answer options. A free-form 'write my own answer' option is always appended automatically - never include one yourself.",
+  question: "The question to ask the user",
 };
 
 /** Describes the ask_user tool's question shape and dismissible free-form fallback. */
@@ -22,24 +22,29 @@ export const ASK_USER_PROMPT_GUIDELINES = [
 ];
 
 /** Builds the behavioral tool-result message returned to the parent model for an ask_user outcome. */
-export function buildAskUserResultMessage(
+export const buildAskUserResultMessage = (
   outcome:
     | { kind: "no-ui" }
     | { kind: "cancelled" }
     | { kind: "dismissed" }
     | { kind: "custom"; answer: string }
     | { kind: "selected"; answer: string; index: number | undefined },
-) {
+) => {
   switch (outcome.kind) {
-    case "no-ui":
+    case "no-ui": {
       return "No interactive UI is available, so the question could not be shown. Ask the user in plain text instead.";
-    case "cancelled":
+    }
+    case "cancelled": {
       return "Cancelled";
-    case "dismissed":
+    }
+    case "dismissed": {
       return "User dismissed the question without answering. Do not assume an answer; proceed accordingly or ask differently.";
-    case "custom":
+    }
+    case "custom": {
       return `User wrote their own answer: ${outcome.answer}`;
-    case "selected":
+    }
+    case "selected": {
       return `User selected option ${outcome.index}: ${outcome.answer}`;
+    }
   }
-}
+};

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
+import  { type AgentToolResult } from "@earendil-works/pi-coding-agent";
 import {
   createMcpExtension,
   mcpPolicyFromEnvironment,
@@ -12,31 +12,88 @@ import {
   type McpSearchOptions,
   type McpToolDescription,
 } from "../index.js";
-import { createFakePi } from "#test-utils/fake-pi";
+import { createFakePi } from "#test-utils/fake_pi";
 
 interface RecordedCall {
   method: string;
   values: unknown[];
 }
 
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((done) => {
+const deferred = <Value,>() => {
+  let resolve!: (value: Value | PromiseLike<Value>) => void;
+  const promise = new Promise<Value>((done) => {
     resolve = done;
   });
   return { promise, resolve };
-}
+};
 
-function createHarness(overrides: Partial<McpGatewayManager> = {}) {
+const createHarness = (overrides: Partial<McpGatewayManager> = {}) => {
   const calls: RecordedCall[] = [];
   let callbacks: McpManagerCallbacks | undefined;
   let loadCount = 0;
   const callResult: AgentToolResult<unknown> = {
-    content: [{ type: "text", text: "called" }],
+    content: [{ text: "called", type: "text" }],
     details: { from: "manager" },
   };
 
   const manager: McpGatewayManager = {
+    async authenticate(server: string, options?: McpOperationOptions) {
+      calls.push({ method: "authenticate", values: [server, options] });
+    },
+    async call(tool: string, args: Record<string, unknown>, options?: McpOperationOptions) {
+      calls.push({ method: "call", values: [tool, args, options] });
+      return callResult;
+    },
+    async close() {
+      calls.push({ method: "close", values: [] });
+    },
+    async connect(server: string, options?: McpOperationOptions) {
+      calls.push({ method: "connect", values: [server, options] });
+    },
+    async describe(tool: string, options?: McpOperationOptions): Promise<McpToolDescription> {
+      calls.push({ method: "describe", values: [tool, options] });
+      return {
+        annotations: { destructiveHint: false, readOnlyHint: true },
+        description: "A useful tool",
+        inputSchema: { type: "object" },
+        name: tool,
+        server: options?.server ?? "resolved",
+      };
+    },
+    async list(server: string, options?: McpOperationOptions) {
+      calls.push({ method: "list", values: [server, options] });
+      return [
+        {
+          annotations: { destructiveHint: true, readOnlyHint: false },
+          description: "Last",
+          name: `${server}_z`,
+        },
+        {
+          annotations: { destructiveHint: false, readOnlyHint: true },
+          description: "First",
+          name: `${server}_a`,
+        },
+      ];
+    },
+    oauthServers() {
+      calls.push({ method: "oauthServers", values: [] });
+      return ["slack"];
+    },
+    async search(query: string, options?: McpSearchOptions) {
+      calls.push({ method: "search", values: [query, options] });
+      return [
+        {
+          annotations: { destructiveHint: true, readOnlyHint: false },
+          description: "Last",
+          name: "z_tool",
+        },
+        {
+          annotations: { destructiveHint: false, readOnlyHint: true },
+          description: "First",
+          name: "a_tool",
+        },
+      ];
+    },
     status() {
       calls.push({ method: "status", values: [] });
       return [
@@ -44,86 +101,29 @@ function createHarness(overrides: Partial<McpGatewayManager> = {}) {
         { name: "alpha", status: "connected" },
       ];
     },
-    oauthServers() {
-      calls.push({ method: "oauthServers", values: [] });
-      return ["slack"];
-    },
-    async connect(server: string, options?: McpOperationOptions) {
-      calls.push({ method: "connect", values: [server, options] });
-    },
-    async list(server: string, options?: McpOperationOptions) {
-      calls.push({ method: "list", values: [server, options] });
-      return [
-        {
-          name: `${server}_z`,
-          description: "Last",
-          annotations: { readOnlyHint: false, destructiveHint: true },
-        },
-        {
-          name: `${server}_a`,
-          description: "First",
-          annotations: { readOnlyHint: true, destructiveHint: false },
-        },
-      ];
-    },
-    async search(query: string, options?: McpSearchOptions) {
-      calls.push({ method: "search", values: [query, options] });
-      return [
-        {
-          name: "z_tool",
-          description: "Last",
-          annotations: { readOnlyHint: false, destructiveHint: true },
-        },
-        {
-          name: "a_tool",
-          description: "First",
-          annotations: { readOnlyHint: true, destructiveHint: false },
-        },
-      ];
-    },
-    async describe(tool: string, options?: McpOperationOptions): Promise<McpToolDescription> {
-      calls.push({ method: "describe", values: [tool, options] });
-      return {
-        name: tool,
-        server: options?.server ?? "resolved",
-        description: "A useful tool",
-        inputSchema: { type: "object" },
-        annotations: { readOnlyHint: true, destructiveHint: false },
-      };
-    },
-    async call(tool: string, args: Record<string, unknown>, options?: McpOperationOptions) {
-      calls.push({ method: "call", values: [tool, args, options] });
-      return callResult;
-    },
-    async authenticate(server: string, options?: McpOperationOptions) {
-      calls.push({ method: "authenticate", values: [server, options] });
-    },
-    async close() {
-      calls.push({ method: "close", values: [] });
-    },
     ...overrides,
   };
 
   const dependencies: McpGatewayDependencies<string> = {
     configPath: "/test-home/.config/mcp/mcp.json",
-    async loadConfig() {
-      loadCount += 1;
-      return "config";
-    },
-    createManager(config, managerCallbacks) {
+    createManager(config, { callbacks: managerCallbacks }) {
       expect(config).toBe("config");
       callbacks = managerCallbacks;
       return manager;
+    },
+    async loadConfig() {
+      loadCount += 1;
+      return "config";
     },
   };
   const fixture = createFakePi();
   createMcpExtension(dependencies)(fixture.pi);
 
-  async function start() {
+  const start = async () => {
     await fixture.emit("session_start", {}, context());
-  }
+  };
 
-  async function execute(params: Record<string, unknown>, signal?: AbortSignal) {
+  const execute = async (params: Record<string, unknown>, signal?: AbortSignal) => {
     const tool = fixture.state.tools.get("mcp");
     expect(tool).toBeDefined();
     const executeTool = tool?.execute as (
@@ -132,58 +132,53 @@ function createHarness(overrides: Partial<McpGatewayManager> = {}) {
       signal?: AbortSignal,
     ) => Promise<AgentToolResult<unknown>>;
     return executeTool("call-1", params, signal);
-  }
+  };
 
-  async function invokeCommand(args = "", commandContext: unknown = context()) {
+  const invokeCommand = async (args = "", commandContext: unknown = context()) => {
     const command = fixture.state.commands.get("mcp-auth");
     expect(command).toBeDefined();
     const handler = command?.handler as (args: string, ctx: unknown) => Promise<void>;
     return handler(args, commandContext);
-  }
+  };
 
   return {
-    fixture,
-    manager,
-    calls,
     callResult,
-    dependencies,
-    start,
-    execute,
-    invokeCommand,
     callbacks: () => callbacks,
+    calls,
+    dependencies,
+    execute,
+    fixture,
+    invokeCommand,
     loadCount: () => loadCount,
+    manager,
+    start,
   };
-}
+};
 
-function context(statuses?: Array<{ key: string; value: unknown }>) {
-  return {
-    hasUI: Boolean(statuses),
-    ui: {
-      theme: { fg: (_color: string, value: string) => value },
-      setStatus(key: string, value: unknown) {
-        statuses?.push({ key, value });
-      },
+const context = (statuses?: { key: string; value: unknown }[]) => ({
+  hasUI: Boolean(statuses),
+  ui: {
+    setStatus(key: string, value: unknown) {
+      statuses?.push({ key, value });
     },
-  };
-}
+    theme: { fg: (_color: string, value: string) => value },
+  },
+});
 
-function authContext(notifications: Array<{ message: string; level: string }>, selected?: string) {
-  return {
-    hasUI: true,
-    ui: {
-      notify(message: string, level: string) {
-        notifications.push({ message, level });
-      },
-      async select() {
-        return selected;
-      },
+const authContext = (notifications: { message: string; level: string }[], selected?: string) => ({
+  hasUI: true,
+  ui: {
+    notify(message: string, level: string) {
+      notifications.push({ level, message });
     },
-  };
-}
+    async select() {
+      return selected;
+    },
+  },
+});
 
-function callsFor(harness: ReturnType<typeof createHarness>, method: string): RecordedCall[] {
-  return harness.calls.filter((call) => call.method === method);
-}
+const callsFor = (harness: ReturnType<typeof createHarness>, method: string): RecordedCall[] =>
+  harness.calls.filter((call) => call.method === method);
 
 describe("MCP gateway policy selection", () => {
   test("enables read-only policy only for PI_SUBAGENT_READONLY=1", () => {
@@ -199,50 +194,50 @@ describe("MCP gateway policy selection", () => {
 
   test("allows annotated safe reads and exact DBX exceptions only", () => {
     const request = {
-      server: "linear",
-      remoteName: "get_issue",
+      annotations: { destructiveHint: false, readOnlyHint: true },
       exposedName: "linear_get_issue",
       operation: "call" as const,
-      annotations: { readOnlyHint: true, destructiveHint: false },
+      remoteName: "get_issue",
+      server: "linear",
     };
     expect(readonlyMcpPolicy.allows(request)).toBeTrue();
     expect(
       readonlyMcpPolicy.allows({
         ...request,
-        annotations: { readOnlyHint: true, destructiveHint: true },
+        annotations: { destructiveHint: true, readOnlyHint: true },
       }),
     ).toBeFalse();
     expect(
       readonlyMcpPolicy.allows({
         ...request,
-        server: "dbx",
-        remoteName: "dbx_list_tables",
         annotations: {},
+        remoteName: "dbx_list_tables",
+        server: "dbx",
       }),
     ).toBeTrue();
     expect(
       readonlyMcpPolicy.allows({
         ...request,
-        server: "dbx",
-        remoteName: "list_tables",
+        annotations: {},
         exposedName: "dbx_list_tables",
-        annotations: {},
+        remoteName: "list_tables",
+        server: "dbx",
       }),
     ).toBeFalse();
     expect(
       readonlyMcpPolicy.allows({
         ...request,
-        server: "dbx",
+        annotations: {},
         remoteName: "dbx_execute_sql",
-        annotations: {},
+        server: "dbx",
       }),
     ).toBeFalse();
     expect(
       readonlyMcpPolicy.allows({
         ...request,
-        server: "dbx",
-        remoteName: "dbx_list_tables",
         annotations: { readOnlyHint: false },
+        remoteName: "dbx_list_tables",
+        server: "dbx",
       }),
     ).toBeFalse();
   });
@@ -273,7 +268,7 @@ describe("MCP gateway registration and lifecycle", () => {
     const harness = createHarness();
     let receivedPolicy: unknown;
     harness.dependencies.policy = readonlyMcpPolicy;
-    harness.dependencies.createManager = (_config, _callbacks, _pi, policy) => {
+    harness.dependencies.createManager = (_config, { policy }) => {
       receivedPolicy = policy;
       return harness.manager;
     };
@@ -283,7 +278,7 @@ describe("MCP gateway registration and lifecycle", () => {
   });
 
   test("manager status callbacks show only connected count", async () => {
-    const statuses: Array<{ key: string; value: unknown }> = [];
+    const statuses: { key: string; value: unknown }[] = [];
     const harness = createHarness();
     await harness.fixture.emit("session_start", {}, context(statuses));
 
@@ -308,8 +303,8 @@ describe("MCP gateway registration and lifecycle", () => {
     expect(callsFor(harness, "status")).toHaveLength(1);
     expect(callsFor(harness, "connect")).toHaveLength(0);
     expect(result.content[0]).toEqual({
-      type: "text",
       text: expect.stringContaining("MCP config: /test-home/.config/mcp/mcp.json"),
+      type: "text",
     });
     const text = result.content[0]?.type === "text" ? result.content[0].text : "";
     expect(text.indexOf("alpha: connected")).toBeLessThan(text.indexOf("zeta: disconnected"));
@@ -321,7 +316,7 @@ describe("MCP gateway registration and lifecycle", () => {
     const controller = new AbortController();
 
     const result = await harness.execute(
-      { tool: "fff_read", args: { path: "README.md" }, server: "fff" },
+      { args: { path: "README.md" }, server: "fff", tool: "fff_read" },
       controller.signal,
     );
 
@@ -337,7 +332,7 @@ describe("MCP gateway registration and lifecycle", () => {
     const harness = createHarness();
     await harness.start();
 
-    await harness.execute({ tool: "one", args: '{"count":2}' });
+    await harness.execute({ args: '{"count":2}', tool: "one" });
     await harness.execute({ tool: "two" });
 
     expect(callsFor(harness, "call").map((call) => call.values[1])).toEqual([{ count: 2 }, {}]);
@@ -355,8 +350,8 @@ describe("MCP gateway registration and lifecycle", () => {
       { signal: controller.signal },
     ]);
     expect(result.content[0]).toEqual({
-      type: "text",
       text: expect.stringContaining('mcp({ server: "linear" })'),
+      type: "text",
     });
   });
 
@@ -375,16 +370,16 @@ describe("MCP gateway registration and lifecycle", () => {
       { server: "linear", signal: controller.signal },
     ]);
     expect(result.content[0]).toEqual({
-      type: "text",
       text: expect.stringContaining('mcp({ tool: "find_issue", args: { ... } })'),
+      type: "text",
     });
     expect(result.content[0]).toEqual({
-      type: "text",
       text: expect.stringContaining("[read-only, non-destructive]"),
+      type: "text",
     });
     expect(result.details).toEqual(
       expect.objectContaining({
-        annotations: { readOnlyHint: true, destructiveHint: false },
+        annotations: { destructiveHint: false, readOnlyHint: true },
       }),
     );
   });
@@ -395,13 +390,13 @@ describe("MCP gateway registration and lifecycle", () => {
     const controller = new AbortController();
 
     const result = await harness.execute(
-      { search: "issue.*", regex: true, server: "linear" },
+      { regex: true, search: "issue.*", server: "linear" },
       controller.signal,
     );
 
     expect(callsFor(harness, "search")[0]?.values).toEqual([
       "issue.*",
-      { server: "linear", regex: true, limit: 31, signal: controller.signal },
+      { limit: 31, regex: true, server: "linear", signal: controller.signal },
     ]);
     const text = result.content[0]?.type === "text" ? result.content[0].text : "";
     expect(text.indexOf("a_tool")).toBeLessThan(text.indexOf("z_tool"));
@@ -421,7 +416,7 @@ describe("MCP gateway registration and lifecycle", () => {
 
   test("mcp-auth authenticates an explicit server and infers the sole OAuth server", async () => {
     const harness = createHarness();
-    const notifications: Array<{ message: string; level: string }> = [];
+    const notifications: { message: string; level: string }[] = [];
     await harness.start();
 
     await harness.invokeCommand(" slack ", authContext(notifications));
@@ -432,8 +427,8 @@ describe("MCP gateway registration and lifecycle", () => {
       ["slack", undefined],
     ]);
     expect(notifications).toEqual([
-      { message: "Authenticated and connected MCP server slack.", level: "info" },
-      { message: "Authenticated and connected MCP server slack.", level: "info" },
+      { level: "info", message: "Authenticated and connected MCP server slack." },
+      { level: "info", message: "Authenticated and connected MCP server slack." },
     ]);
   });
 
@@ -441,7 +436,7 @@ describe("MCP gateway registration and lifecycle", () => {
     const harness = createHarness();
     await harness.start();
 
-    await expect(harness.execute({ tool: "one", search: "two" })).rejects.toThrow(
+    await expect(harness.execute({ search: "two", tool: "one" })).rejects.toThrow(
       "Ambiguous mcp request",
     );
     await expect(harness.execute({ connect: "one", server: "two" })).rejects.toThrow(
@@ -459,9 +454,9 @@ describe("MCP gateway registration and lifecycle", () => {
     const harness = createHarness();
     await harness.start();
 
-    await expect(harness.execute({ tool: "one", args: "{" })).rejects.toThrow("valid JSON");
-    for (const args of ["null", "[]", "42", '"value"', null, [], 42]) {
-      await expect(harness.execute({ tool: "one", args })).rejects.toThrow("must be a JSON object");
+    await expect(harness.execute({ args: "{", tool: "one" })).rejects.toThrow("valid JSON");
+    for (const args of ["null", "[]", "42", '"value"', JSON.parse("null") as unknown, [], 42]) {
+      await expect(harness.execute({ args, tool: "one" })).rejects.toThrow("must be a JSON object");
     }
     expect(callsFor(harness, "call")).toHaveLength(0);
   });
@@ -476,15 +471,15 @@ describe("MCP gateway registration and lifecycle", () => {
         await permitClose.promise;
       },
     });
-    harness.dependencies.createManager = async (_config, managerCallbacks) => {
+    harness.dependencies.createManager = async (_config, managerContext) => {
       harness.callbacks()?.onStatusChange(0);
-      void managerCallbacks;
+      void managerContext;
       return creation.promise;
     };
     // Re-register against the modified dependency object in a fresh fixture.
     const fixture = createFakePi();
     createMcpExtension(harness.dependencies)(fixture.pi);
-    const statuses: Array<{ key: string; value: unknown }> = [];
+    const statuses: { key: string; value: unknown }[] = [];
 
     const starting = fixture.emit("session_start", {}, context(statuses));
     await Promise.resolve();

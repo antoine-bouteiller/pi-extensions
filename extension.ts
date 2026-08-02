@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import  { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import askUser from "./src/ask-user/index.js";
 import backgroundPoll from "./src/background-poll/index.js";

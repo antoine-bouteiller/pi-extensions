@@ -1,19 +1,19 @@
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-  ToolResultEvent,
+import  {
+  type ExtensionAPI,
+  type ExtensionContext,
+  type ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
 
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const PROCESS_TIMEOUT_MS = 30_000;
 
-type CheckerEdit = {
+interface CheckerEdit {
   old_string: string;
   new_string: string;
-};
+}
 
-type HookInput = {
+interface HookInput {
   session_id: string;
   tool_name: "Write" | "MultiEdit";
   transcript_path: string;
@@ -24,79 +24,81 @@ type HookInput = {
     content?: string;
     edits?: CheckerEdit[];
   };
-};
+}
 
-export type CheckerResult = {
-  exitCode: number | null;
+export interface CheckerResult {
+  exitCode: number | undefined;
   stdout: string;
   stderr: string;
-};
+}
 
 export type CheckerRunner = (input: HookInput) => Promise<CheckerResult>;
 
-function record(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
+const record = (value: unknown): Record<string, unknown> | undefined =>
+  typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
 
-function hookInput(event: ToolResultEvent, ctx: ExtensionContext): HookInput | undefined {
-  if (event.isError) return undefined;
+const hookInput = (event: ToolResultEvent, ctx: ExtensionContext): HookInput | undefined => {
+  if (event.isError) {return undefined;}
 
   const input = record(event.input);
-  if (!input || typeof input.path !== "string") return undefined;
-  const path = input.path;
+  if (!input || typeof input.path !== "string") {return undefined;}
+  const {path} = input;
 
   const base = {
-    session_id: ctx.sessionManager.getSessionId(),
-    transcript_path: "",
     cwd: ctx.cwd,
     hook_event_name: "PostToolUse" as const,
+    session_id: ctx.sessionManager.getSessionId(),
+    transcript_path: "",
   };
 
   if (event.toolName === "write" && typeof input.content === "string") {
     return {
       ...base,
+      tool_input: { content: input.content, file_path: path },
       tool_name: "Write",
-      tool_input: { file_path: path, content: input.content },
     };
   }
 
-  if (event.toolName !== "edit" || !Array.isArray(input.edits)) return undefined;
+  if (event.toolName !== "edit" || !Array.isArray(input.edits)) {return undefined;}
 
   const edits = input.edits.flatMap((value): CheckerEdit[] => {
     const edit = record(value);
     return typeof edit?.oldText === "string" && typeof edit.newText === "string"
-      ? [{ old_string: edit.oldText, new_string: edit.newText }]
+      ? [{ new_string: edit.newText, old_string: edit.oldText }]
       : [];
   });
-  if (edits.length === 0) return undefined;
+  if (edits.length === 0) {return undefined;}
 
   return {
     ...base,
+    tool_input: { edits, file_path: path },
     tool_name: "MultiEdit",
-    tool_input: { file_path: path, edits },
   };
-}
+};
 
-export function runCommentChecker(input: HookInput): Promise<CheckerResult> {
-  return new Promise((resolve) => {
+export const runCommentChecker = (input: HookInput): Promise<CheckerResult> =>
+  new Promise((resolve) => {
     const child = execFile(
       "comment-checker",
       ["check"],
       { maxBuffer: MAX_OUTPUT_BYTES, timeout: PROCESS_TIMEOUT_MS },
       (error, stdout, stderr) => {
+        let exitCode: number | undefined = 0;
+        if (typeof error?.code === "number") {
+          exitCode = error.code;
+        } else if (error) {
+          exitCode = undefined;
+        }
         resolve({
-          exitCode: typeof error?.code === "number" ? error.code : error ? null : 0,
-          stdout,
+          exitCode,
           stderr,
+          stdout,
         });
       },
     );
     child.stdin?.on("error", () => undefined);
     child.stdin?.end(JSON.stringify(input));
   });
-}
 
 export default function commentChecker(
   pi: ExtensionAPI,
@@ -104,16 +106,16 @@ export default function commentChecker(
 ) {
   pi.on("tool_result", async (event, ctx) => {
     const input = hookInput(event, ctx);
-    if (!input) return undefined;
+    if (!input) {return undefined;}
 
     const result = await runner(input);
-    if (result.exitCode !== 2) return undefined;
+    if (result.exitCode !== 2) {return undefined;}
 
     const warning = (result.stderr || result.stdout).trim();
-    if (!warning) return undefined;
+    if (!warning) {return undefined;}
 
     return {
-      content: [...event.content, { type: "text" as const, text: `\n\n${warning}` }],
+      content: [...event.content, { text: `\n\n${warning}`, type: "text" as const }],
     };
   });
 }

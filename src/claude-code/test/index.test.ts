@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createFakePi } from "#test-utils/fake-pi";
+import { createFakePi } from "#test-utils/fake_pi";
 import claudeCodeExtension, { parseCommandFrontmatter } from "../index";
 
 interface DiscoveryResult {
@@ -16,12 +16,12 @@ afterEach(async () => {
   fixtureRoots.clear();
 });
 
-async function writeFixture(path: string, content: string): Promise<void> {
+const writeFixture = async (path: string, content: string): Promise<void> => {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, content, "utf8");
-}
+};
 
-async function createFixture() {
+const createFixture = async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-claude-code-test-"));
   fixtureRoots.add(root);
   const homeDirectory = join(root, "home");
@@ -40,14 +40,17 @@ async function createFixture() {
     cwd: projectDirectory,
     isProjectTrusted: () => trusted,
   });
-  const invoke = async <Result>(name: string, event: unknown, eventContext: unknown) =>
-    (await fakePi.emit(name, event, eventContext))[0] as Result;
+  const invoke = async <Result>(name: string, event: unknown, eventContext: unknown) => {
+    const results = await fakePi.emit(name, event, eventContext);
+    return results[0] as Result;
+  };
 
-  return { homeDirectory, projectDirectory, context, invoke };
-}
+  return { context, homeDirectory, invoke, projectDirectory };
+};
 
-async function generatedSkills(skillDirectory: string): Promise<Map<string, string>> {
-  const names = (await readdir(skillDirectory)).sort();
+const generatedSkills = async (skillDirectory: string): Promise<Map<string, string>> => {
+  const entries = await readdir(skillDirectory);
+  const names = entries.toSorted();
   return new Map(
     await Promise.all(
       names.map(
@@ -56,16 +59,16 @@ async function generatedSkills(skillDirectory: string): Promise<Map<string, stri
       ),
     ),
   );
-}
+};
 
-async function pathExists(path: string): Promise<boolean> {
+const pathExists = async (path: string): Promise<boolean> => {
   try {
     await stat(path);
     return true;
   } catch {
     return false;
   }
-}
+};
 
 describe("Claude Code compatibility", () => {
   test("converts command metadata and derives a fallback description", () => {
@@ -151,7 +154,8 @@ describe("Claude Code compatibility", () => {
       { cwd: fixture.projectDirectory },
       fixture.context(true),
     );
-    expect([...(await generatedSkills(repeatedResult.skillPaths[0])).keys()]).toEqual(names);
+    const repeatedSkills = await generatedSkills(repeatedResult.skillPaths[0]);
+    expect([...repeatedSkills.keys()]).toEqual(names);
   });
 
   test("follows command symlinks and stops directory cycles safely", async () => {
@@ -191,7 +195,7 @@ describe("Claude Code compatibility", () => {
       { cwd: fixture.projectDirectory },
       context,
     );
-    const firstDirectory = firstResult.skillPaths[0];
+    const [firstDirectory] = firstResult.skillPaths;
     expect(await pathExists(firstDirectory)).toBeTrue();
 
     const secondResult = await fixture.invoke<DiscoveryResult>(
@@ -199,7 +203,7 @@ describe("Claude Code compatibility", () => {
       { cwd: fixture.projectDirectory },
       context,
     );
-    const secondDirectory = secondResult.skillPaths[0];
+    const [secondDirectory] = secondResult.skillPaths;
     expect(secondDirectory).not.toBe(firstDirectory);
     expect(await pathExists(firstDirectory)).toBeFalse();
     expect(await pathExists(secondDirectory)).toBeTrue();
@@ -225,8 +229,8 @@ describe("Claude Code compatibility", () => {
         context,
       ),
     ]);
-    const firstDirectory = firstResult.skillPaths[0];
-    const secondDirectory = secondResult.skillPaths[0];
+    const [firstDirectory] = firstResult.skillPaths;
+    const [secondDirectory] = secondResult.skillPaths;
 
     expect(firstDirectory).not.toBe(secondDirectory);
     expect(await pathExists(firstDirectory)).toBeFalse();

@@ -9,8 +9,8 @@ import {
   UnauthorizedError,
   type OAuthClientProvider,
 } from "@modelcontextprotocol/sdk/client/auth.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
+import  { type Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import  { type AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { boundGatewayOutput, type GatewayContent } from "./output.js";
 import {
   KeychainCredentialError,
@@ -22,20 +22,26 @@ import {
   createOAuthState,
   oauthCallbackPort,
   startOAuthCallback,
+  type OAuthCallback,
   type OpenUrl,
 } from "./oauth.js";
-import type {
-  McpGatewayPolicy,
-  McpPolicyOperation,
-  McpServerMap,
-  McpServerStatus,
-  McpToolAnnotations,
-  OAuthConfig,
-  ServerConfig,
+import  {
+  type McpGatewayPolicy,
+  type McpPolicyOperation,
+  type McpServerMap,
+  type McpServerStatus,
+  type McpToolAnnotations,
+  type OAuthConfig,
+  type ServerConfig,
 } from "./types.js";
 
 const CONNECT_TIMEOUT_MS = 30_000;
 const REQUEST_TIMEOUT_MS = 60_000;
+
+interface TransportOptions {
+  kind: "stdio" | "streamable-http" | "sse";
+  authProvider?: OAuthClientProvider;
+}
 
 interface ToolMetadata {
   name: string;
@@ -47,17 +53,17 @@ interface ToolMetadata {
 }
 
 interface ClientLike {
-  connect(
+  connect: (
     transport: Transport,
     options?: { signal?: AbortSignal; timeout?: number },
-  ): Promise<void>;
-  close(): Promise<void>;
-  getInstructions(): string | undefined;
-  listTools(
+  ) => Promise<void>;
+  close: () => Promise<void>;
+  getInstructions: () => string | undefined;
+  listTools: (
     params?: { cursor?: string },
     options?: { signal?: AbortSignal; timeout?: number },
-  ): Promise<{
-    tools: Array<{
+  ) => Promise<{
+    tools: {
       name: string;
       description?: string;
       inputSchema: Record<string, unknown>;
@@ -68,14 +74,14 @@ interface ClientLike {
         idempotentHint?: unknown;
         openWorldHint?: unknown;
       };
-    }>;
+    }[];
     nextCursor?: string;
   }>;
-  callTool(
+  callTool: (
     params: { name: string; arguments: Record<string, unknown> },
     schema: undefined,
     options?: { signal?: AbortSignal; timeout?: number },
-  ): Promise<unknown>;
+  ) => Promise<unknown>;
 }
 
 interface ConnectedServer {
@@ -104,7 +110,7 @@ interface ServerRuntime {
 
 export interface McpManagerOptions {
   onStatusChange?: (
-    statuses: ReadonlyArray<{ name: string; status: McpServerStatus; error?: string }>,
+    statuses: readonly { name: string; status: McpServerStatus; error?: string }[],
   ) => void;
   openUrl: OpenUrl;
   credentialStore?: CredentialStore;
@@ -112,8 +118,7 @@ export interface McpManagerOptions {
   createTransport?: (
     serverName: string,
     config: Exclude<ServerConfig, { type?: undefined }>,
-    kind: "stdio" | "streamable-http" | "sse",
-    authProvider?: OAuthClientProvider,
+    options: TransportOptions,
   ) => Transport;
   connectTimeoutMs?: number;
   requestTimeoutMs?: number;
@@ -121,20 +126,25 @@ export interface McpManagerOptions {
 }
 
 class PendingAuthorization extends Error {
+  readonly client: ClientLike;
+  readonly transport: Transport & { finishAuth?: (code: string) => Promise<void> };
+
   constructor(
-    readonly client: ClientLike,
-    readonly transport: Transport & { finishAuth?: (code: string) => Promise<void> },
+    client: ClientLike,
+    transport: Transport & { finishAuth?: (code: string) => Promise<void> },
   ) {
     super("OAuth authorization is required");
+    this.client = client;
+    this.transport = transport;
   }
 }
 
-function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
+const errorMessage = (error: unknown): string => {
+  if (error instanceof Error) {return error.message;}
   return String(error);
-}
+};
 
-function safeOperationError(error: unknown, operation: string, server: string): Error {
+const safeOperationError = (error: unknown, operation: string, server: string): Error => {
   if (isAbort(error)) {
     const cancelled = new Error(`MCP ${operation} was cancelled`);
     cancelled.name = "AbortError";
@@ -150,7 +160,7 @@ function safeOperationError(error: unknown, operation: string, server: string): 
   }
   const message = errorMessage(error);
   if (
-    /^(MCP tool-name collision|MCP server-name collision|MCP server .* repeated a tools cursor|OAuth callback|Could not start the OAuth callback|The MCP HTTP transport cannot|Invalid MCP search)/.test(
+    /^(?:MCP tool-name collision|MCP server-name collision|MCP server .* repeated a tools cursor|OAuth callback|Could not start the OAuth callback|The MCP HTTP transport cannot|Invalid MCP search)/.test(
       message,
     )
   ) {
@@ -159,71 +169,61 @@ function safeOperationError(error: unknown, operation: string, server: string): 
   return new Error(`MCP ${operation} failed for server ${JSON.stringify(server)}`);
 }
 
-function isSafeSearchRegex(pattern: string): boolean {
-  if (pattern.length === 0 || pattern.length > 128 || /\\[1-9]/.test(pattern)) return false;
+const isSafeSearchRegex = (pattern: string): boolean => {
+  if (pattern.length === 0 || pattern.length > 128 || /\\[1-9]/.test(pattern)) {return false;}
   // Accept only a fixed-width subset plus one `.*` wildcard. Excluding groups,
-  // alternation, and other repetition keeps evaluation linear in candidate size.
-  const remainder = pattern.replace(/\\./g, "").replace(/\[(?:\\.|[^\]\\])*\]/g, "");
+  // Alternation, and other repetition keeps evaluation linear in candidate size.
+  const remainder = pattern.replaceAll(/\\./g, "").replaceAll(/\[(?:\\.|[^\]\\])*\]/g, "");
   const wildcards = remainder.match(/\.\*/g)?.length ?? 0;
   return wildcards <= 1 && !/(?:[+*?{}()|]|\[|\])/.test(remainder.replace(".*", ""));
-}
+};
 
-function isAbort(error: unknown, signal?: AbortSignal): boolean {
-  return Boolean(
+const isAbort = (error: unknown, signal?: AbortSignal): boolean =>
+  Boolean(
     signal?.aborted ||
     (error instanceof Error &&
       (error.name === "AbortError" || /cancelled|aborted/i.test(error.message))),
   );
-}
 
-function isAuthorizationFailure(error: unknown): boolean {
-  return (
-    error instanceof UnauthorizedError ||
-    (error instanceof StreamableHTTPError && (error.code === 401 || error.code === 403)) ||
-    (error instanceof Error &&
-      /unauthori[sz]ed|mcp-auth|authentication is required/i.test(error.message))
-  );
-}
+const isAuthorizationFailure = (error: unknown): boolean =>
+  error instanceof UnauthorizedError ||
+  (error instanceof StreamableHTTPError && (error.code === 401 || error.code === 403)) ||
+  (error instanceof Error &&
+    /unauthori[sz]ed|mcp-auth|authentication is required/i.test(error.message));
 
-function isOAuthChallenge(error: unknown): boolean {
-  return (
-    error instanceof UnauthorizedError ||
-    (error instanceof StreamableHTTPError && error.code === 401)
-  );
-}
+const isOAuthChallenge = (error: unknown): boolean =>
+  error instanceof UnauthorizedError ||
+  (error instanceof StreamableHTTPError && error.code === 401);
 
 /**
  * URL-only HTTP servers may advertise OAuth through their 401 challenge. Custom
  * headers opt out of implicit discovery, while an explicit oauth block always wins.
  */
-function oauthConfigFor(config: ServerConfig): OAuthConfig | undefined {
-  if (config.type !== "http") return undefined;
-  if (config.oauth !== undefined) return config.oauth;
-  if (config.headers && Object.keys(config.headers).length > 0) return undefined;
+const oauthConfigFor = (config: ServerConfig): OAuthConfig | undefined => {
+  if (config.type !== "http") {return undefined;}
+  if (config.oauth !== undefined) {return config.oauth;}
+  if (config.headers && Object.keys(config.headers).length > 0) {return undefined;}
   return {};
-}
+};
 
-function isLegacyTransportCandidate(error: unknown): boolean {
-  return (
-    error instanceof StreamableHTTPError &&
-    ((error.code !== undefined && [400, 404, 405, 406, 415].includes(error.code)) ||
-      (error.code === -1 && /unexpected content type/i.test(error.message)))
-  );
-}
+const isLegacyTransportCandidate = (error: unknown): boolean =>
+  error instanceof StreamableHTTPError &&
+  ((error.code !== undefined && [400, 404, 405, 406, 415].includes(error.code)) ||
+    (error.code === -1 && /unexpected content type/i.test(error.message)));
 
-export function sanitizeToolPart(value: string): string {
-  const sanitized = value.replace(/[^A-Za-z0-9_-]/g, "_");
+export const sanitizeToolPart = (value: string): string => {
+  const sanitized = value.replaceAll(/[^A-Za-z0-9_-]/g, "_");
   return sanitized || "_";
-}
+};
 
-function normalizeAnnotations(value: {
+const normalizeAnnotations = (value: {
   title?: unknown;
   readOnlyHint?: unknown;
   destructiveHint?: unknown;
   idempotentHint?: unknown;
   openWorldHint?: unknown;
-} | undefined): McpToolAnnotations {
-  if (!value) return {};
+} | undefined): McpToolAnnotations => {
+  if (!value) {return {};}
   return {
     ...(typeof value.title === "string" ? { title: value.title } : {}),
     ...(typeof value.readOnlyHint === "boolean"
@@ -239,30 +239,31 @@ function normalizeAnnotations(value: {
       ? { openWorldHint: value.openWorldHint }
       : {}),
   };
-}
+};
 
-function inheritedEnvironment(
+const inheritedEnvironment = (
   configured: Record<string, string> | undefined,
-): Record<string, string> {
+): Record<string, string> => {
   const inherited: Record<string, string> = {};
   for (const [name, value] of Object.entries(process.env)) {
-    if (value !== undefined) inherited[name] = value;
+    if (value !== undefined) {inherited[name] = value;}
   }
   return { ...inherited, ...configured };
-}
+};
 
-function combineSignals(...signals: Array<AbortSignal | undefined>): AbortSignal {
+const combineSignals = (...signals: (AbortSignal | undefined)[]): AbortSignal => {
   const present = signals.filter((signal): signal is AbortSignal => signal !== undefined);
-  if (present.length === 0) return new AbortController().signal;
-  if (present.length === 1) return present[0]!;
+  const [only] = present;
+  if (present.length === 0) {return new AbortController().signal;}
+  if (present.length === 1 && only) {return only;}
   return AbortSignal.any(present);
-}
+};
 
-function waitWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return promise;
+const waitWithSignal = <Value>(promise: Promise<Value>, signal?: AbortSignal): Promise<Value> => {
+  if (!signal) {return promise;}
   if (signal.aborted)
-    return Promise.reject(new DOMException("The operation was aborted", "AbortError"));
-  return new Promise<T>((resolve, reject) => {
+    {return Promise.reject(new DOMException("The operation was aborted", "AbortError"));}
+  return new Promise<Value>((resolve, reject) => {
     const onAbort = () => reject(new DOMException("The operation was aborted", "AbortError"));
     signal.addEventListener("abort", onAbort, { once: true });
     void promise.then(
@@ -276,11 +277,33 @@ function waitWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T
       },
     );
   });
-}
+};
 
-function convertToolResult(result: unknown): { content: GatewayContent[]; isError: boolean } {
+const convertContentBlock = (item: unknown): GatewayContent | undefined => {
+  if (typeof item !== "object" || item === null || !("type" in item)) {return undefined;}
+  const block = item as Record<string, unknown>;
+  if (block.type === "text" && typeof block.text === "string") {
+    return { text: block.text, type: "text" };
+  }
+  if (
+    block.type === "image" &&
+    typeof block.data === "string" &&
+    typeof block.mimeType === "string"
+  ) {
+    return { data: block.data, mimeType: block.mimeType, type: "image" };
+  }
+  if (block.type === "resource" && typeof block.resource === "object" && block.resource) {
+    const resource = block.resource as Record<string, unknown>;
+    if (typeof resource.text === "string") {return { text: resource.text, type: "text" };}
+  }
+  return undefined;
+};
+
+const convertToolResult = (
+  result: unknown,
+): { content: GatewayContent[]; isError: boolean } => {
   if (typeof result !== "object" || result === null) {
-    return { content: [{ type: "text", text: JSON.stringify(result) }], isError: false };
+    return { content: [{ text: JSON.stringify(result), type: "text" }], isError: false };
   }
   const value = result as {
     isError?: boolean;
@@ -290,41 +313,25 @@ function convertToolResult(result: unknown): { content: GatewayContent[]; isErro
   };
   if ("toolResult" in value && value.content === undefined) {
     return {
-      content: [{ type: "text", text: JSON.stringify(value.toolResult, null, 2) }],
+      content: [{ text: JSON.stringify(value.toolResult, undefined, 2), type: "text" }],
       isError: false,
     };
   }
 
-  const converted: GatewayContent[] = [];
-  for (const item of value.content ?? []) {
-    if (typeof item !== "object" || item === null || !("type" in item)) continue;
-    const block = item as Record<string, unknown>;
-    if (block.type === "text" && typeof block.text === "string") {
-      converted.push({ type: "text", text: block.text });
-    } else if (
-      block.type === "image" &&
-      typeof block.data === "string" &&
-      typeof block.mimeType === "string"
-    ) {
-      converted.push({ type: "image", data: block.data, mimeType: block.mimeType });
-    } else if (block.type === "resource" && typeof block.resource === "object" && block.resource) {
-      const resource = block.resource as Record<string, unknown>;
-      if (typeof resource.text === "string") {
-        converted.push({ type: "text", text: resource.text });
-      }
-    }
-  }
+  const converted = (value.content ?? [])
+    .map((item) => convertContentBlock(item))
+    .filter((block): block is GatewayContent => block !== undefined);
   if (value.structuredContent !== undefined) {
-    converted.push({ type: "text", text: JSON.stringify(value.structuredContent, null, 2) });
+    converted.push({ text: JSON.stringify(value.structuredContent, undefined, 2), type: "text" });
   }
   return {
     content:
       converted.length > 0
         ? converted
-        : [{ type: "text", text: "(MCP tool returned no supported content)" }],
+        : [{ text: "(MCP tool returned no supported content)", type: "text" }],
     isError: value.isError === true,
   };
-}
+};
 
 export class McpManager {
   private readonly runtimes = new Map<string, ServerRuntime>();
@@ -336,12 +343,11 @@ export class McpManager {
   private readonly requestTimeoutMs: number;
   private readonly authentications = new Set<Promise<void>>();
   private readonly authenticationByServer = new Map<string, AuthenticationRuntime>();
+  private readonly options: McpManagerOptions;
   private closed = false;
 
-  constructor(
-    config: McpServerMap,
-    private readonly options: McpManagerOptions,
-  ) {
+  constructor(config: McpServerMap, options: McpManagerOptions) {
+    this.options = options;
     this.credentialStore = options.credentialStore ?? createKeychainCredentialStore();
     this.createClient =
       options.createClient ??
@@ -352,15 +358,15 @@ export class McpManager {
 
     for (const [name, serverConfig] of Object.entries(config)) {
       this.runtimes.set(name, {
-        name,
         config: serverConfig,
-        status: serverConfig.disabled ? "disabled" : "disconnected",
         connectWaiters: 0,
+        name,
+        status: serverConfig.disabled ? "disabled" : "disconnected",
       });
     }
   }
 
-  status(): ReadonlyArray<{ name: string; status: McpServerStatus; error?: string }> {
+  status(): readonly { name: string; status: McpServerStatus; error?: string }[] {
     return [...this.runtimes.values()].map((runtime) => ({
       name: runtime.name,
       status: runtime.status,
@@ -374,23 +380,20 @@ export class McpManager {
         (runtime) => runtime.status !== "disabled" && oauthConfigFor(runtime.config) !== undefined,
       )
       .map((runtime) => runtime.name)
-      .sort((left, right) => left.localeCompare(right));
+      .toSorted((left, right) => left.localeCompare(right));
   }
 
   async connect(server: string, options: { signal?: AbortSignal } = {}): Promise<unknown> {
     const runtime = this.runtime(server);
-    if (runtime.connection) return runtime.connection;
+    if (runtime.connection) {return runtime.connection;}
     if (!runtime.connecting) {
       runtime.status = "connecting";
       runtime.error = undefined;
       this.notify();
       runtime.connectingController = new AbortController();
-      runtime.connecting = this.establish(
-        runtime,
-        undefined,
-        false,
-        runtime.connectingController.signal,
-      )
+      runtime.connecting = this.establish(runtime, {
+        signal: runtime.connectingController.signal,
+      })
         .then(async (connection) => {
           runtime.connection = connection;
           try {
@@ -455,7 +458,7 @@ export class McpManager {
       const firstFailure = settled.find(
         (result): result is PromiseRejectedResult => result.status === "rejected",
       );
-      if (firstFailure) throw firstFailure.reason;
+      if (firstFailure) {throw firstFailure.reason;}
     }
 
     let matches: ToolMetadata[];
@@ -469,7 +472,7 @@ export class McpManager {
       try {
         expression = new RegExp(query, "i");
       } catch (error) {
-        throw new Error(`Invalid MCP search regular expression: ${errorMessage(error)}`);
+        throw new Error(`Invalid MCP search regular expression: ${errorMessage(error)}`, { cause: error });
       }
       matches = tools.filter((tool) =>
         expression.test(`${tool.name}\n${(tool.description ?? "").slice(0, 2048)}`),
@@ -483,7 +486,7 @@ export class McpManager {
       );
     }
     return matches
-      .sort((left, right) => left.name.localeCompare(right.name))
+      .toSorted((left, right) => left.name.localeCompare(right.name))
       .slice(0, options.limit ?? 30)
       .map((tool) => ({ ...tool, annotations: { ...tool.annotations } }));
   }
@@ -503,10 +506,11 @@ export class McpManager {
   ): Promise<AgentToolResult<unknown>> {
     const metadata = await this.resolveTool(tool, options, "call");
     const runtime = this.runtime(metadata.server);
+    if (!runtime.connection) {throw new Error(`MCP server ${JSON.stringify(metadata.server)} is not connected`);}
     let result: unknown;
     try {
-      result = await runtime.connection!.client.callTool(
-        { name: metadata.remoteName, arguments: args },
+      result = await runtime.connection.client.callTool(
+        { arguments: args, name: metadata.remoteName },
         undefined,
         { signal: options.signal, timeout: this.requestTimeoutMs },
       );
@@ -540,7 +544,7 @@ export class McpManager {
     if (!authentication) {
       const controller = new AbortController();
       const promise = this.authenticateServer(server, { signal: controller.signal });
-      authentication = { promise, controller, waiters: 0 };
+      authentication = { controller, promise, waiters: 0 };
       this.authentications.add(promise);
       this.authenticationByServer.set(server, authentication);
       void promise
@@ -567,71 +571,38 @@ export class McpManager {
     options: { signal?: AbortSignal } = {},
   ): Promise<void> {
     const runtime = this.runtime(server);
-    if (runtime.connecting) {
-      try {
-        await waitWithSignal(runtime.connecting, options.signal);
-      } catch (error) {
-        if (!isAuthorizationFailure(error) && runtime.status !== "needs-auth") throw error;
-      }
-    }
+    await this.awaitExistingConnectionAttempt(runtime, options.signal);
     const oauthConfig = oauthConfigFor(runtime.config);
     if (runtime.config.type !== "http" || !oauthConfig) {
       throw new Error(`MCP server ${JSON.stringify(server)} does not support OAuth`);
     }
-    if (runtime.connection) return;
+    if (runtime.connection) {return;}
 
     const operation = new AbortController();
     const signal = combineSignals(this.lifecycle.signal, operation.signal, options.signal);
     const state = createOAuthState();
     const callback = await startOAuthCallback({
+      expectedState: state,
       port: oauthCallbackPort(oauthConfig),
       redirectUri: oauthConfig.redirectUri,
-      expectedState: state,
       signal,
     });
     const provider = new KeychainOAuthProvider({
+      config: oauthConfig,
+      interactive: true,
+      openUrl: this.options.openUrl,
       serverName: runtime.name,
       serverUrl: runtime.config.url,
-      config: oauthConfig,
-      store: this.credentialStore,
-      interactive: true,
-      state,
-      openUrl: this.options.openUrl,
       signal,
+      state,
+      store: this.credentialStore,
     });
 
     runtime.status = "connecting";
     runtime.error = undefined;
     this.notify();
-    let pending: PendingAuthorization | undefined;
     try {
-      try {
-        const connected = await this.establish(runtime, provider, true, signal);
-        runtime.connection = connected;
-        try {
-          this.validateGlobalCollisions();
-        } catch (error) {
-          runtime.connection = undefined;
-          await connected.client.close().catch(() => undefined);
-          throw error;
-        }
-        runtime.status = "connected";
-        this.notify();
-        return;
-      } catch (error) {
-        if (!(error instanceof PendingAuthorization)) throw error;
-        pending = error;
-      }
-
-      const code = await callback.waitForCode();
-      if (!pending.transport.finishAuth) {
-        throw new Error("The MCP HTTP transport cannot complete OAuth authorization");
-      }
-      await pending.transport.finishAuth(code);
-      await pending.client.close().catch(() => undefined);
-      pending = undefined;
-      runtime.status = "disconnected";
-      await this.connect(runtime.name, { signal });
+      await this.runOAuthFlow(runtime, { callback, provider, signal });
     } catch (error) {
       const publicError = safeOperationError(error, "authentication", runtime.name);
       runtime.status = isAuthorizationFailure(error) ? "needs-auth" : "failed";
@@ -640,13 +611,68 @@ export class McpManager {
       throw publicError;
     } finally {
       operation.abort();
-      if (pending) await pending.client.close().catch(() => undefined);
       await callback.close();
     }
   }
 
+  private async awaitExistingConnectionAttempt(
+    runtime: ServerRuntime,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (!runtime.connecting) {return;}
+    try {
+      await waitWithSignal(runtime.connecting, signal);
+    } catch (error) {
+      if (!isAuthorizationFailure(error) && runtime.status !== "needs-auth") {throw error;}
+    }
+  }
+
+  private async attemptOAuthConnect(
+    runtime: ServerRuntime,
+    provider: OAuthClientProvider,
+    signal: AbortSignal,
+  ): Promise<PendingAuthorization | undefined> {
+    try {
+      const connected = await this.establish(runtime, { provider, retainAuthorization: true, signal });
+      runtime.connection = connected;
+      try {
+        this.validateGlobalCollisions();
+      } catch (error) {
+        runtime.connection = undefined;
+        await connected.client.close().catch(() => undefined);
+        throw error;
+      }
+      runtime.status = "connected";
+      this.notify();
+      return undefined;
+    } catch (error) {
+      if (error instanceof PendingAuthorization) {return error;}
+      throw error;
+    }
+  }
+
+  private async runOAuthFlow(
+    runtime: ServerRuntime,
+    options: { provider: OAuthClientProvider; signal: AbortSignal; callback: OAuthCallback },
+  ): Promise<void> {
+    const { provider, signal, callback } = options;
+    const pending = await this.attemptOAuthConnect(runtime, provider, signal);
+    if (!pending) {return;}
+    try {
+      const code = await callback.waitForCode();
+      if (!pending.transport.finishAuth) {
+        throw new Error("The MCP HTTP transport cannot complete OAuth authorization");
+      }
+      await pending.transport.finishAuth(code);
+    } finally {
+      await pending.client.close().catch(() => undefined);
+    }
+    runtime.status = "disconnected";
+    await this.connect(runtime.name, { signal });
+  }
+
   async close(): Promise<void> {
-    if (this.closed) return;
+    if (this.closed) {return;}
     this.closed = true;
     this.lifecycle.abort();
     const pendingConnections = [...this.runtimes.values()]
@@ -669,11 +695,11 @@ export class McpManager {
   }
 
   private runtime(name: string): ServerRuntime {
-    if (this.closed) throw new Error("MCP manager is closed");
+    if (this.closed) {throw new Error("MCP manager is closed");}
     const runtime = this.runtimes.get(name);
-    if (!runtime) throw new Error(`Unknown MCP server ${JSON.stringify(name)}`);
+    if (!runtime) {throw new Error(`Unknown MCP server ${JSON.stringify(name)}`);}
     if (runtime.status === "disabled")
-      throw new Error(`MCP server ${JSON.stringify(name)} is disabled`);
+      {throw new Error(`MCP server ${JSON.stringify(name)} is disabled`);}
     return runtime;
   }
 
@@ -687,25 +713,29 @@ export class McpManager {
       const matches = tools.filter(
         (tool) => tool.name === requested || tool.remoteName === requested,
       );
-      if (matches.length === 1) return this.requireAllowed(matches[0]!, operation);
-      if (matches.length > 1) throw new Error(`Ambiguous MCP tool ${JSON.stringify(requested)}`);
+      const [onlyMatch] = matches;
+      if (matches.length === 1 && onlyMatch) {return this.requireAllowed(onlyMatch, operation);}
+      if (matches.length > 1) {throw new Error(`Ambiguous MCP tool ${JSON.stringify(requested)}`);}
       throw new Error(`MCP tool ${JSON.stringify(requested)} was not found on ${options.server}`);
     }
 
     const prefixed = [...this.runtimes.values()]
       .filter((runtime) => runtime.status !== "disabled")
-      .map((runtime) => ({ runtime, prefix: `${sanitizeToolPart(runtime.name)}_` }))
+      .map((runtime) => ({ prefix: `${sanitizeToolPart(runtime.name)}_`, runtime }))
       .filter(({ prefix }) => requested.startsWith(prefix))
-      .sort((left, right) => right.prefix.length - left.prefix.length);
-    if (prefixed.length > 0) {
-      const longest = prefixed[0]!.prefix.length;
+      .toSorted((left, right) => right.prefix.length - left.prefix.length);
+    const [longestPrefixed] = prefixed;
+    if (longestPrefixed) {
+      const longest = longestPrefixed.prefix.length;
       const targets = prefixed.filter(({ prefix }) => prefix.length === longest);
       if (targets.length > 1) {
         throw new Error(`MCP server-name collision while resolving ${JSON.stringify(requested)}`);
       }
-      const tools = await this.toolsForServer(targets[0]!.runtime.name, options.signal);
+      const [target] = targets;
+      if (!target) {throw new Error(`Unknown MCP tool ${JSON.stringify(requested)}`);}
+      const tools = await this.toolsForServer(target.runtime.name, options.signal);
       const match = tools.find((tool) => tool.name === requested);
-      if (match) return this.requireAllowed(match, operation);
+      if (match) {return this.requireAllowed(match, operation);}
       throw new Error(`Unknown MCP tool ${JSON.stringify(requested)}`);
     }
 
@@ -722,12 +752,13 @@ export class McpManager {
       const firstFailure = settled.find(
         (result): result is PromiseRejectedResult => result.status === "rejected",
       );
-      if (firstFailure) throw firstFailure.reason;
+      if (firstFailure) {throw firstFailure.reason;}
     }
     const matches = all.filter(
       (tool) => tool.name === requested || tool.remoteName === requested,
     );
-    if (matches.length === 1) return this.requireAllowed(matches[0]!, operation);
+    const [onlyMatch] = matches;
+    if (matches.length === 1 && onlyMatch) {return this.requireAllowed(onlyMatch, operation);}
     if (matches.length > 1) {
       throw new Error(
         `Ambiguous MCP tool ${JSON.stringify(requested)}; use its exposed server-prefixed name`,
@@ -742,15 +773,15 @@ export class McpManager {
   }
 
   private isAllowed(tool: ToolMetadata, operation: McpPolicyOperation): boolean {
-    const policy = this.options.policy;
-    if (!policy) return true;
+    const {policy} = this.options;
+    if (!policy) {return true;}
     try {
       return policy.allows({
-        server: tool.server,
-        remoteName: tool.remoteName,
-        exposedName: tool.name,
         annotations: { ...tool.annotations },
+        exposedName: tool.name,
         operation,
+        remoteName: tool.remoteName,
+        server: tool.server,
       });
     } catch {
       return false;
@@ -761,9 +792,9 @@ export class McpManager {
     tool: ToolMetadata,
     operation: "describe" | "call",
   ): ToolMetadata {
-    if (this.isAllowed(tool, operation)) return tool;
+    if (this.isAllowed(tool, operation)) {return tool;}
     const policyName = (this.options.policy?.name ?? "configured")
-      .replace(/[\r\n]/g, " ")
+      .replaceAll(/[\r\n]/g, " ")
       .slice(0, 80);
     const remoteName = JSON.stringify(tool.remoteName.slice(0, 128));
     const server = JSON.stringify(tool.server.slice(0, 128));
@@ -774,55 +805,78 @@ export class McpManager {
 
   private async establish(
     runtime: ServerRuntime,
-    overrideProvider?: OAuthClientProvider,
-    retainAuthorization = false,
-    overrideSignal?: AbortSignal,
+    options: {
+      provider?: OAuthClientProvider;
+      retainAuthorization?: boolean;
+      signal?: AbortSignal;
+    } = {},
   ): Promise<ConnectedServer> {
-    if (runtime.config.type === undefined) throw new Error("Disabled MCP server has no transport");
+    if (runtime.config.type === undefined) {throw new Error("Disabled MCP server has no transport");}
     const timeout = AbortSignal.timeout(this.connectTimeoutMs);
-    const signal = combineSignals(this.lifecycle.signal, timeout, overrideSignal);
-    let provider =
-      overrideProvider ??
-      (runtime.config.type === "http" && runtime.config.oauth
-        ? this.createOAuthProvider(runtime, runtime.config.oauth)
-        : undefined);
+    const signal = combineSignals(this.lifecycle.signal, timeout, options.signal);
+    const retainAuthorization = options.retainAuthorization ?? false;
+    const provider = options.provider ?? this.defaultOAuthProvider(runtime);
 
     if (runtime.config.type === "stdio") {
-      return this.connectTransport(runtime, "stdio", provider, signal, retainAuthorization);
+      return this.connectTransport(runtime, { kind: "stdio", provider, retainAuthorization, signal });
     }
+    return this.establishHttp(runtime, { provider, retainAuthorization, signal });
+  }
 
-    let failure: unknown;
+  private defaultOAuthProvider(runtime: ServerRuntime): KeychainOAuthProvider | undefined {
+    return runtime.config.type === "http" && runtime.config.oauth
+      ? this.createOAuthProvider(runtime, runtime.config.oauth)
+      : undefined;
+  }
+
+  private async establishHttp(
+    runtime: ServerRuntime,
+    attempt: { provider: OAuthClientProvider | undefined; signal: AbortSignal; retainAuthorization: boolean },
+  ): Promise<ConnectedServer> {
+    const { provider, signal, retainAuthorization } = attempt;
     try {
-      return await this.connectTransport(
-        runtime,
-        "streamable-http",
+      return await this.connectTransport(runtime, {
+        kind: "streamable-http",
         provider,
-        signal,
         retainAuthorization,
-      );
+        signal,
+      });
     } catch (error) {
-      failure = error;
+      const retriedProvider = this.implicitOAuthProvider(runtime, provider, error);
+      if (!retriedProvider) {return this.fallbackToSse(runtime, { ...attempt, provider }, error);}
+      try {
+        return await this.connectTransport(runtime, {
+          kind: "streamable-http",
+          provider: retriedProvider,
+          retainAuthorization,
+          signal,
+        });
+      } catch (retryError) {
+        return this.fallbackToSse(runtime, { ...attempt, provider: retriedProvider }, retryError);
+      }
     }
+  }
 
+  private implicitOAuthProvider(
+    runtime: ServerRuntime,
+    provider: OAuthClientProvider | undefined,
+    failure: unknown,
+  ): KeychainOAuthProvider | undefined {
+    if (runtime.config.type !== "http") {return undefined;}
     // Keep public/anonymous HTTP servers independent of the credential store.
     // Only attach an implicit OAuth provider after the endpoint returns 401.
     const implicitOAuth =
       runtime.config.oauth === undefined ? oauthConfigFor(runtime.config) : undefined;
-    if (!provider && implicitOAuth && isOAuthChallenge(failure)) {
-      provider = this.createOAuthProvider(runtime, implicitOAuth);
-      try {
-        return await this.connectTransport(
-          runtime,
-          "streamable-http",
-          provider,
-          signal,
-          retainAuthorization,
-        );
-      } catch (error) {
-        failure = error;
-      }
-    }
+    if (provider || !implicitOAuth || !isOAuthChallenge(failure)) {return undefined;}
+    return this.createOAuthProvider(runtime, implicitOAuth);
+  }
 
+  private fallbackToSse(
+    runtime: ServerRuntime,
+    attempt: { provider: OAuthClientProvider | undefined; signal: AbortSignal; retainAuthorization: boolean },
+    failure: unknown,
+  ): Promise<ConnectedServer> {
+    const { provider, signal, retainAuthorization } = attempt;
     if (
       failure instanceof PendingAuthorization ||
       isAbort(failure, signal) ||
@@ -830,36 +884,39 @@ export class McpManager {
     ) {
       throw failure;
     }
-    return this.connectTransport(runtime, "sse", provider, signal, retainAuthorization);
+    return this.connectTransport(runtime, { kind: "sse", provider, retainAuthorization, signal });
   }
 
   private createOAuthProvider(runtime: ServerRuntime, config: OAuthConfig): KeychainOAuthProvider {
-    if (runtime.config.type !== "http") throw new Error("OAuth requires an HTTP server");
+    if (runtime.config.type !== "http") {throw new Error("OAuth requires an HTTP server");}
     return new KeychainOAuthProvider({
+      config,
       serverName: runtime.name,
       serverUrl: runtime.config.url,
-      config,
       store: this.credentialStore,
     });
   }
 
   private async connectTransport(
     runtime: ServerRuntime,
-    kind: "stdio" | "streamable-http" | "sse",
-    provider: OAuthClientProvider | undefined,
-    signal: AbortSignal,
-    retainAuthorization: boolean,
+    options: {
+      kind: "stdio" | "streamable-http" | "sse";
+      provider: OAuthClientProvider | undefined;
+      signal: AbortSignal;
+      retainAuthorization: boolean;
+    },
   ): Promise<ConnectedServer> {
-    if (runtime.config.type === undefined) throw new Error("Disabled MCP server has no transport");
+    const { kind, provider, signal, retainAuthorization } = options;
+    if (runtime.config.type === undefined) {throw new Error("Disabled MCP server has no transport");}
     const client = this.createClient(runtime.name);
-    const transport = this.createTransport(runtime.name, runtime.config, kind, provider);
+    const transport = this.createTransport(runtime.name, runtime.config, { authProvider: provider, kind });
     try {
       await waitWithSignal(
         client.connect(transport, { signal, timeout: this.connectTimeoutMs }),
         signal,
       );
       const tools = await this.loadTools(runtime.name, client, signal);
-      return { client, transport, tools, instructions: client.getInstructions() };
+      return { client, instructions: client.getInstructions(), tools, transport };
     } catch (error) {
       if (retainAuthorization && isAuthorizationFailure(error)) {
         throw new PendingAuthorization(
@@ -883,7 +940,7 @@ export class McpManager {
     let cursor: string | undefined;
     do {
       if (cursor) {
-        if (cursors.has(cursor)) throw new Error(`MCP server ${server} repeated a tools cursor`);
+        if (cursors.has(cursor)) {throw new Error(`MCP server ${server} repeated a tools cursor`);}
         cursors.add(cursor);
       }
       const page = await client.listTools(cursor ? { cursor } : undefined, {
@@ -897,12 +954,12 @@ export class McpManager {
         }
         names.add(name);
         tools.push({
-          name,
-          server,
-          remoteName: tool.name,
+          annotations: normalizeAnnotations(tool.annotations),
           description: tool.description,
           inputSchema: tool.inputSchema,
-          annotations: normalizeAnnotations(tool.annotations),
+          name,
+          remoteName: tool.name,
+          server,
         });
       }
       cursor = page.nextCursor;
@@ -932,19 +989,18 @@ export class McpManager {
   private defaultTransport(
     _serverName: string,
     config: Exclude<ServerConfig, { type?: undefined }>,
-    kind: "stdio" | "streamable-http" | "sse",
-    authProvider?: OAuthClientProvider,
+    { kind, authProvider }: TransportOptions,
   ): Transport {
     if (kind === "stdio" && config.type === "stdio") {
       return new StdioClientTransport({
-        command: config.command,
         args: config.args,
+        command: config.command,
         cwd: config.cwd,
         env: inheritedEnvironment(config.env),
         stderr: "ignore",
       });
     }
-    if (config.type !== "http") throw new Error(`Cannot use ${kind} for a stdio server`);
+    if (config.type !== "http") {throw new Error(`Cannot use ${kind} for a stdio server`);}
     const requestInit: RequestInit = { headers: new Headers(config.headers) };
     if (kind === "streamable-http") {
       return new StreamableHTTPClientTransport(new URL(config.url), {

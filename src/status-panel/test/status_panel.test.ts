@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { createFakePi } from "#test-utils/fake-pi";
+import { createFakePi } from "#test-utils/fake_pi";
 import statusPanel from "../index";
 import { columns, formatTokens, progressBar } from "../render";
 import { emptyGitInfoState, emptyModelInfoState } from "../state";
@@ -11,8 +11,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (originalOwnerToken === undefined) delete process.env.PI_SUBAGENT_OWNER_TOKEN;
-  else process.env.PI_SUBAGENT_OWNER_TOKEN = originalOwnerToken;
+  if (originalOwnerToken === undefined) {delete process.env.PI_SUBAGENT_OWNER_TOKEN;}
+  else {process.env.PI_SUBAGENT_OWNER_TOKEN = originalOwnerToken;}
 });
 
 describe("status panel registration", () => {
@@ -23,7 +23,7 @@ describe("status panel registration", () => {
     const dependencies = {
       get fetchAnthropicQuota() {
         dependencyReads += 1;
-        return async () => null;
+        return async () => undefined;
       },
     };
 
@@ -67,7 +67,7 @@ describe("status panel formatting", () => {
 
   test("creates independent empty state values", () => {
     expect(emptyModelInfoState().modelId).toBe("no-model");
-    expect(emptyGitInfoState()).toEqual({ branch: null, changedFiles: 0, pullRequest: null });
+    expect(emptyGitInfoState()).toEqual({ branch: undefined, changedFiles: 0, pullRequest: undefined });
   });
 
   test("moves footer information into a bounded right sidebar", async () => {
@@ -76,30 +76,22 @@ describe("status panel formatting", () => {
     let renderSidebar: ((width: number) => string[]) | undefined;
     let hiddenOverlays = 0;
     const tui = {
-      requestRender() {},
       render: (_width: number) => [],
+      requestRender() { /* Empty */ },
       terminal: { columns: 120, rows: 30 },
     };
     const theme = {
-      fg: (_color: string, value: string) => value,
       bold: (value: string) => value,
+      fg: (_color: string, value: string) => value,
     };
     const footerData = {
       getExtensionStatuses: () => new Map([["long-status", "a very long extension status"]]),
       onBranchChange: () => () => undefined,
     };
     const ui = {
-      setFooter(factory?: (...args: unknown[]) => { render(width: number): string[] }) {
-        if (!factory) {
-          renderFooter = undefined;
-          return;
-        }
-        const component = factory(tui, theme, footerData);
-        renderFooter = (width) => component.render(width);
-      },
       custom(
-        factory: (...args: unknown[]) => { render(width: number): string[] },
-        options: { onHandle?: (handle: { hide(): void }) => void },
+        factory: (...args: unknown[]) => { render: (width: number) => string[] },
+        options: { onHandle?: (handle: { hide: () => void }) => void },
       ) {
         return new Promise<void>((resolve) => {
           const component = factory(tui, theme, {}, resolve);
@@ -111,13 +103,21 @@ describe("status panel formatting", () => {
           });
         });
       },
-      setTitle() {},
+      setFooter(factory?: (...args: unknown[]) => { render: (width: number) => string[] }) {
+        if (!factory) {
+          renderFooter = undefined;
+          return;
+        }
+        const component = factory(tui, theme, footerData);
+        renderFooter = (width) => component.render(width);
+      },
+      setTitle() { /* Empty */ },
     };
     const ctx = {
-      mode: "tui",
       cwd: "/a/very/long/project/directory",
-      model: { provider: "openai", id: "a-very-long-model-name", contextWindow: 200_000 },
-      getContextUsage: () => ({ tokens: 12_345, contextWindow: 200_000, percent: 6.2 }),
+      getContextUsage: () => ({ contextWindow: 200_000, percent: 6.2, tokens: 12_345 }),
+      mode: "tui",
+      model: { contextWindow: 200_000, id: "a-very-long-model-name", provider: "openai" },
       ui,
     };
     statusPanel(pi);
@@ -127,39 +127,37 @@ describe("status panel formatting", () => {
     tui.terminal.columns = 80;
     expect(renderFooter?.(80).join("\n")).toContain("Context:");
     tui.terminal.columns = 120;
-    expect(renderSidebar).toBeDefined();
+    if (!renderSidebar) {throw new Error("expected a sidebar renderer");}
     for (const width of [28, 36, 44]) {
-      const lines = renderSidebar!(width);
+      const lines = renderSidebar(width);
       expect(lines).toHaveLength(30);
       expect(lines.every((line) => Bun.stringWidth(line) <= width)).toBeTrue();
     }
-    expect(renderSidebar!(44).join("\n")).toContain("AGENT");
-    expect(renderSidebar!(44).join("\n")).toContain("CONTEXT");
+    expect(renderSidebar(44).join("\n")).toContain("AGENT");
+    expect(renderSidebar(44).join("\n")).toContain("CONTEXT");
     await emit("session_shutdown", {}, ctx);
     expect(hiddenOverlays).toBe(1);
   });
 });
 
-describe("status panel quota lifecycle", () => {
-  function context(mode: "tui" | "rpc", provider = "anthropic") {
-    return {
-      mode,
-      cwd: "/project",
-      model: {
-        provider,
-        id: `${provider}-model`,
-        contextWindow: 100_000,
-        baseUrl: "http://127.0.0.1:3456",
-      },
-      getContextUsage: () => null,
-      ui: {
-        setHeader() {},
-        setFooter() {},
-        setTitle() {},
-      },
-    };
-  }
+const quotaLifecycleContext = (mode: "tui" | "rpc", provider = "anthropic") => ({
+  cwd: "/project",
+  getContextUsage: () => undefined,
+  mode,
+  model: {
+    baseUrl: "http://127.0.0.1:3456",
+    contextWindow: 100_000,
+    id: `${provider}-model`,
+    provider,
+  },
+  ui: {
+    setFooter() { /* Empty */ },
+    setHeader() { /* Empty */ },
+    setTitle() { /* Empty */ },
+  },
+});
 
+describe("status panel quota lifecycle", () => {
   test("does not request Anthropic quota outside TUI mode", async () => {
     const { pi, emit } = createFakePi();
     const signals: AbortSignal[] = [];
@@ -169,7 +167,7 @@ describe("status panel quota lifecycle", () => {
         return new Promise(() => undefined);
       },
     });
-    const ctx = context("rpc");
+    const ctx = quotaLifecycleContext("rpc");
 
     await emit("session_start", {}, ctx);
     await emit("model_select", { model: ctx.model }, ctx);
@@ -188,19 +186,23 @@ describe("status panel quota lifecycle", () => {
         return new Promise(() => undefined);
       },
     });
-    const ctx = context("tui");
+    const ctx = quotaLifecycleContext("tui");
 
     await emit("session_start", {}, ctx);
     expect(signals).toHaveLength(1);
-    ctx.model = { ...ctx.model, provider: "openai", id: "openai-model" };
+    ctx.model = { ...ctx.model, id: "openai-model", provider: "openai" };
     await emit("model_select", { model: ctx.model }, ctx);
-    expect(signals[0]!.aborted).toBeTrue();
+    const [firstSignal] = signals;
+    if (!firstSignal) {throw new Error("expected a first quota request");}
+    expect(firstSignal.aborted).toBeTrue();
 
-    ctx.model = { ...ctx.model, provider: "anthropic", id: "another-anthropic-model" };
+    ctx.model = { ...ctx.model, id: "another-anthropic-model", provider: "anthropic" };
     await emit("model_select", { model: ctx.model }, ctx);
     expect(signals).toHaveLength(2);
     expect(baseUrls).toEqual(["http://127.0.0.1:3456", "http://127.0.0.1:3456"]);
     await emit("session_shutdown", {}, ctx);
-    expect(signals[1]!.aborted).toBeTrue();
+    const secondSignal = signals.at(1);
+    if (!secondSignal) {throw new Error("expected a second quota request");}
+    expect(secondSignal.aborted).toBeTrue();
   });
 });

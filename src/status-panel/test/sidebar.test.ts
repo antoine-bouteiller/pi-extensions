@@ -3,25 +3,27 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { renderSidebarLines, type SidebarState } from "../sidebar";
 
 const theme = {
-  fg: (_color: string, text: string) => text,
   bold: (text: string) => text,
+  fg: (_color: string, text: string) => text,
 };
 
 const state: SidebarState = {
   activity: "working",
+  agents: [],
   cwd: "/Users/example/pi-extensions",
-  model: {
-    provider: "openai-codex",
-    modelId: "gpt-5.6-sol",
-    thinking: "medium",
-    contextTokens: 31_000,
-    contextWindow: 272_000,
-    contextPercent: 11.5,
-  },
+  extensionStatuses: ["index ready"],
   git: {
     branch: "feature/sidebar",
     changedFiles: 4,
-    pullRequest: null,
+    pullRequest: undefined,
+  },
+  model: {
+    contextPercent: 11.5,
+    contextTokens: 31_000,
+    contextWindow: 272_000,
+    modelId: "gpt-5.6-sol",
+    provider: "openai-codex",
+    thinking: "medium",
   },
   quota: {
     label: "anthropic",
@@ -31,28 +33,24 @@ const state: SidebarState = {
       { label: "Weekly", percent: 18, resetsIn: "4d 6h" },
     ],
   },
-  agents: [],
-  extensionStatuses: ["index ready"],
 };
 
 const withAgents = (count: number): SidebarState => ({
   ...state,
-  agents: Array.from({ length: count }, (_, index) => ({
+  agents: Array.from({ length: count }, (_value, index) => ({
+    color: "accent" as const,
     name: `/scout-${index}`,
     profile: "scout",
-    color: "accent" as const,
   })),
 });
 
-const ANSI_PATTERN = new RegExp(String.raw`\u001b\[[0-?]*[ -/]*[@-~]`, "g");
+const ANSI_PATTERN = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, "g");
 
-function stripAnsi(text: string) {
-  return text.replace(ANSI_PATTERN, "");
-}
+const stripAnsi = (text: string) => text.replace(ANSI_PATTERN, "");
 
 describe("sidebar rendering", () => {
   test("renders the Atelier-style information hierarchy", () => {
-    const lines = renderSidebarLines(state, theme, 44, 36, 0);
+    const lines = renderSidebarLines({ height: 36, now: 0, state, theme, width: 44 });
     const text = stripAnsi(lines.join("\n"));
 
     expect(lines).toHaveLength(36);
@@ -71,7 +69,7 @@ describe("sidebar rendering", () => {
   });
 
   test("renders session and weekly quota as matching bars with their time left", () => {
-    const lines = renderSidebarLines(state, theme, 44, 36, 0).map(stripAnsi);
+    const lines = renderSidebarLines({ height: 36, now: 0, state, theme, width: 44 }).map(stripAnsi);
     const quotaIndex = lines.findIndex((line) => line.includes("QUOTA"));
     const [session, sessionMeter, weekly, weeklyMeter] = lines.slice(quotaIndex + 1, quotaIndex + 5);
 
@@ -81,20 +79,21 @@ describe("sidebar rendering", () => {
     expect(weekly).toContain("Weekly");
     expect(weekly).toContain("18.0%");
     expect(weeklyMeter).toMatch(/■+·+ +4d 6h/);
-    expect(sessionMeter!.indexOf("2h 14m") + "2h 14m".length).toBe(
-      weeklyMeter!.indexOf("4d 6h") + "4d 6h".length,
+    if (!sessionMeter || !weeklyMeter) {throw new Error("expected quota meter rows");}
+    expect(sessionMeter.indexOf("2h 14m") + "2h 14m".length).toBe(
+      weeklyMeter.indexOf("4d 6h") + "4d 6h".length,
     );
   });
 
   test("falls back to a single labelled bar when the provider reports no windows", () => {
     const text = stripAnsi(
-      renderSidebarLines(
-        { ...state, quota: { label: "azure", percent: 71 } },
+      renderSidebarLines({
+        height: 36,
+        now: 0,
+        state: { ...state, quota: { label: "azure", percent: 71 } },
         theme,
-        44,
-        36,
-        0,
-      ).join("\n"),
+        width: 44,
+      }).join("\n"),
     );
 
     expect(text).toContain("Azure");
@@ -102,8 +101,12 @@ describe("sidebar rendering", () => {
   });
 
   test("pulses only the working Agent jewel", () => {
-    const first = stripAnsi(renderSidebarLines(state, theme, 44, 20, 0).join("\n"));
-    const second = stripAnsi(renderSidebarLines(state, theme, 44, 20, 400).join("\n"));
+    const first = stripAnsi(
+      renderSidebarLines({ height: 20, now: 0, state, theme, width: 44 }).join("\n"),
+    );
+    const second = stripAnsi(
+      renderSidebarLines({ height: 20, now: 400, state, theme, width: 44 }).join("\n"),
+    );
 
     expect(first).toContain("╭─ ✦ AGENT");
     expect(second).toContain("╭─ ✧ AGENT");
@@ -111,19 +114,23 @@ describe("sidebar rendering", () => {
   });
 
   test("lists running subagents and hides the panel when none are running", () => {
-    const text = stripAnsi(renderSidebarLines(withAgents(2), theme, 44, 36, 0).join("\n"));
+    const text = stripAnsi(
+      renderSidebarLines({ height: 36, now: 0, state: withAgents(2), theme, width: 44 }).join("\n"),
+    );
 
     expect(text).toContain("╭─ ✦ SUBAGENTS");
     expect(text).toContain("▸ /scout-0");
     expect(text).toContain("▸ /scout-1");
     expect(text).toContain("scout");
-    expect(stripAnsi(renderSidebarLines(state, theme, 44, 36, 0).join("\n"))).not.toContain(
-      "SUBAGENTS",
-    );
+    expect(
+      stripAnsi(renderSidebarLines({ height: 36, now: 0, state, theme, width: 44 }).join("\n")),
+    ).not.toContain("SUBAGENTS");
   });
 
   test("caps the subagent list so a large fan-out cannot crowd out other panels", () => {
-    const text = stripAnsi(renderSidebarLines(withAgents(9), theme, 44, 40, 0).join("\n"));
+    const text = stripAnsi(
+      renderSidebarLines({ height: 40, now: 0, state: withAgents(9), theme, width: 44 }).join("\n"),
+    );
 
     expect(text).toContain("▸ /scout-4");
     expect(text).not.toContain("▸ /scout-5");
@@ -131,7 +138,9 @@ describe("sidebar rendering", () => {
   });
 
   test("keeps running subagents visible after other optional panels are dropped", () => {
-    const text = stripAnsi(renderSidebarLines(withAgents(2), theme, 44, 20, 0).join("\n"));
+    const text = stripAnsi(
+      renderSidebarLines({ height: 20, now: 0, state: withAgents(2), theme, width: 44 }).join("\n"),
+    );
 
     expect(text).toContain("SUBAGENTS");
     expect(text).not.toContain("QUOTA");
@@ -139,7 +148,9 @@ describe("sidebar rendering", () => {
   });
 
   test("drops optional panels as terminal height contracts", () => {
-    const text = stripAnsi(renderSidebarLines(state, theme, 44, 12, 0).join("\n"));
+    const text = stripAnsi(
+      renderSidebarLines({ height: 12, now: 0, state, theme, width: 44 }).join("\n"),
+    );
 
     expect(text).toContain("AGENT");
     expect(text).toContain("CONTEXT");
@@ -152,24 +163,28 @@ describe("sidebar rendering", () => {
     const long: SidebarState = {
       ...state,
       cwd: `/Users/example/${"界".repeat(60)}`,
-      model: { ...state.model, modelId: `model-${"x".repeat(100)}` },
       extensionStatuses: [`status ${"z".repeat(100)}`],
+      model: { ...state.model, modelId: `model-${"x".repeat(100)}` },
     };
 
     for (const width of [1, 2, 8, 28, 44]) {
-      const lines = renderSidebarLines(long, theme, width, 24);
+      const lines = renderSidebarLines({ height: 24, state: long, theme, width });
       expect(lines).toHaveLength(24);
       expect(lines.every((line) => visibleWidth(line) <= width)).toBeTrue();
     }
-    expect(stripAnsi(renderSidebarLines(long, theme, 28, 24).join("\n"))).toContain("◆ Working");
+    expect(
+      stripAnsi(renderSidebarLines({ height: 24, state: long, theme, width: 28 }).join("\n")),
+    ).toContain("◆ Working");
   });
 
   test("renders unavailable context explicitly", () => {
     const unavailable = {
       ...state,
-      model: { ...state.model, contextTokens: null, contextPercent: null },
+      model: { ...state.model, contextPercent: undefined, contextTokens: undefined },
     };
-    const text = stripAnsi(renderSidebarLines(unavailable, theme, 44, 20).join("\n"));
+    const text = stripAnsi(
+      renderSidebarLines({ height: 20, state: unavailable, theme, width: 44 }).join("\n"),
+    );
 
     expect(text).toContain("Context unavailable");
   });

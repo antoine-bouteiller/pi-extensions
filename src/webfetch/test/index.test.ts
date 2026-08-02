@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
-import { createFakePi } from "#test-utils/fake-pi";
+import  { type AgentToolResult } from "@earendil-works/pi-coding-agent";
+import { createFakePi } from "#test-utils/fake_pi";
 import {
   createWebfetchExtension,
   type WebfetchDetails,
@@ -8,19 +8,19 @@ import {
   type WebfetchInput,
 } from "../index.js";
 
-function createHarness(
+const createHarness = (
   fetch: WebfetchFetch,
   saveFullOutput?: (content: string) => Promise<string>,
-) {
+) => {
   const fixture = createFakePi();
   createWebfetchExtension({ fetch, saveFullOutput })(fixture.pi);
   const tool = fixture.state.tools.get("webfetch");
 
-  async function execute(
+  const execute = async (
     params: WebfetchInput,
     signal?: AbortSignal,
     onUpdate?: (result: AgentToolResult<unknown>) => void,
-  ): Promise<AgentToolResult<WebfetchDetails>> {
+  ): Promise<AgentToolResult<WebfetchDetails>> => {
     expect(tool).toBeDefined();
     const run = tool?.execute as (
       id: string,
@@ -28,16 +28,16 @@ function createHarness(
       signal?: AbortSignal,
       onUpdate?: (result: AgentToolResult<unknown>) => void,
     ) => Promise<AgentToolResult<WebfetchDetails>>;
-    return run("call-1", params, signal, onUpdate);
-  }
+    return await run("call-1", params, signal, onUpdate);
+  };
 
-  return { fixture, tool, execute };
-}
+  return { execute, fixture, tool };
+};
 
-function text(result: AgentToolResult<unknown>): string {
-  const content = result.content[0];
+const text = (result: AgentToolResult<unknown>): string => {
+  const [content] = result.content;
   return content?.type === "text" ? content.text : "";
-}
+};
 
 describe("webfetch", () => {
   test("registers the tool with static-web guidance", () => {
@@ -61,8 +61,8 @@ describe("webfetch", () => {
     const harness = createHarness(
       async () =>
         new Response(html, {
-          status: 200,
           headers: { "content-type": "text/html; charset=utf-8" },
+          status: 200,
         }),
     );
 
@@ -81,14 +81,14 @@ describe("webfetch", () => {
     expect(text(result)).not.toContain("bad()");
     expect(updates).toEqual(["Fetching https://example.com/post as markdown (timeout 30s)..."]);
     expect(result.details).toMatchObject({
-      url: "https://example.com/post",
-      finalUrl: "https://example.com/post",
-      status: 200,
       contentType: "text/html; charset=utf-8",
-      format: "markdown",
-      timeoutSeconds: 30,
       converted: true,
+      finalUrl: "https://example.com/post",
+      format: "markdown",
       outputTruncated: false,
+      status: 200,
+      timeoutSeconds: 30,
+      url: "https://example.com/post",
     });
   });
 
@@ -100,11 +100,11 @@ describe("webfetch", () => {
     );
 
     const plain = await harness.execute({
-      url: "https://example.com",
       format: "text",
       timeout: 4.2,
+      url: "https://example.com",
     });
-    const raw = await harness.execute({ url: "https://example.com", format: "html" });
+    const raw = await harness.execute({ format: "html", url: "https://example.com" });
 
     expect(text(plain)).toBe("Title\n\nHeading\n\nA bold link to home.");
     expect(plain.details?.timeoutSeconds).toBe(5);
@@ -117,24 +117,24 @@ describe("webfetch", () => {
     const harness = createHarness(
       async () =>
         new Response('{"error":"missing"}', {
+          headers: { "content-type": "application/json" },
           status: 404,
           statusText: "Not Found",
-          headers: { "content-type": "application/json" },
         }),
     );
 
     const result = await harness.execute({
-      url: "https://example.com/missing",
       format: "markdown",
       timeout: 500,
+      url: "https://example.com/missing",
     });
 
     expect(text(result)).toBe('{"error":"missing"}');
     expect(result.details).toMatchObject({
-      status: 404,
-      statusText: "Not Found",
       contentType: "application/json",
       converted: false,
+      status: 404,
+      statusText: "Not Found",
       timeoutSeconds: 120,
     });
   });
@@ -183,8 +183,8 @@ describe("webfetch", () => {
     expect(text(result)).toContain("[Output truncated:");
     expect(text(result)).toContain("/tmp/pi-webfetch-test/output.txt");
     expect(result.details).toMatchObject({
-      outputTruncated: true,
       fullOutputPath: "/tmp/pi-webfetch-test/output.txt",
+      outputTruncated: true,
     });
   });
 

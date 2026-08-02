@@ -20,7 +20,7 @@ export interface McpPolicyRequest {
 export interface McpGatewayPolicy {
   /** A short, non-sensitive label used in bounded denial errors. */
   name: string;
-  allows(request: Readonly<McpPolicyRequest>): boolean;
+  allows: (request: Readonly<McpPolicyRequest>) => boolean;
 }
 
 export type McpServerStatus =

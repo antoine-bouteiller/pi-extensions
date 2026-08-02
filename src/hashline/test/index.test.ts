@@ -3,8 +3,13 @@ import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createFakePi } from "#test-utils/fake-pi";
+import { createFakePi } from "#test-utils/fake_pi";
 import hashline from "../index";
+
+interface ToolOutput {
+  content: { text: string; type: string }[];
+  details: Record<string, unknown>;
+}
 
 interface Tool {
   description: string;
@@ -15,7 +20,7 @@ interface Tool {
     signal: AbortSignal | undefined,
     onUpdate: undefined,
     ctx: { cwd: string },
-  ) => Promise<any>;
+  ) => Promise<ToolOutput>;
 }
 
 const temporaryDirectories: string[] = [];
@@ -25,29 +30,28 @@ afterEach(async () => {
   );
 });
 
-function setup(): { read: Tool; write: Tool } {
+const setup = (): { read: Tool; write: Tool } => {
   const { pi, state } = createFakePi();
   hashline(pi);
   return {
     read: state.tools.get("hashline_read") as unknown as Tool,
     write: state.tools.get("hashline_write") as unknown as Tool,
   };
-}
+};
 
-async function workspace(): Promise<string> {
+const workspace = async (): Promise<string> => {
   const directory = await mkdtemp(join(tmpdir(), "hashline-test-"));
   temporaryDirectories.push(directory);
   return directory;
-}
+};
 
-async function header(tool: Tool, cwd: string, path: string): Promise<string> {
+const header = async (tool: Tool, cwd: string, path: string): Promise<string> => {
   const output = await tool.execute("read", { path }, undefined, undefined, { cwd });
   return output.content[0].text.split("\n", 1)[0];
-}
+};
 
-function swap(headerLine: string, line: number, replacement: string): string {
-  return `${headerLine}\nSWAP ${line}.=${line}:\n+${replacement}`;
-}
+const swap = (headerLine: string, line: number, replacement: string): string =>
+  `${headerLine}\nSWAP ${line}.=${line}:\n+${replacement}`;
 
 describe("hashline extension", () => {
   test("registers anchored read and write tools", async () => {
@@ -162,20 +166,20 @@ describe("hashline extension", () => {
     const directory = await workspace();
     await writeFile(join(directory, "a.txt"), "a\n");
     await writeFile(join(directory, "b.txt"), "b\n");
-    const a = await header(read, directory, "a.txt");
-    const b = await header(read, directory, "b.txt");
+    const headerA = await header(read, directory, "a.txt");
+    const headerB = await header(read, directory, "b.txt");
 
     const outcomes = await Promise.allSettled([
       write.execute(
         "ab",
-        { patch: `${swap(a, 1, "A1")}\n${swap(b, 1, "B1")}` },
+        { patch: `${swap(headerA, 1, "A1")}\n${swap(headerB, 1, "B1")}` },
         undefined,
         undefined,
         { cwd: directory },
       ),
       write.execute(
         "reverse-order",
-        { patch: `${swap(b, 1, "B2")}\n${swap(a, 1, "A2")}` },
+        { patch: `${swap(headerB, 1, "B2")}\n${swap(headerA, 1, "A2")}` },
         undefined,
         undefined,
         { cwd: directory },

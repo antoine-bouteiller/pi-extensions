@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { createFakePi } from "#test-utils/fake-pi";
+import { createFakePi } from "#test-utils/fake_pi";
 import { createMeridianSessionAffinityExtension } from "../index.js";
 
 const originalMeridianBaseUrl = process.env.MERIDIAN_BASE_URL;
@@ -12,20 +12,18 @@ afterEach(() => {
   }
 });
 
-function createHarness() {
+const createHarness = () => {
   const fixture = createFakePi();
   createMeridianSessionAffinityExtension(fixture.pi);
   return fixture;
-}
+};
 
-function context(sessionId: string, baseUrl = "https://api.anthropic.com") {
-  return {
-    model: { baseUrl },
-    sessionManager: {
-      getSessionId: () => sessionId,
-    },
-  };
-}
+const context = (sessionId: string, baseUrl = "https://api.anthropic.com") => ({
+  model: { baseUrl },
+  sessionManager: {
+    getSessionId: () => sessionId,
+  },
+});
 
 describe("meridian session affinity", () => {
   test("registers no daemon or session-start lifecycle behavior", () => {
@@ -39,17 +37,17 @@ describe("meridian session affinity", () => {
     const fixture = createHarness();
     const event: { headers: Record<string, string> } = {
       headers: {
-        "x-meridian-agent": "pi",
         authorization: "Bearer x",
+        "x-meridian-agent": "pi",
       },
     };
 
     await fixture.emit("before_provider_headers", event, context("session-a"));
 
     expect(event.headers).toEqual({
+      authorization: "Bearer x",
       "x-meridian-agent": "pi",
       "x-session-affinity": "session-a",
-      authorization: "Bearer x",
     });
   });
 

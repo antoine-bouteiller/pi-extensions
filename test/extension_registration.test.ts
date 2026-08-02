@@ -12,7 +12,7 @@ import rules from "../src/rules/index.js";
 import safeRm from "../src/safe-rm/index.js";
 import safetyGuard from "../src/safety-guard/index.js";
 import statusPanel from "../src/status-panel/index.js";
-import { createFakePi } from "#test-utils/fake-pi";
+import { createFakePi } from "#test-utils/fake_pi";
 
 const entrypoints = {
   askUser,
@@ -27,19 +27,21 @@ const entrypoints = {
   statusPanel,
 };
 
-// Bun runs every test file in a single process. Importing sub-agents here would populate the
-// module cache with the real Pi agent directory before src/sub-agents/test/core.test.ts installs
-// its mock for it, so that entrypoint is verified in a child process instead.
+/*
+ * Bun runs every test file in a single process. Importing sub-agents here would populate the
+ * module cache with the real Pi agent directory before src/sub-agents/test/core.test.ts installs
+ * its mock for it, so that entrypoint is verified in a child process instead.
+ */
 const ISOLATED_EXTENSIONS = ["sub-agents"];
 
-async function importsExtensionFactory(modulePath: string): Promise<boolean> {
+const importsExtensionFactory = async (modulePath: string): Promise<boolean> => {
   const script = `
     const { default: extension } = await import(${JSON.stringify("MODULE_PATH")});
     if (typeof extension !== "function") process.exit(1);
   `.replace(JSON.stringify("MODULE_PATH"), JSON.stringify(modulePath));
-  const child = Bun.spawn([process.execPath, "--eval", script], { stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn([process.execPath, "--eval", script], { stderr: "pipe", stdout: "pipe" });
   return (await child.exited) === 0;
-}
+};
 
 describe("extension entrypoints", () => {
   test("imports every deployed extension", () => {
@@ -56,7 +58,7 @@ describe("extension entrypoints", () => {
       .map((entry) => join(root, entry.name));
     for (const entry of entries.filter((candidate) => candidate.isDirectory())) {
       const children = await readdir(join(root, entry.name));
-      if (children.includes("index.ts")) discovered.push(join(root, entry.name, "index.ts"));
+      if (children.includes("index.ts")) {discovered.push(join(root, entry.name, "index.ts"));}
     }
 
     expect(discovered.length).toBeGreaterThan(0);
@@ -87,7 +89,7 @@ describe("extension entrypoints", () => {
       entrypoint(fixture.pi);
     }
 
-    expect([...fixture.state.tools.keys()].sort()).toEqual([
+    expect([...fixture.state.tools.keys()].toSorted()).toEqual([
       "ask_user",
       "background_poll",
       "hashline_read",

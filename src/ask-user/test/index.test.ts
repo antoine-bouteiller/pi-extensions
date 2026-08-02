@@ -5,30 +5,41 @@ import {
   type Component,
   type Focusable,
 } from "@earendil-works/pi-tui";
-import { createFakePi } from "#test-utils/fake-pi";
+import { createFakePi } from "#test-utils/fake_pi";
 import askUser from "../index";
 
-type AskUserTool = {
+interface AskUserResult {
+  content: { type: "text"; text: string }[];
+  details: {
+    question: string;
+    options: string[];
+    answer: string | undefined;
+    wasCustom: boolean;
+    cancelled: boolean;
+  };
+}
+
+interface AskUserTool {
   execute: (
     toolCallId: string,
     params: {
       question: string;
-      options: Array<{ label: string; description?: string }>;
+      options: { label: string; description?: string }[];
     },
     signal: AbortSignal | undefined,
     onUpdate: undefined,
-    ctx: Record<string, any>,
-  ) => Promise<any>;
-};
+    ctx: unknown,
+  ) => Promise<AskUserResult>;
+}
 
 type PromptComponent = Component & Focusable;
 
 const params = {
-  question: "When should this ship?",
   options: [{ label: "Now" }, { label: "Tomorrow" }],
+  question: "When should this ship?",
 };
 
-function setup() {
+const setup = () => {
   let component: PromptComponent | undefined;
   let customCalls = 0;
   const tui = {
@@ -36,11 +47,18 @@ function setup() {
     terminal: { rows: 24 },
   };
   const theme = {
-    fg: (_color: string, value: string) => value,
     bold: (value: string) => value,
+    fg: (_color: string, value: string) => value,
   };
   const ui = {
-    custom: (factory: (...args: any[]) => PromptComponent) => {
+    custom: (
+      factory: (
+        tui: unknown,
+        theme: unknown,
+        keybindings: unknown,
+        done: (result: unknown) => void,
+      ) => PromptComponent,
+    ) => {
       customCalls++;
       return new Promise<unknown>((resolve) => {
         component = factory(tui, theme, {}, resolve);
@@ -53,21 +71,22 @@ function setup() {
   const tool = fakePi.state.tools.get("ask_user") as unknown as AskUserTool;
 
   return {
-    tool,
-    tuiContext: { mode: "tui", ui },
-    nonTuiContext: { mode: "rpc", ui },
     get component() {
-      return component!;
+      if (!component) {throw new Error("component not initialized");}
+      return component;
     },
     get customCalls() {
       return customCalls;
     },
+    nonTuiContext: { mode: "rpc", ui },
+    tool,
+    tuiContext: { mode: "tui", ui },
   };
-}
+};
 
-function type(component: PromptComponent, text: string) {
-  for (const character of text) component.handleInput?.(character);
-}
+const type = (component: PromptComponent, text: string) => {
+  for (const character of text) {component.handleInput?.(character);}
+};
 
 describe("ask_user tool behavior", () => {
   test("returns the selected answer and option number", async () => {
@@ -86,8 +105,8 @@ describe("ask_user tool behavior", () => {
     expect(result.content[0].text).toBe("User selected option 2: Tomorrow");
     expect(result.details).toMatchObject({
       answer: "Tomorrow",
-      wasCustom: false,
       cancelled: false,
+      wasCustom: false,
     });
   });
 
@@ -105,7 +124,7 @@ describe("ask_user tool behavior", () => {
     const result = await pending;
 
     expect(result.content[0].text).toContain("User dismissed the question");
-    expect(result.details).toMatchObject({ answer: null, cancelled: true });
+    expect(result.details).toMatchObject({ answer: undefined, cancelled: true });
   });
 
   test("reports cancellation when aborted while the prompt is open", async () => {
@@ -123,7 +142,7 @@ describe("ask_user tool behavior", () => {
     const result = await pending;
 
     expect(result.content[0].text).toBe("Cancelled");
-    expect(result.details).toMatchObject({ answer: null, cancelled: true });
+    expect(result.details).toMatchObject({ answer: undefined, cancelled: true });
   });
 
   test("submits trimmed custom input", async () => {
@@ -144,8 +163,8 @@ describe("ask_user tool behavior", () => {
     expect(result.content[0].text).toBe("User wrote their own answer: Wait until Friday");
     expect(result.details).toMatchObject({
       answer: "Wait until Friday",
-      wasCustom: true,
       cancelled: false,
+      wasCustom: true,
     });
   });
 
@@ -160,7 +179,7 @@ describe("ask_user tool behavior", () => {
     );
 
     expect(result.content[0].text).toContain("Ask the user in plain text instead");
-    expect(result.details).toMatchObject({ answer: null, cancelled: true });
+    expect(result.details).toMatchObject({ answer: undefined, cancelled: true });
     expect(fixture.customCalls).toBe(0);
   });
 });
@@ -191,11 +210,11 @@ describe("ask_user prompt component", () => {
     const pending = fixture.tool.execute(
       "call-7",
       {
-        question: "界界界界",
         options: [
-          { label: "A long first option", description: "A long explanatory description" },
+          { description: "A long explanatory description", label: "A long first option" },
           { label: "Second option" },
         ],
+        question: "界界界界",
       },
       undefined,
       undefined,

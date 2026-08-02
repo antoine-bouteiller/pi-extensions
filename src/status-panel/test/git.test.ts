@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { createFakePi } from "#test-utils/fake-pi";
+import { createFakePi } from "#test-utils/fake_pi";
 import { fetchGitInfo } from "../git";
 
-const success = (stdout: string) => ({ stdout, stderr: "", code: 0, killed: false });
+const success = (stdout: string) => ({ code: 0, killed: false, stderr: "", stdout });
 
 describe("status panel git state", () => {
   test("reports the current branch and porcelain entry count", async () => {
@@ -11,14 +11,14 @@ describe("status panel git state", () => {
     const { pi } = createFakePi({
       exec: async (command, args) => {
         calls.push([command, ...args]);
-        return outputs.shift()!;
+        return outputs.shift() ?? success("");
       },
     });
 
     expect(await fetchGitInfo(pi)).toEqual({
       branch: "feature/footer",
       changedFiles: 2,
-      pullRequest: null,
+      pullRequest: undefined,
     });
     expect(calls).toEqual([
       ["git", "rev-parse", "--is-inside-work-tree"],
@@ -38,7 +38,7 @@ describe("status panel git state", () => {
       },
     });
 
-    const empty = { branch: null, changedFiles: 0, pullRequest: null };
+    const empty = { branch: undefined, changedFiles: 0, pullRequest: undefined };
     expect(await fetchGitInfo(outside.pi)).toEqual(empty);
     expect(await fetchGitInfo(failing.pi)).toEqual(empty);
   });
@@ -50,13 +50,13 @@ describe("status panel git state", () => {
       { ...success(" M stale\n"), code: 1 },
     ];
     const { pi } = createFakePi({
-      exec: async () => outputs.shift()!,
+      exec: async () => outputs.shift() ?? success(""),
     });
 
     expect(await fetchGitInfo(pi)).toEqual({
-      branch: null,
+      branch: undefined,
       changedFiles: 0,
-      pullRequest: null,
+      pullRequest: undefined,
     });
   });
 });

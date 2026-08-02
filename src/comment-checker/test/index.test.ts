@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import commentChecker, { type CheckerRunner } from "../index.js";
-import { createFakePi } from "#test-utils/fake-pi";
+import { createFakePi } from "#test-utils/fake_pi";
 
 const context = {
   cwd: "/workspace",
@@ -9,76 +9,76 @@ const context = {
 
 describe("comment checker", () => {
   test("appends checker warnings after writes", async () => {
-    const inputs: Array<Parameters<CheckerRunner>[0]> = [];
+    const inputs: Parameters<CheckerRunner>[0][] = [];
     const fixture = createFakePi();
     commentChecker(fixture.pi, async (input) => {
       inputs.push(input);
-      return { exitCode: 2, stdout: "", stderr: "remove this comment" };
+      return { exitCode: 2, stderr: "remove this comment", stdout: "" };
     });
 
     const [result] = await fixture.emit(
       "tool_result",
       {
-        toolName: "write",
-        input: { path: "src/main.ts", content: "// redundant\nconst value = 1;\n" },
-        content: [{ type: "text", text: "Wrote src/main.ts" }],
+        content: [{ text: "Wrote src/main.ts", type: "text" }],
+        input: { content: "// redundant\nconst value = 1;\n", path: "src/main.ts" },
         isError: false,
+        toolName: "write",
       },
       context,
     );
 
     expect(inputs).toEqual([
       {
-        session_id: "session-1",
-        tool_name: "Write",
-        transcript_path: "",
         cwd: "/workspace",
         hook_event_name: "PostToolUse",
+        session_id: "session-1",
         tool_input: {
-          file_path: "src/main.ts",
           content: "// redundant\nconst value = 1;\n",
+          file_path: "src/main.ts",
         },
+        tool_name: "Write",
+        transcript_path: "",
       },
     ]);
     expect(result).toEqual({
       content: [
-        { type: "text", text: "Wrote src/main.ts" },
-        { type: "text", text: "\n\nremove this comment" },
+        { text: "Wrote src/main.ts", type: "text" },
+        { text: "\n\nremove this comment", type: "text" },
       ],
     });
   });
 
   test("converts Pi edit batches to MultiEdit input", async () => {
-    const inputs: Array<Parameters<CheckerRunner>[0]> = [];
+    const inputs: Parameters<CheckerRunner>[0][] = [];
     const fixture = createFakePi();
     commentChecker(fixture.pi, async (input) => {
       inputs.push(input);
-      return { exitCode: 0, stdout: "", stderr: "" };
+      return { exitCode: 0, stderr: "", stdout: "" };
     });
 
     const [result] = await fixture.emit(
       "tool_result",
       {
-        toolName: "edit",
+        content: [{ text: "Edited src/main.ts", type: "text" }],
         input: {
-          path: "src/main.ts",
           edits: [
-            { oldText: "const one = 1;", newText: "const first = 1;" },
-            { oldText: "const two = 2;", newText: "const second = 2;" },
+            { newText: "const first = 1;", oldText: "const one = 1;" },
+            { newText: "const second = 2;", oldText: "const two = 2;" },
           ],
+          path: "src/main.ts",
         },
-        content: [{ type: "text", text: "Edited src/main.ts" }],
         isError: false,
+        toolName: "edit",
       },
       context,
     );
 
     expect(inputs[0]?.tool_input).toEqual({
-      file_path: "src/main.ts",
       edits: [
-        { old_string: "const one = 1;", new_string: "const first = 1;" },
-        { old_string: "const two = 2;", new_string: "const second = 2;" },
+        { new_string: "const first = 1;", old_string: "const one = 1;" },
+        { new_string: "const second = 2;", old_string: "const two = 2;" },
       ],
+      file_path: "src/main.ts",
     });
     expect(result).toBeUndefined();
   });
@@ -88,22 +88,22 @@ describe("comment checker", () => {
     const fixture = createFakePi();
     commentChecker(fixture.pi, async () => {
       calls += 1;
-      return { exitCode: 0, stdout: "", stderr: "" };
+      return { exitCode: 0, stderr: "", stdout: "" };
     });
 
     await fixture.emit(
       "tool_result",
       {
-        toolName: "write",
-        input: { path: "src/main.ts", content: "const value = 1;" },
         content: [],
+        input: { content: "const value = 1;", path: "src/main.ts" },
         isError: true,
+        toolName: "write",
       },
       context,
     );
     await fixture.emit(
       "tool_result",
-      { toolName: "read", input: { path: "src/main.ts" }, content: [], isError: false },
+      { content: [], input: { path: "src/main.ts" }, isError: false, toolName: "read" },
       context,
     );
 

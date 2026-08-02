@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createFakePi } from "#test-utils/fake-pi";
+import { createFakePi } from "#test-utils/fake_pi";
 import rulesExtension, { extractToolPaths, parseRuleFrontmatter } from "../index";
 
 interface PromptResult {
@@ -10,7 +10,7 @@ interface PromptResult {
 }
 
 interface ToolResult {
-  content: Array<{ type: string; text: string }>;
+  content: { type: string; text: string }[];
 }
 
 const fixtureRoots = new Set<string>();
@@ -20,12 +20,12 @@ afterEach(async () => {
   fixtureRoots.clear();
 });
 
-async function writeFixture(path: string, content: string): Promise<void> {
+const writeFixture = async (path: string, content: string): Promise<void> => {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, content, "utf8");
-}
+};
 
-async function createFixture() {
+const createFixture = async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-rules-test-"));
   fixtureRoots.add(root);
   const homeDirectory = join(root, "home");
@@ -41,21 +41,21 @@ async function createFixture() {
     cwd: projectDirectory,
     isProjectTrusted: () => trusted,
   });
-  const invoke = async <Result>(name: string, event: unknown, trusted = true) =>
-    (await fakePi.emit(name, event, context(trusted)))[0] as Result | undefined;
+  const invoke = async <Result>(name: string, event: unknown, trusted = true) => {
+    const results = await fakePi.emit(name, event, context(trusted));
+    return results[0] as Result | undefined;
+  };
 
   return { fakePi, homeDirectory, invoke, projectDirectory };
-}
+};
 
-function readEvent(path: string) {
-  return {
-    toolName: "read",
-    input: { path },
-    details: {},
-    isError: false,
-    content: [{ type: "text", text: "file contents" }],
-  };
-}
+const readEvent = (path: string) => ({
+  content: [{ text: "file contents", type: "text" }],
+  details: {},
+  input: { path },
+  isError: false,
+  toolName: "read",
+});
 
 describe("rule parsing", () => {
   test("parses Claude paths, generic globs, comments, CRLF, and alwaysApply", () => {
@@ -64,17 +64,17 @@ describe("rule parsing", () => {
         '\uFEFF---\r\npaths: ["src/a,b.ts", src/**] # comment\r\nglobs:\r\n  - "test/**"\r\nalwaysApply: true\r\n---\r\nRule',
       ),
     ).toEqual({
+      alwaysApply: true,
       body: "Rule",
       paths: ["src/a,b.ts", "src/**", "test/**"],
-      alwaysApply: true,
     });
   });
 
   test("keeps plain rules and diagnoses malformed frontmatter", () => {
     expect(parseRuleFrontmatter("Always test changes.")).toEqual({
+      alwaysApply: false,
       body: "Always test changes.",
       paths: [],
-      alwaysApply: false,
     });
     expect(parseRuleFrontmatter("---\npaths: [src/**\n---\nRule").diagnostic).toContain(
       "Malformed frontmatter",
@@ -240,13 +240,13 @@ describe("path-scoped injection", () => {
     expect(
       extractToolPaths(
         {
-          toolName: "hashline_write",
-          input: { patch: "[src/main.ts#ABCD]\nSWAP 1.=1:\n+next" },
-          details: {
-            sections: [{ path: "src/main.ts", moveDest: "src/moved.ts" }],
-          },
-          isError: false,
           content: [],
+          details: {
+            sections: [{ moveDest: "src/moved.ts", path: "src/main.ts" }],
+          },
+          input: { patch: "[src/main.ts#ABCD]\nSWAP 1.=1:\n+next" },
+          isError: false,
+          toolName: "hashline_write",
         } as never,
         "/project",
       ),
@@ -254,13 +254,13 @@ describe("path-scoped injection", () => {
     expect(
       extractToolPaths(
         {
-          toolName: "hashline_write",
+          content: [],
+          details: {},
           input: {
             patch: "[src/one.ts#ABCD]\nSWAP 1.=1:\n+one\n[src/two.ts#EFGH]\nSWAP 1.=1:\n+two",
           },
-          details: {},
           isError: false,
-          content: [],
+          toolName: "hashline_write",
         } as never,
         "/project",
       ),

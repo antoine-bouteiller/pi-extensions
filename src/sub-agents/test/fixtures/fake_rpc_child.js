@@ -1,22 +1,21 @@
 #!/usr/bin/env node
 
-import * as fs from "node:fs";
-import * as readline from "node:readline";
+import { appendFileSync } from "node:fs";
+import { createInterface } from "node:readline";
 
 const sessionIndex = process.argv.indexOf("--session");
-const sessionFile = sessionIndex >= 0 ? process.argv[sessionIndex + 1] : undefined;
+const sessionFile = sessionIndex === -1 ? undefined : process.argv[sessionIndex + 1];
 
-function record(value) {
+const record = (value) => {
   if (sessionFile)
-    fs.appendFileSync(sessionFile, `${JSON.stringify({ pid: process.pid, ...value })}\n`);
-}
+    {appendFileSync(sessionFile, `${JSON.stringify({ pid: process.pid, ...value })}\n`);}
+};
 
-function send(value) {
+const send = (value) => {
   process.stdout.write(`${JSON.stringify(value)}\n`);
-}
+};
 
 record({
-  type: "started",
   args: process.argv.slice(2),
   env: Object.fromEntries(
     [
@@ -30,26 +29,27 @@ record({
       "PI_SUBAGENT_READONLY",
     ].flatMap((key) => (process.env[key] === undefined ? [] : [[key, process.env[key]]])),
   ),
+  type: "started",
 });
-const input = readline.createInterface({ input: process.stdin });
+const input = createInterface({ input: process.stdin });
 input.on("line", (line) => {
   const command = JSON.parse(line);
   if (command.type === "get_state") {
     const delay = Number(process.env.PI_SUBAGENT_TEST_GET_STATE_DELAY_MS || 0);
     if (delay > 0)
-      setTimeout(() => send({ type: "response", id: command.id, success: true, data: {} }), delay);
-    else send({ type: "response", id: command.id, success: true, data: {} });
+      {setTimeout(() => send({ data: {}, id: command.id, success: true, type: "response" }), delay);}
+    else {send({ data: {}, id: command.id, success: true, type: "response" });}
     return;
   }
   if (command.type === "prompt") {
-    record({ type: "prompt", message: command.message });
+    record({ message: command.message, type: "prompt" });
     if (String(command.message).startsWith("reject")) {
-      send({ type: "response", id: command.id, success: false, error: "fake prompt rejection" });
+      send({ error: "fake prompt rejection", id: command.id, success: false, type: "response" });
       return;
     }
-    send({ type: "response", id: command.id, success: true, data: {} });
+    send({ data: {}, id: command.id, success: true, type: "response" });
     send({ type: "agent_start" });
-    if (String(command.message).startsWith("hold")) return;
+    if (String(command.message).startsWith("hold")) {return;}
     if (String(command.message).startsWith("crash")) {
       setTimeout(() => process.exit(23), 20);
       return;
@@ -62,13 +62,13 @@ input.on("line", (line) => {
           ? "x".repeat(60 * 1024)
           : `response:${message}`;
         send({
-          type: "message_end",
           message: {
+            content: [{ text: response, type: "text" }],
             role: "assistant",
-            content: [{ type: "text", text: response }],
             stopReason: failing ? "error" : "stop",
             ...(failing ? { errorMessage: "fake failure" } : {}),
           },
+          type: "message_end",
         });
         send({ type: "agent_settled" });
       },
@@ -77,6 +77,6 @@ input.on("line", (line) => {
     return;
   }
   if (command.type === "steer" || command.type === "abort") {
-    send({ type: "response", id: command.id, success: true, data: {} });
+    send({ data: {}, id: command.id, success: true, type: "response" });
   }
 });

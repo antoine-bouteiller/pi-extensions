@@ -30,7 +30,7 @@ export interface BoundedOutput {
  * Bounds only model-visible text. Images remain native Pi image blocks and the
  * complete text is written to a private temporary file when truncation occurs.
  */
-export async function boundGatewayOutput(content: GatewayContent[]): Promise<BoundedOutput> {
+export const boundGatewayOutput = async (content: GatewayContent[]): Promise<BoundedOutput> => {
   const textBlocks = content.filter(
     (block): block is Extract<GatewayContent, { type: "text" }> => block.type === "text",
   );
@@ -40,14 +40,14 @@ export async function boundGatewayOutput(content: GatewayContent[]): Promise<Bou
     maxLines: DEFAULT_MAX_LINES,
   });
 
-  if (!initial.truncated) return { content, details: { truncated: false } };
+  if (!initial.truncated) {return { content, details: { truncated: false } };}
 
   const directory = await mkdtemp(join(tmpdir(), "pi-mcp-"));
   const fullOutputPath = join(directory, "output.txt");
   await writeFile(fullOutputPath, completeText, { encoding: "utf8", mode: 0o600 });
 
   // Reserve enough room for the notice (including the private temp path) so the
-  // final model-visible text, not merely the retained payload, stays in Pi's limits.
+  // Final model-visible text, not merely the retained payload, stays in Pi's limits.
   const truncation = truncateHead(completeText, {
     maxBytes: DEFAULT_MAX_BYTES - 2048,
     maxLines: DEFAULT_MAX_LINES - 4,
@@ -68,14 +68,14 @@ export async function boundGatewayOutput(content: GatewayContent[]): Promise<Bou
   );
 
   return {
-    content: [{ type: "text", text: visibleText }, ...images],
+    content: [{ text: visibleText, type: "text" }, ...images],
     details: {
-      truncated: true,
       fullOutputPath,
-      outputLines: truncation.outputLines,
-      totalLines: truncation.totalLines,
       outputBytes: truncation.outputBytes,
+      outputLines: truncation.outputLines,
       totalBytes: truncation.totalBytes,
+      totalLines: truncation.totalLines,
+      truncated: true,
     },
   };
-}
+};

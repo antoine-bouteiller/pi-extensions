@@ -1,5 +1,6 @@
-import type { ExtensionAPI, ToolResultEvent } from "@earendil-works/pi-coding-agent";
+import  { type ExtensionAPI, type ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { createHash } from "node:crypto";
+import { type Dirent } from "node:fs";
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -50,11 +51,9 @@ export interface RulesEnvironment {
   homeDirectory: string;
 }
 
-function normalizePath(path: string): string {
-  return path.replaceAll("\\", "/").replace(/^\.\//, "");
-}
+const normalizePath = (path: string): string => path.replaceAll("\\", "/").replace(/^\.\//, "");
 
-function isWithin(child: string, parent: string): boolean {
+const isWithin = (child: string, parent: string): boolean => {
   const pathFromParent = relative(parent, child);
   return (
     pathFromParent === "" ||
@@ -62,16 +61,73 @@ function isWithin(child: string, parent: string): boolean {
       pathFromParent !== ".." &&
       !isAbsolute(pathFromParent))
   );
+};
+
+interface ResolvedEntry {
+  path: string;
+  canonicalPath: string;
+  isDirectory: boolean;
+  isFile: boolean;
 }
 
-async function discoverRuleFiles(root: string, containmentRoot?: string): Promise<RuleFile[]> {
+const resolveEntry = async (
+  directory: string,
+  entry: Dirent,
+  canonicalBoundary: string | undefined,
+): Promise<ResolvedEntry | undefined> => {
+  const path = join(directory, entry.name);
+  let isDirectory = entry.isDirectory();
+  let isFile = entry.isFile();
+  let canonicalPath = path;
+
+  if (entry.isSymbolicLink()) {
+    try {
+      canonicalPath = await realpath(path);
+      if (canonicalBoundary && !isWithin(canonicalPath, canonicalBoundary)) {return undefined;}
+      const target = await stat(path);
+      isDirectory = target.isDirectory();
+      isFile = target.isFile();
+    } catch {
+      return undefined;
+    }
+  }
+
+  return { canonicalPath, isDirectory, isFile, path };
+};
+
+const registerRuleFile = async (options: {
+  root: string;
+  path: string;
+  canonicalBoundary: string | undefined;
+  files: RuleFile[];
+}): Promise<void> => {
+  const { root, path, canonicalBoundary, files } = options;
+  let canonicalPath: string;
+  try {
+    canonicalPath = await realpath(path);
+  } catch {
+    return;
+  }
+  if (canonicalBoundary && !isWithin(canonicalPath, canonicalBoundary)) {return;}
+  files.push({
+    path,
+    realPath: canonicalPath,
+    relativePath: normalizePath(relative(root, path)),
+  });
+};
+
+const discoverRuleFiles = async (
+  root: string,
+  containmentRoot?: string,
+): Promise<RuleFile[]> => {
   let canonicalRoot: string;
   let canonicalBoundary: string | undefined;
   try {
     canonicalRoot = await realpath(root);
     canonicalBoundary = containmentRoot ? await realpath(containmentRoot) : undefined;
-    if (!(await stat(canonicalRoot)).isDirectory()) return [];
-    if (canonicalBoundary && !isWithin(canonicalRoot, canonicalBoundary)) return [];
+    const rootStat = await stat(canonicalRoot);
+    if (!rootStat.isDirectory()) {return [];}
+    if (canonicalBoundary && !isWithin(canonicalRoot, canonicalBoundary)) {return [];}
   } catch {
     return [];
   }
@@ -79,7 +135,7 @@ async function discoverRuleFiles(root: string, containmentRoot?: string): Promis
   const files: RuleFile[] = [];
   const visitedDirectories = new Set<string>();
 
-  async function walk(directory: string, depth: number): Promise<void> {
+  const walk = async (directory: string, depth: number): Promise<void> => {
     let canonicalDirectory: string;
     try {
       canonicalDirectory = await realpath(directory);
@@ -91,7 +147,7 @@ async function discoverRuleFiles(root: string, containmentRoot?: string): Promis
       (canonicalBoundary && !isWithin(canonicalDirectory, canonicalBoundary)) ||
       visitedDirectories.has(canonicalDirectory)
     )
-      return;
+      {return;}
     visitedDirectories.add(canonicalDirectory);
 
     let entries;
@@ -103,48 +159,25 @@ async function discoverRuleFiles(root: string, containmentRoot?: string): Promis
     entries.sort((left, right) => left.name.localeCompare(right.name));
 
     for (const entry of entries) {
-      const path = join(directory, entry.name);
-      let isDirectory = entry.isDirectory();
-      let isFile = entry.isFile();
-      let canonicalPath = path;
-
-      if (entry.isSymbolicLink()) {
-        try {
-          canonicalPath = await realpath(path);
-          if (canonicalBoundary && !isWithin(canonicalPath, canonicalBoundary)) continue;
-          const target = await stat(path);
-          isDirectory = target.isDirectory();
-          isFile = target.isFile();
-        } catch {
-          continue;
-        }
-      }
+      const resolved = await resolveEntry(directory, entry, canonicalBoundary);
+      if (!resolved) {continue;}
+      const { path, isDirectory, isFile } = resolved;
 
       if (isDirectory) {
         if (depth < MAX_SCAN_DEPTH && !EXCLUDED_DIRECTORIES.has(entry.name)) {
           await walk(path, depth + 1);
         }
       } else if (isFile && RULE_EXTENSIONS.has(extname(entry.name))) {
-        try {
-          canonicalPath = await realpath(path);
-        } catch {
-          continue;
-        }
-        if (canonicalBoundary && !isWithin(canonicalPath, canonicalBoundary)) continue;
-        files.push({
-          path,
-          realPath: canonicalPath,
-          relativePath: normalizePath(relative(root, path)),
-        });
+        await registerRuleFile({ canonicalBoundary, files, path, root });
       }
     }
-  }
+  };
 
   await walk(root, 0);
   return files;
-}
+};
 
-function stripComment(value: string): string {
+const stripComment = (value: string): string => {
   let quote: '"' | "'" | undefined;
   let escaped = false;
 
@@ -159,32 +192,36 @@ function stripComment(value: string): string {
       continue;
     }
     if (character === '"' || character === "'") {
-      quote = quote === character ? undefined : quote === undefined ? character : quote;
+      if (quote === character) {
+        quote = undefined;
+      } else if (quote === undefined) {
+        quote = character;
+      }
       continue;
     }
-    if (character === "#" && quote === undefined) return value.slice(0, index);
+    if (character === "#" && quote === undefined) {return value.slice(0, index);}
   }
 
   return value;
-}
+};
 
-function parseString(value: string): string {
+const parseString = (value: string): string => {
   const trimmed = value.trim();
-  if (!trimmed) return "";
+  if (!trimmed) {return "";}
   if (trimmed.startsWith('"')) {
     const parsed: unknown = JSON.parse(trimmed);
-    if (typeof parsed !== "string") throw new Error("expected a string");
+    if (typeof parsed !== "string") {throw new Error("expected a string");}
     return parsed;
   }
   if (trimmed.startsWith("'")) {
-    if (!trimmed.endsWith("'") || trimmed.length === 1) throw new Error("unclosed quote");
+    if (!trimmed.endsWith("'") || trimmed.length === 1) {throw new Error("unclosed quote");}
     return trimmed.slice(1, -1).replaceAll("''", "'");
   }
   return trimmed;
-}
+};
 
-function splitInlineList(value: string): string[] {
-  if (!value.endsWith("]")) throw new Error("unclosed inline list");
+const splitInlineList = (value: string): string[] => {
+  if (!value.endsWith("]")) {throw new Error("unclosed inline list");}
   const content = value.slice(1, -1);
   const entries: string[] = [];
   let current = "";
@@ -203,7 +240,11 @@ function splitInlineList(value: string): string[] {
       continue;
     }
     if (character === '"' || character === "'") {
-      quote = quote === character ? undefined : quote === undefined ? character : quote;
+      if (quote === character) {
+        quote = undefined;
+      } else if (quote === undefined) {
+        quote = character;
+      }
       current += character;
       continue;
     }
@@ -215,27 +256,27 @@ function splitInlineList(value: string): string[] {
     current += character;
   }
 
-  if (quote !== undefined) throw new Error("unclosed quote");
+  if (quote !== undefined) {throw new Error("unclosed quote");}
   entries.push(parseString(current));
   return entries.filter(Boolean);
-}
+};
 
-function parsePathValue(
+const parsePathValue = (
   rawValue: string,
   lines: string[],
   lineIndex: number,
-): { paths: string[]; consumed: number } {
+): { paths: string[]; consumed: number } => {
   if (rawValue.startsWith("[")) {
-    return { paths: splitInlineList(rawValue), consumed: 1 };
+    return { consumed: 1, paths: splitInlineList(rawValue) };
   }
   if (rawValue) {
     const value = parseString(rawValue);
     return {
+      consumed: 1,
       paths: value
         .split(",")
         .map((path) => path.trim())
         .filter(Boolean),
-      consumed: 1,
     };
   }
 
@@ -247,118 +288,130 @@ function parsePathValue(
       consumed++;
       continue;
     }
-    const match = /^\s+-\s*(.*)$/.exec(line);
-    if (!match) break;
-    paths.push(parseString(match[1] ?? ""));
+    const match = /^\s+-\s*(?<item>.*)$/.exec(line);
+    if (!match) {break;}
+    paths.push(parseString(match.groups?.item ?? ""));
     consumed++;
   }
-  return { paths: paths.filter(Boolean), consumed };
+  return { consumed, paths: paths.filter(Boolean) };
+};
+
+interface FrontmatterLineResult {
+  consumed: number;
+  paths?: string[];
+  alwaysApply?: boolean;
 }
 
+const parseFrontmatterLine = (lines: string[], index: number): FrontmatterLineResult => {
+  const line = stripComment(lines[index] ?? "").trim();
+  if (!line) {return { consumed: 1 };}
+
+  const separator = line.indexOf(":");
+  if (separator === -1) {throw new Error(`expected key-value pair on line ${index + 1}`);}
+  const key = line.slice(0, separator).trim();
+  const value = line.slice(separator + 1).trim();
+
+  if (key === "paths" || key === "globs") {
+    const parsed = parsePathValue(value, lines, index);
+    return { consumed: parsed.consumed, paths: parsed.paths };
+  }
+  if (key === "alwaysApply") {
+    if (value !== "true" && value !== "false") {throw new Error("alwaysApply must be boolean");}
+    return { alwaysApply: value === "true", consumed: 1 };
+  }
+  return { consumed: 1 };
+};
+
 /** Parse the supported Claude-style rule frontmatter without requiring a YAML dependency. */
-export function parseRuleFrontmatter(content: string): RuleFrontmatter {
+export const parseRuleFrontmatter = (content: string): RuleFrontmatter => {
   const normalized = content.startsWith("\uFEFF") ? content.slice(1) : content;
   if (!/^---\r?\n/.test(normalized)) {
-    return { body: normalized, paths: [], alwaysApply: false };
+    return { alwaysApply: false, body: normalized, paths: [] };
   }
 
-  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(normalized);
+  const match = /^---\r?\n(?<frontmatter>[\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(normalized);
   if (!match) {
     return {
-      body: normalized,
-      paths: [],
       alwaysApply: false,
+      body: normalized,
       diagnostic: "Missing closing frontmatter delimiter",
+      paths: [],
     };
   }
 
   try {
-    const lines = (match[1] ?? "").replaceAll("\r\n", "\n").split("\n");
+    const lines = (match.groups?.frontmatter ?? "").replaceAll("\r\n", "\n").split("\n");
     const paths: string[] = [];
     let alwaysApply = false;
 
     for (let index = 0; index < lines.length;) {
-      const line = stripComment(lines[index] ?? "").trim();
-      if (!line) {
-        index++;
-        continue;
-      }
-      const separator = line.indexOf(":");
-      if (separator === -1) throw new Error(`expected key-value pair on line ${index + 1}`);
-      const key = line.slice(0, separator).trim();
-      const value = line.slice(separator + 1).trim();
-
-      if (key === "paths" || key === "globs") {
-        const parsed = parsePathValue(value, lines, index);
-        for (const path of parsed.paths) {
-          if (!paths.includes(path)) paths.push(path);
+      const result = parseFrontmatterLine(lines, index);
+      if (result.paths) {
+        for (const path of result.paths) {
+          if (!paths.includes(path)) {paths.push(path);}
         }
-        index += parsed.consumed;
-      } else if (key === "alwaysApply") {
-        if (value !== "true" && value !== "false") throw new Error("alwaysApply must be boolean");
-        alwaysApply = value === "true";
-        index++;
-      } else {
-        index++;
       }
+      const { alwaysApply: parsedAlwaysApply } = result;
+      if (parsedAlwaysApply !== undefined) {alwaysApply = parsedAlwaysApply;}
+      index += result.consumed;
     }
 
+    const [fullMatch] = match;
     return {
-      body: normalized.slice(match[0].length),
-      paths,
       alwaysApply,
+      body: normalized.slice(fullMatch.length),
+      paths,
     };
   } catch (error) {
     return {
-      body: normalized,
-      paths: [],
       alwaysApply: false,
+      body: normalized,
       diagnostic:
         error instanceof Error
           ? `Malformed frontmatter: ${error.message}`
           : "Malformed frontmatter",
+      paths: [],
     };
   }
-}
+};
 
-function contentHash(content: string): string {
-  return createHash("sha256").update(content).digest("hex");
-}
+const contentHash = (content: string): string =>
+  createHash("sha256").update(content).digest("hex");
 
-async function readRules(
+const readRules = async (
   root: string,
   displayRoot: string,
   containmentRoot?: string,
-): Promise<Rule[]> {
+): Promise<Rule[]> => {
   const rules: Rule[] = [];
   for (const file of await discoverRuleFiles(root, containmentRoot)) {
     try {
       const content = await readFile(file.path, "utf8");
       const parsed = parseRuleFrontmatter(content);
-      if (parsed.diagnostic || !parsed.body.trim()) continue;
+      if (parsed.diagnostic || !parsed.body.trim()) {continue;}
       rules.push({
-        realPath: file.realPath,
-        displayPath: `${displayRoot}/${file.relativePath}`,
-        body: parsed.body.trim(),
-        paths: parsed.paths,
         alwaysApply: parsed.alwaysApply,
+        body: parsed.body.trim(),
         contentHash: contentHash(content),
+        displayPath: `${displayRoot}/${file.relativePath}`,
+        paths: parsed.paths,
+        realPath: file.realPath,
       });
     } catch {
       // An unreadable or malformed rule must not prevent other rules from loading.
     }
   }
   return rules;
-}
+};
 
-async function discoverRules(
+const discoverRules = async (
   cwd: string,
   trusted: boolean,
   homeDirectory: string,
-): Promise<Rule[]> {
+): Promise<Rule[]> => {
   const groups: Rule[][] = [];
   // Global guidance comes first so the shared prompt budget cannot starve it;
-  // project guidance remains later in the prompt and can refine it.
+  // Project guidance remains later in the prompt and can refine it.
   for (const directory of RULE_DIRECTORIES) {
     groups.push(await readRules(join(homeDirectory, directory), `~/${directory}`));
   }
@@ -371,22 +424,22 @@ async function discoverRules(
   const rules: Rule[] = [];
   const seen = new Set<string>();
   for (const rule of groups.flat()) {
-    if (seen.has(rule.realPath)) continue;
+    if (seen.has(rule.realPath)) {continue;}
     seen.add(rule.realPath);
     rules.push(rule);
   }
   return rules;
-}
+};
 
-function truncateBody(rule: Rule, maxChars: number): string {
-  if (rule.body.length <= maxChars) return rule.body;
+const truncateBody = (rule: Rule, maxChars: number): string => {
+  if (rule.body.length <= maxChars) {return rule.body;}
   const notice = `\n\n[Rule truncated. Read full rule: ${rule.displayPath}]`;
   const end = Math.max(0, maxChars - notice.length);
   const safeEnd = /[\uD800-\uDBFF]/.test(rule.body.at(end - 1) ?? "") ? end - 1 : end;
   return `${rule.body.slice(0, safeEnd)}${notice}`;
-}
+};
 
-function formatRules(rules: Rule[], header: string): FormattedRules {
+const formatRules = (rules: Rule[], header: string): FormattedRules => {
   let block = header;
   const emitted: Rule[] = [];
 
@@ -394,7 +447,7 @@ function formatRules(rules: Rule[], header: string): FormattedRules {
     const body = truncateBody(rule, MAX_RULE_CHARS);
     const formatted = `${emitted.length === 0 ? "" : "\n\n"}Instructions from: ${rule.displayPath}\n${body}`;
     const remaining = MAX_BLOCK_CHARS - block.length;
-    if (remaining <= 0) break;
+    if (remaining <= 0) {break;}
     if (formatted.length <= remaining) {
       block += formatted;
       emitted.push(rule);
@@ -402,35 +455,35 @@ function formatRules(rules: Rule[], header: string): FormattedRules {
     }
 
     const notice = `\n\n[Rule truncated. Read full rule: ${rule.displayPath}]`;
-    if (remaining <= notice.length) break;
+    if (remaining <= notice.length) {break;}
     block += `${formatted.slice(0, remaining - notice.length)}${notice}`;
     emitted.push(rule);
     break;
   }
 
   return { block: emitted.length === 0 ? "" : block, emitted };
-}
+};
 
-function formatRulePointers(rules: Rule[], maxChars: number): string {
-  if (rules.length === 0 || maxChars <= 0) return "";
+const formatRulePointers = (rules: Rule[], maxChars: number): string => {
+  if (rules.length === 0 || maxChars <= 0) {return "";}
   const header =
     "\n\n## Path-scoped rules\n\nThese rules are injected automatically after a matching file tool result. Read one proactively when its scope covers work you are about to do:\n\n";
-  if (header.length >= maxChars) return "";
+  if (header.length >= maxChars) {return "";}
   let block = header;
   let count = 0;
 
   for (const rule of rules) {
     const line = `${count === 0 ? "" : "\n"}- ${rule.displayPath} — applies to: ${rule.paths.join(", ")}`;
-    if (block.length + line.length > maxChars) break;
+    if (block.length + line.length > maxChars) {break;}
     block += line;
     count++;
   }
 
   return count === 0 ? "" : block;
-}
+};
 
-function matchesRule(rule: Rule, targetPath: string, cwd: string): boolean {
-  if (rule.alwaysApply || rule.paths.length === 0) return true;
+const matchesRule = (rule: Rule, targetPath: string, cwd: string): boolean => {
+  if (rule.alwaysApply || rule.paths.length === 0) {return true;}
   const absoluteTarget = isAbsolute(targetPath) ? targetPath : resolve(cwd, targetPath);
   const projectRelative = normalizePath(relative(cwd, absoluteTarget));
   const basename = projectRelative.split("/").at(-1) ?? projectRelative;
@@ -445,8 +498,8 @@ function matchesRule(rule: Rule, targetPath: string, cwd: string): boolean {
       const glob = new Bun.Glob(normalizePath(pattern));
       return pathBases.some((path) => glob.match(path));
     });
-    if (excluded) return false;
-    if (positives.length === 0) return true;
+    if (excluded) {return false;}
+    if (positives.length === 0) {return true;}
     return positives.some((pattern) => {
       const glob = new Bun.Glob(normalizePath(pattern).replace(/^\//, ""));
       return pathBases.some((path) => glob.match(path));
@@ -454,21 +507,18 @@ function matchesRule(rule: Rule, targetPath: string, cwd: string): boolean {
   } catch {
     return false;
   }
-}
+};
 
-function record(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
+const record = (value: unknown): Record<string, unknown> | undefined =>
+  typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
 
-function stringProperty(value: unknown, property: string): string | undefined {
+const stringProperty = (value: unknown, property: string): string | undefined => {
   const candidate = record(value)?.[property];
   return typeof candidate === "string" && candidate ? candidate : undefined;
-}
+};
 
 /** Extract paths from Pi's file tools, including the local hashline compatibility tools. */
-export function extractToolPaths(event: ToolResultEvent, cwd: string): string[] {
+export const extractToolPaths = (event: ToolResultEvent, cwd: string): string[] => {
   if (
     event.isError ||
     !["read", "edit", "write", "hashline_read", "hashline_write"].includes(event.toolName)
@@ -478,7 +528,7 @@ export function extractToolPaths(event: ToolResultEvent, cwd: string): string[] 
 
   const paths = new Set<string>();
   const add = (path: string | undefined) => {
-    if (path) paths.add(isAbsolute(path) ? path : resolve(cwd, path));
+    if (path) {paths.add(isAbsolute(path) ? path : resolve(cwd, path));}
   };
   add(stringProperty(event.input, "path"));
   add(stringProperty(event.input, "filePath"));
@@ -487,7 +537,9 @@ export function extractToolPaths(event: ToolResultEvent, cwd: string): string[] 
   if (event.toolName === "hashline_write") {
     const patch = stringProperty(event.input, "patch");
     if (patch) {
-      for (const match of patch.matchAll(/^\[([^\]#]+)#[^\]]+\]/gm)) add(match[1]);
+      for (const match of patch.matchAll(/^\[(?<path>[^\]#]+)#[^\]]+\]/gm)) {
+        add(match.groups?.path);
+      }
     }
 
     const sections = record(event.details)?.sections;
@@ -501,7 +553,7 @@ export function extractToolPaths(event: ToolResultEvent, cwd: string): string[] 
   }
 
   return [...paths];
-}
+};
 
 export default function rulesExtension(
   pi: ExtensionAPI,
@@ -510,18 +562,18 @@ export default function rulesExtension(
   const dynamicInjections = new Set<string>();
   let activeDiscovery: { key: string; promise: Promise<Rule[]> } | undefined;
 
-  async function refresh(cwd: string, trusted: boolean): Promise<Rule[]> {
+  const refresh = async (cwd: string, trusted: boolean): Promise<Rule[]> => {
     const key = `${cwd}\0${trusted}`;
-    if (activeDiscovery?.key === key) return activeDiscovery.promise;
+    if (activeDiscovery?.key === key) {return activeDiscovery.promise;}
 
     const promise = discoverRules(cwd, trusted, environment.homeDirectory);
     activeDiscovery = { key, promise };
     try {
       return await promise;
     } finally {
-      if (activeDiscovery?.promise === promise) activeDiscovery = undefined;
+      if (activeDiscovery?.promise === promise) {activeDiscovery = undefined;}
     }
-  }
+  };
 
   pi.on("session_start", () => {
     dynamicInjections.clear();
@@ -547,18 +599,18 @@ export default function rulesExtension(
 
   pi.on("tool_result", async (event, ctx) => {
     const targetPaths = extractToolPaths(event, ctx.cwd);
-    if (targetPaths.length === 0) return;
+    if (targetPaths.length === 0) {return;}
 
     const rules = await refresh(ctx.cwd, ctx.isProjectTrusted());
     const pendingTargetsByRule = new Map<Rule, string[]>();
     for (const rule of rules) {
-      if (rule.alwaysApply || rule.paths.length === 0) continue;
+      if (rule.alwaysApply || rule.paths.length === 0) {continue;}
       const pendingTargets = targetPaths.filter(
         (target) =>
           matchesRule(rule, target, ctx.cwd) &&
           !dynamicInjections.has(`${target}\0${rule.realPath}\0${rule.contentHash}`),
       );
-      if (pendingTargets.length > 0) pendingTargetsByRule.set(rule, pendingTargets);
+      if (pendingTargets.length > 0) {pendingTargetsByRule.set(rule, pendingTargets);}
     }
 
     const displayTarget = normalizePath(relative(ctx.cwd, targetPaths[0] ?? ctx.cwd));
@@ -572,7 +624,7 @@ export default function rulesExtension(
       }
     }
     return formatted.block
-      ? { content: [...event.content, { type: "text", text: formatted.block }] }
+      ? { content: [...event.content, { text: formatted.block, type: "text" }] }
       : undefined;
   });
 }

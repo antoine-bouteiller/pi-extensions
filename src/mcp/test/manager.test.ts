@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_MAX_BYTES } from "@earendil-works/pi-coding-agent";
-import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
+import { UnauthorizedError, type OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
-import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
+import  { type JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
+import  { type Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { createServer } from "node:http";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,20 +12,28 @@ import { fileURLToPath } from "node:url";
 import { KeychainCredentialError, type CredentialStore } from "../keychain.js";
 import { readonlyMcpPolicy } from "../index.js";
 import { McpManager } from "../manager.js";
-import type { McpGatewayPolicy } from "../types.js";
+import  { type McpGatewayPolicy, type McpServerMap } from "../types.js";
 
 class FakeTransport {
   onclose?: () => void;
   onerror?: (error: Error) => void;
   onmessage?: (message: JSONRPCMessage) => void;
   closed = 0;
+  readonly kind: "stdio" | "streamable-http" | "sse";
+  readonly provider?: OAuthClientProvider;
+  finish?: (code: string) => void;
+
   constructor(
-    readonly kind: "stdio" | "streamable-http" | "sse",
-    readonly provider?: OAuthClientProvider,
-    public finish?: (code: string) => void,
-  ) {}
-  async start() {}
-  async send(_message: JSONRPCMessage) {}
+    kind: "stdio" | "streamable-http" | "sse",
+    provider?: OAuthClientProvider,
+    finish?: (code: string) => void,
+  ) {
+    this.kind = kind;
+    this.provider = provider;
+    this.finish = finish;
+  }
+  async start() { /* Empty */ }
+  async send(_message: JSONRPCMessage) { /* Empty */ }
   async close() {
     this.closed += 1;
   }
@@ -35,7 +43,7 @@ class FakeTransport {
 }
 
 interface FakePage {
-  tools: Array<{
+  tools: {
     name: string;
     description?: string;
     inputSchema: Record<string, unknown>;
@@ -46,13 +54,13 @@ interface FakePage {
       idempotentHint?: unknown;
       openWorldHint?: unknown;
     };
-  }>;
+  }[];
   nextCursor?: string;
 }
 
-function harness(
+const harness = (
   options: {
-    config?: Record<string, any>;
+    config?: McpServerMap;
     pages?: Record<string, FakePage>;
     connect?: (transport: FakeTransport, provider?: OAuthClientProvider) => Promise<void>;
     call?: (params: { name: string; arguments: Record<string, unknown> }) => Promise<unknown>;
@@ -61,102 +69,105 @@ function harness(
     credentialStore?: CredentialStore;
     policy?: McpGatewayPolicy;
   } = {},
-) {
+) => {
   const calls = {
     clients: 0,
-    connects: [] as string[],
-    lists: [] as Array<string | undefined>,
-    toolCalls: [] as Array<{ name: string; arguments: Record<string, unknown> }>,
     closes: 0,
-    transports: [] as FakeTransport[],
+    connects: [] as string[],
     keychainReads: 0,
+    lists: [] as (string | undefined)[],
+    toolCalls: [] as { name: string; arguments: Record<string, unknown> }[],
+    transports: [] as FakeTransport[],
   };
   const pages = options.pages ?? {
     root: {
       tools: [
         {
-          name: "echo",
           description: "Echo text",
-          inputSchema: { type: "object", properties: { text: { type: "string" } } },
+          inputSchema: { properties: { text: { type: "string" } }, type: "object" },
+          name: "echo",
         },
       ],
     },
   };
 
   const manager = new McpManager(
-    options.config ?? { local: { type: "stdio", command: "fixture" } },
+    options.config ?? { local: { command: "fixture", type: "stdio" } },
     {
-      openUrl: options.openUrl ?? (async () => undefined),
-      policy: options.policy,
-      credentialStore: options.credentialStore ?? {
-        async get() {
-          calls.keychainReads += 1;
-          return undefined;
-        },
-        async set() {},
-        async delete() {},
-      },
-      createTransport(_name, _config, kind, provider) {
-        const transport = new FakeTransport(kind, provider);
-        calls.transports.push(transport);
-        return transport as any;
-      },
       createClient() {
         calls.clients += 1;
         return {
-          async connect(transport: FakeTransport) {
-            calls.connects.push(transport.kind);
-            await options.connect?.(transport, transport.provider);
+          async callTool(params: { name: string; arguments: Record<string, unknown> }) {
+            calls.toolCalls.push(params);
+            if (options.call) {return options.call(params);}
+            return options.callResult ?? { content: [{ text: "ok", type: "text" }] };
           },
           async close() {
             calls.closes += 1;
+          },
+          async connect(transport: Transport) {
+            const fake = transport as FakeTransport;
+            calls.connects.push(fake.kind);
+            await options.connect?.(fake, fake.provider);
           },
           getInstructions() {
             return "fixture instructions";
           },
           async listTools(params?: { cursor?: string }) {
             calls.lists.push(params?.cursor);
-            return pages[params?.cursor ?? "root"]!;
+            const page = pages[params?.cursor ?? "root"];
+            if (!page) {throw new Error("missing fixture page");}
+            return page;
           },
-          async callTool(params: { name: string; arguments: Record<string, unknown> }) {
-            calls.toolCalls.push(params);
-            if (options.call) return options.call(params);
-            return options.callResult ?? { content: [{ type: "text", text: "ok" }] };
-          },
-        } as any;
+        };
       },
+      createTransport(_name, _config, { authProvider, kind }) {
+        const transport = new FakeTransport(kind, authProvider);
+        calls.transports.push(transport);
+        return transport;
+      },
+      credentialStore: options.credentialStore ?? {
+        async delete() { /* Empty: never invoked when tests provide credentials explicitly. */ },
+        async get() {
+          calls.keychainReads += 1;
+          return undefined;
+        },
+        async set() { /* Empty: writes are only asserted through calls.keychainReads. */ },
+      },
+      openUrl: options.openUrl ?? (async () => undefined),
+      policy: options.policy,
     },
   );
-  return { manager, calls };
-}
+  return { calls, manager };
+};
 
-async function freePort(): Promise<number> {
+const freePort = async (): Promise<number> => {
   const server = createServer();
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
-  if (!address || typeof address === "string") throw new Error("missing address");
-  const port = address.port;
+  if (!address || typeof address === "string") {throw new Error("missing address");}
+  const {port} = address;
   await new Promise<void>((resolve) => server.close(() => resolve()));
   return port;
-}
+};
 
 describe("MCP manager", () => {
   test("construction and status are metadata-only", () => {
     const fixture = harness({
       config: {
-        local: { type: "stdio", command: "fixture" },
-        linear: { type: "http", url: "https://mcp.linear.app/mcp" },
-        headers: {
-          type: "http",
-          url: "https://example.test/mcp",
-          headers: { Authorization: "Bearer token" },
-        },
         explicit: {
-          type: "http",
-          url: "https://example.test/mcp",
           headers: { "X-Tenant": "one" },
           oauth: {},
+          type: "http",
+          url: "https://example.test/mcp",
         },
+        headers: {
+          headers: { Authorization: "Bearer token" },
+          type: "http",
+          url: "https://example.test/mcp",
+        },
+        linear: { type: "http", url: "https://mcp.linear.app/mcp" },
+        local: { command: "fixture", type: "stdio" },
         off: { disabled: true },
       },
     });
@@ -195,7 +206,7 @@ describe("MCP manager", () => {
       const fixture = harness({
         config: { remote: { type: "http", url: "https://example.test/mcp" } },
         connect: async (transport) => {
-          if (transport.kind === "streamable-http") throw fallbackError;
+          if (transport.kind === "streamable-http") {throw fallbackError;}
         },
       });
       await fixture.manager.list("remote");
@@ -234,7 +245,7 @@ describe("MCP manager", () => {
         }
         expect(provider).toBeDefined();
         expect(fixture.calls.keychainReads).toBe(0);
-        await provider!.tokens();
+        await provider?.tokens();
       },
     });
 
@@ -257,9 +268,9 @@ describe("MCP manager", () => {
     const fixture = harness({
       config: {
         remote: {
+          headers: { Authorization: "Bearer token" },
           type: "http",
           url: "https://example.test/mcp",
-          headers: { Authorization: "Bearer token" },
         },
       },
       connect: async () => {
@@ -275,43 +286,43 @@ describe("MCP manager", () => {
 
   test("loads every page, sanitizes names, searches, describes, and calls scoped tools", async () => {
     const fixture = harness({
-      config: { "my server": { type: "stdio", command: "fixture" } },
+      callResult: {
+        content: [
+          { text: "hello", type: "text" },
+          { data: "AA==", mimeType: "image/png", type: "image" },
+          { resource: { text: "embedded", uri: "x://one" }, type: "resource" },
+        ],
+        structuredContent: { answer: 42 },
+      },
+      config: { "my server": { command: "fixture", type: "stdio" } },
       pages: {
         root: {
+          nextCursor: "two",
           tools: [
             {
-              name: "first.tool",
-              description: "Alpha",
-              inputSchema: { type: "object" },
               annotations: {
-                title: "First",
-                readOnlyHint: true,
                 destructiveHint: false,
                 idempotentHint: true,
                 openWorldHint: false,
+                readOnlyHint: true,
+                title: "First",
               },
+              description: "Alpha",
+              inputSchema: { type: "object" },
+              name: "first.tool",
             },
           ],
-          nextCursor: "two",
         },
         two: {
           tools: [
             {
-              name: "second-tool",
+              annotations: { destructiveHint: true, readOnlyHint: false },
               description: "Beta",
               inputSchema: { type: "object" },
-              annotations: { readOnlyHint: false, destructiveHint: true },
+              name: "second-tool",
             },
           ],
         },
-      },
-      callResult: {
-        content: [
-          { type: "text", text: "hello" },
-          { type: "image", data: "AA==", mimeType: "image/png" },
-          { type: "resource", resource: { uri: "x://one", text: "embedded" } },
-        ],
-        structuredContent: { answer: 42 },
       },
     });
 
@@ -321,67 +332,67 @@ describe("MCP manager", () => {
       "my_server_second-tool",
     ]);
     expect(fixture.calls.lists).toEqual([undefined, "two"]);
-    expect((await fixture.manager.search("beta"))[0]?.name).toBe("my_server_second-tool");
+    const searched = await fixture.manager.search("beta");
+    expect(searched[0]?.name).toBe("my_server_second-tool");
     const described = await fixture.manager.describe("my_server_first_tool");
     expect(described.remoteName).toBe("first.tool");
     expect(described.annotations).toEqual({
-      title: "First",
-      readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
       openWorldHint: false,
+      readOnlyHint: true,
+      title: "First",
     });
-    expect(listed[1]?.annotations).toEqual({ readOnlyHint: false, destructiveHint: true });
+    expect(listed[1]?.annotations).toEqual({ destructiveHint: true, readOnlyHint: false });
 
     const result = await fixture.manager.call(
       "second-tool",
       { value: true },
       { server: "my server" },
     );
-    expect(fixture.calls.toolCalls).toEqual([{ name: "second-tool", arguments: { value: true } }]);
+    expect(fixture.calls.toolCalls).toEqual([{ arguments: { value: true }, name: "second-tool" }]);
     expect(result.content).toEqual([
-      { type: "text", text: "hello" },
-      { type: "image", data: "AA==", mimeType: "image/png" },
-      { type: "text", text: "embedded" },
-      { type: "text", text: '{\n  "answer": 42\n}' },
+      { text: "hello", type: "text" },
+      { data: "AA==", mimeType: "image/png", type: "image" },
+      { text: "embedded", type: "text" },
+      { text: '{\n  "answer": 42\n}', type: "text" },
     ]);
   });
 
   test("read-only policy filters annotated tools across discovery, description, and calls", async () => {
     const fixture = harness({
-      config: { linear: { type: "stdio", command: "fixture" } },
-      policy: readonlyMcpPolicy,
+      config: { linear: { command: "fixture", type: "stdio" } },
       pages: {
         root: {
           tools: [
             {
+              annotations: { destructiveHint: false, readOnlyHint: true },
+              inputSchema: { type: "object" },
               name: "get_issue",
-              inputSchema: { type: "object" },
-              annotations: { readOnlyHint: true, destructiveHint: false },
             },
             {
+              annotations: { destructiveHint: false, readOnlyHint: false },
+              inputSchema: { type: "object" },
               name: "create_issue",
-              inputSchema: { type: "object" },
-              annotations: { readOnlyHint: false, destructiveHint: false },
             },
             {
-              name: "dangerous_read",
+              annotations: { destructiveHint: true, readOnlyHint: true },
               inputSchema: { type: "object" },
-              annotations: { readOnlyHint: true, destructiveHint: true },
+              name: "dangerous_read",
             },
-            { name: "mystery", inputSchema: { type: "object" } },
+            { inputSchema: { type: "object" }, name: "mystery" },
           ],
         },
       },
+      policy: readonlyMcpPolicy,
     });
 
-    expect((await fixture.manager.list("linear")).map((tool) => tool.remoteName)).toEqual([
-      "get_issue",
-    ]);
-    expect((await fixture.manager.search("", { server: "linear" })).map((tool) => tool.remoteName))
-      .toEqual(["get_issue"]);
-    expect((await fixture.manager.describe("get_issue", { server: "linear" })).annotations)
-      .toEqual({ readOnlyHint: true, destructiveHint: false });
+    const listed = await fixture.manager.list("linear");
+    expect(listed.map((tool) => tool.remoteName)).toEqual(["get_issue"]);
+    const searched = await fixture.manager.search("", { server: "linear" });
+    expect(searched.map((tool) => tool.remoteName)).toEqual(["get_issue"]);
+    const described = await fixture.manager.describe("get_issue", { server: "linear" });
+    expect(described.annotations).toEqual({ destructiveHint: false, readOnlyHint: true });
     await fixture.manager.call("linear_get_issue", {});
 
     for (const denied of ["create_issue", "dangerous_read", "mystery"]) {
@@ -410,23 +421,25 @@ describe("MCP manager", () => {
       "dbx_remove_connection",
     ];
     const fixture = harness({
-      config: { dbx: { type: "stdio", command: "fixture" } },
-      policy: readonlyMcpPolicy,
+      config: { dbx: { command: "fixture", type: "stdio" } },
       pages: {
         root: {
           tools: [...allowed, ...denied].map((name) => ({
-            name,
             inputSchema: { type: "object" },
+            name,
           })),
         },
       },
+      policy: readonlyMcpPolicy,
     });
 
-    expect((await fixture.manager.list("dbx")).map((tool) => tool.remoteName)).toEqual(allowed);
-    expect((await fixture.manager.search("dbx_", { server: "dbx" })).map((tool) => tool.remoteName))
-      .toEqual([...allowed].sort());
+    const listed = await fixture.manager.list("dbx");
+    expect(listed.map((tool) => tool.remoteName)).toEqual(allowed);
+    const searched = await fixture.manager.search("dbx_", { server: "dbx" });
+    expect(searched.map((tool) => tool.remoteName)).toEqual([...allowed].toSorted());
     for (const tool of allowed) {
-      expect((await fixture.manager.describe(tool, { server: "dbx" })).remoteName).toBe(tool);
+      const describedTool = await fixture.manager.describe(tool, { server: "dbx" });
+      expect(describedTool.remoteName).toBe(tool);
       await fixture.manager.call(tool, {}, { server: "dbx" });
     }
     for (const tool of denied) {
@@ -440,13 +453,13 @@ describe("MCP manager", () => {
     expect(fixture.calls.toolCalls.map((call) => call.name)).toEqual(allowed);
 
     const impersonator = harness({
-      config: { other: { type: "stdio", command: "fixture" } },
-      policy: readonlyMcpPolicy,
+      config: { other: { command: "fixture", type: "stdio" } },
       pages: {
         root: {
-          tools: [{ name: "dbx_list_tables", inputSchema: { type: "object" } }],
+          tools: [{ inputSchema: { type: "object" }, name: "dbx_list_tables" }],
         },
       },
+      policy: readonlyMcpPolicy,
     });
     expect(await impersonator.manager.list("other")).toEqual([]);
     await expect(impersonator.manager.call("other_dbx_list_tables", {})).rejects.toThrow(
@@ -455,24 +468,24 @@ describe("MCP manager", () => {
   });
 
   test("passes the requested operation and canonical names to policy callbacks", async () => {
-    const requests: Array<{
+    const requests: {
       operation: string;
       server: string;
       remoteName: string;
       exposedName: string;
-    }> = [];
+    }[] = [];
     const fixture = harness({
       policy: {
-        name: "recording",
         allows(request) {
           requests.push({
-            operation: request.operation,
-            server: request.server,
-            remoteName: request.remoteName,
             exposedName: request.exposedName,
+            operation: request.operation,
+            remoteName: request.remoteName,
+            server: request.server,
           });
           return true;
         },
+        name: "recording",
       },
     });
 
@@ -483,10 +496,10 @@ describe("MCP manager", () => {
 
     expect(requests).toEqual(
       ["list", "search", "describe", "call"].map((operation) => ({
-        operation,
-        server: "local",
-        remoteName: "echo",
         exposedName: "local_echo",
+        operation,
+        remoteName: "echo",
+        server: "local",
       })),
     );
   });
@@ -496,8 +509,8 @@ describe("MCP manager", () => {
       pages: {
         root: {
           tools: [
-            { name: "a.b", inputSchema: { type: "object" } },
-            { name: "a_b", inputSchema: { type: "object" } },
+            { inputSchema: { type: "object" }, name: "a.b" },
+            { inputSchema: { type: "object" }, name: "a_b" },
           ],
         },
       },
@@ -506,8 +519,8 @@ describe("MCP manager", () => {
 
     const cursor = harness({
       pages: {
-        root: { tools: [], nextCursor: "again" },
-        again: { tools: [], nextCursor: "again" },
+        again: { nextCursor: "again", tools: [] },
+        root: { nextCursor: "again", tools: [] },
       },
     });
     await expect(cursor.manager.list("local")).rejects.toThrow("repeated a tools cursor");
@@ -520,21 +533,21 @@ describe("MCP manager", () => {
     }
 
     const toolError = harness({
-      callResult: { isError: true, content: [{ type: "text", text: "remote failed" }] },
+      callResult: { content: [{ text: "remote failed", type: "text" }], isError: true },
     });
     await expect(toolError.manager.call("local_echo", {})).rejects.toThrow("remote failed");
 
     const oversizedError = harness({
       callResult: {
+        content: [{ text: "x".repeat(DEFAULT_MAX_BYTES * 2), type: "text" }],
         isError: true,
-        content: [{ type: "text", text: "x".repeat(DEFAULT_MAX_BYTES * 2) }],
       },
     });
     try {
       await oversizedError.manager.call("local_echo", {});
       throw new Error("expected oversized MCP error");
     } catch (error) {
-      const message = (error as Error).message;
+      const {message} = (error as Error);
       expect(Buffer.byteLength(message, "utf8")).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
       expect(message).toContain("Full output saved to:");
     }
@@ -547,19 +560,14 @@ describe("MCP manager", () => {
     const fixture = harness({
       config: {
         slack: {
+          oauth: { callbackPort: port, clientId: "client" },
           type: "http",
           url: "https://mcp.slack.test/mcp",
-          oauth: { clientId: "client", callbackPort: port },
         },
       },
-      openUrl: async (authorizationUrl) => {
-        opened.push(authorizationUrl);
-        const state = new URL(authorizationUrl).searchParams.get("state");
-        void fetch(`http://localhost:${port}/callback?code=oauth-code&state=${state}`);
-      },
       connect: async (transport, provider) => {
-        if (authorized) return;
-        if (!provider) throw new Error("provider missing");
+        if (authorized) {return;}
+        if (!provider) {throw new Error("provider missing");}
         provider.saveCodeVerifier("verifier");
         const state = await provider.state?.();
         await provider.redirectToAuthorization(
@@ -570,6 +578,11 @@ describe("MCP manager", () => {
           authorized = true;
         };
         throw new UnauthorizedError();
+      },
+      openUrl: async (authorizationUrl) => {
+        opened.push(authorizationUrl);
+        const state = new URL(authorizationUrl).searchParams.get("state");
+        void fetch(`http://localhost:${port}/callback?code=oauth-code&state=${state}`);
       },
     });
 
@@ -590,17 +603,13 @@ describe("MCP manager", () => {
     const fixture = harness({
       config: {
         slack: {
+          oauth: { callbackPort: port, clientId: "client" },
           type: "http",
           url: "https://mcp.slack.test/mcp",
-          oauth: { clientId: "client", callbackPort: port },
         },
       },
-      openUrl: async (authorizationUrl) => {
-        openedUrl = authorizationUrl;
-        signalBrowserOpened();
-      },
       connect: async (transport, provider) => {
-        if (authorized) return;
+        if (authorized) {return;}
         const state = await provider?.state?.();
         await provider?.redirectToAuthorization(
           new URL(`https://auth.test/start?state=${encodeURIComponent(state ?? "")}`),
@@ -609,6 +618,10 @@ describe("MCP manager", () => {
           authorized = true;
         };
         throw new UnauthorizedError();
+      },
+      openUrl: async (authorizationUrl) => {
+        openedUrl = authorizationUrl;
+        signalBrowserOpened();
       },
     });
 
@@ -633,11 +646,11 @@ describe("MCP manager", () => {
     const port = await freePort();
     const fixture = harness({
       config: {
-        "same.name": { type: "stdio", command: "fixture" },
+        "same.name": { command: "fixture", type: "stdio" },
         same_name: {
+          oauth: { callbackPort: port, clientId: "client" },
           type: "http",
           url: "https://mcp.example.test/mcp",
-          oauth: { clientId: "client", callbackPort: port },
         },
       },
     });
@@ -652,14 +665,14 @@ describe("MCP manager", () => {
   test("uses the real SDK over stdio and terminates the fixture on close", async () => {
     const directory = await mkdtemp(join(tmpdir(), "pi-mcp-manager-test-"));
     const marker = join(directory, "pid");
-    const fixturePath = fileURLToPath(new URL("./fixtures/stdio-fixture.ts", import.meta.url));
+    const fixturePath = fileURLToPath(new URL("fixtures/stdio_fixture.ts", import.meta.url));
     const manager = new McpManager(
       {
         fixture: {
-          type: "stdio",
-          command: process.execPath,
           args: [fixturePath],
+          command: process.execPath,
           env: { PI_MCP_FIXTURE_PID: marker },
+          type: "stdio",
         },
       },
       { openUrl: async () => undefined },
@@ -668,7 +681,7 @@ describe("MCP manager", () => {
     const tools = await manager.list("fixture");
     expect(tools.map((tool) => tool.name)).toEqual(["fixture_echo_fixture"]);
     const result = await manager.call("fixture_echo_fixture", { value: "hello" });
-    expect(result.content[0]).toEqual({ type: "text", text: "fixture:hello" });
+    expect(result.content[0]).toEqual({ text: "fixture:hello", type: "text" });
     const pid = Number(await readFile(marker, "utf8"));
 
     await manager.close();
@@ -695,19 +708,19 @@ describe("MCP manager", () => {
 
     const keychain = harness({
       config: {
-        remote: { type: "http", url: "https://example.test/mcp", oauth: {} },
+        remote: { oauth: {}, type: "http", url: "https://example.test/mcp" },
+      },
+      connect: async (_transport, provider) => {
+        await provider?.tokens();
       },
       credentialStore: {
+        async delete() { /* Empty: this failure test never deletes a credential. */ },
         async get() {
           throw new KeychainCredentialError(
             "macOS Keychain lookup failed. Ensure Keychain is available and unlocked, then retry.",
           );
         },
-        async set() {},
-        async delete() {},
-      },
-      connect: async (_transport, provider) => {
-        await provider?.tokens();
+        async set() { /* Empty: this failure test never writes a credential. */ },
       },
     });
     await expect(keychain.manager.connect("remote")).rejects.toThrow(

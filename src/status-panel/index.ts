@@ -1,7 +1,7 @@
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-  ReadonlyFooterDataProvider,
+import  {
+  type ExtensionAPI,
+  type ExtensionContext,
+  type ReadonlyFooterDataProvider,
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { emptyGitInfoState, emptyModelInfoState, type GitInfoState, type ModelInfoState, type ProviderQuota } from "./state";
@@ -9,8 +9,8 @@ import { columns, formatDirectory, formatTokens, progressBar, progressLine } fro
 import { fetchGitInfo } from "./git";
 import { AnthropicQuotaPoller, quotaFromHeaders, type QuotaFetcher } from "./provider";
 import { createSidebarController, type SidebarController, type SidebarState } from "./sidebar";
-import { MIN_MAIN_WIDTH, MIN_SIDEBAR_WIDTH } from "./split-pane";
-import { runningAgents } from "../shared/agent-activity";
+import { MIN_MAIN_WIDTH, MIN_SIDEBAR_WIDTH } from "./split_pane";
+import { runningAgents } from "../shared/agent_activity";
 
 const ANTHROPIC_QUOTA_REFRESH_MS = 15_000;
 
@@ -19,11 +19,11 @@ interface StatusPanelDependencies {
 }
 
 export default function statusPanel(pi: ExtensionAPI, dependencies: StatusPanelDependencies = {}) {
-  if (process.env.PI_SUBAGENT_OWNER_TOKEN !== undefined) return;
+  if (process.env.PI_SUBAGENT_OWNER_TOKEN !== undefined) {return;}
 
   let modelInfo: ModelInfoState = emptyModelInfoState();
   let gitInfo: GitInfoState = emptyGitInfoState();
-  let providerQuota: ProviderQuota | null = null;
+  let providerQuota: ProviderQuota | undefined;
   let activity: SidebarState["activity"] = "ready";
   let sidebar: SidebarController | undefined;
   let footerData: ReadonlyFooterDataProvider | undefined;
@@ -35,39 +35,42 @@ export default function statusPanel(pi: ExtensionAPI, dependencies: StatusPanelD
       requestRender?.();
     },
     {
-      refreshMs: ANTHROPIC_QUOTA_REFRESH_MS,
       fetchQuota: dependencies.fetchAnthropicQuota,
+      refreshMs: ANTHROPIC_QUOTA_REFRESH_MS,
     },
   );
 
-  async function refreshGit() {
+  const refreshGit = async () => {
     gitInfo = await fetchGitInfo(pi);
     requestRender?.();
-  }
+  };
 
-  function refreshModel(ctx: ExtensionContext) {
-    const model = ctx.model;
+  const applyModelInfo = (ctx: ExtensionContext) => {
+    const {model} = ctx;
     const usage = ctx.getContextUsage();
-    modelInfo = {
+    return {
       ...modelInfo,
-      provider: model?.provider ?? "",
-      modelId: model?.id ?? "no-model",
-      thinking: model?.reasoning ? pi.getThinkingLevel() : "off",
-      contextTokens: usage?.tokens ?? null,
+      contextPercent: usage?.percent ?? undefined,
+      contextTokens: usage?.tokens ?? undefined,
       contextWindow: usage?.contextWindow ?? model?.contextWindow ?? 0,
-      contextPercent: usage?.percent ?? null,
+      modelId: model?.id ?? "no-model",
+      provider: model?.provider ?? "",
+      thinking: model?.reasoning ? pi.getThinkingLevel() : "off",
     };
+  };
+
+  const refreshModel = (ctx: ExtensionContext) => {
+    modelInfo = applyModelInfo(ctx);
     requestRender?.();
-  }
+  };
 
-  function extensionStatuses() {
-    return Array.from(footerData?.getExtensionStatuses().entries() ?? [])
-      .sort(([left], [right]) => left.localeCompare(right))
+  const extensionStatuses = () =>
+    [...footerData?.getExtensionStatuses().entries() ?? []]
+      .toSorted(([left], [right]) => left.localeCompare(right))
       .flatMap(([, text]) => text.split("\n"));
-  }
 
-  function install(ctx: ExtensionContext) {
-    if (ctx.mode !== "tui") return;
+  const install = (ctx: ExtensionContext) => {
+    if (ctx.mode !== "tui") {return;}
     sidebar?.dispose();
     footerData = undefined;
     ctx.ui.setFooter((tui, theme, data: ReadonlyFooterDataProvider) => {
@@ -77,8 +80,13 @@ export default function statusPanel(pi: ExtensionAPI, dependencies: StatusPanelD
         tui.requestRender();
       });
       return {
+        dispose() {
+          unsubscribe?.();
+          if (footerData === data) {footerData = undefined;}
+        },
+        invalidate() { /* Empty */ },
         render(width: number) {
-          if (tui.terminal.columns >= MIN_MAIN_WIDTH + MIN_SIDEBAR_WIDTH) return [];
+          if (tui.terminal.columns >= MIN_MAIN_WIDTH + MIN_SIDEBAR_WIDTH) {return [];}
           const directory = theme.fg("text", formatDirectory(ctx.cwd));
           const model = theme.fg("muted", `${modelInfo.modelId} · ${modelInfo.thinking}`);
           const percent = modelInfo.contextPercent ?? 0;
@@ -107,19 +115,19 @@ export default function statusPanel(pi: ExtensionAPI, dependencies: StatusPanelD
               truncateToWidth(
                 theme.fg(
                   "muted",
-                  progressLine(label, providerQuota.percent, providerQuota.detail ?? "", 8),
+                  progressLine({
+                    detail: providerQuota.detail ?? "",
+                    label,
+                    percent: providerQuota.percent,
+                    width: 8,
+                  }),
                 ),
                 width,
               ),
             );
           }
-          for (const status of extensionStatuses()) lines.push(truncateToWidth(status, width));
+          for (const status of extensionStatuses()) {lines.push(truncateToWidth(status, width));}
           return lines;
-        },
-        invalidate() {},
-        dispose() {
-          unsubscribe?.();
-          if (footerData === data) footerData = undefined;
         },
       };
     });
@@ -127,12 +135,12 @@ export default function statusPanel(pi: ExtensionAPI, dependencies: StatusPanelD
       ctx,
       getState: () => ({
         activity,
-        cwd: ctx.cwd,
-        model: modelInfo,
-        git: gitInfo,
-        quota: providerQuota,
         agents: runningAgents.list(),
+        cwd: ctx.cwd,
         extensionStatuses: extensionStatuses(),
+        git: gitInfo,
+        model: modelInfo,
+        quota: providerQuota,
       }),
       onError: () => undefined,
     });
@@ -141,33 +149,33 @@ export default function statusPanel(pi: ExtensionAPI, dependencies: StatusPanelD
     ctx.ui.setTitle(`pi · ${formatDirectory(ctx.cwd)}`);
     refreshModel(ctx);
     void refreshGit();
-  }
+  };
 
   pi.on("session_start", (_event, ctx) => {
     anthropicQuota.stop();
     modelInfo = emptyModelInfoState();
     gitInfo = emptyGitInfoState();
-    providerQuota = null;
+    providerQuota = undefined;
     activity = "ready";
     install(ctx);
-    if (ctx.mode !== "tui") refreshModel(ctx);
+    if (ctx.mode !== "tui") {refreshModel(ctx);}
     if (ctx.mode === "tui" && ctx.model?.provider === "anthropic")
-      anthropicQuota.start(ctx.model.baseUrl);
+      {anthropicQuota.start(ctx.model.baseUrl);}
   });
   pi.on("model_select", (event, ctx) => {
     modelInfo = {
       ...modelInfo,
-      provider: event.model.provider,
-      modelId: event.model.id,
-      thinking: event.model.reasoning ? pi.getThinkingLevel() : "off",
       contextWindow: event.model.contextWindow,
+      modelId: event.model.id,
+      provider: event.model.provider,
+      thinking: event.model.reasoning ? pi.getThinkingLevel() : "off",
     };
-    providerQuota = null;
+    providerQuota = undefined;
     anthropicQuota.stop();
     refreshModel(ctx);
     void refreshGit();
     if (ctx.mode === "tui" && event.model.provider === "anthropic")
-      anthropicQuota.start(event.model.baseUrl);
+      {anthropicQuota.start(event.model.baseUrl);}
   });
   pi.on("thinking_level_select", (event) => {
     modelInfo = { ...modelInfo, thinking: event.level };
@@ -198,6 +206,6 @@ export default function statusPanel(pi: ExtensionAPI, dependencies: StatusPanelD
     sidebar = undefined;
     footerData = undefined;
     requestRender = undefined;
-    if (ctx.mode === "tui") ctx.ui.setFooter(undefined);
+    if (ctx.mode === "tui") {ctx.ui.setFooter(undefined);}
   });
 }

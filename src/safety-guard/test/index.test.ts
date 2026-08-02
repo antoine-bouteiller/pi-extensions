@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import safetyGuard from "../index";
 
 const temporaryDirectories: string[] = [];
@@ -11,21 +12,43 @@ afterEach(async () => {
   );
 });
 
-type Handler = (event: any, ctx: any) => Promise<any>;
-
-function setup() {
-  let handler: Handler | undefined;
-  const emitted: Array<[string, unknown]> = [];
-  safetyGuard({
-    on: (event: string, callback: Handler) => {
-      if (event === "tool_call") handler = callback;
-    },
-    events: { emit: (event: string, data: unknown) => emitted.push([event, data]) },
-  } as any);
-  return { handler: handler!, emitted };
+interface FakeToolCallEvent {
+  toolName: string;
+  input: { command?: string; path?: string };
 }
 
-const event = (command: string) => ({ toolName: "bash", input: { command } });
+interface FakeUi {
+  confirm: (title: string, message: string) => Promise<boolean>;
+  notify: (message: string, level: string) => void;
+}
+
+interface FakeContext {
+  cwd: string;
+  hasUI: boolean;
+  ui?: FakeUi;
+}
+
+interface GuardResult {
+  block?: boolean;
+  reason?: string;
+}
+
+type Handler = (event: FakeToolCallEvent, ctx: FakeContext) => Promise<GuardResult | undefined>;
+
+const setup = () => {
+  let handler: Handler | undefined;
+  const emitted: [string, unknown][] = [];
+  safetyGuard({
+    events: { emit: (event: string, data: unknown) => emitted.push([event, data]) },
+    on: (event: string, callback: Handler) => {
+      if (event === "tool_call") {handler = callback;}
+    },
+  } as unknown as ExtensionAPI);
+  if (!handler) {throw new Error("tool_call handler was not registered");}
+  return { emitted, handler };
+};
+
+const event = (command: string) => ({ input: { command }, toolName: "bash" });
 
 describe("safety guard", () => {
   test("blocks recognized shell deletion commands and directs the agent to safe_rm", async () => {
@@ -49,12 +72,12 @@ describe("safety guard", () => {
       "if true; then /bin/rm build.log; fi",
       "find build -type f -delete",
       "find build -exec rm {} +",
-      "printf '%s\\n' build.log | xargs rm",
+      String.raw`printf '%s\n' build.log | xargs rm`,
     ]) {
       const result = await handler(event(command), ctx);
-      expect(result.block, command).toBeTrue();
-      expect(result.reason, command).toContain("safe_rm");
-      expect(result.reason, command).toContain("CRITICAL");
+      expect(result?.block, command).toBeTrue();
+      expect(result?.reason, command).toContain("safe_rm");
+      expect(result?.reason, command).toContain("CRITICAL");
     }
   });
 
@@ -63,9 +86,9 @@ describe("safety guard", () => {
     const ctx = { cwd: "/work/project", hasUI: false };
 
     const recognized = await handler(event("env -i rm build.log"), ctx);
-    expect(recognized.reason).toContain("best-effort command policy");
+    expect(recognized?.reason).toContain("best-effort command policy");
     // The shell scanner is deliberately a heuristic, not a sandbox. Custom
-    // destructive tools therefore have to enforce path policy themselves.
+    // Destructive tools therefore have to enforce path policy themselves.
     expect(
       await handler(event(`python3 -c "__import__('os').remove('build.log')"`), ctx),
     ).toBeUndefined();
@@ -74,18 +97,18 @@ describe("safety guard", () => {
   test("hard-blocks critical commands", async () => {
     const { handler } = setup();
     const result = await handler(event("mkfs /dev/sda"), { cwd: "/work/project", hasUI: false });
-    expect(result.block).toBeTrue();
-    expect(result.reason).toContain("CRITICAL");
+    expect(result?.block).toBeTrue();
+    expect(result?.reason).toContain("CRITICAL");
   });
 
   test("blocks recognized shell deletion registered for background polling", async () => {
     const { handler } = setup();
     const result = await handler(
-      { toolName: "background_poll", input: { command: "rm -rf build" } },
+      { input: { command: "rm -rf build" }, toolName: "background_poll" },
       { cwd: "/work/project", hasUI: false },
     );
-    expect(result.block).toBeTrue();
-    expect(result.reason).toContain("safe_rm");
+    expect(result?.block).toBeTrue();
+    expect(result?.reason).toContain("safe_rm");
   });
 
   test("does not offer a confirmation prompt for shell deletion", async () => {
@@ -95,14 +118,14 @@ describe("safety guard", () => {
       cwd: "/work/project",
       hasUI: true,
       ui: {
-        notify: () => undefined,
         confirm: async () => {
           confirmed = true;
           return true;
         },
+        notify: () => undefined,
       },
     });
-    expect(result.reason).toContain("safe_rm");
+    expect(result?.reason).toContain("safe_rm");
     expect(confirmed).toBeFalse();
   });
 
@@ -117,7 +140,7 @@ describe("safety guard", () => {
       'psql -c "DROP TABLE users"',
     ]) {
       const result = await handler(event(command), ctx);
-      expect(result.block, command).toBeTrue();
+      expect(result?.block, command).toBeTrue();
     }
   });
 
@@ -126,17 +149,17 @@ describe("safety guard", () => {
     const ctx = { cwd: "/work/project", hasUI: false };
 
     for (const toolName of ["read", "write", "edit"]) {
-      const result = await handler({ toolName, input: { path: ".env" } }, ctx);
-      expect(result.block, toolName).toBeTrue();
-      expect(result.reason).toContain(`Protected file ${toolName}`);
+      const result = await handler({ input: { path: ".env" }, toolName }, ctx);
+      expect(result?.block, toolName).toBeTrue();
+      expect(result?.reason).toContain(`Protected file ${toolName}`);
     }
 
-    const atPrefixed = await handler({ toolName: "read", input: { path: "@.env" } }, ctx);
-    expect(atPrefixed.block).toBeTrue();
-    expect(atPrefixed.reason).toContain("Protected file read");
+    const atPrefixed = await handler({ input: { path: "@.env" }, toolName: "read" }, ctx);
+    expect(atPrefixed?.block).toBeTrue();
+    expect(atPrefixed?.reason).toContain("Protected file read");
 
     expect(
-      await handler({ toolName: "read", input: { path: ".env.example" } }, ctx),
+      await handler({ input: { path: ".env.example" }, toolName: "read" }, ctx),
     ).toBeUndefined();
   });
 
@@ -154,7 +177,7 @@ describe("safety guard", () => {
     const { handler } = setup();
     const ctx = { cwd, hasUI: false };
     for (const path of ["innocent.txt", "linked-secrets/config", "linked-secrets/new-key.pem"]) {
-      const result = await handler({ toolName: "read", input: { path } }, ctx);
+      const result = await handler({ input: { path }, toolName: "read" }, ctx);
       expect(result?.block, path).toBeTrue();
     }
   });
@@ -166,15 +189,15 @@ describe("safety guard", () => {
       cwd: "/work/project",
       hasUI: true,
       ui: {
-        notify: () => undefined,
         confirm: async () => {
           confirmed = true;
           return true;
         },
+        notify: () => undefined,
       },
     });
 
-    expect(result.reason).toContain("CRITICAL");
+    expect(result?.reason).toContain("CRITICAL");
     expect(confirmed).toBeFalse();
   });
 
@@ -183,9 +206,9 @@ describe("safety guard", () => {
     const result = await handler(event("sudo echo ok"), {
       cwd: "/work/project",
       hasUI: true,
-      ui: { confirm: async () => false },
+      ui: { confirm: async () => false, notify: () => undefined },
     });
-    expect(result.block).toBeTrue();
+    expect(result?.block).toBeTrue();
     expect(emitted).toEqual([
       ["herdr:blocked", { active: true, label: "Elevated privileges (sudo)" }],
       ["herdr:blocked", { active: false }],

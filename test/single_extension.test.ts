@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 
 // Runs in a child process so importing sub-agents here does not populate the module cache
-// before src/sub-agents/test/core.test.ts installs its mock (see extension-registration.test.ts).
+// Before src/sub-agents/test/core.test.ts installs its mock (see extension-registration.test.ts).
 describe("bundled single extension", () => {
   test("registers every first-party tool and lifecycle handler through one factory", async () => {
     const modulePath = fileURLToPath(new URL("../extension.ts", import.meta.url));
@@ -38,7 +38,7 @@ describe("bundled single extension", () => {
       await extension(pi);
       console.log(JSON.stringify({ tools: toolNames.sort(), handlers: [...handlerNames].sort() }));
     `;
-    const child = Bun.spawn([process.execPath, "--eval", script], { stdout: "pipe", stderr: "pipe" });
+    const child = Bun.spawn([process.execPath, "--eval", script], { stderr: "pipe", stdout: "pipe" });
     const [stdout, exitCode] = await Promise.all([
       new Response(child.stdout).text(),
       child.exited,

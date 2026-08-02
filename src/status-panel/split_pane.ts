@@ -1,4 +1,4 @@
-import type { OverlayOptions, TUI } from "@earendil-works/pi-tui";
+import  { type OverlayOptions, type TUI } from "@earendil-works/pi-tui";
 
 export const DEFAULT_SIDEBAR_WIDTH = 44;
 export const MIN_SIDEBAR_WIDTH = 28;
@@ -8,27 +8,26 @@ export const MIN_MAIN_WIDTH = 64;
 type RenderFunction = TUI["render"];
 
 export interface SplitPaneController {
-  attach(tui: TUI): void;
-  show(): void;
-  hide(): void;
-  isEnabled(): boolean;
-  overlayOptions(): OverlayOptions;
-  requestRender(): void;
-  dispose(): void;
+  attach: (tui: TUI) => void;
+  show: () => void;
+  hide: () => void;
+  isEnabled: () => boolean;
+  overlayOptions: () => OverlayOptions;
+  requestRender: () => void;
+  dispose: () => void;
 }
 
 interface SplitPaneOptions {
   sidebarWidth?: number;
   minSidebarWidth?: number;
   minMainWidth?: number;
-  onError?(error: unknown): void;
+  onError?: (error: unknown) => void;
 }
 
-function finiteInteger(value: number, fallback: number) {
-  return Number.isFinite(value) ? Math.trunc(value) : fallback;
-}
+const finiteInteger = (value: number, fallback: number) =>
+  Number.isFinite(value) ? Math.trunc(value) : fallback;
 
-export function createSplitPaneController(options: SplitPaneOptions = {}): SplitPaneController {
+export const createSplitPaneController = (options: SplitPaneOptions = {}): SplitPaneController => {
   const minSidebarWidth = Math.max(
     1,
     finiteInteger(options.minSidebarWidth ?? MIN_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH),
@@ -56,27 +55,27 @@ export function createSplitPaneController(options: SplitPaneOptions = {}): Split
     isVisible(terminalWidth) ? Math.min(sidebarWidth, terminalWidth - minMainWidth) : 0;
   const overlayLayout: OverlayOptions = {
     anchor: "top-right",
-    width: sidebarWidth,
-    maxHeight: "100%",
     margin: 0,
+    maxHeight: "100%",
     nonCapturing: true,
     visible: (terminalWidth) => isVisible(terminalWidth),
+    width: sidebarWidth,
   };
 
-  function syncOverlayWidth(terminalWidth = tui?.terminal.columns) {
+  const syncOverlayWidth = (terminalWidth = tui?.terminal.columns) => {
     const width = terminalWidth === undefined ? 0 : effectiveWidth(terminalWidth);
     overlayLayout.width = width > 0 ? width : sidebarWidth;
-  }
+  };
 
-  function requestRender() {
+  const requestRender = () => {
     tui?.requestRender();
-  }
+  };
 
   return {
     attach(nextTui) {
-      if (disposed) throw new Error("Cannot attach a disposed status panel");
-      if (tui === nextTui) return;
-      if (tui) throw new Error("Status panel is already attached to another TUI");
+      if (disposed) {throw new Error("Cannot attach a disposed status panel");}
+      if (tui === nextTui) {return;}
+      if (tui) {throw new Error("Status panel is already attached to another TUI");}
       tui = nextTui;
       originalRender = nextTui.render;
       const previousRender = nextTui.render;
@@ -93,29 +92,29 @@ export function createSplitPaneController(options: SplitPaneOptions = {}): Split
       nextTui.render = wrappedRender;
       requestRender();
     },
-    show() {
-      if (disposed || enabled) return;
-      enabled = true;
-      syncOverlayWidth();
+    dispose() {
+      if (disposed) {return;}
+      disposed = true;
+      enabled = false;
+      if (tui && originalRender && tui.render === wrappedRender) {tui.render = originalRender;}
       requestRender();
+      tui = undefined;
+      originalRender = undefined;
+      wrappedRender = undefined;
     },
     hide() {
-      if (!enabled) return;
+      if (!enabled) {return;}
       enabled = false;
       requestRender();
     },
     isEnabled: () => enabled,
     overlayOptions: () => overlayLayout,
     requestRender,
-    dispose() {
-      if (disposed) return;
-      disposed = true;
-      enabled = false;
-      if (tui && originalRender && tui.render === wrappedRender) tui.render = originalRender;
+    show() {
+      if (disposed || enabled) {return;}
+      enabled = true;
+      syncOverlayWidth();
       requestRender();
-      tui = undefined;
-      originalRender = undefined;
-      wrappedRender = undefined;
     },
   };
-}
+};
