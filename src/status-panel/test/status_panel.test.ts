@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 
 import { createFakePi } from '#test-utils/fake_pi'
 
+import { runningAgents } from '../../shared/agent_activity'
 import statusPanel from '../index'
 import { columns, formatTokens, progressBar } from '../render'
 import { emptyGitInfoState, emptyModelInfoState } from '../state'
@@ -13,6 +14,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  runningAgents.publish([])
   if (originalOwnerToken === undefined) {
     delete process.env.PI_SUBAGENT_OWNER_TOKEN
   } else {
@@ -225,5 +227,64 @@ describe('status panel quota lifecycle', () => {
       throw new Error('expected a second quota request')
     }
     expect(secondSignal.aborted).toBeTrue()
+  })
+})
+
+describe('status panel cross-extension sharing', () => {
+  test('renders subagents published through the shared AgentActivity singleton, as sub-agents does', async () => {
+    runningAgents.publish([{ color: 'accent', name: '/scout-shared', profile: 'scout' }])
+
+    const { pi, emit } = createFakePi()
+    let renderSidebar: ((width: number) => string[]) | undefined
+    const tui = {
+      render: (_width: number) => [],
+      requestRender() {
+        /* Empty */
+      },
+      terminal: { columns: 120, rows: 30 },
+    }
+    const theme = {
+      bold: (value: string) => value,
+      fg: (_color: string, value: string) => value,
+    }
+    const ui = {
+      custom(
+        factory: (...args: unknown[]) => { render: (width: number) => string[] },
+        options: { onHandle?: (handle: { hide: () => void }) => void }
+      ) {
+        return new Promise<void>((resolve) => {
+          const component = factory(tui, theme, {}, resolve)
+          renderSidebar = (width) => component.render(width)
+          options.onHandle?.({
+            hide() {
+              /* Empty */
+            },
+          })
+        })
+      },
+      setFooter() {
+        /* Empty */
+      },
+      setTitle() {
+        /* Empty */
+      },
+    }
+    const ctx = {
+      cwd: '/project',
+      getContextUsage: () => undefined,
+      mode: 'tui',
+      model: { contextWindow: 100_000, id: 'model', provider: 'openai' },
+      ui,
+    }
+
+    statusPanel(pi)
+    await emit('session_start', {}, ctx)
+
+    if (!renderSidebar) {
+      throw new Error('expected a sidebar renderer')
+    }
+    expect(renderSidebar(44).join('\n')).toContain('/scout-shared')
+
+    await emit('session_shutdown', {}, ctx)
   })
 })

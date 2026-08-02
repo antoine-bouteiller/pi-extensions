@@ -1,8 +1,10 @@
-import { describe, expect, test } from 'bun:test'
+import { Effect } from 'effect'
+import { TestClock } from 'effect/testing'
 
+import { describe, expect, it } from '#test-utils/bun_effect'
 import { asFetch } from '#test-utils/casts'
 
-import { AnthropicQuotaPoller, fetchAnthropicQuota, quotaFromHeaders } from '../provider'
+import { fetchAnthropicQuota, makeQuotaPoller, quotaFromHeaders } from '../provider'
 import { type ProviderQuota } from '../state'
 
 const deferred = <Value>() => {
@@ -13,30 +15,6 @@ const deferred = <Value>() => {
   return { promise, resolve }
 }
 
-const fakeTimers = () => {
-  const handlers = new Map<ReturnType<typeof setInterval>, () => void>()
-  return {
-    cancel(timer: ReturnType<typeof setInterval>) {
-      clearInterval(timer)
-      handlers.delete(timer)
-    },
-    schedule(handler: () => void) {
-      // Max delay so this never actually fires; tick() drives callbacks manually.
-      const timer = setInterval(() => undefined, 2 ** 31 - 1)
-      handlers.set(timer, handler)
-      return timer
-    },
-    get size() {
-      return handlers.size
-    },
-    tick() {
-      for (const handler of handlers.values()) {
-        handler()
-      }
-    },
-  }
-}
-
 const flushPromises = async () => {
   await Promise.resolve()
   await Promise.resolve()
@@ -45,7 +23,7 @@ const flushPromises = async () => {
 const gatewayResponse = (profiles: unknown) => Promise.resolve(Response.json(profiles, { status: 200 }))
 
 describe('Anthropic quota provider', () => {
-  test('passes the abort signal and converts gateway fractions to percentages', async () => {
+  it('passes the abort signal and converts gateway fractions to percentages', async () => {
     const controller = new AbortController()
     let requestedUrl = ''
     let requestedInit: RequestInit | undefined
@@ -91,7 +69,7 @@ describe('Anthropic quota provider', () => {
     expect(windows[1]?.resetsIn).toBe('4d 6h')
   })
 
-  test('reads the active profile rather than the first one', async () => {
+  it('reads the active profile rather than the first one', async () => {
     const fakeFetch = asFetch(() =>
       gatewayResponse({
         activeProfile: 'work',
@@ -113,7 +91,7 @@ describe('Anthropic quota provider', () => {
     expect(quota?.percent).toBe(50)
   })
 
-  test('strips trailing slashes from the configured base URL', async () => {
+  it('strips trailing slashes from the configured base URL', async () => {
     let requestedUrl = ''
     const fakeFetch = asFetch((input) => {
       requestedUrl = String(input)
@@ -124,7 +102,7 @@ describe('Anthropic quota provider', () => {
     expect(requestedUrl).toBe('http://127.0.0.1:3456/v1/usage/quota/all')
   })
 
-  test('returns null without a base URL, and for unsuccessful or malformed responses', async () => {
+  it('returns null without a base URL, and for unsuccessful or malformed responses', async () => {
     const unusable = asFetch(() => {
       throw new Error('should not be called')
     })
@@ -142,7 +120,7 @@ describe('Anthropic quota provider', () => {
     expect(await fetchAnthropicQuota('http://gateway', undefined, empty)).toBeUndefined()
   })
 
-  test('derives Azure quota only from valid token headers', () => {
+  it('derives Azure quota only from valid token headers', () => {
     expect(
       quotaFromHeaders('azure-openai', {
         'x-ratelimit-limit-tokens': '1000',
@@ -160,85 +138,119 @@ describe('Anthropic quota provider', () => {
 })
 
 describe('Anthropic quota polling lifecycle', () => {
-  test('does not overlap requests when a timer fires', async () => {
-    const timers = fakeTimers()
-    const requests: ReturnType<typeof deferred<ProviderQuota | undefined>>[] = []
-    const poller = new AnthropicQuotaPoller(() => undefined, {
-      cancel: (timer) => timers.cancel(timer),
-      fetchQuota: () => {
-        const request = deferred<ProviderQuota | undefined>()
-        requests.push(request)
-        return request.promise
-      },
-      refreshMs: 10,
-      schedule: (callback) => timers.schedule(callback),
+  it.effect('does not overlap requests when a timer fires', () =>
+    Effect.gen(function* () {
+      const requests: ReturnType<typeof deferred<ProviderQuota | undefined>>[] = []
+      const poller = yield* makeQuotaPoller(() => undefined, {
+        fetchQuota: () => {
+          const request = deferred<ProviderQuota | undefined>()
+          requests.push(request)
+          return request.promise
+        },
+        refreshMs: 10,
+      })
+
+      yield* poller.start('http://gateway')
+      expect(requests).toHaveLength(1)
+
+      yield* TestClock.adjust('10 millis')
+      expect(requests).toHaveLength(1)
+
+      const [firstRequest] = requests
+      if (!firstRequest) {
+        throw new Error('expected a pending request')
+      }
+      firstRequest.resolve({ label: 'anthropic', percent: 10 })
+      yield* Effect.promise(flushPromises)
+      yield* TestClock.adjust('10 millis')
+      expect(requests).toHaveLength(2)
+
+      yield* poller.stop
+      yield* TestClock.adjust('60 millis')
+      expect(requests).toHaveLength(2)
     })
+  )
 
-    poller.start('http://gateway')
-    expect(requests).toHaveLength(1)
-    expect(timers.size).toBe(1)
-    timers.tick()
-    expect(requests).toHaveLength(1)
+  it.effect('continues polling when publishing a quota throws', () =>
+    Effect.gen(function* () {
+      let fetches = 0
+      let publications = 0
+      const poller = yield* makeQuotaPoller(
+        () => {
+          publications += 1
+          if (publications === 1) {
+            throw new Error('render failed')
+          }
+        },
+        {
+          fetchQuota: async () => {
+            fetches += 1
+            return { label: 'anthropic', percent: 10 }
+          },
+          refreshMs: 10,
+        }
+      )
 
-    const [firstRequest] = requests
-    if (!firstRequest) {
-      throw new Error('expected a pending request')
-    }
-    firstRequest.resolve({ label: 'anthropic', percent: 10 })
-    await flushPromises()
-    timers.tick()
-    expect(requests).toHaveLength(2)
-    poller.stop()
-    expect(timers.size).toBe(0)
-  })
-
-  test('aborts stopped generations and ignores their late results', async () => {
-    const timers = fakeTimers()
-    const requests: {
-      baseUrl: string
-      signal: AbortSignal
-      result: ReturnType<typeof deferred<ProviderQuota | undefined>>
-    }[] = []
-    const published: (ProviderQuota | undefined)[] = []
-    const poller = new AnthropicQuotaPoller((quota) => published.push(quota), {
-      cancel: (timer) => timers.cancel(timer),
-      fetchQuota: (baseUrl, signal) => {
-        const result = deferred<ProviderQuota | undefined>()
-        requests.push({ baseUrl, result, signal })
-        return result.promise
-      },
-      refreshMs: 10,
-      schedule: (callback) => timers.schedule(callback),
+      yield* poller.start('http://gateway')
+      yield* Effect.yieldNow
+      yield* TestClock.adjust('10 millis')
+      expect(fetches).toBe(2)
+      expect(publications).toBe(2)
+      yield* poller.stop
     })
+  )
 
-    poller.start('http://gateway')
-    const [first] = requests
-    if (!first) {
-      throw new Error('expected a pending request')
-    }
-    poller.start('http://gateway')
-    const [, second] = requests
-    if (!second) {
-      throw new Error('expected a second pending request')
-    }
-    expect(first.signal.aborted).toBeTrue()
-    expect(second.signal.aborted).toBeFalse()
-    expect(timers.size).toBe(1)
+  it.effect('aborts stopped generations and ignores their late results', () =>
+    Effect.gen(function* () {
+      const requests: {
+        baseUrl: string
+        signal: AbortSignal
+        result: ReturnType<typeof deferred<ProviderQuota | undefined>>
+      }[] = []
+      const published: (ProviderQuota | undefined)[] = []
+      const poller = yield* makeQuotaPoller(
+        (quota) => {
+          published.push(quota)
+        },
+        {
+          fetchQuota: (baseUrl, signal) => {
+            const result = deferred<ProviderQuota | undefined>()
+            requests.push({ baseUrl, result, signal })
+            return result.promise
+          },
+          refreshMs: 10,
+        }
+      )
 
-    expect(second.baseUrl).toBe('http://gateway')
-    second.result.resolve({ label: 'anthropic', percent: 20 })
-    await flushPromises()
-    first.result.resolve({ label: 'anthropic', percent: 90 })
-    await flushPromises()
-    expect(published).toEqual([{ label: 'anthropic', percent: 20 }])
+      yield* poller.start('http://gateway')
+      const [first] = requests
+      if (!first) {
+        throw new Error('expected a pending request')
+      }
+      yield* poller.start('http://gateway')
+      const [, second] = requests
+      if (!second) {
+        throw new Error('expected a second pending request')
+      }
+      expect(first.signal.aborted).toBeTrue()
+      expect(second.signal.aborted).toBeFalse()
 
-    timers.tick()
-    const third = requests.at(2)
-    if (!third) {
-      throw new Error('expected a third pending request')
-    }
-    poller.stop()
-    expect(third.signal.aborted).toBeTrue()
-    expect(timers.size).toBe(0)
-  })
+      expect(second.baseUrl).toBe('http://gateway')
+      second.result.resolve({ label: 'anthropic', percent: 20 })
+      yield* Effect.promise(flushPromises)
+      first.result.resolve({ label: 'anthropic', percent: 90 })
+      yield* Effect.promise(flushPromises)
+      expect(published).toEqual([{ label: 'anthropic', percent: 20 }])
+
+      yield* TestClock.adjust('10 millis')
+      const third = requests.at(2)
+      if (!third) {
+        throw new Error('expected a third pending request')
+      }
+      yield* poller.stop
+      expect(third.signal.aborted).toBeTrue()
+      yield* TestClock.adjust('60 millis')
+      expect(requests).toHaveLength(3)
+    })
+  )
 })
