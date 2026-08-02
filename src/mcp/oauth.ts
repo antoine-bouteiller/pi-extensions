@@ -1,363 +1,358 @@
-import {
-  UnauthorizedError,
-  type OAuthClientProvider,
-  type OAuthDiscoveryState,
-} from "@modelcontextprotocol/sdk/client/auth.js";
-import  {
-  type OAuthClientInformationMixed,
-  type OAuthClientMetadata,
-  type OAuthTokens,
-} from "@modelcontextprotocol/sdk/shared/auth.js";
-import { randomBytes } from "node:crypto";
-import { createServer } from "node:http";
-import  { type AddressInfo } from "node:net";
-import  { type CredentialStore, type OAuthCredentialPayload } from "./keychain.js";
-import  { type OAuthConfig } from "./types.js";
+import { randomBytes } from 'node:crypto'
+import { createServer } from 'node:http'
+import { type AddressInfo } from 'node:net'
 
-const CALLBACK_TIMEOUT_MS = 5 * 60 * 1000;
-const DEFAULT_CALLBACK_PORT = 3334;
+import { UnauthorizedError, type OAuthClientProvider, type OAuthDiscoveryState } from '@modelcontextprotocol/sdk/client/auth.js'
+import { type OAuthClientInformationMixed, type OAuthClientMetadata, type OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js'
 
-export type OpenUrl = (url: string, signal?: AbortSignal) => Promise<void>;
+import { type CredentialStore, type OAuthCredentialPayload } from './keychain.js'
+import { type OAuthConfig } from './types.js'
+
+const CALLBACK_TIMEOUT_MS = 5 * 60 * 1000
+const DEFAULT_CALLBACK_PORT = 3334
+
+export type OpenUrl = (url: string, signal?: AbortSignal) => Promise<void>
 
 export interface OAuthCallback {
-  redirectUrl: string;
-  waitForCode: () => Promise<string>;
-  close: () => Promise<void>;
+  redirectUrl: string
+  waitForCode: () => Promise<string>
+  close: () => Promise<void>
 }
 
 export interface OAuthCallbackOptions {
-  port: number;
-  redirectUri?: string;
-  expectedState: string;
-  signal?: AbortSignal;
-  timeoutMs?: number;
+  port: number
+  redirectUri?: string
+  expectedState: string
+  signal?: AbortSignal
+  timeoutMs?: number
 }
 
 const abortError = (message: string): Error => {
-  const error = new Error(message);
-  error.name = "AbortError";
-  return error;
-};
+  const error = new Error(message)
+  error.name = 'AbortError'
+  return error
+}
 
 const escaped = (value: string): string =>
   value.replaceAll(/[&<>"']/g, (character) => {
     const entities: Record<string, string> = {
-      '"': "&quot;",
-      "&": "&amp;",
-      "'": "&#39;",
-      "<": "&lt;",
-      ">": "&gt;",
-    };
-    return entities[character] ?? character;
-  });
+      '"': '&quot;',
+      '&': '&amp;',
+      "'": '&#39;',
+      '<': '&lt;',
+      '>': '&gt;',
+    }
+    return entities[character] ?? character
+  })
 
 const callbackUrl = (options: OAuthCallbackOptions): { url: URL; bindHost: string } => {
-  const url = new URL(options.redirectUri ?? `http://localhost:${options.port}/callback`);
-  if (url.protocol !== "http:") {throw new Error("OAuth redirectUri must use http on loopback");}
-  if (!["localhost", "127.0.0.1", "::1", "[::1]"].includes(url.hostname)) {
-    throw new Error("OAuth redirectUri must use a loopback host");
+  const url = new URL(options.redirectUri ?? `http://localhost:${options.port}/callback`)
+  if (url.protocol !== 'http:') {
+    throw new Error('OAuth redirectUri must use http on loopback')
+  }
+  if (!['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname)) {
+    throw new Error('OAuth redirectUri must use a loopback host')
   }
   if (url.username || url.password || url.search || url.hash) {
-    throw new Error("OAuth redirectUri must not contain credentials, a query, or a fragment");
+    throw new Error('OAuth redirectUri must not contain credentials, a query, or a fragment')
   }
-  const configuredPort = url.port ? Number(url.port) : 80;
+  const configuredPort = url.port ? Number(url.port) : 80
   if (configuredPort !== options.port) {
-    throw new Error("OAuth redirectUri port must match callbackPort");
+    throw new Error('OAuth redirectUri port must match callbackPort')
   }
   return {
-    bindHost: url.hostname === "::1" || url.hostname === "[::1]" ? "::1" : "127.0.0.1",
+    bindHost: url.hostname === '::1' || url.hostname === '[::1]' ? '::1' : '127.0.0.1',
     url,
-  };
-};
+  }
+}
 
 /** Start a one-shot, loopback-only OAuth callback listener. */
-export const startOAuthCallback = async (
-  options: OAuthCallbackOptions,
-): Promise<OAuthCallback> => {
-  if (options.signal?.aborted) {throw abortError("OAuth authentication was cancelled");}
-  const { url, bindHost } = callbackUrl(options);
-  const timeoutMs = options.timeoutMs ?? CALLBACK_TIMEOUT_MS;
-  let settled = false;
-  let closePromise: Promise<void> | undefined;
-  let resolveCode!: (code: string) => void;
-  let rejectCode!: (error: Error) => void;
+export const startOAuthCallback = async (options: OAuthCallbackOptions): Promise<OAuthCallback> => {
+  if (options.signal?.aborted) {
+    throw abortError('OAuth authentication was cancelled')
+  }
+  const { url, bindHost } = callbackUrl(options)
+  const timeoutMs = options.timeoutMs ?? CALLBACK_TIMEOUT_MS
+  let settled = false
+  let closePromise: Promise<void> | undefined
+  let resolveCode!: (code: string) => void
+  let rejectCode!: (error: Error) => void
   const codePromise = new Promise<string>((resolve, reject) => {
-    resolveCode = resolve;
-    rejectCode = reject;
-  });
+    resolveCode = resolve
+    rejectCode = reject
+  })
   // Avoid an unhandled rejection when listener startup itself fails.
-  void codePromise.catch(() => undefined);
+  void codePromise.catch(() => undefined)
 
   const finish = (error?: Error, code?: string) => {
-    if (settled) {return;}
-    settled = true;
-    if (timer) {clearTimeout(timer);}
-    options.signal?.removeEventListener("abort", onAbort);
-    if (error) {
-      rejectCode(error);
-    } else if (code) {
-      resolveCode(code);
-    } else {
-      rejectCode(new Error("OAuth callback finished without a code or an error"));
+    if (settled) {
+      return
     }
-    void close();
-  };
+    settled = true
+    if (timer) {
+      clearTimeout(timer)
+    }
+    options.signal?.removeEventListener('abort', onAbort)
+    if (error) {
+      rejectCode(error)
+    } else if (code) {
+      resolveCode(code)
+    } else {
+      rejectCode(new Error('OAuth callback finished without a code or an error'))
+    }
+    void close()
+  }
 
   const server = createServer((request, response) => {
-    let requested: URL;
+    let requested: URL
     try {
-      requested = new URL(request.url ?? "/", url.origin);
+      requested = new URL(request.url ?? '/', url.origin)
     } catch {
-      response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
-      response.end("Invalid OAuth callback request");
-      return;
+      response.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' })
+      response.end('Invalid OAuth callback request')
+      return
     }
-    if (request.method !== "GET" || requested.pathname !== url.pathname) {
-      response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
-      response.end("Not found");
-      return;
+    if (request.method !== 'GET' || requested.pathname !== url.pathname) {
+      response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+      response.end('Not found')
+      return
     }
 
-    const state = requested.searchParams.get("state");
+    const state = requested.searchParams.get('state')
     if (state !== options.expectedState) {
-      response.writeHead(400, { "content-type": "text/html; charset=utf-8" });
-      response.end(
-        "<!doctype html><title>OAuth error</title><p>Invalid OAuth state. Return to Pi and retry.</p>",
-      );
-      return;
+      response.writeHead(400, { 'content-type': 'text/html; charset=utf-8' })
+      response.end('<!doctype html><title>OAuth error</title><p>Invalid OAuth state. Return to Pi and retry.</p>')
+      return
     }
 
-    const oauthError = requested.searchParams.get("error");
+    const oauthError = requested.searchParams.get('error')
     if (oauthError) {
-      const description = requested.searchParams.get("error_description");
-      const message = `OAuth authorization failed: ${oauthError}${description ? ` (${description})` : ""}`;
-      response.writeHead(400, { "content-type": "text/html; charset=utf-8" });
-      response.end(`<!doctype html><title>OAuth error</title><p>${escaped(message)}</p>`);
-      finish(new Error(message));
-      return;
+      const description = requested.searchParams.get('error_description')
+      const message = `OAuth authorization failed: ${oauthError}${description ? ` (${description})` : ''}`
+      response.writeHead(400, { 'content-type': 'text/html; charset=utf-8' })
+      response.end(`<!doctype html><title>OAuth error</title><p>${escaped(message)}</p>`)
+      finish(new Error(message))
+      return
     }
 
-    const code = requested.searchParams.get("code");
+    const code = requested.searchParams.get('code')
     if (!code) {
-      response.writeHead(400, { "content-type": "text/html; charset=utf-8" });
-      response.end("<!doctype html><title>OAuth error</title><p>Missing authorization code.</p>");
-      finish(new Error("OAuth callback did not include an authorization code"));
-      return;
+      response.writeHead(400, { 'content-type': 'text/html; charset=utf-8' })
+      response.end('<!doctype html><title>OAuth error</title><p>Missing authorization code.</p>')
+      finish(new Error('OAuth callback did not include an authorization code'))
+      return
     }
 
-    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(
-      "<!doctype html><title>OAuth complete</title><p>Authentication succeeded. You can close this window and return to Pi.</p>",
-    );
-    finish(undefined, code);
-  });
+    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    response.end('<!doctype html><title>OAuth complete</title><p>Authentication succeeded. You can close this window and return to Pi.</p>')
+    finish(undefined, code)
+  })
 
   const close = (): Promise<void> => {
-    if (closePromise) {return closePromise;}
-    if (timer) {clearTimeout(timer);}
-    options.signal?.removeEventListener("abort", onAbort);
-    closePromise = server.listening
-      ? new Promise<void>((resolve) => server.close(() => resolve()))
-      : Promise.resolve();
-    return closePromise;
-  };
+    if (closePromise) {
+      return closePromise
+    }
+    if (timer) {
+      clearTimeout(timer)
+    }
+    options.signal?.removeEventListener('abort', onAbort)
+    closePromise = server.listening ? new Promise<void>((resolve) => server.close(() => resolve())) : Promise.resolve()
+    return closePromise
+  }
 
-  const onAbort = () => finish(abortError("OAuth authentication was cancelled"));
-  options.signal?.addEventListener("abort", onAbort, { once: true });
-  const timer = setTimeout(
-    () => finish(new Error("OAuth callback timed out after five minutes")),
-    timeoutMs,
-  );
-  timer.unref?.();
+  const onAbort = () => finish(abortError('OAuth authentication was cancelled'))
+  options.signal?.addEventListener('abort', onAbort, { once: true })
+  const timer = setTimeout(() => finish(new Error('OAuth callback timed out after five minutes')), timeoutMs)
+  timer.unref?.()
 
   try {
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error) => {
-        server.off("listening", onListening);
-        reject(error);
-      };
+        server.off('listening', onListening)
+        reject(error)
+      }
       const onListening = () => {
-        server.off("error", onError);
-        resolve();
-      };
-      server.once("error", onError);
-      server.once("listening", onListening);
-      server.listen(options.port, bindHost);
-    });
+        server.off('error', onError)
+        resolve()
+      }
+      server.once('error', onError)
+      server.once('listening', onListening)
+      server.listen(options.port, bindHost)
+    })
   } catch (error) {
-    if (timer) {clearTimeout(timer);}
-    options.signal?.removeEventListener("abort", onAbort);
-    await close();
+    if (timer) {
+      clearTimeout(timer)
+    }
+    options.signal?.removeEventListener('abort', onAbort)
+    await close()
     const reason =
-      error instanceof Error && "code" in error && error.code === "EADDRINUSE"
+      error instanceof Error && 'code' in error && error.code === 'EADDRINUSE'
         ? `OAuth callback port ${options.port} is already in use`
-        : "Could not start the OAuth callback listener";
-    throw new Error(reason, { cause: error });
+        : 'Could not start the OAuth callback listener'
+    throw new Error(reason, { cause: error })
   }
 
-  const address = server.address() as AddressInfo | null;
+  const address = server.address() as AddressInfo | null
   if (!address) {
-    await close();
-    throw new Error("Could not determine the OAuth callback listener address");
+    await close()
+    throw new Error('Could not determine the OAuth callback listener address')
   }
 
-  return { close, redirectUrl: url.href, waitForCode: () => codePromise };
-};
+  return { close, redirectUrl: url.href, waitForCode: () => codePromise }
+}
 
 export interface KeychainOAuthProviderOptions {
-  serverName: string;
-  serverUrl: string;
-  config: OAuthConfig;
-  store: CredentialStore;
-  interactive?: boolean;
-  state?: string;
-  openUrl?: OpenUrl;
-  signal?: AbortSignal;
+  serverName: string
+  serverUrl: string
+  config: OAuthConfig
+  store: CredentialStore
+  interactive?: boolean
+  state?: string
+  openUrl?: OpenUrl
+  signal?: AbortSignal
 }
 
 /** MCP SDK OAuth provider that persists only reusable tokens/registration data. */
 export class KeychainOAuthProvider implements OAuthClientProvider {
-  readonly redirectUrl: string;
-  readonly clientMetadata: OAuthClientMetadata;
-  private verifier?: string;
-  private discovery?: OAuthDiscoveryState;
-  private mutation: Promise<void> = Promise.resolve();
-  private readonly options: KeychainOAuthProviderOptions;
+  readonly redirectUrl: string
+  readonly clientMetadata: OAuthClientMetadata
+  private verifier?: string
+  private discovery?: OAuthDiscoveryState
+  private mutation: Promise<void> = Promise.resolve()
+  private readonly options: KeychainOAuthProviderOptions
 
   constructor(options: KeychainOAuthProviderOptions) {
-    this.options = options;
-    const port = options.config.callbackPort ?? DEFAULT_CALLBACK_PORT;
+    this.options = options
+    const port = options.config.callbackPort ?? DEFAULT_CALLBACK_PORT
     const { url } = callbackUrl({
-      expectedState: options.state ?? "unused",
+      expectedState: options.state ?? 'unused',
       port,
       redirectUri: options.config.redirectUri,
-    });
-    this.redirectUrl = url.href;
+    })
+    this.redirectUrl = url.href
     this.clientMetadata = {
-      client_name: "Pi MCP Gateway",
-      grant_types: ["authorization_code", "refresh_token"],
+      client_name: 'Pi MCP Gateway',
+      grant_types: ['authorization_code', 'refresh_token'],
       redirect_uris: [this.redirectUrl],
-      response_types: ["code"],
-      token_endpoint_auth_method: options.config.clientSecret ? "client_secret_post" : "none",
+      response_types: ['code'],
+      token_endpoint_auth_method: options.config.clientSecret ? 'client_secret_post' : 'none',
       ...(options.config.scope ? { scope: options.config.scope } : {}),
-    };
+    }
   }
 
   state(): string {
     if (!this.options.interactive || !this.options.state) {
-      throw new UnauthorizedError("OAuth authorization requires /mcp-auth <server>");
+      throw new UnauthorizedError('OAuth authorization requires /mcp-auth <server>')
     }
-    return this.options.state;
+    return this.options.state
   }
 
   async clientInformation(): Promise<OAuthClientInformationMixed | undefined> {
     if (this.options.config.clientId) {
       return {
         client_id: this.options.config.clientId,
-        ...(this.options.config.clientSecret
-          ? { client_secret: this.options.config.clientSecret }
-          : {}),
-      };
+        ...(this.options.config.clientSecret ? { client_secret: this.options.config.clientSecret } : {}),
+      }
     }
-    const credential = await this.load();
-    return credential?.clientInformation as OAuthClientInformationMixed | undefined;
+    const credential = await this.load()
+    return credential?.clientInformation as OAuthClientInformationMixed | undefined
   }
 
   async saveClientInformation(clientInformation: OAuthClientInformationMixed): Promise<void> {
     await this.update((credential) => ({
       serverUrl: this.options.serverUrl,
       ...credential,
-      clientInformation: clientInformation as OAuthCredentialPayload["clientInformation"],
-    }));
+      clientInformation: clientInformation as OAuthCredentialPayload['clientInformation'],
+    }))
   }
 
   async tokens(): Promise<OAuthTokens | undefined> {
-    const credential = await this.load();
-    return credential?.tokens as OAuthTokens | undefined;
+    const credential = await this.load()
+    return credential?.tokens as OAuthTokens | undefined
   }
 
   async saveTokens(tokens: OAuthTokens): Promise<void> {
     await this.update((credential) => ({
       serverUrl: this.options.serverUrl,
       ...credential,
-      tokens: tokens as OAuthCredentialPayload["tokens"],
-    }));
+      tokens: tokens as OAuthCredentialPayload['tokens'],
+    }))
   }
 
   async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
     if (!this.options.interactive || !this.options.openUrl) {
-      throw new UnauthorizedError("OAuth authorization is required; use /mcp-auth <server>");
+      throw new UnauthorizedError('OAuth authorization is required; use /mcp-auth <server>')
     }
-    await this.options.openUrl(authorizationUrl.href, this.options.signal);
+    await this.options.openUrl(authorizationUrl.href, this.options.signal)
   }
 
   saveCodeVerifier(codeVerifier: string): void {
-    this.verifier = codeVerifier;
+    this.verifier = codeVerifier
   }
 
   codeVerifier(): string {
-    if (!this.verifier)
-      {throw new Error("OAuth PKCE verifier is unavailable; restart authentication");}
-    return this.verifier;
+    if (!this.verifier) {
+      throw new Error('OAuth PKCE verifier is unavailable; restart authentication')
+    }
+    return this.verifier
   }
 
   saveDiscoveryState(state: OAuthDiscoveryState): void {
-    this.discovery = state;
+    this.discovery = state
   }
 
   discoveryState(): OAuthDiscoveryState | undefined {
-    return this.discovery;
+    return this.discovery
   }
 
-  async invalidateCredentials(
-    scope: "all" | "client" | "tokens" | "verifier" | "discovery",
-  ): Promise<void> {
-    if (scope === "verifier") {
-      this.verifier = undefined;
-      return;
+  async invalidateCredentials(scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery'): Promise<void> {
+    if (scope === 'verifier') {
+      this.verifier = undefined
+      return
     }
-    if (scope === "discovery") {
-      this.discovery = undefined;
-      return;
+    if (scope === 'discovery') {
+      this.discovery = undefined
+      return
     }
-    if (scope === "all") {
-      this.verifier = undefined;
-      this.discovery = undefined;
-      await this.options.store.delete(this.options.serverName);
-      return;
+    if (scope === 'all') {
+      this.verifier = undefined
+      this.discovery = undefined
+      await this.options.store.delete(this.options.serverName)
+      return
     }
     await this.update((credential) => {
-      const next = { ...credential, serverUrl: this.options.serverUrl };
-      if (scope === "client") {delete next.clientInformation;}
-      if (scope === "tokens") {delete next.tokens;}
-      return next.tokens || next.clientInformation ? next : undefined;
-    });
+      const next = { ...credential, serverUrl: this.options.serverUrl }
+      if (scope === 'client') {
+        delete next.clientInformation
+      }
+      if (scope === 'tokens') {
+        delete next.tokens
+      }
+      return next.tokens || next.clientInformation ? next : undefined
+    })
   }
 
   private load(): Promise<OAuthCredentialPayload | undefined> {
-    return this.options.store.get(this.options.serverName, this.options.serverUrl);
+    return this.options.store.get(this.options.serverName, this.options.serverUrl)
   }
 
-  private async update(
-    updater: (current: OAuthCredentialPayload | undefined) => OAuthCredentialPayload | undefined,
-  ): Promise<void> {
-    let failure: unknown;
+  private async update(updater: (current: OAuthCredentialPayload | undefined) => OAuthCredentialPayload | undefined): Promise<void> {
+    let failure: unknown
     this.mutation = this.mutation.then(async () => {
       try {
-        const next = updater(await this.load());
-        await (next
-          ? this.options.store.set(this.options.serverName, next)
-          : this.options.store.delete(this.options.serverName));
+        const next = updater(await this.load())
+        await (next ? this.options.store.set(this.options.serverName, next) : this.options.store.delete(this.options.serverName))
       } catch (error) {
-        failure = error;
+        failure = error
       }
-    });
-    await this.mutation;
-    if (failure) {throw failure;}
+    })
+    await this.mutation
+    if (failure) {
+      throw failure
+    }
   }
 }
 
-export const createOAuthState = (): string => randomBytes(32).toString("base64url");
+export const createOAuthState = (): string => randomBytes(32).toString('base64url')
 
-export const oauthCallbackPort = (config: OAuthConfig): number =>
-  config.callbackPort ?? DEFAULT_CALLBACK_PORT;
+export const oauthCallbackPort = (config: OAuthConfig): number => config.callbackPort ?? DEFAULT_CALLBACK_PORT

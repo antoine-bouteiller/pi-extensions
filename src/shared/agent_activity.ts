@@ -1,34 +1,27 @@
-import  { type ThemeColor } from "@earendil-works/pi-coding-agent";
+import { type ThemeColor } from '@earendil-works/pi-coding-agent'
+
+import { createObservableStore } from './store'
 
 export interface RunningAgent {
-  name: string;
-  profile?: string;
-  color: ThemeColor;
+  name: string
+  profile?: string
+  color: ThemeColor
 }
 
 export interface AgentActivityStore {
-  list: () => readonly RunningAgent[];
-  publish: (agents: readonly RunningAgent[]) => void;
-  subscribe: (listener: () => void) => () => void;
+  list: () => readonly RunningAgent[]
+  publish: (agents: readonly RunningAgent[]) => void
+  subscribe: (listener: () => void) => () => void
 }
 
 export const createAgentActivityStore = (): AgentActivityStore => {
-  let agents: readonly RunningAgent[] = [];
-  const listeners = new Set<() => void>();
+  const store = createObservableStore<readonly RunningAgent[]>([])
   return {
-    list: () => agents,
-    publish(next) {
-      agents = [...next];
-      for (const listener of listeners) {listener();}
-    },
-    subscribe(listener) {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
-  };
-};
+    list: store.get,
+    publish: (agents) => store.set([...agents]),
+    subscribe: store.subscribe,
+  }
+}
 
 /** Extensions load once per process, so sub-agents and the status panel share this instance. */
-export const runningAgents = createAgentActivityStore();
+export const runningAgents = createAgentActivityStore()

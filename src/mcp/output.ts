@@ -1,29 +1,21 @@
-import {
-  DEFAULT_MAX_BYTES,
-  DEFAULT_MAX_LINES,
-  formatSize,
-  truncateHead,
-} from "@earendil-works/pi-coding-agent";
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from '@earendil-works/pi-coding-agent'
 
-export type GatewayContent =
-  | { type: "text"; text: string }
-  | { type: "image"; data: string; mimeType: string };
+import { boundToolText, writePrivateTempFile } from '../shared/tool_output.js'
+
+export type GatewayContent = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }
 
 export interface BoundedOutputDetails {
-  truncated: boolean;
-  fullOutputPath?: string;
-  outputLines?: number;
-  totalLines?: number;
-  outputBytes?: number;
-  totalBytes?: number;
+  truncated: boolean
+  fullOutputPath?: string
+  outputLines?: number
+  totalLines?: number
+  outputBytes?: number
+  totalBytes?: number
 }
 
 export interface BoundedOutput {
-  content: GatewayContent[];
-  details: BoundedOutputDetails;
+  content: GatewayContent[]
+  details: BoundedOutputDetails
 }
 
 /**
@@ -31,51 +23,32 @@ export interface BoundedOutput {
  * complete text is written to a private temporary file when truncation occurs.
  */
 export const boundGatewayOutput = async (content: GatewayContent[]): Promise<BoundedOutput> => {
-  const textBlocks = content.filter(
-    (block): block is Extract<GatewayContent, { type: "text" }> => block.type === "text",
-  );
-  const completeText = textBlocks.map((block) => block.text).join("\n");
-  const initial = truncateHead(completeText, {
+  const textBlocks = content.filter((block): block is Extract<GatewayContent, { type: 'text' }> => block.type === 'text')
+  const completeText = textBlocks.map((block) => block.text).join('\n')
+  const bounded = await boundToolText(completeText, {
     maxBytes: DEFAULT_MAX_BYTES,
     maxLines: DEFAULT_MAX_LINES,
-  });
+    saveFullOutput: (text) => writePrivateTempFile(text, { prefix: 'pi-mcp-' }),
+  })
 
-  if (!initial.truncated) {return { content, details: { truncated: false } };}
-
-  const directory = await mkdtemp(join(tmpdir(), "pi-mcp-"));
-  const fullOutputPath = join(directory, "output.txt");
-  await writeFile(fullOutputPath, completeText, { encoding: "utf8", mode: 0o600 });
-
-  // Reserve enough room for the notice (including the private temp path) so the
-  // Final model-visible text, not merely the retained payload, stays in Pi's limits.
-  const truncation = truncateHead(completeText, {
-    maxBytes: DEFAULT_MAX_BYTES - 2048,
-    maxLines: DEFAULT_MAX_LINES - 4,
-  });
-  const notice =
-    `\n\n[Output truncated: showing ${truncation.outputLines} of ${truncation.totalLines} lines ` +
-    `(${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}). ` +
-    `Full output saved to: ${fullOutputPath}]`;
-  const visibleText = truncation.content + notice;
-  if (
-    Buffer.byteLength(visibleText, "utf8") > DEFAULT_MAX_BYTES ||
-    visibleText.split("\n").length > DEFAULT_MAX_LINES
-  ) {
-    throw new Error("Could not safely bound MCP tool output");
+  if (!bounded.truncated) {
+    return { content, details: { truncated: false } }
   }
-  const images = content.filter(
-    (block): block is Extract<GatewayContent, { type: "image" }> => block.type === "image",
-  );
+
+  if (Buffer.byteLength(bounded.text, 'utf8') > DEFAULT_MAX_BYTES || bounded.text.split('\n').length > DEFAULT_MAX_LINES) {
+    throw new Error('Could not safely bound MCP tool output')
+  }
+  const images = content.filter((block): block is Extract<GatewayContent, { type: 'image' }> => block.type === 'image')
 
   return {
-    content: [{ text: visibleText, type: "text" }, ...images],
+    content: [{ text: bounded.text, type: 'text' }, ...images],
     details: {
-      fullOutputPath,
-      outputBytes: truncation.outputBytes,
-      outputLines: truncation.outputLines,
-      totalBytes: truncation.totalBytes,
-      totalLines: truncation.totalLines,
+      fullOutputPath: bounded.fullOutputPath,
+      outputBytes: bounded.truncation.outputBytes,
+      outputLines: bounded.truncation.outputLines,
+      totalBytes: bounded.truncation.totalBytes,
+      totalLines: bounded.truncation.totalLines,
       truncated: true,
     },
-  };
-};
+  }
+}

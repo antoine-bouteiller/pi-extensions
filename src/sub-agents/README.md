@@ -28,25 +28,24 @@ Agent profiles live only in [`profiles.ts`](./profiles.ts). `agent_type` is requ
 
 ```ts
 type AgentConfig = {
-  allowedTools: readonly string[];
-  model: string | ((context: ModelSelectorContext) => string);
-  prompt: string;
-  isReadonly: boolean;
-  description?: string;
-  thinking?: ThinkingLevel;
-  color?: ThemeColor;
-};
+  allowedTools: readonly string[]
+  model: string | ((context: ModelSelectorContext) => string)
+  prompt: string
+  isReadonly: boolean
+  description?: string
+  thinking?: ThinkingLevel
+  color?: ThemeColor
+}
 
 const example: AgentConfig = {
-  allowedTools: ["read", "webfetch", "mcp"],
-  model: ({ parentModel }) =>
-    parentModel.provider === "anthropic" ? "gpt-5.6-sol" : "claude-opus-5",
-  prompt: "Research the assigned question and cite the evidence.",
+  allowedTools: ['read', 'webfetch', 'mcp'],
+  model: ({ parentModel }) => (parentModel.provider === 'anthropic' ? 'gpt-5.6-sol' : 'claude-opus-5'),
+  prompt: 'Research the assigned question and cite the evidence.',
   isReadonly: true,
-  description: "Cited research",
-  thinking: "high",
-  color: "mdLink",
-};
+  description: 'Cited research',
+  thinking: 'high',
+  color: 'mdLink',
+}
 ```
 
 The first four fields are required. `description` defaults to the registry key, `thinking` to `high`, and `color` to `accent`. Built-ins currently select only the configured OpenAI and Anthropic models.

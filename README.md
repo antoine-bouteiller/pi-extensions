@@ -37,21 +37,21 @@ test/utils/                shared typed fakes, imported as #test-utils/*
 
 ## Extensions
 
-| Extension         | Purpose                                                                                                     |
-| ----------------- | ----------------------------------------------------------------------------------------------------------- |
-| `ask-user`        | Asks the user a multiple-choice question mid-turn                                                            |
-| `background-poll` | Polls a shell command in the background and wakes the agent when it succeeds                                 |
-| `claude-code`     | Converts global and trusted-project `.claude/commands/` files into temporary Pi skills                       |
-| `comment-checker` | Runs the `comment-checker` binary after successful writes and edits, appending warnings to the tool result   |
-| `hashline`        | Content-hash anchored file reads and writes that reject stale edits                                          |
-| `mcp`             | One deliberately narrow, lazy MCP gateway (see below)                                                        |
-| `meridian-session-affinity` | Adds Pi's current session ID to Meridian requests so SDK sessions resume across client-side tool loops |
-| `rules`           | Loads recursive `.md` and `.mdc` rules from `.claude/rules/` and `.agents/rules/`                            |
-| `safe-rm`         | Validated deletion that refuses credentials, Git repositories, and paths outside the working directory       |
-| `safety-guard`    | Blocks recognized destructive shell commands and protected-path access                                       |
-| `status-panel`    | Renders a docked status sidebar with model, context usage, git state, provider quota, and running subagents  |
-| `sub-agents`      | Session-scoped subagents in isolated child Pi processes ([details](src/sub-agents/README.md))                |
-| `webfetch`        | Fetches a URL and returns markdown, plain text, or raw HTML                                                  |
+| Extension                   | Purpose                                                                                                     |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `ask-user`                  | Asks the user a multiple-choice question mid-turn                                                           |
+| `background-poll`           | Polls a shell command in the background and wakes the agent when it succeeds                                |
+| `claude-code`               | Converts global and trusted-project `.claude/commands/` files into temporary Pi skills                      |
+| `comment-checker`           | Runs the `comment-checker` binary after successful writes and edits, appending warnings to the tool result  |
+| `hashline`                  | Content-hash anchored file reads and writes that reject stale edits                                         |
+| `mcp`                       | One deliberately narrow, lazy MCP gateway (see below)                                                       |
+| `meridian-session-affinity` | Adds Pi's current session ID to Meridian requests so SDK sessions resume across client-side tool loops      |
+| `rules`                     | Loads recursive `.md` and `.mdc` rules from `.claude/rules/` and `.agents/rules/`                           |
+| `safe-rm`                   | Validated deletion that refuses credentials, Git repositories, and paths outside the working directory      |
+| `safety-guard`              | Blocks recognized destructive shell commands and protected-path access                                      |
+| `status-panel`              | Renders a docked status sidebar with model, context usage, git state, provider quota, and running subagents |
+| `sub-agents`                | Session-scoped subagents in isolated child Pi processes ([details](src/sub-agents/README.md))               |
+| `webfetch`                  | Fetches a URL and returns markdown, plain text, or raw HTML                                                 |
 
 `mcp/` is backed only by `~/.config/mcp/mcp.json`. It supports stdio and HTTP/SSE tools plus automatic loopback OAuth through `/mcp-auth`, with reusable credentials stored in the macOS Keychain, and opens no connections during startup. URL-only HTTP servers such as Linear (`https://mcp.linear.app/mcp`) auto-detect OAuth after a 401 challenge, so they do not need an empty `"oauth": {}` block. Custom HTTP headers suppress this implicit detection unless `oauth` is explicitly configured.
 

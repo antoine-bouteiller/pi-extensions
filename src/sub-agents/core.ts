@@ -1,5 +1,5 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { createHash, randomUUID } from 'node:crypto'
 import {
   chmodSync,
   closeSync,
@@ -19,672 +19,680 @@ import {
   unlinkSync,
   writeFileSync,
   type WriteStream,
-} from "node:fs";
-import { createServer, type Server, type Socket } from "node:net";
-import { homedir, tmpdir, userInfo } from "node:os";
-import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
-import { getAgentDir, type ThemeColor } from "@earendil-works/pi-coding-agent";
-import {
-  inspectProcess,
-  ownershipMatches,
-  processAlive,
-  processOwnerIsActive,
-  type ProcessSnapshot,
-} from "./process_ownership.js";
-import {
-  persistedProfileColor,
-  resolveAgentConfig,
-  type AgentProfileName,
-  type AvailableModel,
-  type ThinkingLevel,
-} from "./profiles.js";
-import { consumeFirstMatchingMailboxEvent, RpcJsonlDecoder } from "./rpc.js";
+} from 'node:fs'
+import { createServer, type Server, type Socket } from 'node:net'
+import { homedir, tmpdir, userInfo } from 'node:os'
+import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 
-export type { ThinkingLevel } from "./profiles.js";
+import { getAgentDir, type ThemeColor } from '@earendil-works/pi-coding-agent'
 
-export { consumeFirstMatchingMailboxEvent, RpcJsonlDecoder } from "./rpc.js";
+import { inspectProcess, ownershipMatches, processAlive, processOwnerIsActive, type ProcessSnapshot } from './process_ownership.js'
+import { persistedProfileColor, resolveAgentConfig, type AgentProfileName, type AvailableModel, type ThinkingLevel } from './profiles.js'
+import { consumeFirstMatchingMailboxEvent, RpcJsonlDecoder } from './rpc.js'
 
-export const PACKAGE_BASENAME = "pi-codex-subagents";
-export const SUBAGENT_DIR = join(getAgentDir(), PACKAGE_BASENAME);
-const CONFIG_PATH = join(SUBAGENT_DIR, "config.json");
-const TEMP_ROOT = join(
-  process.env.PI_SUBAGENT_TEMP_DIR || tmpdir(),
-  PACKAGE_BASENAME,
-  userInfo().username,
-);
-const LEGACY_RUNS_DIR = join(TEMP_ROOT, "runs");
-const SOCKET_DIR = join(TEMP_ROOT, "sockets");
+export type { ThinkingLevel } from './profiles.js'
 
-export const DEFAULT_STARTUP_TIMEOUT_MS = 15_000;
-export const DEFAULT_RETENTION_DAYS = 7;
-const FINAL_STATUSES = new Set<AgentRuntimeStatus>(["completed", "failed", "interrupted"]);
+export { consumeFirstMatchingMailboxEvent, RpcJsonlDecoder } from './rpc.js'
 
-export type AgentRuntimeStatus = "starting" | "running" | "completed" | "failed" | "interrupted";
+export const PACKAGE_BASENAME = 'pi-codex-subagents'
+export const SUBAGENT_DIR = join(getAgentDir(), PACKAGE_BASENAME)
+const CONFIG_PATH = join(SUBAGENT_DIR, 'config.json')
+const TEMP_ROOT = join(process.env.PI_SUBAGENT_TEMP_DIR || tmpdir(), PACKAGE_BASENAME, userInfo().username)
+const LEGACY_RUNS_DIR = join(TEMP_ROOT, 'runs')
+const SOCKET_DIR = join(TEMP_ROOT, 'sockets')
+
+export const DEFAULT_STARTUP_TIMEOUT_MS = 15_000
+export const DEFAULT_RETENTION_DAYS = 7
+const FINAL_STATUSES = new Set<AgentRuntimeStatus>(['completed', 'failed', 'interrupted'])
+
+export type AgentRuntimeStatus = 'starting' | 'running' | 'completed' | 'failed' | 'interrupted'
 
 export interface SubagentConfig {
-  storageDir?: string;
-  retentionDays?: number;
+  storageDir?: string
+  retentionDays?: number
 }
 
 export interface ChildProcessOwnership {
-  pid: number;
-  processIdentity: string;
-  token: string;
-  ownerPid: number;
-  ownerProcessIdentity?: string;
-  startedAt: number;
+  pid: number
+  processIdentity: string
+  token: string
+  ownerPid: number
+  ownerProcessIdentity?: string
+  startedAt: number
 }
 
 export interface AgentInfo {
-  id: string;
-  taskName: string;
-  canonicalName: string;
-  parentSessionId: string;
-  parentSessionFile?: string;
-  profile?: string;
-  agentType?: string;
-  provider: string;
-  modelId: string;
-  model: string;
-  thinking?: ThinkingLevel;
-  allowedTools?: string[];
-  prompt?: string;
-  color?: ThemeColor;
-  isReadonly?: boolean;
-  tools?: string;
-  cwd: string;
-  sessionFile: string;
-  infoFile: string;
-  logFile: string;
-  createdAt: number;
-  updatedAt: number;
-  startedAt?: number;
-  completedAt?: number;
-  lastActivity?: number;
-  messageCount: number;
-  status: AgentRuntimeStatus;
-  lastTaskMessage?: string;
-  finalResponse?: string;
-  error?: string;
-  childProcess?: ChildProcessOwnership;
+  id: string
+  taskName: string
+  canonicalName: string
+  parentSessionId: string
+  parentSessionFile?: string
+  profile?: string
+  agentType?: string
+  provider: string
+  modelId: string
+  model: string
+  thinking?: ThinkingLevel
+  allowedTools?: string[]
+  prompt?: string
+  color?: ThemeColor
+  isReadonly?: boolean
+  tools?: string
+  cwd: string
+  sessionFile: string
+  infoFile: string
+  logFile: string
+  createdAt: number
+  updatedAt: number
+  startedAt?: number
+  completedAt?: number
+  lastActivity?: number
+  messageCount: number
+  status: AgentRuntimeStatus
+  lastTaskMessage?: string
+  finalResponse?: string
+  error?: string
+  childProcess?: ChildProcessOwnership
 }
 
 export interface AgentListEntry {
-  agent_name: string;
-  agent_status: AgentRuntimeStatus;
-  last_task_message: string | undefined;
-  parent_session_id?: string;
-  profile?: string;
-  color: ThemeColor;
-  is_readonly?: boolean;
+  agent_name: string
+  agent_status: AgentRuntimeStatus
+  last_task_message: string | undefined
+  parent_session_id?: string
+  profile?: string
+  color: ThemeColor
+  is_readonly?: boolean
 }
 
 export interface AgentResponseEntry {
-  agent_name: string;
-  status: AgentRuntimeStatus;
-  finalResponse?: string;
-  error?: string;
-  last_task_message: string | undefined;
-  profile?: string;
-  color: ThemeColor;
-  is_readonly?: boolean;
+  agent_name: string
+  status: AgentRuntimeStatus
+  finalResponse?: string
+  error?: string
+  last_task_message: string | undefined
+  profile?: string
+  color: ThemeColor
+  is_readonly?: boolean
 }
 
 export interface SpawnAgentParams {
-  task_name: string;
-  message: string;
-  agent_type: AgentProfileName;
-  cwd: string;
-  parentSessionId: string;
-  parentSessionFile?: string;
-  availableModels: readonly AvailableModel[];
-  parentModel: AvailableModel;
+  task_name: string
+  message: string
+  agent_type: AgentProfileName
+  cwd: string
+  parentSessionId: string
+  parentSessionFile?: string
+  availableModels: readonly AvailableModel[]
+  parentModel: AvailableModel
 }
 
 interface PendingRequest {
-  resolve: (data: unknown) => void;
-  reject: (error: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+  resolve: (data: unknown) => void
+  reject: (error: Error) => void
+  timer: ReturnType<typeof setTimeout>
 }
 
 interface LiveAgent {
-  info: AgentInfo;
-  proc: ChildProcessWithoutNullStreams;
-  broadcaster: EventBroadcaster;
-  logger: SessionLogger;
-  pending: Map<string, PendingRequest>;
-  reqId: number;
-  stderr: string;
-  expectedExit: boolean;
-  processFinished: boolean;
-  finalizedRun: boolean;
-  exitPromise: Promise<void>;
-  resolveExit: () => void;
-  termination?: Promise<void>;
-  candidateResponse: string;
-  candidateError?: string;
+  info: AgentInfo
+  proc: ChildProcessWithoutNullStreams
+  broadcaster: EventBroadcaster
+  logger: SessionLogger
+  pending: Map<string, PendingRequest>
+  reqId: number
+  stderr: string
+  expectedExit: boolean
+  processFinished: boolean
+  finalizedRun: boolean
+  exitPromise: Promise<void>
+  resolveExit: () => void
+  termination?: Promise<void>
+  candidateResponse: string
+  candidateError?: string
 }
 
 export interface AgentCompletionEvent {
-  id: string;
-  parentSessionId: string;
-  agentName: string;
-  status: AgentRuntimeStatus;
-  finalResponse?: string;
-  error?: string;
-  createdAt: number;
-  profile?: string;
-  color: ThemeColor;
-  isReadonly?: boolean;
+  id: string
+  parentSessionId: string
+  agentName: string
+  status: AgentRuntimeStatus
+  finalResponse?: string
+  error?: string
+  createdAt: number
+  profile?: string
+  color: ThemeColor
+  isReadonly?: boolean
 }
 
 export interface AgentActivityEvent {
-  parentSessionId: string;
-  agentName: string;
-  active: boolean;
-  profile?: string;
-  color: ThemeColor;
-  isReadonly?: boolean;
+  parentSessionId: string
+  agentName: string
+  active: boolean
+  profile?: string
+  color: ThemeColor
+  isReadonly?: boolean
 }
 
 export interface AgentManagerOptions {
-  onActivityChange?: (event: AgentActivityEvent) => void;
-  onUnclaimedCompletion?: (event: AgentCompletionEvent) => void;
+  onActivityChange?: (event: AgentActivityEvent) => void
+  onUnclaimedCompletion?: (event: AgentCompletionEvent) => void
   /** Override the child Pi executable for embedding and tests. */
   piCommand?: {
-    command: string;
-    prefixArgs?: string[];
-  };
+    command: string
+    prefixArgs?: string[]
+  }
   /** Additional environment entries passed only to child Pi processes. */
-  childEnv?: NodeJS.ProcessEnv;
+  childEnv?: NodeJS.ProcessEnv
   /** Test hook invoked after a dead lock is inspected but before its instance is revalidated. */
-  beforeReclaimTaskLockRemoval?: (lockFile: string) => void;
+  beforeReclaimTaskLockRemoval?: (lockFile: string) => void
 }
 
 interface Waiter {
-  parentSessionId: string;
-  targets?: Set<string>;
-  resolve: (event: AgentCompletionEvent) => void;
+  parentSessionId: string
+  targets?: Set<string>
+  resolve: (event: AgentCompletionEvent) => void
 }
 
-const abortError = (signal?: AbortSignal): Error =>
-  signal?.reason instanceof Error ? signal.reason : new Error("Wait canceled.");
+const abortError = (signal?: AbortSignal): Error => (signal?.reason instanceof Error ? signal.reason : new Error('Wait canceled.'))
 
 const throwIfAborted = (signal?: AbortSignal): void => {
-  if (signal?.aborted) {throw abortError(signal);}
-};
+  if (signal?.aborted) {
+    throw abortError(signal)
+  }
+}
 
 const expandHome = (value: string): string => {
-  if (value === "~") {return homedir();}
-  if (value.startsWith("~/")) {return join(homedir(), value.slice(2));}
-  return value;
-};
+  if (value === '~') {
+    return homedir()
+  }
+  if (value.startsWith('~/')) {
+    return join(homedir(), value.slice(2))
+  }
+  return value
+}
 
 const normalizeConfig = (value: unknown): SubagentConfig => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {return {};}
-  const raw = value as Record<string, unknown>;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {}
+  }
+  const raw = value as Record<string, unknown>
   const retentionDays =
-    typeof raw.retentionDays === "number" &&
-    Number.isFinite(raw.retentionDays) &&
-    raw.retentionDays >= 0
-      ? raw.retentionDays
-      : undefined;
+    typeof raw.retentionDays === 'number' && Number.isFinite(raw.retentionDays) && raw.retentionDays >= 0 ? raw.retentionDays : undefined
   return {
-    ...(typeof raw.storageDir === "string" && raw.storageDir.trim()
-      ? { storageDir: raw.storageDir.trim() }
-      : {}),
+    ...(typeof raw.storageDir === 'string' && raw.storageDir.trim() ? { storageDir: raw.storageDir.trim() } : {}),
     ...(retentionDays === undefined ? {} : { retentionDays }),
-  };
-};
+  }
+}
 
 export const loadSubagentConfig = (): SubagentConfig => {
   try {
-    if (existsSync(CONFIG_PATH))
-      {return normalizeConfig(JSON.parse(readFileSync(CONFIG_PATH, "utf8")));}
+    if (existsSync(CONFIG_PATH)) {
+      return normalizeConfig(JSON.parse(readFileSync(CONFIG_PATH, 'utf8')))
+    }
   } catch {
     // Best effort; a missing or unreadable config file falls back to defaults.
   }
-  return {};
-};
+  return {}
+}
 
 export const getRunsDir = (): string => {
-  const configured = loadSubagentConfig().storageDir;
+  const configured = loadSubagentConfig().storageDir
   if (configured) {
-    const expanded = expandHome(configured);
-    return isAbsolute(expanded) ? expanded : resolvePath(SUBAGENT_DIR, expanded);
+    const expanded = expandHome(configured)
+    return isAbsolute(expanded) ? expanded : resolvePath(SUBAGENT_DIR, expanded)
   }
-  return join(SUBAGENT_DIR, "runs");
-};
+  return join(SUBAGENT_DIR, 'runs')
+}
 
 const ensurePrivateDir = (directory: string, enforceMode = false): void => {
-  const existed = existsSync(directory);
-  mkdirSync(directory, { mode: 0o700, recursive: true });
-  if (process.platform !== "win32" && (enforceMode || !existed)) {chmodSync(directory, 0o700);}
-};
+  const existed = existsSync(directory)
+  mkdirSync(directory, { mode: 0o700, recursive: true })
+  if (process.platform !== 'win32' && (enforceMode || !existed)) {
+    chmodSync(directory, 0o700)
+  }
+}
 
 const ensureBaseDirs = (): void => {
-  ensurePrivateDir(getRunsDir(), !loadSubagentConfig().storageDir);
-  ensurePrivateDir(SOCKET_DIR, true);
-};
+  ensurePrivateDir(getRunsDir(), !loadSubagentConfig().storageDir)
+  ensurePrivateDir(SOCKET_DIR, true)
+}
 
-const SCOPE_DIR_PATTERN = /^[0-9a-f]{24}$/;
-const AGENT_ID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const OUTPUT_FILE_PATTERN = /^\d+-[0-9a-f-]{36}\.txt$/i;
-const TASK_LOCK_PATTERN = /^\.task-[0-9a-f]{24}\.lock$/;
+const SCOPE_DIR_PATTERN = /^[0-9a-f]{24}$/
+const AGENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const OUTPUT_FILE_PATTERN = /^\d+-[0-9a-f-]{36}\.txt$/i
+const TASK_LOCK_PATTERN = /^\.task-[0-9a-f]{24}\.lock$/
 
 const isAgentArtifact = (name: string, agentId: string): boolean =>
   name === `${agentId}.jsonl` ||
   name === `${agentId}.info.json` ||
   name === `${agentId}.log` ||
-  new RegExp(`^${agentId}\\.info\\.json\\.\\d+\\.tmp$`).test(name);
+  new RegExp(`^${agentId}\\.info\\.json\\.\\d+\\.tmp$`).test(name)
 
 const latestArtifactMtime = (directory: string, agentEntries: Dirent[]): number => {
-  let latest = 0;
+  let latest = 0
   for (const artifact of agentEntries) {
     try {
-      latest = Math.max(latest, statSync(join(directory, artifact.name)).mtimeMs);
+      latest = Math.max(latest, statSync(join(directory, artifact.name)).mtimeMs)
     } catch {
       // Missing files between the readdir snapshot and stat don't affect staleness.
     }
   }
-  return latest;
-};
+  return latest
+}
 
 const removeAgentArtifacts = (directory: string, artifacts: Dirent[]): boolean => {
-  let failed = false;
+  let failed = false
   for (const artifact of artifacts) {
     try {
-      rmSync(join(directory, artifact.name), { force: true });
+      rmSync(join(directory, artifact.name), { force: true })
     } catch {
-      failed = true;
+      failed = true
     }
   }
-  return failed;
-};
+  return failed
+}
 
 interface PruneAgentEntryParams {
-  directory: string;
-  entries: Dirent[];
-  entry: Dirent;
-  cutoff: number;
+  directory: string
+  entries: Dirent[]
+  entry: Dirent
+  cutoff: number
 }
 
 const pruneAgentEntry = ({ directory, entries, entry, cutoff }: PruneAgentEntryParams): void => {
-  const agentId = entry.name.slice(0, -".info.json".length);
-  if (!AGENT_ID_PATTERN.test(agentId)) {return;}
-  const info = readInfoFile(join(directory, entry.name));
-  const agentEntries = entries.filter(
-    (candidate) => candidate.isFile() && isAgentArtifact(candidate.name, agentId),
-  );
-  const baseline = Math.max(info?.lastActivity ?? 0, info?.updatedAt ?? 0, info?.createdAt ?? 0);
-  const latest = Math.max(baseline, latestArtifactMtime(directory, agentEntries));
-  if (isRunActive(agentId) || latest >= cutoff) {return;}
-  const otherArtifacts = agentEntries.filter((candidate) => candidate.name !== entry.name);
-  if (removeAgentArtifacts(directory, otherArtifacts)) {return;}
+  const agentId = entry.name.slice(0, -'.info.json'.length)
+  if (!AGENT_ID_PATTERN.test(agentId)) {
+    return
+  }
+  const info = readInfoFile(join(directory, entry.name))
+  const agentEntries = entries.filter((candidate) => candidate.isFile() && isAgentArtifact(candidate.name, agentId))
+  const baseline = Math.max(info?.lastActivity ?? 0, info?.updatedAt ?? 0, info?.createdAt ?? 0)
+  const latest = Math.max(baseline, latestArtifactMtime(directory, agentEntries))
+  if (isRunActive(agentId) || latest >= cutoff) {
+    return
+  }
+  const otherArtifacts = agentEntries.filter((candidate) => candidate.name !== entry.name)
+  if (removeAgentArtifacts(directory, otherArtifacts)) {
+    return
+  }
   try {
-    rmSync(join(directory, entry.name), { force: true });
+    rmSync(join(directory, entry.name), { force: true })
   } catch {
     // Best effort cleanup; a concurrent deletion is not an error.
   }
-};
+}
 
 const pruneStaleTaskLock = (directory: string, entry: Dirent, cutoff: number): void => {
-  const lockFile = join(directory, entry.name);
+  const lockFile = join(directory, entry.name)
   try {
-    if (statSync(lockFile).mtimeMs >= cutoff) {return;}
+    if (statSync(lockFile).mtimeMs >= cutoff) {
+      return
+    }
   } catch {
-    return;
+    return
   }
-  reclaimDeadTaskLock(lockFile);
-};
+  reclaimDeadTaskLock(lockFile)
+}
 
 const pruneScope = (directory: string, cutoff: number): void => {
-  const entries = readdirSync(directory, { withFileTypes: true });
+  const entries = readdirSync(directory, { withFileTypes: true })
 
   for (const entry of entries) {
-    if (entry.isFile() && entry.name.endsWith(".info.json")) {
-      pruneAgentEntry({ cutoff, directory, entries, entry });
+    if (entry.isFile() && entry.name.endsWith('.info.json')) {
+      pruneAgentEntry({ cutoff, directory, entries, entry })
     }
   }
 
   for (const entry of entries) {
     if (entry.isFile() && TASK_LOCK_PATTERN.test(entry.name)) {
-      pruneStaleTaskLock(directory, entry, cutoff);
+      pruneStaleTaskLock(directory, entry, cutoff)
     }
   }
 
   try {
-    rmdirSync(directory);
+    rmdirSync(directory)
   } catch {
     // Best effort cleanup; a non-empty or already-removed directory is not an error.
   }
-};
+}
 
 const pruneOutputFiles = (target: string, cutoff: number): void => {
-  let outputs: Dirent[];
+  let outputs: Dirent[]
   try {
-    outputs = readdirSync(target, { withFileTypes: true });
+    outputs = readdirSync(target, { withFileTypes: true })
   } catch {
-    return;
+    return
   }
   for (const output of outputs) {
-    if (!output.isFile() || !OUTPUT_FILE_PATTERN.test(output.name)) {continue;}
-    const outputPath = join(target, output.name);
+    if (!output.isFile() || !OUTPUT_FILE_PATTERN.test(output.name)) {
+      continue
+    }
+    const outputPath = join(target, output.name)
     try {
-      if (statSync(outputPath).mtimeMs < cutoff) {rmSync(outputPath, { force: true });}
+      if (statSync(outputPath).mtimeMs < cutoff) {
+        rmSync(outputPath, { force: true })
+      }
     } catch {
       // Best effort cleanup; a concurrent deletion is not an error.
     }
   }
-};
+}
 
 const pruneRunsRoot = (root: string, cutoff: number): void => {
-  let entries: Dirent[];
+  let entries: Dirent[]
   try {
-    entries = readdirSync(root, { withFileTypes: true });
+    entries = readdirSync(root, { withFileTypes: true })
   } catch {
-    return;
+    return
   }
   for (const entry of entries) {
-    const target = join(root, entry.name);
-    if (entry.name === "_outputs" && entry.isDirectory()) {
-      pruneOutputFiles(target, cutoff);
-      continue;
+    const target = join(root, entry.name)
+    if (entry.name === '_outputs' && entry.isDirectory()) {
+      pruneOutputFiles(target, cutoff)
+      continue
     }
-    if (!entry.isDirectory() || !SCOPE_DIR_PATTERN.test(entry.name)) {continue;}
+    if (!entry.isDirectory() || !SCOPE_DIR_PATTERN.test(entry.name)) {
+      continue
+    }
     try {
-      pruneScope(target, cutoff);
+      pruneScope(target, cutoff)
     } catch {
       // Best effort cleanup; a partially-removed scope directory is not an error.
     }
   }
-};
+}
 
 const pruneExpiredRuns = (): void => {
-  const retentionDays = loadSubagentConfig().retentionDays ?? DEFAULT_RETENTION_DAYS;
-  if (retentionDays === 0) {return;}
-  const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
-  for (const root of runsRoots()) {pruneRunsRoot(root, cutoff);}
-};
+  const retentionDays = loadSubagentConfig().retentionDays ?? DEFAULT_RETENTION_DAYS
+  if (retentionDays === 0) {
+    return
+  }
+  const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000
+  for (const root of runsRoots()) {
+    pruneRunsRoot(root, cutoff)
+  }
+}
 
-export const parentScopeKey = (parentSessionId: string): string =>
-  createHash("sha256").update(parentSessionId).digest("hex").slice(0, 24);
+export const parentScopeKey = (parentSessionId: string): string => createHash('sha256').update(parentSessionId).digest('hex').slice(0, 24)
 
-export const taskStorageKey = (taskName: string): string =>
-  createHash("sha256").update(taskName).digest("hex").slice(0, 24);
+export const taskStorageKey = (taskName: string): string => createHash('sha256').update(taskName).digest('hex').slice(0, 24)
 
-const runsRoots = (): string[] => [...new Set([getRunsDir(), LEGACY_RUNS_DIR])];
+const runsRoots = (): string[] => [...new Set([getRunsDir(), LEGACY_RUNS_DIR])]
 
-const scopeDir = (parentSessionId: string): string =>
-  join(getRunsDir(), parentScopeKey(parentSessionId));
+const scopeDir = (parentSessionId: string): string => join(getRunsDir(), parentScopeKey(parentSessionId))
 
 const scopeDirs = (parentSessionId: string): string[] => {
-  const key = parentScopeKey(parentSessionId);
-  return runsRoots().map((root) => join(root, key));
-};
+  const key = parentScopeKey(parentSessionId)
+  return runsRoots().map((root) => join(root, key))
+}
 
 const normalizeTaskName = (name: string): string => {
-  const normalized = name.trim().replaceAll(/^\/+|\/+$/g, "");
+  const normalized = name.trim().replaceAll(/^\/+|\/+$/g, '')
   if (!/^[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)*$/.test(normalized)) {
-    throw new Error(
-      "task_name must use letters, digits, underscores, dashes, and optional slash path separators",
-    );
+    throw new Error('task_name must use letters, digits, underscores, dashes, and optional slash path separators')
   }
-  return normalized;
-};
+  return normalized
+}
 
-const taskLockFile = (parentSessionId: string, taskName: string): string =>
-  join(scopeDir(parentSessionId), `.task-${taskStorageKey(taskName)}.lock`);
+const taskLockFile = (parentSessionId: string, taskName: string): string => join(scopeDir(parentSessionId), `.task-${taskStorageKey(taskName)}.lock`)
 
 const taskLockIsActive = (parentSessionId: string, taskName: string): boolean => {
   try {
-    const owner = JSON.parse(readFileSync(taskLockFile(parentSessionId, taskName), "utf8")) as {
-      pid?: number;
-      processIdentity?: string;
-    };
-    return processOwnerIsActive(owner);
+    const owner = JSON.parse(readFileSync(taskLockFile(parentSessionId, taskName), 'utf8')) as {
+      pid?: number
+      processIdentity?: string
+    }
+    return processOwnerIsActive(owner)
   } catch {
-    return false;
+    return false
   }
-};
+}
 
 interface TaskLockOwner {
-  pid?: number;
-  processIdentity?: string;
-  token?: string;
+  pid?: number
+  processIdentity?: string
+  token?: string
 }
 
 const parseTaskLockOwner = (content: string): TaskLockOwner => {
   try {
-    return JSON.parse(content) as TaskLockOwner;
+    return JSON.parse(content) as TaskLockOwner
   } catch {
-    return {};
+    return {}
   }
-};
+}
 
-const sameFileInstance = (first: Stats, second: Stats): boolean =>
-  first.dev === second.dev && first.ino === second.ino;
+const sameFileInstance = (first: Stats, second: Stats): boolean => first.dev === second.dev && first.ino === second.ino
 
-const reclaimDeadTaskLock = (
-  lockFile: string,
-  beforeRevalidate?: (lockFile: string) => void,
-): boolean => {
-  let inspectedFd: number | undefined;
-  let currentFd: number | undefined;
+const reclaimDeadTaskLock = (lockFile: string, beforeRevalidate?: (lockFile: string) => void): boolean => {
+  let inspectedFd: number | undefined
+  let currentFd: number | undefined
   try {
     // Keep the inspected instance open, then reopen the pathname immediately before unlinking.
     // Comparing both file identity and content prevents deleting a replacement lock that won a
     // Race after the dead owner's record was read.
-    inspectedFd = openSync(lockFile, "r");
-    const inspectedStat = fstatSync(inspectedFd);
-    const inspectedContent = readFileSync(inspectedFd, "utf8");
-    const owner = parseTaskLockOwner(inspectedContent);
-    if (processOwnerIsActive(owner)) {return false;}
+    inspectedFd = openSync(lockFile, 'r')
+    const inspectedStat = fstatSync(inspectedFd)
+    const inspectedContent = readFileSync(inspectedFd, 'utf8')
+    const owner = parseTaskLockOwner(inspectedContent)
+    if (processOwnerIsActive(owner)) {
+      return false
+    }
 
-    beforeRevalidate?.(lockFile);
+    beforeRevalidate?.(lockFile)
 
-    currentFd = openSync(lockFile, "r");
-    const currentStat = fstatSync(currentFd);
-    const currentContent = readFileSync(currentFd, "utf8");
-    if (!sameFileInstance(inspectedStat, currentStat) || inspectedContent !== currentContent)
-      {return false;}
-    unlinkSync(lockFile);
-    return true;
+    currentFd = openSync(lockFile, 'r')
+    const currentStat = fstatSync(currentFd)
+    const currentContent = readFileSync(currentFd, 'utf8')
+    if (!sameFileInstance(inspectedStat, currentStat) || inspectedContent !== currentContent) {
+      return false
+    }
+    unlinkSync(lockFile)
+    return true
   } catch {
-    return false;
+    return false
   } finally {
-    if (currentFd !== undefined) {closeSync(currentFd);}
-    if (inspectedFd !== undefined) {closeSync(inspectedFd);}
+    if (currentFd !== undefined) {
+      closeSync(currentFd)
+    }
+    if (inspectedFd !== undefined) {
+      closeSync(inspectedFd)
+    }
   }
-};
+}
 
 const releaseTaskLock = (lockFile: string, ownedFd: number, token: string): void => {
-  let currentFd: number | undefined;
+  let currentFd: number | undefined
   try {
-    const ownedStat = fstatSync(ownedFd);
-    currentFd = openSync(lockFile, "r");
-    const currentStat = fstatSync(currentFd);
-    const currentOwner = parseTaskLockOwner(readFileSync(currentFd, "utf8"));
-    if (sameFileInstance(ownedStat, currentStat) && currentOwner.token === token)
-      {unlinkSync(lockFile);}
+    const ownedStat = fstatSync(ownedFd)
+    currentFd = openSync(lockFile, 'r')
+    const currentStat = fstatSync(currentFd)
+    const currentOwner = parseTaskLockOwner(readFileSync(currentFd, 'utf8'))
+    if (sameFileInstance(ownedStat, currentStat) && currentOwner.token === token) {
+      unlinkSync(lockFile)
+    }
   } catch {
     // A missing or replaced pathname is no longer this caller's lock to release.
   } finally {
-    if (currentFd !== undefined) {closeSync(currentFd);}
-    closeSync(ownedFd);
+    if (currentFd !== undefined) {
+      closeSync(currentFd)
+    }
+    closeSync(ownedFd)
   }
-};
+}
 
 const saveInfo = (info: AgentInfo): void => {
-  mkdirSync(dirname(info.infoFile), { recursive: true });
-  info.updatedAt = Date.now();
-  const temporary = `${info.infoFile}.${process.pid}.tmp`;
-  writeFileSync(temporary, JSON.stringify(info, undefined, 2));
-  renameSync(temporary, info.infoFile);
-};
+  mkdirSync(dirname(info.infoFile), { recursive: true })
+  info.updatedAt = Date.now()
+  const temporary = `${info.infoFile}.${process.pid}.tmp`
+  writeFileSync(temporary, JSON.stringify(info, undefined, 2))
+  renameSync(temporary, info.infoFile)
+}
 
 const readInfoFile = (file: string): AgentInfo | undefined => {
   try {
-    const info = JSON.parse(readFileSync(file, "utf8")) as Omit<AgentInfo, "status"> & {
-      status: AgentRuntimeStatus | "closed";
-      closedAt?: number;
-    };
-    if (info.status === "closed") {
-      if (info.error) {
-        info.status = "failed";
-      } else {
-        info.status = info.finalResponse === undefined ? "interrupted" : "completed";
-      }
-      delete info.closedAt;
+    const info = JSON.parse(readFileSync(file, 'utf8')) as Omit<AgentInfo, 'status'> & {
+      status: AgentRuntimeStatus | 'closed'
+      closedAt?: number
     }
-    return info as AgentInfo;
+    if (info.status === 'closed') {
+      if (info.error) {
+        info.status = 'failed'
+      } else {
+        info.status = info.finalResponse === undefined ? 'interrupted' : 'completed'
+      }
+      delete info.closedAt
+    }
+    return info as AgentInfo
   } catch {
-    return undefined;
+    return undefined
   }
-};
+}
 
 const readInfos = (directory: string): AgentInfo[] => {
-  if (!existsSync(directory)) {return [];}
+  if (!existsSync(directory)) {
+    return []
+  }
   return readdirSync(directory)
-    .filter((name) => name.endsWith(".info.json"))
+    .filter((name) => name.endsWith('.info.json'))
     .flatMap((name) => {
-      const info = readInfoFile(join(directory, name));
-      return info ? [info] : [];
-    });
-};
+      const info = readInfoFile(join(directory, name))
+      return info ? [info] : []
+    })
+}
 
 const sortInfos = (infos: AgentInfo[]): AgentInfo[] =>
-  infos.toSorted((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id));
+  infos.toSorted((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))
 
-const readScopeInfos = (parentSessionId: string): AgentInfo[] =>
-  sortInfos(scopeDirs(parentSessionId).flatMap(readInfos));
+const readScopeInfos = (parentSessionId: string): AgentInfo[] => sortInfos(scopeDirs(parentSessionId).flatMap(readInfos))
 
 const readAllInfos = (): AgentInfo[] => {
   const directories = runsRoots().flatMap((root) => {
-    if (!existsSync(root)) {return [];}
+    if (!existsSync(root)) {
+      return []
+    }
     return readdirSync(root, { withFileTypes: true })
       .filter((entry) => entry.isDirectory() && SCOPE_DIR_PATTERN.test(entry.name))
-      .map((entry) => join(root, entry.name));
-  });
-  return sortInfos(directories.flatMap(readInfos));
-};
+      .map((entry) => join(root, entry.name))
+  })
+  return sortInfos(directories.flatMap(readInfos))
+}
 
 export const getAgent = (name: string, parentSessionId: string): AgentInfo | undefined => {
-  const taskName = normalizeTaskName(name);
-  return readScopeInfos(parentSessionId).find((info) => info.taskName === taskName);
-};
+  const taskName = normalizeTaskName(name)
+  return readScopeInfos(parentSessionId).find((info) => info.taskName === taskName)
+}
 
 export interface PeekMarker {
-  pid: number;
-  startedAt: number;
-  token: string;
+  pid: number
+  startedAt: number
+  token: string
 }
 
 export const getSocketPath = (agentId: string): string =>
-  process.platform === "win32"
-    ? `\\\\.\\pipe\\${PACKAGE_BASENAME}-${userInfo().username}-${agentId}`
-    : join(SOCKET_DIR, `${agentId}.sock`);
+  process.platform === 'win32' ? `\\\\.\\pipe\\${PACKAGE_BASENAME}-${userInfo().username}-${agentId}` : join(SOCKET_DIR, `${agentId}.sock`)
 
-const markerPath = (agentId: string, kind: "active" | "peek"): string =>
-  join(SOCKET_DIR, `${agentId}.${kind}.json`);
+const markerPath = (agentId: string, kind: 'active' | 'peek'): string => join(SOCKET_DIR, `${agentId}.${kind}.json`)
 
-const markActive = (agentId: string, kind: "active" | "peek", marker: PeekMarker): void => {
-  writeFileSync(markerPath(agentId, kind), JSON.stringify(marker, undefined, 2));
-};
+const markActive = (agentId: string, kind: 'active' | 'peek', marker: PeekMarker): void => {
+  writeFileSync(markerPath(agentId, kind), JSON.stringify(marker, undefined, 2))
+}
 
-const clearActive = (
-  agentId: string,
-  kind: "active" | "peek",
-  owner?: Pick<PeekMarker, "pid" | "token">,
-): void => {
-  const file = markerPath(agentId, kind);
+const clearActive = (agentId: string, kind: 'active' | 'peek', owner?: Pick<PeekMarker, 'pid' | 'token'>): void => {
+  const file = markerPath(agentId, kind)
   try {
     if (owner && existsSync(file)) {
-      const current = JSON.parse(readFileSync(file, "utf8")) as Partial<PeekMarker>;
-      if (current.pid !== owner.pid || current.token !== owner.token) {return;}
+      const current = JSON.parse(readFileSync(file, 'utf8')) as Partial<PeekMarker>
+      if (current.pid !== owner.pid || current.token !== owner.token) {
+        return
+      }
     }
-    unlinkSync(file);
+    unlinkSync(file)
   } catch {
     // Best effort cleanup; a missing or already-removed marker is not an error.
   }
-};
+}
 
-const isActive = (agentId: string, kind: "active" | "peek"): boolean => {
-  const file = markerPath(agentId, kind);
+const isActive = (agentId: string, kind: 'active' | 'peek'): boolean => {
+  const file = markerPath(agentId, kind)
   try {
-    if (!existsSync(file)) {return false;}
-    const marker = JSON.parse(readFileSync(file, "utf8")) as PeekMarker;
-    if (processAlive(marker.pid)) {return true;}
-    clearActive(agentId, kind, marker);
+    if (!existsSync(file)) {
+      return false
+    }
+    const marker = JSON.parse(readFileSync(file, 'utf8')) as PeekMarker
+    if (processAlive(marker.pid)) {
+      return true
+    }
+    clearActive(agentId, kind, marker)
   } catch {
     // Best effort; treat an unreadable marker file as inactive.
   }
-  return false;
-};
+  return false
+}
 
-const isRunActive = (agentId: string): boolean =>
-  isActive(agentId, "active") || isActive(agentId, "peek");
+const isRunActive = (agentId: string): boolean => isActive(agentId, 'active') || isActive(agentId, 'peek')
 
-export const isPeekActive = (agentId: string): boolean => isActive(agentId, "peek");
+export const isPeekActive = (agentId: string): boolean => isActive(agentId, 'peek')
 
 export interface SubagentMessage {
-  role?: string;
-  content?: unknown;
-  stopReason?: string;
-  errorMessage?: string;
-  toolCallId?: string;
+  role?: string
+  content?: unknown
+  stopReason?: string
+  errorMessage?: string
+  toolCallId?: string
 }
 
 export interface ActiveToolSnapshot {
-  toolCallId: string;
-  toolName: string;
-  args: unknown;
-  partialResult?: unknown;
-  result?: unknown;
-  isError?: boolean;
+  toolCallId: string
+  toolName: string
+  args: unknown
+  partialResult?: unknown
+  result?: unknown
+  isError?: boolean
 }
 
 export interface SyncBroadcastEvent {
-  type: "sync";
-  activeTools: ActiveToolSnapshot[];
-  partialMessage: SubagentMessage | undefined;
-  status: "thinking" | "streaming" | "tool" | "done";
-  toolName: string | undefined;
-  userMessage: SubagentMessage | undefined;
+  type: 'sync'
+  activeTools: ActiveToolSnapshot[]
+  partialMessage: SubagentMessage | undefined
+  status: 'thinking' | 'streaming' | 'tool' | 'done'
+  toolName: string | undefined
+  userMessage: SubagentMessage | undefined
 }
 
 export interface SubagentRpcEvent {
-  type: string;
-  id?: string;
-  success?: boolean;
-  data?: unknown;
-  error?: string;
-  message?: SubagentMessage;
-  messages?: SubagentMessage[];
-  assistantMessageEvent?: { type?: string };
-  toolCallId?: string;
-  toolName?: string;
-  args?: unknown;
-  partialResult?: unknown;
-  result?: unknown;
-  isError?: boolean;
-  finalError?: string;
+  type: string
+  id?: string
+  success?: boolean
+  data?: unknown
+  error?: string
+  message?: SubagentMessage
+  messages?: SubagentMessage[]
+  assistantMessageEvent?: { type?: string }
+  toolCallId?: string
+  toolName?: string
+  args?: unknown
+  partialResult?: unknown
+  result?: unknown
+  isError?: boolean
+  finalError?: string
 }
 
-export type BroadcastEvent = SyncBroadcastEvent | SubagentRpcEvent;
+export type BroadcastEvent = SyncBroadcastEvent | SubagentRpcEvent
 
 class SessionLogger {
-  private stream: WriteStream | undefined = undefined;
-  private readonly file: string;
+  private stream: WriteStream | undefined = undefined
+  private readonly file: string
   constructor(file: string) {
-    this.file = file;
+    this.file = file
   }
   private write(entry: { level: string; category: string; message: string; data?: unknown }): void {
-    const { level, category, message, data } = entry;
-    mkdirSync(dirname(this.file), { recursive: true });
-    if (!this.stream) {this.stream = createWriteStream(this.file, { flags: "a" });}
+    const { level, category, message, data } = entry
+    mkdirSync(dirname(this.file), { recursive: true })
+    if (!this.stream) {
+      this.stream = createWriteStream(this.file, { flags: 'a' })
+    }
     this.stream.write(
       `${JSON.stringify({
         category,
@@ -692,53 +700,55 @@ class SessionLogger {
         message,
         ts: new Date().toISOString(),
         ...(data === undefined ? {} : { data }),
-      })  }\n`,
-    );
+      })}\n`
+    )
   }
   info(category: string, message: string, data?: unknown): void {
-    this.write({ category, data, level: "INFO", message });
+    this.write({ category, data, level: 'INFO', message })
   }
   stderr(chunk: string): void {
-    this.write({ category: "pi-process", level: "STDERR", message: chunk.trim() });
+    this.write({ category: 'pi-process', level: 'STDERR', message: chunk.trim() })
   }
   close(): void {
-    this.stream?.end();
-    this.stream = undefined;
+    this.stream?.end()
+    this.stream = undefined
   }
 }
 
 class EventBroadcaster {
-  private server: Server | undefined = undefined;
-  private connections: Socket[] = [];
+  private server: Server | undefined = undefined
+  private connections: Socket[] = []
   private readonly marker: PeekMarker = {
     pid: process.pid,
     startedAt: Date.now(),
     token: randomUUID(),
-  };
-  private status: "thinking" | "streaming" | "tool" | "done" = "thinking";
-  private toolName?: string;
-  private partialMessage: SubagentMessage | undefined = undefined;
-  private userMessage: SubagentMessage | undefined = undefined;
-  private readonly activeTools = new Map<string, ActiveToolSnapshot>();
-  private readonly agentId: string;
+  }
+  private status: 'thinking' | 'streaming' | 'tool' | 'done' = 'thinking'
+  private toolName?: string
+  private partialMessage: SubagentMessage | undefined = undefined
+  private userMessage: SubagentMessage | undefined = undefined
+  private readonly activeTools = new Map<string, ActiveToolSnapshot>()
+  private readonly agentId: string
 
   constructor(agentId: string) {
-    this.agentId = agentId;
+    this.agentId = agentId
   }
 
   start(): void {
-    ensurePrivateDir(SOCKET_DIR, true);
-    markActive(this.agentId, "active", this.marker);
-    const socketPath = getSocketPath(this.agentId);
-    if (process.platform !== "win32") {
+    ensurePrivateDir(SOCKET_DIR, true)
+    markActive(this.agentId, 'active', this.marker)
+    const socketPath = getSocketPath(this.agentId)
+    if (process.platform !== 'win32') {
       try {
-        if (existsSync(socketPath)) {unlinkSync(socketPath);}
+        if (existsSync(socketPath)) {
+          unlinkSync(socketPath)
+        }
       } catch {
         // Best effort; a missing stale socket file is not an error.
       }
     }
     this.server = createServer((connection) => {
-      this.connections.push(connection);
+      this.connections.push(connection)
       try {
         connection.write(
           `${JSON.stringify({
@@ -746,108 +756,120 @@ class EventBroadcaster {
             partialMessage: this.partialMessage,
             status: this.status,
             toolName: this.toolName,
-            type: "sync",
+            type: 'sync',
             userMessage: this.userMessage,
-          } satisfies SyncBroadcastEvent)  }\n`,
-        );
+          } satisfies SyncBroadcastEvent)}\n`
+        )
       } catch {
         // Best effort; a connection that closed before the sync write is not an error.
       }
       const remove = () => {
-        this.connections = this.connections.filter((candidate) => candidate !== connection);
-      };
-      connection.on("close", remove);
-      connection.on("error", remove);
-    });
-    this.server.on("listening", () => markActive(this.agentId, "peek", this.marker));
-    this.server.on("error", () => this.stopSocket());
+        this.connections = this.connections.filter((candidate) => candidate !== connection)
+      }
+      connection.on('close', remove)
+      connection.on('error', remove)
+    })
+    this.server.on('listening', () => markActive(this.agentId, 'peek', this.marker))
+    this.server.on('error', () => this.stopSocket())
     try {
-      this.server.listen(socketPath);
+      this.server.listen(socketPath)
     } catch {
-      this.stopSocket();
+      this.stopSocket()
     }
   }
 
   private applyMessageStart(event: SubagentRpcEvent): void {
-    if (event.message?.role === "user") {
-      this.userMessage = event.message;
-    } else if (event.message?.role === "assistant") {
-      this.partialMessage = event.message;
-      this.status = "thinking";
+    if (event.message?.role === 'user') {
+      this.userMessage = event.message
+    } else if (event.message?.role === 'assistant') {
+      this.partialMessage = event.message
+      this.status = 'thinking'
     }
   }
 
   private applyMessageUpdate(event: SubagentRpcEvent): void {
-    if (event.message?.role !== "assistant") {return;}
-    this.partialMessage = event.message;
-    const delta = event.assistantMessageEvent;
-    if (delta?.type === "thinking_delta") {this.status = "thinking";}
-    if (delta?.type === "text_delta") {this.status = "streaming";}
+    if (event.message?.role !== 'assistant') {
+      return
+    }
+    this.partialMessage = event.message
+    const delta = event.assistantMessageEvent
+    if (delta?.type === 'thinking_delta') {
+      this.status = 'thinking'
+    }
+    if (delta?.type === 'text_delta') {
+      this.status = 'streaming'
+    }
   }
 
   private applyToolExecutionStart(event: SubagentRpcEvent): void {
-    this.status = "tool";
-    this.toolName = event.toolName;
+    this.status = 'tool'
+    this.toolName = event.toolName
     if (event.toolCallId && event.toolName) {
       this.activeTools.set(event.toolCallId, {
         args: event.args,
         toolCallId: event.toolCallId,
         toolName: event.toolName,
-      });
+      })
     }
   }
 
   private applyToolExecutionUpdate(event: SubagentRpcEvent): void {
-    if (!event.toolCallId) {return;}
-    const active = this.activeTools.get(event.toolCallId);
-    if (active) {active.partialResult = event.partialResult;}
+    if (!event.toolCallId) {
+      return
+    }
+    const active = this.activeTools.get(event.toolCallId)
+    if (active) {
+      active.partialResult = event.partialResult
+    }
   }
 
   private applyToolExecutionEnd(event: SubagentRpcEvent): void {
-    if (!event.toolCallId) {return;}
-    const active = this.activeTools.get(event.toolCallId);
+    if (!event.toolCallId) {
+      return
+    }
+    const active = this.activeTools.get(event.toolCallId)
     if (active) {
-      active.result = event.result;
-      active.isError = event.isError ?? false;
+      active.result = event.result
+      active.isError = event.isError ?? false
     }
   }
 
   private applyMessageEnd(event: SubagentRpcEvent): void {
-    if (event.message?.role === "toolResult" && event.message.toolCallId) {
-      this.activeTools.delete(event.message.toolCallId);
+    if (event.message?.role === 'toolResult' && event.message.toolCallId) {
+      this.activeTools.delete(event.message.toolCallId)
     }
-    this.partialMessage = undefined;
-    this.userMessage = undefined;
+    this.partialMessage = undefined
+    this.userMessage = undefined
   }
 
   private applyAgentSettled(): void {
-    this.partialMessage = undefined;
-    this.userMessage = undefined;
-    this.activeTools.clear();
-    this.status = "done";
-    this.toolName = undefined;
+    this.partialMessage = undefined
+    this.userMessage = undefined
+    this.activeTools.clear()
+    this.status = 'done'
+    this.toolName = undefined
   }
 
   broadcast(event: SubagentRpcEvent): void {
-    if (event.type === "message_start") {
-      this.applyMessageStart(event);
-    } else if (event.type === "message_update") {
-      this.applyMessageUpdate(event);
-    } else if (event.type === "tool_execution_start") {
-      this.applyToolExecutionStart(event);
-    } else if (event.type === "tool_execution_update") {
-      this.applyToolExecutionUpdate(event);
-    } else if (event.type === "tool_execution_end") {
-      this.applyToolExecutionEnd(event);
-    } else if (event.type === "message_end") {
-      this.applyMessageEnd(event);
-    } else if (event.type === "agent_settled") {
-      this.applyAgentSettled();
+    if (event.type === 'message_start') {
+      this.applyMessageStart(event)
+    } else if (event.type === 'message_update') {
+      this.applyMessageUpdate(event)
+    } else if (event.type === 'tool_execution_start') {
+      this.applyToolExecutionStart(event)
+    } else if (event.type === 'tool_execution_update') {
+      this.applyToolExecutionUpdate(event)
+    } else if (event.type === 'tool_execution_end') {
+      this.applyToolExecutionEnd(event)
+    } else if (event.type === 'message_end') {
+      this.applyMessageEnd(event)
+    } else if (event.type === 'agent_settled') {
+      this.applyAgentSettled()
     }
-    const line = `${JSON.stringify(event)  }\n`;
+    const line = `${JSON.stringify(event)}\n`
     for (const connection of this.connections) {
       try {
-        connection.write(line);
+        connection.write(line)
       } catch {
         // Best effort; a connection that closed mid-broadcast is not an error.
       }
@@ -855,24 +877,26 @@ class EventBroadcaster {
   }
 
   private stopSocket(): void {
-    clearActive(this.agentId, "peek", this.marker);
+    clearActive(this.agentId, 'peek', this.marker)
     for (const connection of this.connections) {
       try {
-        connection.destroy();
+        connection.destroy()
       } catch {
         // Best effort; a connection that is already closed is not an error.
       }
     }
-    this.connections = [];
+    this.connections = []
     try {
-      this.server?.close();
+      this.server?.close()
     } catch {
       // Best effort; a server that is already closed is not an error.
     }
-    this.server = undefined;
-    if (process.platform !== "win32") {
+    this.server = undefined
+    if (process.platform !== 'win32') {
       try {
-        if (existsSync(getSocketPath(this.agentId))) {unlinkSync(getSocketPath(this.agentId));}
+        if (existsSync(getSocketPath(this.agentId))) {
+          unlinkSync(getSocketPath(this.agentId))
+        }
       } catch {
         // Best effort; a missing stale socket file is not an error.
       }
@@ -880,155 +904,156 @@ class EventBroadcaster {
   }
 
   stop(): void {
-    clearActive(this.agentId, "active", this.marker);
-    this.stopSocket();
+    clearActive(this.agentId, 'active', this.marker)
+    this.stopSocket()
   }
 }
 
-const isTextContentPart = (part: unknown): part is { type: "text"; text: string } =>
-  typeof part === "object" &&
-  part !== null &&
-  (part as { type?: unknown }).type === "text" &&
-  typeof (part as { text?: unknown }).text === "string";
+const isTextContentPart = (part: unknown): part is { type: 'text'; text: string } =>
+  typeof part === 'object' && part !== null && (part as { type?: unknown }).type === 'text' && typeof (part as { text?: unknown }).text === 'string'
 
 const extractTextFromMessage = (message: SubagentMessage | undefined): string => {
-  const content = message?.content;
-  if (typeof content === "string") {return content;}
-  if (!Array.isArray(content)) {return "";}
+  const content = message?.content
+  if (typeof content === 'string') {
+    return content
+  }
+  if (!Array.isArray(content)) {
+    return ''
+  }
   return content
     .filter(isTextContentPart)
     .map((part) => part.text)
-    .join("\n\n");
-};
+    .join('\n\n')
+}
 
 const previewText = (text: string | undefined, maxLength = 180): string | undefined => {
-  if (!text) {return undefined;}
-  const normalized = text.replaceAll(/\s+/g, " ").trim();
-  return normalized.length <= maxLength
-    ? normalized
-    : `${normalized.slice(0, Math.max(0, maxLength - 1))}…`;
-};
+  if (!text) {
+    return undefined
+  }
+  const normalized = text.replaceAll(/\s+/g, ' ').trim()
+  return normalized.length <= maxLength ? normalized : `${normalized.slice(0, Math.max(0, maxLength - 1))}…`
+}
 
 const agentMetadata = (
-  info: AgentInfo,
+  info: AgentInfo
 ): {
-  profile?: string;
-  color: ThemeColor;
-  isReadonly?: boolean;
+  profile?: string
+  color: ThemeColor
+  isReadonly?: boolean
 } => ({
   ...(info.profile ? { profile: info.profile } : {}),
   color: persistedProfileColor(info.profile, info.color),
   ...(info.isReadonly === undefined ? {} : { isReadonly: info.isReadonly }),
-});
+})
 
 const getPiCommand = (
-  override?: AgentManagerOptions["piCommand"],
+  override?: AgentManagerOptions['piCommand']
 ): {
-  command: string;
-  prefixArgs: string[];
+  command: string
+  prefixArgs: string[]
 } => {
-  if (override) {return { command: override.command, prefixArgs: override.prefixArgs ?? [] };}
-  if (process.env.PI_SUBAGENT_PI_BIN)
-    {return { command: process.env.PI_SUBAGENT_PI_BIN, prefixArgs: [] };}
-  const [, currentEntry] = process.argv;
-  if (currentEntry && existsSync(currentEntry))
-    {return { command: process.execPath, prefixArgs: [currentEntry] };}
-  return { command: process.execPath, prefixArgs: [] };
-};
+  if (override) {
+    return { command: override.command, prefixArgs: override.prefixArgs ?? [] }
+  }
+  if (process.env.PI_SUBAGENT_PI_BIN) {
+    return { command: process.env.PI_SUBAGENT_PI_BIN, prefixArgs: [] }
+  }
+  const [, currentEntry] = process.argv
+  if (currentEntry && existsSync(currentEntry)) {
+    return { command: process.execPath, prefixArgs: [currentEntry] }
+  }
+  return { command: process.execPath, prefixArgs: [] }
+}
 
-const canonicalAgentName = (target: string): string =>
-  target.startsWith("/") ? target : `/${target}`;
+const canonicalAgentName = (target: string): string => (target.startsWith('/') ? target : `/${target}`)
 
-const targetMatches = (event: AgentCompletionEvent, targets?: Set<string>): boolean =>
-  !targets || targets.has(event.agentName);
+const targetMatches = (event: AgentCompletionEvent, targets?: Set<string>): boolean => !targets || targets.has(event.agentName)
 
-const buildChildArgs = (
-  launch: { command: string; prefixArgs: string[] },
-  info: AgentInfo,
-): string[] => {
+const buildChildArgs = (launch: { command: string; prefixArgs: string[] }, info: AgentInfo): string[] => {
   const args = [
     ...launch.prefixArgs,
-    "--mode",
-    "rpc",
-    "--no-skills",
-    "--no-prompt-templates",
-    "--no-context-files",
-    "--append-system-prompt",
+    '--mode',
+    'rpc',
+    '--no-skills',
+    '--no-prompt-templates',
+    '--no-context-files',
+    '--append-system-prompt',
     [
       info.prompt,
       info.isReadonly
-        ? "This subagent role is read-only. Do not modify local or remote state. The configured tool allowlist remains the local capability boundary."
+        ? 'This subagent role is read-only. Do not modify local or remote state. The configured tool allowlist remains the local capability boundary.'
         : undefined,
     ]
       .filter(Boolean)
-      .join("\n\n"),
-    "--provider",
+      .join('\n\n'),
+    '--provider',
     info.provider,
-    "--model",
+    '--model',
     info.modelId,
-    "--session",
+    '--session',
     info.sessionFile,
-  ];
-  if (info.thinking) {args.push("--thinking", info.thinking);}
-  const tools = info.allowedTools?.join(",") ?? info.tools;
-  if (tools !== undefined) {
-    if (tools) {args.push("--tools", tools);}
-    else {args.push("--no-builtin-tools");}
+  ]
+  if (info.thinking) {
+    args.push('--thinking', info.thinking)
   }
-  return args;
-};
+  const tools = info.allowedTools?.join(',') ?? info.tools
+  if (tools !== undefined) {
+    if (tools) {
+      args.push('--tools', tools)
+    } else {
+      args.push('--no-builtin-tools')
+    }
+  }
+  return args
+}
 
-const buildChildEnv = (
-  info: AgentInfo,
-  childToken: string,
-  extraChildEnv: NodeJS.ProcessEnv | undefined,
-): NodeJS.ProcessEnv => {
-  const childEnv = { ...process.env, ...extraChildEnv };
-  delete childEnv.PI_SESSION_ID;
-  delete childEnv.PI_SESSION_FILE;
-  delete childEnv.PI_PROVIDER;
-  delete childEnv.PI_MODEL;
-  delete childEnv.PI_REASONING_LEVEL;
-  childEnv.PI_SUBAGENT_OWNER_TOKEN = childToken;
-  childEnv.PI_SUBAGENT_PROFILE = info.profile ?? "";
-  childEnv.PI_SUBAGENT_READONLY = info.isReadonly ? "1" : "0";
-  return childEnv;
-};
+const buildChildEnv = (info: AgentInfo, childToken: string, extraChildEnv: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv => {
+  const childEnv = { ...process.env, ...extraChildEnv }
+  delete childEnv.PI_SESSION_ID
+  delete childEnv.PI_SESSION_FILE
+  delete childEnv.PI_PROVIDER
+  delete childEnv.PI_MODEL
+  delete childEnv.PI_REASONING_LEVEL
+  childEnv.PI_SUBAGENT_OWNER_TOKEN = childToken
+  childEnv.PI_SUBAGENT_PROFILE = info.profile ?? ''
+  childEnv.PI_SUBAGENT_READONLY = info.isReadonly ? '1' : '0'
+  return childEnv
+}
 
 export class AgentManager {
-  private readonly live = new Map<string, LiveAgent>();
-  private readonly mailbox: AgentCompletionEvent[] = [];
-  private waiters: Waiter[] = [];
+  private readonly live = new Map<string, LiveAgent>()
+  private readonly mailbox: AgentCompletionEvent[] = []
+  private waiters: Waiter[] = []
   private readonly waitAllClaims = new Set<{
-    parentSessionId: string;
-    targets: Set<string>;
-    suppressedEventIds: Set<string>;
-  }>();
-  private readonly defaultWaitAllTargets = new Map<string, Set<string>>();
-  private readonly shutdownController = new AbortController();
-  private readonly ownerProcessIdentity = inspectProcess(process.pid)?.identity;
-  private readonly reconciliation: Promise<void>;
-  private readonly options: AgentManagerOptions;
+    parentSessionId: string
+    targets: Set<string>
+    suppressedEventIds: Set<string>
+  }>()
+  private readonly defaultWaitAllTargets = new Map<string, Set<string>>()
+  private readonly shutdownController = new AbortController()
+  private readonly ownerProcessIdentity = inspectProcess(process.pid)?.identity
+  private readonly reconciliation: Promise<void>
+  private readonly options: AgentManagerOptions
 
   constructor(options: AgentManagerOptions = {}) {
-    this.options = options;
-    ensureBaseDirs();
-    pruneExpiredRuns();
-    this.reconciliation = this.reconcilePersistedChildren();
+    this.options = options
+    ensureBaseDirs()
+    pruneExpiredRuns()
+    this.reconciliation = this.reconcilePersistedChildren()
   }
 
   async ready(): Promise<void> {
-    await this.reconciliation;
+    await this.reconciliation
   }
 
   private notifyStatusChange(info: AgentInfo): void {
     try {
       this.options.onActivityChange?.({
-        active: info.status === "starting" || info.status === "running",
+        active: info.status === 'starting' || info.status === 'running',
         agentName: info.canonicalName,
         parentSessionId: info.parentSessionId,
         ...agentMetadata(info),
-      });
+      })
     } catch {
       // Best effort; a throwing extension callback must not break status tracking.
     }
@@ -1036,41 +1061,47 @@ export class AgentManager {
 
   private notifyUnclaimedCompletion(event: AgentCompletionEvent): void {
     try {
-      this.options.onUnclaimedCompletion?.(event);
+      this.options.onUnclaimedCompletion?.(event)
     } catch {
       // Best effort; a throwing extension callback must not break event delivery.
     }
   }
 
   private clearChildOwnership(info: AgentInfo, expectedToken: string): void {
-    const persisted = readInfoFile(info.infoFile);
+    const persisted = readInfoFile(info.infoFile)
     if (persisted?.childProcess?.token === expectedToken) {
-      delete persisted.childProcess;
-      saveInfo(persisted);
+      delete persisted.childProcess
+      saveInfo(persisted)
     }
-    if (info.childProcess?.token === expectedToken) {delete info.childProcess;}
+    if (info.childProcess?.token === expectedToken) {
+      delete info.childProcess
+    }
   }
 
-  private async waitForOwnedExit(
-    ownership: ChildProcessOwnership,
-    timeoutMs: number,
-  ): Promise<boolean> {
-    const deadline = Date.now() + timeoutMs;
+  private async waitForOwnedExit(ownership: ChildProcessOwnership, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
-      if (!ownershipMatches(ownership)) {return true;}
-      await delay(25);
+      if (!ownershipMatches(ownership)) {
+        return true
+      }
+      await delay(25)
     }
-    return !ownershipMatches(ownership);
+    return !ownershipMatches(ownership)
   }
 
   private signalOwnedProcess(ownership: ChildProcessOwnership, signal: NodeJS.Signals): void {
-    if (!ownershipMatches(ownership)) {return;}
+    if (!ownershipMatches(ownership)) {
+      return
+    }
     try {
-      if (process.platform === "win32") {process.kill(ownership.pid, signal);}
-      else {process.kill(-ownership.pid, signal);}
+      if (process.platform === 'win32') {
+        process.kill(ownership.pid, signal)
+      } else {
+        process.kill(-ownership.pid, signal)
+      }
     } catch {
       try {
-        process.kill(ownership.pid, signal);
+        process.kill(ownership.pid, signal)
       } catch {
         // Best effort; the process may have already exited.
       }
@@ -1078,74 +1109,75 @@ export class AgentManager {
   }
 
   private async terminateOwnedChild(info: AgentInfo): Promise<void> {
-    const ownership = info.childProcess;
-    if (!ownership) {return;}
-    if (!ownershipMatches(ownership)) {
-      this.clearChildOwnership(info, ownership.token);
-      return;
+    const ownership = info.childProcess
+    if (!ownership) {
+      return
     }
-    if (process.platform === "win32") {
+    if (!ownershipMatches(ownership)) {
+      this.clearChildOwnership(info, ownership.token)
+      return
+    }
+    if (process.platform === 'win32') {
       await new Promise<void>((finished) => {
-        const killer = spawn("taskkill", ["/pid", String(ownership.pid), "/T", "/F"], {
-          stdio: "ignore",
-        });
-        killer.once("error", () => finished());
-        killer.once("exit", () => finished());
-      });
-      await this.waitForOwnedExit(ownership, 2000);
+        const killer = spawn('taskkill', ['/pid', String(ownership.pid), '/T', '/F'], {
+          stdio: 'ignore',
+        })
+        killer.once('error', () => finished())
+        killer.once('exit', () => finished())
+      })
+      await this.waitForOwnedExit(ownership, 2000)
     } else {
-      this.signalOwnedProcess(ownership, "SIGTERM");
+      this.signalOwnedProcess(ownership, 'SIGTERM')
       if (!(await this.waitForOwnedExit(ownership, 1000))) {
-        this.signalOwnedProcess(ownership, "SIGKILL");
-        await this.waitForOwnedExit(ownership, 1000);
+        this.signalOwnedProcess(ownership, 'SIGKILL')
+        await this.waitForOwnedExit(ownership, 1000)
       }
     }
-    if (ownershipMatches(ownership))
-      {throw new Error(`Unable to terminate owned child process for ${info.canonicalName}.`);}
-    this.clearChildOwnership(info, ownership.token);
+    if (ownershipMatches(ownership)) {
+      throw new Error(`Unable to terminate owned child process for ${info.canonicalName}.`)
+    }
+    this.clearChildOwnership(info, ownership.token)
   }
 
   private async reconcilePersistedChildren(): Promise<void> {
     for (const info of readAllInfos()) {
-      const ownership = info.childProcess;
+      const ownership = info.childProcess
       if (!ownership) {
-        if (info.status === "starting" && !taskLockIsActive(info.parentSessionId, info.taskName)) {
-          reclaimDeadTaskLock(
-            taskLockFile(info.parentSessionId, info.taskName),
-            this.options.beforeReclaimTaskLockRemoval,
-          );
-          info.status = "interrupted";
-          info.lastActivity = Date.now();
-          saveInfo(info);
-          this.notifyStatusChange(info);
+        if (info.status === 'starting' && !taskLockIsActive(info.parentSessionId, info.taskName)) {
+          reclaimDeadTaskLock(taskLockFile(info.parentSessionId, info.taskName), this.options.beforeReclaimTaskLockRemoval)
+          info.status = 'interrupted'
+          info.lastActivity = Date.now()
+          saveInfo(info)
+          this.notifyStatusChange(info)
         }
-        continue;
+        continue
       }
       try {
         if (!ownershipMatches(ownership)) {
-          if (info.status === "starting" || info.status === "running") {
-            info.status = "interrupted";
-            info.lastActivity = Date.now();
-            saveInfo(info);
-            this.notifyStatusChange(info);
+          if (info.status === 'starting' || info.status === 'running') {
+            info.status = 'interrupted'
+            info.lastActivity = Date.now()
+            saveInfo(info)
+            this.notifyStatusChange(info)
           }
-          this.clearChildOwnership(info, ownership.token);
-          continue;
+          this.clearChildOwnership(info, ownership.token)
+          continue
         }
-        const ownerSnapshot = inspectProcess(ownership.ownerPid);
+        const ownerSnapshot = inspectProcess(ownership.ownerPid)
         const ownerStillActive =
           ownership.ownerPid !== process.pid &&
           ownerSnapshot &&
-          (!ownership.ownerProcessIdentity ||
-            ownerSnapshot.identity === ownership.ownerProcessIdentity);
-        if (ownerStillActive) {continue;}
-        if (info.status === "starting" || info.status === "running") {
-          info.status = "interrupted";
-          info.lastActivity = Date.now();
-          saveInfo(info);
-          this.notifyStatusChange(info);
+          (!ownership.ownerProcessIdentity || ownerSnapshot.identity === ownership.ownerProcessIdentity)
+        if (ownerStillActive) {
+          continue
         }
-        await this.terminateOwnedChild(info);
+        if (info.status === 'starting' || info.status === 'running') {
+          info.status = 'interrupted'
+          info.lastActivity = Date.now()
+          saveInfo(info)
+          this.notifyStatusChange(info)
+        }
+        await this.terminateOwnedChild(info)
       } catch {
         // Best effort reconciliation; a failure here is retried on the next manager start.
       }
@@ -1153,29 +1185,29 @@ export class AgentManager {
   }
 
   async spawnAgent(params: SpawnAgentParams): Promise<{
-    task_name: string;
-    nickname: undefined;
-    profile: string;
-    color: ThemeColor;
-    is_readonly: boolean;
+    task_name: string
+    nickname: undefined
+    profile: string
+    color: ThemeColor
+    is_readonly: boolean
   }> {
-    await this.reconciliation;
-    const taskName = normalizeTaskName(params.task_name);
+    await this.reconciliation
+    const taskName = normalizeTaskName(params.task_name)
     const resolved = resolveAgentConfig(params.agent_type, {
       availableModels: params.availableModels,
       parentModel: params.parentModel,
-    });
-    const cwd = resolvePath(params.cwd);
-    const directory = scopeDir(params.parentSessionId);
-    ensurePrivateDir(directory, true);
+    })
+    const cwd = resolvePath(params.cwd)
+    const directory = scopeDir(params.parentSessionId)
+    ensurePrivateDir(directory, true)
 
-    const lockFile = taskLockFile(params.parentSessionId, taskName);
-    const lockToken = randomUUID();
-    let lock: number | undefined;
+    const lockFile = taskLockFile(params.parentSessionId, taskName)
+    const lockToken = randomUUID()
+    let lock: number | undefined
     try {
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          lock = openSync(lockFile, "wx");
+          lock = openSync(lockFile, 'wx')
           writeFileSync(
             lock,
             JSON.stringify({
@@ -1183,26 +1215,26 @@ export class AgentManager {
               pid: process.pid,
               processIdentity: this.ownerProcessIdentity,
               token: lockToken,
-            }),
-          );
-          break;
-        } catch (error: unknown) {
-          if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") {throw error;}
-          if (
-            attempt === 0 &&
-            reclaimDeadTaskLock(lockFile, this.options.beforeReclaimTaskLockRemoval)
+            })
           )
-            {continue;}
-          throw new Error(`Agent ${taskName} is already being created.`, { cause: error });
+          break
+        } catch (error: unknown) {
+          if (!(error instanceof Error) || !('code' in error) || error.code !== 'EEXIST') {
+            throw error
+          }
+          if (attempt === 0 && reclaimDeadTaskLock(lockFile, this.options.beforeReclaimTaskLockRemoval)) {
+            continue
+          }
+          throw new Error(`Agent ${taskName} is already being created.`, { cause: error })
         }
       }
-      if (lock === undefined) {throw new Error(`Unable to lock agent ${taskName} for creation.`);}
-      if (readScopeInfos(params.parentSessionId).some((info) => info.taskName === taskName)) {
-        throw new Error(
-          `Agent ${taskName} already exists in this parent session. Use a new task_name.`,
-        );
+      if (lock === undefined) {
+        throw new Error(`Unable to lock agent ${taskName} for creation.`)
       }
-      const id = randomUUID();
+      if (readScopeInfos(params.parentSessionId).some((info) => info.taskName === taskName)) {
+        throw new Error(`Agent ${taskName} already exists in this parent session. Use a new task_name.`)
+      }
+      const id = randomUUID()
       const info: AgentInfo = {
         agentType: resolved.key,
         allowedTools: [...resolved.allowedTools],
@@ -1226,153 +1258,158 @@ export class AgentManager {
         provider: resolved.provider,
         sessionFile: join(directory, `${id}.jsonl`),
         startedAt: Date.now(),
-        status: "starting",
+        status: 'starting',
         taskName,
         thinking: resolved.thinking,
         updatedAt: Date.now(),
-      };
-      saveInfo(info);
-      this.notifyStatusChange(info);
-      const targets = this.defaultWaitAllTargets.get(params.parentSessionId) ?? new Set<string>();
-      targets.add(info.canonicalName);
-      this.defaultWaitAllTargets.set(params.parentSessionId, targets);
-      await this.startLiveAgent(info, params.message, params.message);
+      }
+      saveInfo(info)
+      this.notifyStatusChange(info)
+      const targets = this.defaultWaitAllTargets.get(params.parentSessionId) ?? new Set<string>()
+      targets.add(info.canonicalName)
+      this.defaultWaitAllTargets.set(params.parentSessionId, targets)
+      await this.startLiveAgent(info, params.message, params.message)
       return {
         color: resolved.color,
         is_readonly: resolved.isReadonly,
         nickname: undefined,
         profile: resolved.key,
         task_name: info.canonicalName,
-      };
+      }
     } finally {
-      if (lock !== undefined) {releaseTaskLock(lockFile, lock, lockToken);}
+      if (lock !== undefined) {
+        releaseTaskLock(lockFile, lock, lockToken)
+      }
     }
   }
 
   private teardownChildStreams(live: LiveAgent): void {
-    live.proc.stdin.removeAllListeners();
-    live.proc.stdout.removeAllListeners();
-    live.proc.stderr.removeAllListeners();
-    live.proc.removeAllListeners();
+    live.proc.stdin.removeAllListeners()
+    live.proc.stdout.removeAllListeners()
+    live.proc.stderr.removeAllListeners()
+    live.proc.removeAllListeners()
     try {
-      live.proc.stdin.destroy();
+      live.proc.stdin.destroy()
     } catch {
       // Best effort; the stream may already be destroyed.
     }
     try {
-      live.proc.stdout.destroy();
+      live.proc.stdout.destroy()
     } catch {
       // Best effort; the stream may already be destroyed.
     }
     try {
-      live.proc.stderr.destroy();
+      live.proc.stderr.destroy()
     } catch {
       // Best effort; the stream may already be destroyed.
     }
   }
 
   private finishProcess(live: LiveAgent, error?: Error): void {
-    if (live.processFinished) {return;}
-    live.processFinished = true;
-    const persisted = readInfoFile(live.info.infoFile);
+    if (live.processFinished) {
+      return
+    }
+    live.processFinished = true
+    const persisted = readInfoFile(live.info.infoFile)
     if (persisted && FINAL_STATUSES.has(persisted.status)) {
-      live.info = persisted;
-      live.finalizedRun = true;
+      live.info = persisted
+      live.finalizedRun = true
     }
     for (const [requestId, pending] of live.pending) {
-      clearTimeout(pending.timer);
-      pending.reject(error ?? new Error("Child Pi process exited before responding."));
-      live.pending.delete(requestId);
+      clearTimeout(pending.timer)
+      pending.reject(error ?? new Error('Child Pi process exited before responding.'))
+      live.pending.delete(requestId)
     }
     if (!live.expectedExit && !live.finalizedRun && !FINAL_STATUSES.has(live.info.status)) {
-      this.markFailed(live, error?.message ?? "Child Pi process exited unexpectedly.");
+      this.markFailed(live, error?.message ?? 'Child Pi process exited unexpectedly.')
     }
-    const ownership = live.info.childProcess;
-    if (ownership) {this.clearChildOwnership(live.info, ownership.token);}
-    if (this.live.get(live.info.id) === live) {this.live.delete(live.info.id);}
-    live.broadcaster.stop();
-    live.logger.close();
-    this.teardownChildStreams(live);
-    live.resolveExit();
+    const ownership = live.info.childProcess
+    if (ownership) {
+      this.clearChildOwnership(live.info, ownership.token)
+    }
+    if (this.live.get(live.info.id) === live) {
+      this.live.delete(live.info.id)
+    }
+    live.broadcaster.stop()
+    live.logger.close()
+    this.teardownChildStreams(live)
+    live.resolveExit()
   }
 
   private wireChildProcess(live: LiveAgent, decoder: RpcJsonlDecoder): void {
-    const { proc, logger } = live;
-    proc.stdout.on("data", (chunk) => {
-      for (const line of decoder.push(chunk)) {this.handleLine(live, line);}
-    });
-    proc.stdout.on("end", () => {
-      for (const line of decoder.end()) {this.handleLine(live, line);}
-    });
-    proc.stderr.on("data", (data) => {
-      const chunk = data.toString();
-      live.stderr = `${live.stderr}${chunk}`.slice(-64 * 1024);
-      logger.stderr(chunk);
-    });
-    proc.stdin.on("error", (error) => {
-      logger.info("stdin", "child stdin error", { error: error.message });
-      if (!live.expectedExit) {
-        const persisted = readInfoFile(live.info.infoFile);
-        if (persisted && FINAL_STATUSES.has(persisted.status)) {
-          live.info = persisted;
-          live.finalizedRun = true;
-        } else if (!live.finalizedRun) {
-          this.markFailed(live, error.message);
-        }
-        void this.terminateProcess(live);
+    const { proc, logger } = live
+    proc.stdout.on('data', (chunk) => {
+      for (const line of decoder.push(chunk)) {
+        this.handleLine(live, line)
       }
-    });
-    proc.on("error", (error) => this.finishProcess(live, error));
-    proc.on("exit", (code, signal) => {
-      logger.info("exit", "child exited", { code, signal });
-      const suffix = live.stderr.trim() ? `: ${live.stderr.trim().slice(-1000)}` : "";
-      this.finishProcess(
-        live,
-        live.expectedExit
-          ? undefined
-          : new Error(`Child Pi exited (code=${code}, signal=${signal})${suffix}`),
-      );
-    });
+    })
+    proc.stdout.on('end', () => {
+      for (const line of decoder.end()) {
+        this.handleLine(live, line)
+      }
+    })
+    proc.stderr.on('data', (data) => {
+      const chunk = data.toString()
+      live.stderr = `${live.stderr}${chunk}`.slice(-64 * 1024)
+      logger.stderr(chunk)
+    })
+    proc.stdin.on('error', (error) => {
+      logger.info('stdin', 'child stdin error', { error: error.message })
+      if (!live.expectedExit) {
+        const persisted = readInfoFile(live.info.infoFile)
+        if (persisted && FINAL_STATUSES.has(persisted.status)) {
+          live.info = persisted
+          live.finalizedRun = true
+        } else if (!live.finalizedRun) {
+          this.markFailed(live, error.message)
+        }
+        void this.terminateProcess(live)
+      }
+    })
+    proc.on('error', (error) => this.finishProcess(live, error))
+    proc.on('exit', (code, signal) => {
+      logger.info('exit', 'child exited', { code, signal })
+      const suffix = live.stderr.trim() ? `: ${live.stderr.trim().slice(-1000)}` : ''
+      this.finishProcess(live, live.expectedExit ? undefined : new Error(`Child Pi exited (code=${code}, signal=${signal})${suffix}`))
+    })
   }
 
   private async verifyChildOwnership(pid: number, token: string): Promise<ProcessSnapshot> {
     for (let attempt = 0; attempt < 20; attempt++) {
-      const candidate = inspectProcess(pid, token);
-      if (candidate && candidate.tokenMatches !== false) {return candidate;}
-      await delay(10);
+      const candidate = inspectProcess(pid, token)
+      if (candidate && candidate.tokenMatches !== false) {
+        return candidate
+      }
+      await delay(10)
     }
-    throw new Error("Unable to verify child Pi process ownership.");
+    throw new Error('Unable to verify child Pi process ownership.')
   }
 
-  private async startLiveAgent(
-    info: AgentInfo,
-    initialMessage?: string,
-    displayMessage?: string,
-  ): Promise<LiveAgent> {
-    if (info.status !== "starting" && info.status !== "running") {
-      this.notifyStatusChange({ ...info, lastActivity: Date.now(), status: "starting" });
+  private async startLiveAgent(info: AgentInfo, initialMessage?: string, displayMessage?: string): Promise<LiveAgent> {
+    if (info.status !== 'starting' && info.status !== 'running') {
+      this.notifyStatusChange({ ...info, lastActivity: Date.now(), status: 'starting' })
     }
-    const logger = new SessionLogger(info.logFile);
-    const broadcaster = new EventBroadcaster(info.id);
-    broadcaster.start();
-    const launch = getPiCommand(this.options.piCommand);
-    const args = buildChildArgs(launch, info);
-    const childToken = randomUUID();
-    logger.info("spawn", "starting child pi", { args, command: launch.command, cwd: info.cwd });
-    const childEnv = buildChildEnv(info, childToken, this.options.childEnv);
+    const logger = new SessionLogger(info.logFile)
+    const broadcaster = new EventBroadcaster(info.id)
+    broadcaster.start()
+    const launch = getPiCommand(this.options.piCommand)
+    const args = buildChildArgs(launch, info)
+    const childToken = randomUUID()
+    logger.info('spawn', 'starting child pi', { args, command: launch.command, cwd: info.cwd })
+    const childEnv = buildChildEnv(info, childToken, this.options.childEnv)
     const proc = spawn(launch.command, args, {
       cwd: info.cwd,
-      detached: process.platform !== "win32",
+      detached: process.platform !== 'win32',
       env: childEnv,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let resolveExit!: () => void;
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    let resolveExit!: () => void
     const exitPromise = new Promise<void>((markExited) => {
-      resolveExit = markExited;
-    });
+      resolveExit = markExited
+    })
     const live: LiveAgent = {
       broadcaster,
-      candidateResponse: "",
+      candidateResponse: '',
       exitPromise,
       expectedExit: false,
       finalizedRun: false,
@@ -1383,15 +1420,17 @@ export class AgentManager {
       processFinished: false,
       reqId: 0,
       resolveExit,
-      stderr: "",
-    };
-    this.live.set(info.id, live);
-    const decoder = new RpcJsonlDecoder();
-    this.wireChildProcess(live, decoder);
+      stderr: '',
+    }
+    this.live.set(info.id, live)
+    const decoder = new RpcJsonlDecoder()
+    this.wireChildProcess(live, decoder)
 
     try {
-      if (!proc.pid) {throw new Error("Child Pi process did not provide a PID.");}
-      const snapshot = await this.verifyChildOwnership(proc.pid, childToken);
+      if (!proc.pid) {
+        throw new Error('Child Pi process did not provide a PID.')
+      }
+      const snapshot = await this.verifyChildOwnership(proc.pid, childToken)
       // Persist ownership before the first RPC round trip. If this process crashes while
       // The child is starting, the next manager can identify and terminate the orphan.
       info.childProcess = {
@@ -1401,46 +1440,46 @@ export class AgentManager {
         processIdentity: snapshot.identity,
         startedAt: Date.now(),
         token: childToken,
-      };
-      saveInfo(info);
-      await this.sendCommand(live, { type: "get_state" }, DEFAULT_STARTUP_TIMEOUT_MS);
-      if (initialMessage) {await this.prompt(live, initialMessage, displayMessage);}
-      return live;
+      }
+      saveInfo(info)
+      await this.sendCommand(live, { type: 'get_state' }, DEFAULT_STARTUP_TIMEOUT_MS)
+      if (initialMessage) {
+        await this.prompt(live, initialMessage, displayMessage)
+      }
+      return live
     } catch (error) {
-      if (!live.finalizedRun)
-        {this.markFailed(live, error instanceof Error ? error.message : String(error));}
-      await this.terminateProcess(live);
-      throw error;
+      if (!live.finalizedRun) {
+        this.markFailed(live, error instanceof Error ? error.message : String(error))
+      }
+      await this.terminateProcess(live)
+      throw error
     }
   }
 
-  private sendCommand(
-    live: LiveAgent,
-    command: Record<string, unknown>,
-    timeoutMs = DEFAULT_STARTUP_TIMEOUT_MS,
-  ): Promise<unknown> {
-    if (live.processFinished || live.expectedExit)
-      {return Promise.reject(new Error(`Agent ${live.info.taskName} process is not available.`));}
-    const id = `req-${++live.reqId}`;
+  private sendCommand(live: LiveAgent, command: Record<string, unknown>, timeoutMs = DEFAULT_STARTUP_TIMEOUT_MS): Promise<unknown> {
+    if (live.processFinished || live.expectedExit) {
+      return Promise.reject(new Error(`Agent ${live.info.taskName} process is not available.`))
+    }
+    const id = `req-${++live.reqId}`
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        live.pending.delete(id);
-        reject(
-          new Error(
-            `Timed out waiting for child Pi RPC command: ${String(command.type ?? "unknown")}`,
-          ),
-        );
-      }, timeoutMs);
-      live.pending.set(id, { reject, resolve, timer });
-      live.proc.stdin.write(`${JSON.stringify({ id, ...command })  }\n`, (error) => {
-        if (!error) {return;}
-        const pending = live.pending.get(id);
-        if (!pending) {return;}
-        clearTimeout(pending.timer);
-        live.pending.delete(id);
-        pending.reject(error);
-      });
-    });
+        live.pending.delete(id)
+        reject(new Error(`Timed out waiting for child Pi RPC command: ${String(command.type ?? 'unknown')}`))
+      }, timeoutMs)
+      live.pending.set(id, { reject, resolve, timer })
+      live.proc.stdin.write(`${JSON.stringify({ id, ...command })}\n`, (error) => {
+        if (!error) {
+          return
+        }
+        const pending = live.pending.get(id)
+        if (!pending) {
+          return
+        }
+        clearTimeout(pending.timer)
+        live.pending.delete(id)
+        pending.reject(error)
+      })
+    })
   }
 
   private async prompt(live: LiveAgent, message: string, displayMessage?: string): Promise<void> {
@@ -1449,222 +1488,237 @@ export class AgentManager {
       error: live.info.error,
       finalResponse: live.info.finalResponse,
       status: live.info.status,
-    };
-    this.removeMailboxEvents(live.info.parentSessionId, live.info.canonicalName);
-    const targets = this.defaultWaitAllTargets.get(live.info.parentSessionId) ?? new Set<string>();
-    targets.add(live.info.canonicalName);
-    this.defaultWaitAllTargets.set(live.info.parentSessionId, targets);
-    live.info.status = "running";
-    live.info.lastTaskMessage = displayMessage ?? message;
-    live.info.lastActivity = Date.now();
-    live.info.messageCount += 1;
-    live.finalizedRun = false;
-    live.candidateResponse = "";
-    live.candidateError = undefined;
-    delete live.info.finalResponse;
-    delete live.info.error;
-    delete live.info.completedAt;
-    saveInfo(live.info);
-    this.notifyStatusChange(live.info);
+    }
+    this.removeMailboxEvents(live.info.parentSessionId, live.info.canonicalName)
+    const targets = this.defaultWaitAllTargets.get(live.info.parentSessionId) ?? new Set<string>()
+    targets.add(live.info.canonicalName)
+    this.defaultWaitAllTargets.set(live.info.parentSessionId, targets)
+    live.info.status = 'running'
+    live.info.lastTaskMessage = displayMessage ?? message
+    live.info.lastActivity = Date.now()
+    live.info.messageCount += 1
+    live.finalizedRun = false
+    live.candidateResponse = ''
+    live.candidateError = undefined
+    delete live.info.finalResponse
+    delete live.info.error
+    delete live.info.completedAt
+    saveInfo(live.info)
+    this.notifyStatusChange(live.info)
     try {
-      await this.sendCommand(live, { message, type: "prompt" });
+      await this.sendCommand(live, { message, type: 'prompt' })
     } catch (error) {
-      live.info.status = previousFinalState.status;
-      if (previousFinalState.finalResponse === undefined)
-        {delete live.info.finalResponse;}
-      else {live.info.finalResponse = previousFinalState.finalResponse;}
-      if (previousFinalState.error === undefined) {delete live.info.error;}
-      else {live.info.error = previousFinalState.error;}
-      if (previousFinalState.completedAt === undefined)
-        {delete live.info.completedAt;}
-      else {live.info.completedAt = previousFinalState.completedAt;}
-      saveInfo(live.info);
-      this.notifyStatusChange(live.info);
-      throw error;
+      live.info.status = previousFinalState.status
+      if (previousFinalState.finalResponse === undefined) {
+        delete live.info.finalResponse
+      } else {
+        live.info.finalResponse = previousFinalState.finalResponse
+      }
+      if (previousFinalState.error === undefined) {
+        delete live.info.error
+      } else {
+        live.info.error = previousFinalState.error
+      }
+      if (previousFinalState.completedAt === undefined) {
+        delete live.info.completedAt
+      } else {
+        live.info.completedAt = previousFinalState.completedAt
+      }
+      saveInfo(live.info)
+      this.notifyStatusChange(live.info)
+      throw error
     }
   }
 
   private handleResponseEvent(live: LiveAgent, event: SubagentRpcEvent): void {
-    const pending = event.id ? live.pending.get(event.id) : undefined;
-    if (!pending) {return;}
-    clearTimeout(pending.timer);
-    live.pending.delete(event.id ?? "");
-    if (event.success) {pending.resolve(event.data);}
-    else {pending.reject(new Error(event.error || "RPC command failed"));}
+    const pending = event.id ? live.pending.get(event.id) : undefined
+    if (!pending) {
+      return
+    }
+    clearTimeout(pending.timer)
+    live.pending.delete(event.id ?? '')
+    if (event.success) {
+      pending.resolve(event.data)
+    } else {
+      pending.reject(new Error(event.error || 'RPC command failed'))
+    }
   }
 
   private handleAgentStart(live: LiveAgent): void {
-    live.info.status = "running";
-    live.info.lastActivity = Date.now();
-    live.candidateResponse = "";
-    live.candidateError = undefined;
-    saveInfo(live.info);
-    this.notifyStatusChange(live.info);
+    live.info.status = 'running'
+    live.info.lastActivity = Date.now()
+    live.candidateResponse = ''
+    live.candidateError = undefined
+    saveInfo(live.info)
+    this.notifyStatusChange(live.info)
   }
 
   private handleMessageEnd(live: LiveAgent, event: SubagentRpcEvent): void {
-    if (event.message?.role !== "assistant") {return;}
-    live.candidateResponse = extractTextFromMessage(event.message).trim();
+    if (event.message?.role !== 'assistant') {
+      return
+    }
+    live.candidateResponse = extractTextFromMessage(event.message).trim()
     live.candidateError =
-      event.message.stopReason === "error" || event.message.stopReason === "aborted"
+      event.message.stopReason === 'error' || event.message.stopReason === 'aborted'
         ? event.message.errorMessage || `Agent ended with ${event.message.stopReason}.`
-        : undefined;
+        : undefined
   }
 
   private handleAgentEnd(live: LiveAgent, event: SubagentRpcEvent): void {
-    const lastAssistant = [...(event.messages ?? [])]
-      .toReversed()
-      .find((message) => message?.role === "assistant");
-    if (!lastAssistant) {return;}
-    live.candidateResponse = extractTextFromMessage(lastAssistant).trim();
+    const lastAssistant = [...(event.messages ?? [])].toReversed().find((message) => message?.role === 'assistant')
+    if (!lastAssistant) {
+      return
+    }
+    live.candidateResponse = extractTextFromMessage(lastAssistant).trim()
     live.candidateError =
-      lastAssistant.stopReason === "error" || lastAssistant.stopReason === "aborted"
+      lastAssistant.stopReason === 'error' || lastAssistant.stopReason === 'aborted'
         ? lastAssistant.errorMessage || `Agent ended with ${lastAssistant.stopReason}.`
-        : undefined;
+        : undefined
   }
 
   private handleAgentSettled(live: LiveAgent): void {
-    if (live.info.status === "interrupted" || live.finalizedRun) {return;}
-    if (live.candidateError) {this.markFailed(live, live.candidateError);}
-    else {this.markCompleted(live);}
+    if (live.info.status === 'interrupted' || live.finalizedRun) {
+      return
+    }
+    if (live.candidateError) {
+      this.markFailed(live, live.candidateError)
+    } else {
+      this.markCompleted(live)
+    }
     void this.terminateProcess(live).catch((error) => {
-      live.logger.info("hibernate", "failed to terminate settled child", {
+      live.logger.info('hibernate', 'failed to terminate settled child', {
         error: error instanceof Error ? error.message : String(error),
-      });
-    });
+      })
+    })
   }
 
   private dispatchLiveEvent(live: LiveAgent, event: SubagentRpcEvent): void {
-    const runningStatusEvents = new Set([
-      "message_update",
-      "tool_execution_start",
-      "tool_execution_update",
-      "tool_execution_end",
-    ]);
-    if (event.type === "agent_start") {
-      this.handleAgentStart(live);
+    const runningStatusEvents = new Set(['message_update', 'tool_execution_start', 'tool_execution_update', 'tool_execution_end'])
+    if (event.type === 'agent_start') {
+      this.handleAgentStart(live)
     } else if (runningStatusEvents.has(event.type)) {
-      live.info.status = "running";
-      live.info.lastActivity = Date.now();
-      saveInfo(live.info);
-    } else if (event.type === "message_end") {
-      this.handleMessageEnd(live, event);
-    } else if (event.type === "agent_end") {
-      this.handleAgentEnd(live, event);
-    } else if (event.type === "auto_retry_end" && event.success === false && event.finalError) {
-      live.candidateError = event.finalError;
-    } else if (event.type === "agent_settled") {
-      this.handleAgentSettled(live);
+      live.info.status = 'running'
+      live.info.lastActivity = Date.now()
+      saveInfo(live.info)
+    } else if (event.type === 'message_end') {
+      this.handleMessageEnd(live, event)
+    } else if (event.type === 'agent_end') {
+      this.handleAgentEnd(live, event)
+    } else if (event.type === 'auto_retry_end' && event.success === false && event.finalError) {
+      live.candidateError = event.finalError
+    } else if (event.type === 'agent_settled') {
+      this.handleAgentSettled(live)
     }
   }
 
   private handleLine(live: LiveAgent, line: string): void {
-    if (!line.trim()) {return;}
-    let event: SubagentRpcEvent;
+    if (!line.trim()) {
+      return
+    }
+    let event: SubagentRpcEvent
     try {
-      event = JSON.parse(line) as SubagentRpcEvent;
+      event = JSON.parse(line) as SubagentRpcEvent
     } catch {
-      live.logger.info("rpc", "ignored invalid JSON line", { line: line.slice(0, 1000) });
-      return;
+      live.logger.info('rpc', 'ignored invalid JSON line', { line: line.slice(0, 1000) })
+      return
     }
-    live.broadcaster.broadcast(event);
-    if (event.type === "response") {
-      this.handleResponseEvent(live, event);
-      return;
+    live.broadcaster.broadcast(event)
+    if (event.type === 'response') {
+      this.handleResponseEvent(live, event)
+      return
     }
-    const persisted = readInfoFile(live.info.infoFile);
-    if (
-      persisted &&
-      FINAL_STATUSES.has(persisted.status) &&
-      persisted.status !== live.info.status
-    ) {
-      live.info = persisted;
-      live.finalizedRun = true;
-      return;
+    const persisted = readInfoFile(live.info.infoFile)
+    if (persisted && FINAL_STATUSES.has(persisted.status) && persisted.status !== live.info.status) {
+      live.info = persisted
+      live.finalizedRun = true
+      return
     }
-    if (live.finalizedRun || live.expectedExit) {return;}
-    this.dispatchLiveEvent(live, event);
+    if (live.finalizedRun || live.expectedExit) {
+      return
+    }
+    this.dispatchLiveEvent(live, event)
   }
 
   private markCompleted(live: LiveAgent): void {
-    if (live.finalizedRun) {return;}
-    live.finalizedRun = true;
-    live.info.status = "completed";
-    live.info.finalResponse = live.candidateResponse;
-    delete live.info.error;
-    live.info.completedAt = Date.now();
-    live.info.lastActivity = Date.now();
-    saveInfo(live.info);
-    this.notifyStatusChange(live.info);
+    if (live.finalizedRun) {
+      return
+    }
+    live.finalizedRun = true
+    live.info.status = 'completed'
+    live.info.finalResponse = live.candidateResponse
+    delete live.info.error
+    live.info.completedAt = Date.now()
+    live.info.lastActivity = Date.now()
+    saveInfo(live.info)
+    this.notifyStatusChange(live.info)
     this.pushMailbox({
       agentName: live.info.canonicalName,
       createdAt: Date.now(),
       finalResponse: live.info.finalResponse,
       id: randomUUID(),
       parentSessionId: live.info.parentSessionId,
-      status: "completed",
+      status: 'completed',
       ...agentMetadata(live.info),
-    });
+    })
   }
 
   private markFailed(live: LiveAgent, error: string): void {
-    if (live.finalizedRun) {return;}
-    live.finalizedRun = true;
-    live.info.status = "failed";
-    live.info.error = error;
-    delete live.info.finalResponse;
-    live.info.completedAt = Date.now();
-    live.info.lastActivity = Date.now();
-    saveInfo(live.info);
-    this.notifyStatusChange(live.info);
+    if (live.finalizedRun) {
+      return
+    }
+    live.finalizedRun = true
+    live.info.status = 'failed'
+    live.info.error = error
+    delete live.info.finalResponse
+    live.info.completedAt = Date.now()
+    live.info.lastActivity = Date.now()
+    saveInfo(live.info)
+    this.notifyStatusChange(live.info)
     this.pushMailbox({
       agentName: live.info.canonicalName,
       createdAt: Date.now(),
       error,
       id: randomUUID(),
       parentSessionId: live.info.parentSessionId,
-      status: "failed",
+      status: 'failed',
       ...agentMetadata(live.info),
-    });
+    })
   }
 
   private removeMailboxEvents(parentSessionId: string, agentName: string): void {
     for (let index = this.mailbox.length - 1; index >= 0; index--) {
-      const event = this.mailbox[index];
-      if (event.parentSessionId === parentSessionId && event.agentName === agentName)
-        {this.mailbox.splice(index, 1);}
+      const event = this.mailbox[index]
+      if (event.parentSessionId === parentSessionId && event.agentName === agentName) {
+        this.mailbox.splice(index, 1)
+      }
     }
   }
 
   private pushMailbox(event: AgentCompletionEvent, notify = true): void {
-    this.removeMailboxEvents(event.parentSessionId, event.agentName);
-    const waiterIndex = this.waiters.findIndex(
-      (waiter) =>
-        waiter.parentSessionId === event.parentSessionId && targetMatches(event, waiter.targets),
-    );
+    this.removeMailboxEvents(event.parentSessionId, event.agentName)
+    const waiterIndex = this.waiters.findIndex((waiter) => waiter.parentSessionId === event.parentSessionId && targetMatches(event, waiter.targets))
     if (waiterIndex !== -1) {
-      const [waiter] = this.waiters.splice(waiterIndex, 1);
-      waiter.resolve(event);
-      return;
+      const [waiter] = this.waiters.splice(waiterIndex, 1)
+      waiter.resolve(event)
+      return
     }
-    this.mailbox.push(event);
+    this.mailbox.push(event)
     const matchingClaims = [...this.waitAllClaims].filter(
-      (claim) =>
-        claim.parentSessionId === event.parentSessionId && claim.targets.has(event.agentName),
-    );
+      (claim) => claim.parentSessionId === event.parentSessionId && claim.targets.has(event.agentName)
+    )
     if (notify) {
-      for (const claim of matchingClaims) {claim.suppressedEventIds.add(event.id);}
-      if (!matchingClaims.length) {this.notifyUnclaimedCompletion(event);}
+      for (const claim of matchingClaims) {
+        claim.suppressedEventIds.add(event.id)
+      }
+      if (!matchingClaims.length) {
+        this.notifyUnclaimedCompletion(event)
+      }
     }
   }
 
-  listAgents(
-    pathPrefix: string | undefined,
-    parentSessionId: string,
-    includeAll = false,
-  ): AgentListEntry[] {
-    const prefix = pathPrefix?.trim().replace(/^\/+/, "");
-    const infos = includeAll ? readAllInfos() : readScopeInfos(parentSessionId);
+  listAgents(pathPrefix: string | undefined, parentSessionId: string, includeAll = false): AgentListEntry[] {
+    const prefix = pathPrefix?.trim().replace(/^\/+/, '')
+    const infos = includeAll ? readAllInfos() : readScopeInfos(parentSessionId)
     return infos
       .filter((info) => !prefix || info.taskName.startsWith(prefix))
       .map((info) => ({
@@ -1675,17 +1729,19 @@ export class AgentManager {
         ...(info.profile ? { profile: info.profile } : {}),
         color: persistedProfileColor(info.profile, info.color),
         ...(info.isReadonly === undefined ? {} : { is_readonly: info.isReadonly }),
-      }));
+      }))
   }
 
   getAgentInfo(target: string, parentSessionId: string): AgentInfo {
-    const info = getAgent(target, parentSessionId);
-    if (!info) {throw new Error(`Agent not found in this parent session: ${target}`);}
-    return info;
+    const info = getAgent(target, parentSessionId)
+    if (!info) {
+      throw new Error(`Agent not found in this parent session: ${target}`)
+    }
+    return info
   }
 
   readAgentResponse(target: string, parentSessionId: string): AgentResponseEntry {
-    return this.agentResponse(this.getAgentInfo(target, parentSessionId));
+    return this.agentResponse(this.getAgentInfo(target, parentSessionId))
   }
 
   private agentResponse(info: AgentInfo): AgentResponseEntry {
@@ -1698,48 +1754,33 @@ export class AgentManager {
       ...(info.profile ? { profile: info.profile } : {}),
       color: persistedProfileColor(info.profile, info.color),
       ...(info.isReadonly === undefined ? {} : { is_readonly: info.isReadonly }),
-    };
+    }
   }
 
   private finishWaitTarget(parentSessionId: string, agentName: string): void {
-    this.defaultWaitAllTargets.get(parentSessionId)?.delete(canonicalAgentName(agentName));
+    this.defaultWaitAllTargets.get(parentSessionId)?.delete(canonicalAgentName(agentName))
   }
 
-  async waitAgent(
-    parentSessionId: string,
-    targets?: string[],
-    signal?: AbortSignal,
-  ): Promise<{ message: string; event?: AgentCompletionEvent }> {
-    const waitSignal = signal
-      ? AbortSignal.any([signal, this.shutdownController.signal])
-      : this.shutdownController.signal;
-    throwIfAborted(waitSignal);
-    const normalizedTargets = targets?.length
-      ? new Set(targets.map(canonicalAgentName))
-      : undefined;
-    const existing = consumeFirstMatchingMailboxEvent(
-      this.mailbox,
-      parentSessionId,
-      normalizedTargets,
-    );
+  async waitAgent(parentSessionId: string, targets?: string[], signal?: AbortSignal): Promise<{ message: string; event?: AgentCompletionEvent }> {
+    const waitSignal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
+    throwIfAborted(waitSignal)
+    const normalizedTargets = targets?.length ? new Set(targets.map(canonicalAgentName)) : undefined
+    const existing = consumeFirstMatchingMailboxEvent(this.mailbox, parentSessionId, normalizedTargets)
     if (existing) {
-      this.finishWaitTarget(parentSessionId, existing.agentName);
+      this.finishWaitTarget(parentSessionId, existing.agentName)
       return {
         event: existing,
         message: `Wait completed: ${existing.agentName} ${existing.status}.`,
-      };
+      }
     }
     if (normalizedTargets) {
-      const targetInfos = readScopeInfos(parentSessionId).filter((info) =>
-        normalizedTargets.has(info.canonicalName),
-      );
-      if (!targetInfos.length)
-        {throw new Error(
-          `Agent not found in this parent session: ${[...normalizedTargets].join(", ")}`,
-        );}
-      const finalInfo = targetInfos.find((info) => FINAL_STATUSES.has(info.status));
+      const targetInfos = readScopeInfos(parentSessionId).filter((info) => normalizedTargets.has(info.canonicalName))
+      if (!targetInfos.length) {
+        throw new Error(`Agent not found in this parent session: ${[...normalizedTargets].join(', ')}`)
+      }
+      const finalInfo = targetInfos.find((info) => FINAL_STATUSES.has(info.status))
       if (finalInfo) {
-        this.finishWaitTarget(parentSessionId, finalInfo.canonicalName);
+        this.finishWaitTarget(parentSessionId, finalInfo.canonicalName)
         return {
           event: {
             agentName: finalInfo.canonicalName,
@@ -1752,180 +1793,187 @@ export class AgentManager {
             ...agentMetadata(finalInfo),
           },
           message: `Wait completed: ${finalInfo.canonicalName} ${finalInfo.status}.`,
-        };
+        }
       }
     }
     return await new Promise((resolve, reject) => {
-      let settled = false;
+      let settled = false
       const settle = (callback: () => void) => {
-        if (settled) {return;}
-        settled = true;
-        waitSignal.removeEventListener("abort", onAbort);
-        this.waiters = this.waiters.filter((candidate) => candidate !== waiter);
-        callback();
-      };
-      const onAbort = () => settle(() => reject(abortError(waitSignal)));
+        if (settled) {
+          return
+        }
+        settled = true
+        waitSignal.removeEventListener('abort', onAbort)
+        this.waiters = this.waiters.filter((candidate) => candidate !== waiter)
+        callback()
+      }
+      const onAbort = () => settle(() => reject(abortError(waitSignal)))
       const waiter: Waiter = {
         parentSessionId,
         resolve: (event) =>
           settle(() => {
-            this.finishWaitTarget(parentSessionId, event.agentName);
-            resolve({ event, message: `Wait completed: ${event.agentName} ${event.status}.` });
+            this.finishWaitTarget(parentSessionId, event.agentName)
+            resolve({ event, message: `Wait completed: ${event.agentName} ${event.status}.` })
           }),
         targets: normalizedTargets,
-      };
-      this.waiters.push(waiter);
-      waitSignal.addEventListener("abort", onAbort, { once: true });
-      if (waitSignal.aborted) {onAbort();}
-    });
+      }
+      this.waiters.push(waiter)
+      waitSignal.addEventListener('abort', onAbort, { once: true })
+      if (waitSignal.aborted) {
+        onAbort()
+      }
+    })
   }
 
   async waitAllAgents(
     parentSessionId: string,
     targets?: string[],
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ): Promise<{ message: string; responses: AgentResponseEntry[] }> {
-    const waitSignal = signal
-      ? AbortSignal.any([signal, this.shutdownController.signal])
-      : this.shutdownController.signal;
-    throwIfAborted(waitSignal);
-    const explicitTargets = targets?.length ? new Set(targets.map(canonicalAgentName)) : undefined;
-    const defaultTargets = this.defaultWaitAllTargets.get(parentSessionId) ?? new Set<string>();
-    const targetSet = explicitTargets ?? new Set(defaultTargets);
+    const waitSignal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
+    throwIfAborted(waitSignal)
+    const explicitTargets = targets?.length ? new Set(targets.map(canonicalAgentName)) : undefined
+    const defaultTargets = this.defaultWaitAllTargets.get(parentSessionId) ?? new Set<string>()
+    const targetSet = explicitTargets ?? new Set(defaultTargets)
     if (explicitTargets) {
-      const infos = readScopeInfos(parentSessionId);
-      const missing = [...explicitTargets].filter(
-        (target) => !infos.some((info) => target === info.canonicalName),
-      );
-      if (missing.length)
-        {throw new Error(`Agent not found in this parent session: ${missing.join(", ")}`);}
+      const infos = readScopeInfos(parentSessionId)
+      const missing = [...explicitTargets].filter((target) => !infos.some((info) => target === info.canonicalName))
+      if (missing.length) {
+        throw new Error(`Agent not found in this parent session: ${missing.join(', ')}`)
+      }
     }
-    const matchingInfos = () =>
-      readScopeInfos(parentSessionId).filter((info) => targetSet.has(info.canonicalName));
+    const matchingInfos = () => readScopeInfos(parentSessionId).filter((info) => targetSet.has(info.canonicalName))
     const pendingNames = () =>
       matchingInfos()
         .filter((info) => !FINAL_STATUSES.has(info.status))
-        .map((info) => info.canonicalName);
+        .map((info) => info.canonicalName)
     const finalize = () => {
       const responses = matchingInfos()
         .filter((info) => FINAL_STATUSES.has(info.status))
-        .map((info) => this.agentResponse(info));
-      for (const response of responses) {this.finishWaitTarget(parentSessionId, response.agent_name);}
+        .map((info) => this.agentResponse(info))
+      for (const response of responses) {
+        this.finishWaitTarget(parentSessionId, response.agent_name)
+      }
       for (let index = this.mailbox.length - 1; index >= 0; index--) {
-        const event = this.mailbox[index];
-        if (event.parentSessionId === parentSessionId && targetSet.has(event.agentName))
-          {this.mailbox.splice(index, 1);}
+        const event = this.mailbox[index]
+        if (event.parentSessionId === parentSessionId && targetSet.has(event.agentName)) {
+          this.mailbox.splice(index, 1)
+        }
       }
       return {
-        message: "All target agents reached final status.",
+        message: 'All target agents reached final status.',
         responses,
-      };
-    };
-    const claim = { parentSessionId, suppressedEventIds: new Set<string>(), targets: targetSet };
-    this.waitAllClaims.add(claim);
+      }
+    }
+    const claim = { parentSessionId, suppressedEventIds: new Set<string>(), targets: targetSet }
+    this.waitAllClaims.add(claim)
     try {
       while (true) {
-        throwIfAborted(waitSignal);
-        if (!pendingNames().length) {return finalize();}
-        await delay(250, undefined, { signal: waitSignal });
+        throwIfAborted(waitSignal)
+        if (!pendingNames().length) {
+          return finalize()
+        }
+        await delay(250, undefined, { signal: waitSignal })
       }
     } finally {
-      this.waitAllClaims.delete(claim);
+      this.waitAllClaims.delete(claim)
       for (const eventId of claim.suppressedEventIds) {
-        const event = this.mailbox.find((candidate) => candidate.id === eventId);
-        if (!event) {continue;}
+        const event = this.mailbox.find((candidate) => candidate.id === eventId)
+        if (!event) {
+          continue
+        }
         const claimedElsewhere = [...this.waitAllClaims].some(
-          (candidate) =>
-            candidate.parentSessionId === event.parentSessionId &&
-            candidate.targets.has(event.agentName),
-        );
-        if (!claimedElsewhere) {this.notifyUnclaimedCompletion(event);}
+          (candidate) => candidate.parentSessionId === event.parentSessionId && candidate.targets.has(event.agentName)
+        )
+        if (!claimedElsewhere) {
+          this.notifyUnclaimedCompletion(event)
+        }
       }
     }
   }
 
-  async sendMessage(
-    parentSessionId: string,
-    target: string,
-    message: string,
-  ): Promise<{ delivery: "steer" | "prompt" }> {
-    await this.reconciliation;
-    let info = this.getAgentInfo(target, parentSessionId);
-    let live = this.live.get(info.id);
+  async sendMessage(parentSessionId: string, target: string, message: string): Promise<{ delivery: 'steer' | 'prompt' }> {
+    await this.reconciliation
+    let info = this.getAgentInfo(target, parentSessionId)
+    let live = this.live.get(info.id)
     if (live?.expectedExit) {
-      await live.termination;
-      live = undefined;
-      info = this.getAgentInfo(target, parentSessionId);
+      await live.termination
+      live = undefined
+      info = this.getAgentInfo(target, parentSessionId)
     }
-    const wasLive = Boolean(live);
+    const wasLive = Boolean(live)
     if (!live) {
-      if (info.childProcess) {await this.terminateOwnedChild(info);}
-      if (info.status === "starting" || info.status === "running") {
-        info.status = "interrupted";
-        info.lastActivity = Date.now();
-        saveInfo(info);
+      if (info.childProcess) {
+        await this.terminateOwnedChild(info)
       }
-      live = await this.startLiveAgent(info);
+      if (info.status === 'starting' || info.status === 'running') {
+        info.status = 'interrupted'
+        info.lastActivity = Date.now()
+        saveInfo(info)
+      }
+      live = await this.startLiveAgent(info)
     }
-    if (wasLive && (info.status === "starting" || info.status === "running")) {
-      await this.sendCommand(live, { message, type: "steer" });
-      info.lastTaskMessage = message;
-      info.lastActivity = Date.now();
-      saveInfo(info);
-      return { delivery: "steer" };
+    if (wasLive && (info.status === 'starting' || info.status === 'running')) {
+      await this.sendCommand(live, { message, type: 'steer' })
+      info.lastTaskMessage = message
+      info.lastActivity = Date.now()
+      saveInfo(info)
+      return { delivery: 'steer' }
     }
     try {
-      await this.prompt(live, message, message);
-      return { delivery: "prompt" };
+      await this.prompt(live, message, message)
+      return { delivery: 'prompt' }
     } catch (error) {
-      await this.terminateProcess(live);
-      throw error;
+      await this.terminateProcess(live)
+      throw error
     }
   }
 
-  async interruptAgent(
-    parentSessionId: string,
-    target: string,
-  ): Promise<{ previous_status: AgentRuntimeStatus }> {
-    await this.reconciliation;
-    const info = this.getAgentInfo(target, parentSessionId);
-    const previous = info.status;
-    if (previous !== "starting" && previous !== "running") {return { previous_status: previous };}
-    const live = this.live.get(info.id);
-    info.status = "interrupted";
-    info.lastActivity = Date.now();
-    saveInfo(info);
-    this.notifyStatusChange(info);
-    if (live) {
-      live.info.status = "interrupted";
-      live.info.lastActivity = info.lastActivity;
-      live.finalizedRun = true;
-      await this.terminateProcess(live);
-    } else {
-      await this.terminateOwnedChild(info);
+  async interruptAgent(parentSessionId: string, target: string): Promise<{ previous_status: AgentRuntimeStatus }> {
+    await this.reconciliation
+    const info = this.getAgentInfo(target, parentSessionId)
+    const previous = info.status
+    if (previous !== 'starting' && previous !== 'running') {
+      return { previous_status: previous }
     }
-    this.finishWaitTarget(parentSessionId, info.canonicalName);
+    const live = this.live.get(info.id)
+    info.status = 'interrupted'
+    info.lastActivity = Date.now()
+    saveInfo(info)
+    this.notifyStatusChange(info)
+    if (live) {
+      live.info.status = 'interrupted'
+      live.info.lastActivity = info.lastActivity
+      live.finalizedRun = true
+      await this.terminateProcess(live)
+    } else {
+      await this.terminateOwnedChild(info)
+    }
+    this.finishWaitTarget(parentSessionId, info.canonicalName)
     this.pushMailbox(
       {
         agentName: info.canonicalName,
         createdAt: Date.now(),
         id: randomUUID(),
         parentSessionId,
-        status: "interrupted",
+        status: 'interrupted',
         ...agentMetadata(info),
       },
-      false,
-    );
-    return { previous_status: previous };
+      false
+    )
+    return { previous_status: previous }
   }
 
   private signalProcessTree(live: LiveAgent, signal: NodeJS.Signals): void {
     try {
-      if (process.platform !== "win32" && live.proc.pid) {process.kill(-live.proc.pid, signal);}
-      else {live.proc.kill(signal);}
+      if (process.platform !== 'win32' && live.proc.pid) {
+        process.kill(-live.proc.pid, signal)
+      } else {
+        live.proc.kill(signal)
+      }
     } catch {
       try {
-        live.proc.kill(signal);
+        live.proc.kill(signal)
       } catch {
         // Best effort; the process may have already exited.
       }
@@ -1933,70 +1981,80 @@ export class AgentManager {
   }
 
   private async forceKillWindowsTree(live: LiveAgent): Promise<void> {
-    if (process.platform !== "win32" || !live.proc.pid) {return;}
+    if (process.platform !== 'win32' || !live.proc.pid) {
+      return
+    }
     await new Promise<void>((resolve) => {
-      const killer = spawn("taskkill", ["/pid", String(live.proc.pid), "/T", "/F"], {
-        stdio: "ignore",
-      });
-      killer.once("error", () => resolve());
-      killer.once("exit", () => resolve());
-    });
+      const killer = spawn('taskkill', ['/pid', String(live.proc.pid), '/T', '/F'], {
+        stdio: 'ignore',
+      })
+      killer.once('error', () => resolve())
+      killer.once('exit', () => resolve())
+    })
   }
 
   private terminateProcess(live: LiveAgent): Promise<void> {
-    if (live.processFinished) {return Promise.resolve();}
-    if (live.termination) {return live.termination;}
+    if (live.processFinished) {
+      return Promise.resolve()
+    }
+    if (live.termination) {
+      return live.termination
+    }
     live.termination = (async () => {
-      const abortRequest = this.sendCommand(live, { type: "abort" }, 1000);
-      live.expectedExit = true;
+      const abortRequest = this.sendCommand(live, { type: 'abort' }, 1000)
+      live.expectedExit = true
       try {
-        await abortRequest;
+        await abortRequest
       } catch {
         // Best effort; the child may already be exiting.
       }
       try {
-        live.proc.stdin.end();
+        live.proc.stdin.end()
       } catch {
         // Best effort; the stream may already be closed.
       }
-      await Promise.race([live.exitPromise, delay(500)]);
+      await Promise.race([live.exitPromise, delay(500)])
       if (!live.processFinished) {
-        this.signalProcessTree(live, "SIGTERM");
-        await Promise.race([live.exitPromise, delay(1000)]);
+        this.signalProcessTree(live, 'SIGTERM')
+        await Promise.race([live.exitPromise, delay(1000)])
       }
       if (!live.processFinished) {
-        if (process.platform === "win32") {await this.forceKillWindowsTree(live);}
-        else {this.signalProcessTree(live, "SIGKILL");}
-        await Promise.race([live.exitPromise, delay(1000)]);
+        if (process.platform === 'win32') {
+          await this.forceKillWindowsTree(live)
+        } else {
+          this.signalProcessTree(live, 'SIGKILL')
+        }
+        await Promise.race([live.exitPromise, delay(1000)])
       }
-      if (!live.processFinished)
-        {throw new Error(`Unable to terminate child Pi process for ${live.info.canonicalName}.`);}
-    })();
-    return live.termination;
+      if (!live.processFinished) {
+        throw new Error(`Unable to terminate child Pi process for ${live.info.canonicalName}.`)
+      }
+    })()
+    return live.termination
   }
 
   async shutdown(): Promise<void> {
-    this.shutdownController.abort(new Error("Agent manager shut down."));
-    await this.reconciliation;
-    const terminations: Promise<void>[] = [];
+    this.shutdownController.abort(new Error('Agent manager shut down.'))
+    await this.reconciliation
+    const terminations: Promise<void>[] = []
     for (const live of this.live.values()) {
-      if (live.info.status === "starting" || live.info.status === "running") {
-        live.info.status = "interrupted";
-        live.info.lastActivity = Date.now();
-        live.finalizedRun = true;
-        saveInfo(live.info);
-        this.notifyStatusChange(live.info);
+      if (live.info.status === 'starting' || live.info.status === 'running') {
+        live.info.status = 'interrupted'
+        live.info.lastActivity = Date.now()
+        live.finalizedRun = true
+        saveInfo(live.info)
+        this.notifyStatusChange(live.info)
       }
-      terminations.push(this.terminateProcess(live));
+      terminations.push(this.terminateProcess(live))
     }
-    await Promise.allSettled(terminations);
+    await Promise.allSettled(terminations)
   }
 }
 
 export const writeFullToolOutput = (content: string): string => {
-  const directory = join(getRunsDir(), "_outputs");
-  ensurePrivateDir(directory, true);
-  const file = join(directory, `${Date.now()}-${randomUUID()}.txt`);
-  writeFileSync(file, content);
-  return file;
+  const directory = join(getRunsDir(), '_outputs')
+  ensurePrivateDir(directory, true)
+  const file = join(directory, `${Date.now()}-${randomUUID()}.txt`)
+  writeFileSync(file, content)
+  return file
 }

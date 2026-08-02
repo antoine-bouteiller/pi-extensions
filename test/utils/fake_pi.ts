@@ -1,29 +1,31 @@
-import  { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
-type EventHandler = (...args: unknown[]) => unknown;
-type ToolDefinition = { name: string } & Record<string, unknown>;
-type CommandDefinition = Record<string, unknown>;
+type EventHandler = (...args: unknown[]) => unknown
+type ToolDefinition = { name: string } & Record<string, unknown>
+type CommandDefinition = Record<string, unknown>
 
 export interface FakePiState {
-  handlers: Map<string, EventHandler[]>;
-  tools: Map<string, ToolDefinition>;
-  commands: Map<string, CommandDefinition>;
-  messages: { message: unknown; options: unknown }[];
-  emittedEvents: { name: string; data: unknown }[];
+  handlers: Map<string, EventHandler[]>
+  tools: Map<string, ToolDefinition>
+  commands: Map<string, CommandDefinition>
+  messages: { message: unknown; options: unknown }[]
+  emittedEvents: { name: string; data: unknown }[]
 }
 
 export interface FakePiOptions {
   exec?: (
     command: string,
     args: string[],
-    options?: Record<string, unknown>,
-  ) => Promise<{ stdout: string; stderr: string; code: number; killed?: boolean }>;
+    options?: Record<string, unknown>
+  ) => Promise<{ stdout: string; stderr: string; code: number; killed?: boolean }>
 }
 
-export const createFakePi = (options: FakePiOptions = {}): {
-  pi: ExtensionAPI;
-  state: FakePiState;
-  emit: (name: string, event?: unknown, context?: unknown) => Promise<unknown[]>;
+export const createFakePi = (
+  options: FakePiOptions = {}
+): {
+  pi: ExtensionAPI
+  state: FakePiState
+  emit: (name: string, event?: unknown, context?: unknown) => Promise<unknown[]>
 } => {
   const state: FakePiState = {
     commands: new Map(),
@@ -31,61 +33,75 @@ export const createFakePi = (options: FakePiOptions = {}): {
     handlers: new Map(),
     messages: [],
     tools: new Map(),
-  };
+  }
 
   const target = {
     events: {
       emit(name: string, data: unknown) {
-        state.emittedEvents.push({ data, name });
+        state.emittedEvents.push({ data, name })
       },
-      on() { /* Empty */ },
+      on() {
+        /* Empty */
+      },
     },
     async exec(command: string, args: string[], execOptions?: Record<string, unknown>) {
-      return options.exec
-        ? options.exec(command, args, execOptions)
-        : { code: 0, killed: false, stderr: "", stdout: "" };
+      return options.exec ? options.exec(command, args, execOptions) : { code: 0, killed: false, stderr: '', stdout: '' }
     },
     getActiveTools: () => [],
     getAllTools: () => [],
-    getThinkingLevel: () => "off",
+    getThinkingLevel: () => 'off',
     on(name: string, handler: EventHandler) {
-      const handlers = state.handlers.get(name) ?? [];
-      handlers.push(handler);
-      state.handlers.set(name, handlers);
+      const handlers = state.handlers.get(name) ?? []
+      handlers.push(handler)
+      state.handlers.set(name, handlers)
     },
     registerCommand(name: string, command: CommandDefinition) {
-      state.commands.set(name, command);
+      state.commands.set(name, command)
     },
-    registerEntryRenderer() { /* Empty */ },
-    registerFlag() { /* Empty */ },
-    registerMessageRenderer() { /* Empty */ },
-    registerProvider() { /* Empty */ },
-    registerShortcut() { /* Empty */ },
+    registerEntryRenderer() {
+      /* Empty */
+    },
+    registerFlag() {
+      /* Empty */
+    },
+    registerMessageRenderer() {
+      /* Empty */
+    },
+    registerProvider() {
+      /* Empty */
+    },
+    registerShortcut() {
+      /* Empty */
+    },
     registerTool(tool: ToolDefinition) {
-      state.tools.set(tool.name, tool);
+      state.tools.set(tool.name, tool)
     },
     sendMessage(message: unknown, messageOptions: unknown) {
-      state.messages.push({ message, options: messageOptions });
+      state.messages.push({ message, options: messageOptions })
     },
-    setActiveTools() { /* Empty */ },
-  };
+    setActiveTools() {
+      /* Empty */
+    },
+  }
 
   const pi = new Proxy(target, {
     get(object, property, receiver) {
-      if (Reflect.has(object, property)) {return Reflect.get(object, property, receiver);}
-      return () => undefined;
+      if (Reflect.has(object, property)) {
+        return Reflect.get(object, property, receiver)
+      }
+      return () => undefined
     },
-  }) as unknown as ExtensionAPI;
+  }) as unknown as ExtensionAPI
 
   return {
     async emit(name, event = {}, context = {}) {
-      const results: unknown[] = [];
+      const results: unknown[] = []
       for (const handler of state.handlers.get(name) ?? []) {
-        results.push(await handler(event, context));
+        results.push(await handler(event, context))
       }
-      return results;
+      return results
     },
     pi,
     state,
-  };
-};
+  }
+}

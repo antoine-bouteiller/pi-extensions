@@ -1,11 +1,11 @@
-import { describe, expect, test } from "bun:test";
-import { fileURLToPath } from "node:url";
+import { describe, expect, test } from 'bun:test'
+import { fileURLToPath } from 'node:url'
 
 // Runs in a child process so importing sub-agents here does not populate the module cache
 // Before src/sub-agents/test/core.test.ts installs its mock (see extension-registration.test.ts).
-describe("bundled single extension", () => {
-  test("registers every first-party tool and lifecycle handler through one factory", async () => {
-    const modulePath = fileURLToPath(new URL("../extension.ts", import.meta.url));
+describe('bundled single extension', () => {
+  test('registers every first-party tool and lifecycle handler through one factory', async () => {
+    const modulePath = fileURLToPath(new URL('../extension.ts', import.meta.url))
     const script = `
       const toolNames = [];
       const handlerNames = new Set();
@@ -37,33 +37,30 @@ describe("bundled single extension", () => {
       if (typeof extension !== "function") process.exit(1);
       await extension(pi);
       console.log(JSON.stringify({ tools: toolNames.sort(), handlers: [...handlerNames].sort() }));
-    `;
-    const child = Bun.spawn([process.execPath, "--eval", script], { stderr: "pipe", stdout: "pipe" });
-    const [stdout, exitCode] = await Promise.all([
-      new Response(child.stdout).text(),
-      child.exited,
-    ]);
-    expect(exitCode, await new Response(child.stderr).text()).toBe(0);
+    `
+    const child = Bun.spawn([process.execPath, '--eval', script], { stderr: 'pipe', stdout: 'pipe' })
+    const [stdout, exitCode] = await Promise.all([new Response(child.stdout).text(), child.exited])
+    expect(exitCode, await new Response(child.stderr).text()).toBe(0)
 
-    const result = JSON.parse(stdout.trim());
+    const result = JSON.parse(stdout.trim())
     expect(result.tools).toEqual([
-      "ask_user",
-      "background_poll",
-      "hashline_read",
-      "hashline_write",
-      "interrupt_agent",
-      "list_agents",
-      "mcp",
-      "read_agent_response",
-      "safe_rm",
-      "send_message",
-      "spawn_agent",
-      "wait_agent",
-      "wait_all_agents",
-      "webfetch",
-    ]);
-    for (const handler of ["session_start", "session_shutdown", "tool_call", "tool_result"]) {
-      expect(result.handlers, handler).toContain(handler);
+      'ask_user',
+      'background_poll',
+      'hashline_read',
+      'hashline_write',
+      'interrupt_agent',
+      'list_agents',
+      'mcp',
+      'read_agent_response',
+      'safe_rm',
+      'send_message',
+      'spawn_agent',
+      'wait_agent',
+      'wait_all_agents',
+      'webfetch',
+    ])
+    for (const handler of ['session_start', 'session_shutdown', 'tool_call', 'tool_result']) {
+      expect(result.handlers, handler).toContain(handler)
     }
-  });
-});
+  })
+})

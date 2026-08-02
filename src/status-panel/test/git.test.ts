@@ -1,62 +1,59 @@
-import { describe, expect, test } from "bun:test";
-import { createFakePi } from "#test-utils/fake_pi";
-import { fetchGitInfo } from "../git";
+import { describe, expect, test } from 'bun:test'
 
-const success = (stdout: string) => ({ code: 0, killed: false, stderr: "", stdout });
+import { createFakePi } from '#test-utils/fake_pi'
 
-describe("status panel git state", () => {
-  test("reports the current branch and porcelain entry count", async () => {
-    const calls: string[][] = [];
-    const outputs = [success("true\n"), success("feature/footer\n"), success(" M one\n?? two\n")];
+import { fetchGitInfo } from '../git'
+
+const success = (stdout: string) => ({ code: 0, killed: false, stderr: '', stdout })
+
+describe('status panel git state', () => {
+  test('reports the current branch and porcelain entry count', async () => {
+    const calls: string[][] = []
+    const outputs = [success('true\n'), success('feature/footer\n'), success(' M one\n?? two\n')]
     const { pi } = createFakePi({
       exec: async (command, args) => {
-        calls.push([command, ...args]);
-        return outputs.shift() ?? success("");
+        calls.push([command, ...args])
+        return outputs.shift() ?? success('')
       },
-    });
+    })
 
     expect(await fetchGitInfo(pi)).toEqual({
-      branch: "feature/footer",
+      branch: 'feature/footer',
       changedFiles: 2,
       pullRequest: undefined,
-    });
+    })
     expect(calls).toEqual([
-      ["git", "rev-parse", "--is-inside-work-tree"],
-      ["git", "branch", "--show-current"],
-      ["git", "status", "--short"],
-    ]);
-  });
+      ['git', 'rev-parse', '--is-inside-work-tree'],
+      ['git', 'branch', '--show-current'],
+      ['git', 'status', '--short'],
+    ])
+  })
 
-  test("returns empty state outside a repository or when git fails", async () => {
+  test('returns empty state outside a repository or when git fails', async () => {
     const outside = createFakePi({
-      exec: async (_command, args) =>
-        args[0] === "rev-parse" ? { ...success("false\n"), code: 128 } : success("ignored"),
-    });
+      exec: async (_command, args) => (args[0] === 'rev-parse' ? { ...success('false\n'), code: 128 } : success('ignored')),
+    })
     const failing = createFakePi({
       exec: async () => {
-        throw new Error("git unavailable");
+        throw new Error('git unavailable')
       },
-    });
+    })
 
-    const empty = { branch: undefined, changedFiles: 0, pullRequest: undefined };
-    expect(await fetchGitInfo(outside.pi)).toEqual(empty);
-    expect(await fetchGitInfo(failing.pi)).toEqual(empty);
-  });
+    const empty = { branch: undefined, changedFiles: 0, pullRequest: undefined }
+    expect(await fetchGitInfo(outside.pi)).toEqual(empty)
+    expect(await fetchGitInfo(failing.pi)).toEqual(empty)
+  })
 
-  test("does not use failed branch or status command output", async () => {
-    const outputs = [
-      success("true\n"),
-      { ...success("stale-branch\n"), code: 1 },
-      { ...success(" M stale\n"), code: 1 },
-    ];
+  test('does not use failed branch or status command output', async () => {
+    const outputs = [success('true\n'), { ...success('stale-branch\n'), code: 1 }, { ...success(' M stale\n'), code: 1 }]
     const { pi } = createFakePi({
-      exec: async () => outputs.shift() ?? success(""),
-    });
+      exec: async () => outputs.shift() ?? success(''),
+    })
 
     expect(await fetchGitInfo(pi)).toEqual({
       branch: undefined,
       changedFiles: 0,
       pullRequest: undefined,
-    });
-  });
-});
+    })
+  })
+})

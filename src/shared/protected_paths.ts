@@ -1,8 +1,8 @@
-import { realpath } from "node:fs/promises";
-import { basename, dirname, resolve } from "node:path";
+import { realpath } from 'node:fs/promises'
+import { basename, dirname, resolve } from 'node:path'
 
 /** Filenames that look like dotenv files but are intended to be public examples. */
-export const PUBLIC_ENV_FILENAMES = new Set([".env.example", ".env.sample", ".env.template"]);
+export const PUBLIC_ENV_FILENAMES = new Set(['.env.example', '.env.sample', '.env.template'])
 
 const ALWAYS_PROTECTED_PATTERNS = [
   /(?<prefix>^|\/)\.ssh(?<suffix>\/|$)/,
@@ -12,29 +12,26 @@ const ALWAYS_PROTECTED_PATTERNS = [
   /(?<prefix>^|\/)\.kube\/config$/,
   /(?<prefix>^|\/)\.config\/(?:gcloud(?:\/|$)|gh\/hosts\.yml$)/,
   /\.(?:kdbx|key|p12|pem)$/,
-];
+]
 
 export interface ProtectedPathResolution {
   /** Absolute path after resolving it lexically against cwd. */
-  absolutePath: string;
+  absolutePath: string
   /** Absolute path after resolving symlinks in the nearest existing ancestor. */
-  canonicalPath: string;
-  protected: boolean;
+  canonicalPath: string
+  protected: boolean
 }
 
 const isMissingPathError = (error: unknown): boolean =>
-  typeof error === "object" &&
+  typeof error === 'object' &&
   error !== null &&
-  "code" in error &&
-  ((error as { code?: unknown }).code === "ENOENT" ||
-    (error as { code?: unknown }).code === "ENOTDIR");
+  'code' in error &&
+  ((error as { code?: unknown }).code === 'ENOENT' || (error as { code?: unknown }).code === 'ENOTDIR')
 
 /** Strip the leading `@` accepted by pi's path-oriented tools. */
-export const stripToolPathPrefix = (path: string): string =>
-  path.startsWith("@") ? path.slice(1) : path;
+export const stripToolPathPrefix = (path: string): string => (path.startsWith('@') ? path.slice(1) : path)
 
-export const resolveToolPath = (path: string, cwd: string): string =>
-  resolve(cwd, stripToolPathPrefix(path));
+export const resolveToolPath = (path: string, cwd: string): string => resolve(cwd, stripToolPathPrefix(path))
 
 /**
  * Canonicalize an existing path, or (for a path that does not exist yet)
@@ -43,62 +40,58 @@ export const resolveToolPath = (path: string, cwd: string): string =>
  * because `new-file` has not been created yet.
  */
 export const canonicalizeNearestExisting = async (path: string): Promise<string> => {
-  let candidate = resolve(path);
-  const missingComponents: string[] = [];
+  let candidate = resolve(path)
+  const missingComponents: string[] = []
 
   while (true) {
     try {
-      const existing = await realpath(candidate);
-      return resolve(existing, ...missingComponents);
+      const existing = await realpath(candidate)
+      return resolve(existing, ...missingComponents)
     } catch (error) {
-      if (!isMissingPathError(error)) {throw error;}
-      const parent = dirname(candidate);
-      if (parent === candidate) {return resolve(path);}
-      missingComponents.unshift(basename(candidate));
-      candidate = parent;
+      if (!isMissingPathError(error)) {
+        throw error
+      }
+      const parent = dirname(candidate)
+      if (parent === candidate) {
+        return resolve(path)
+      }
+      missingComponents.unshift(basename(candidate))
+      candidate = parent
     }
   }
-};
+}
 
 const matchesProtectedPolicy = (path: string): boolean => {
-  const normalized = path.replaceAll("\\", "/").toLowerCase();
-  const name = basename(normalized);
-  const isPrivateEnv =
-    (name === ".env" || name.startsWith(".env.")) && !PUBLIC_ENV_FILENAMES.has(name);
-  return isPrivateEnv || ALWAYS_PROTECTED_PATTERNS.some((pattern) => pattern.test(normalized));
-};
+  const normalized = path.replaceAll('\\', '/').toLowerCase()
+  const name = basename(normalized)
+  const isPrivateEnv = (name === '.env' || name.startsWith('.env.')) && !PUBLIC_ENV_FILENAMES.has(name)
+  return isPrivateEnv || ALWAYS_PROTECTED_PATTERNS.some((pattern) => pattern.test(normalized))
+}
 
 /**
  * Apply protected-file policy to both the lexical and canonical spellings.
  * Checking both means neither a harmless-looking symlink to a credential nor
  * a credential-shaped symlink to a harmless file bypasses the policy.
  */
-export const resolveProtectedPath = async (
-  path: string,
-  cwd: string,
-): Promise<ProtectedPathResolution> => {
-  const absolutePath = resolveToolPath(path, cwd);
-  const canonicalPath = await canonicalizeNearestExisting(absolutePath);
+export const resolveProtectedPath = async (path: string, cwd: string): Promise<ProtectedPathResolution> => {
+  const absolutePath = resolveToolPath(path, cwd)
+  const canonicalPath = await canonicalizeNearestExisting(absolutePath)
   return {
     absolutePath,
     canonicalPath,
     protected: matchesProtectedPolicy(absolutePath) || matchesProtectedPolicy(canonicalPath),
-  };
-};
+  }
+}
 
 export const isProtectedPath = async (path: string, cwd: string): Promise<boolean> => {
-  const resolution = await resolveProtectedPath(path, cwd);
-  return resolution.protected;
-};
+  const resolution = await resolveProtectedPath(path, cwd)
+  return resolution.protected
+}
 
-export const assertUnprotectedPath = async (
-  path: string,
-  cwd: string,
-  operation: string,
-): Promise<ProtectedPathResolution> => {
-  const resolution = await resolveProtectedPath(path, cwd);
+export const assertUnprotectedPath = async (path: string, cwd: string, operation: string): Promise<ProtectedPathResolution> => {
+  const resolution = await resolveProtectedPath(path, cwd)
   if (resolution.protected) {
-    throw new Error(`Refusing to ${operation} protected path: ${path}`);
+    throw new Error(`Refusing to ${operation} protected path: ${path}`)
   }
-  return resolution;
-};
+  return resolution
+}
