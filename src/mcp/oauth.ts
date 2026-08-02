@@ -3,6 +3,7 @@ import { createServer } from 'node:http'
 
 import { UnauthorizedError, type OAuthClientProvider, type OAuthDiscoveryState } from '@modelcontextprotocol/sdk/client/auth.js'
 import { type OAuthClientInformationMixed, type OAuthClientMetadata, type OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js'
+import { Effect, Semaphore, type Scope } from 'effect'
 
 import { type CredentialStore, type OAuthCredentialPayload } from './keychain.js'
 import { type OAuthConfig } from './types.js'
@@ -200,6 +201,12 @@ export const startOAuthCallback = async (options: OAuthCallbackOptions): Promise
   return { close, redirectUrl: url.href, waitForCode: () => codePromise }
 }
 
+/** Scoped callback resource used by Effect-native authentication flows. */
+export const startOAuthCallbackScoped = (options: OAuthCallbackOptions): Effect.Effect<OAuthCallback, unknown, Scope.Scope> =>
+  Effect.acquireRelease(Effect.tryPromise({ catch: (cause) => cause, try: () => startOAuthCallback(options) }), (callback) =>
+    Effect.tryPromise({ catch: (cause) => cause, try: () => callback.close() }).pipe(Effect.ignore)
+  )
+
 export interface KeychainOAuthProviderOptions {
   serverName: string
   serverUrl: string
@@ -217,7 +224,7 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
   readonly clientMetadata: OAuthClientMetadata
   private verifier?: string
   private discovery?: OAuthDiscoveryState
-  private mutation: Promise<void> = Promise.resolve()
+  private readonly mutation = Effect.runSync(Semaphore.make(1))
   private readonly options: KeychainOAuthProviderOptions
 
   constructor(options: KeychainOAuthProviderOptions) {
@@ -335,20 +342,18 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
     return this.options.store.get(this.options.serverName, this.options.serverUrl)
   }
 
-  private async update(updater: (current: OAuthCredentialPayload | undefined) => OAuthCredentialPayload | undefined): Promise<void> {
-    let failure: unknown
-    this.mutation = this.mutation.then(async () => {
-      try {
-        const next = updater(await this.load())
-        await (next ? this.options.store.set(this.options.serverName, next) : this.options.store.delete(this.options.serverName))
-      } catch (error) {
-        failure = error
-      }
-    })
-    await this.mutation
-    if (failure) {
-      throw failure
-    }
+  private update(updater: (current: OAuthCredentialPayload | undefined) => OAuthCredentialPayload | undefined): Promise<void> {
+    return Effect.runPromise(
+      this.mutation.withPermits(1)(
+        Effect.tryPromise({
+          catch: (cause) => cause,
+          try: async () => {
+            const next = updater(await this.load())
+            await (next ? this.options.store.set(this.options.serverName, next) : this.options.store.delete(this.options.serverName))
+          },
+        })
+      )
+    )
   }
 }
 

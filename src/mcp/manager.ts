@@ -5,6 +5,7 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { type Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
+import { Context, Effect, Layer } from 'effect'
 
 import { isRecord } from '../shared/records.js'
 import { KeychainCredentialError, createKeychainCredentialStore, type CredentialStore } from './keychain.js'
@@ -968,3 +969,14 @@ export class McpManager {
     })
   }
 }
+
+/** Scoped Effect service for callers that own the manager through a Layer. */
+export class McpManagerService extends Context.Service<McpManagerService, McpManager>()('@pi/mcp/Manager') {}
+
+export const mcpManagerLayer = (config: McpServerMap, options: McpManagerOptions): Layer.Layer<McpManagerService> =>
+  Layer.effect(McpManagerService)(
+    Effect.acquireRelease(
+      Effect.sync(() => new McpManager(config, options)),
+      (manager) => Effect.tryPromise({ catch: (cause) => cause, try: () => manager.close() }).pipe(Effect.ignore)
+    )
+  )

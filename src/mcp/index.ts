@@ -2,15 +2,15 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import { type AgentToolResult, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
-import { Type } from 'typebox'
+import { Deferred, Effect, Match, Option, Ref } from 'effect'
+import { Type, type Static } from 'typebox'
 
+import { ToolFailure } from '../effect/errors.js'
 import { isRecord } from '../shared/records.js'
 import { createStatusChannel } from '../shared/status_bar.js'
 import { loadGlobalMcpConfig } from './config.js'
 import { boundGatewayOutput } from './output.js'
 import { type McpGatewayPolicy, type McpPolicyRequest, type McpToolAnnotations } from './types.js'
-
-export type { McpGatewayPolicy, McpToolAnnotations } from './types.js'
 
 const SEARCH_RESULT_LIMIT = 30
 const SEARCH_FETCH_LIMIT = SEARCH_RESULT_LIMIT + 1
@@ -47,13 +47,15 @@ const McpGatewayParameters = Type.Object({
   tool: Type.Optional(Type.String({ description: 'Exposed MCP tool name to call.' })),
 })
 
+type McpGatewayInput = Static<typeof McpGatewayParameters>
+
 interface McpServerStatus {
   name: string
   status: 'disconnected' | 'connecting' | 'connected' | 'needs-auth' | 'failed' | 'disabled'
   error?: string
 }
 
-export interface McpToolSummary {
+interface McpToolSummary {
   name: string
   server?: string
   description?: string
@@ -222,49 +224,122 @@ const validateSelectors = (params: {
   }
 }
 
-/** Build the extension with injectable config and manager dependencies for isolated tests. */
-export const createMcpExtension = <TConfig>(dependencies: McpGatewayDependencies<TConfig>) =>
-  function mcpGateway(pi: ExtensionAPI): void {
-    let manager: McpGatewayManager | undefined
-    let initialization: Promise<void> | undefined
-    let lifecycleGeneration = 0
+const errorMessage = (error: unknown): string => {
+  if (error instanceof ToolFailure) {
+    return error.message
+  }
+  if (error instanceof Error) {
+    return error.message
+  }
+  return String(error)
+}
 
-    const requireManager = async (): Promise<McpGatewayManager> => {
-      if (initialization) {
-        await initialization
+/** Maps a caught failure back onto the plain `Error` the pre-Effect gateway rejected with. */
+const toRejection = (error: unknown): Error => {
+  if (error instanceof ToolFailure) {
+    return new Error(error.message)
+  }
+  if (error instanceof Error) {
+    return error
+  }
+  return new Error(String(error))
+}
+
+/** Wraps a manager (or gateway helper) Promise call, keeping the raw rejection identity in the error channel. */
+const callManager = <Value>(run: () => Promise<Value>): Effect.Effect<Value, unknown> => Effect.tryPromise({ catch: (cause) => cause, try: run })
+
+type McpSelector =
+  | { readonly _tag: 'Call'; readonly tool: string; readonly server: string | undefined; readonly rawArgs: unknown }
+  | { readonly _tag: 'Connect'; readonly server: string }
+  | { readonly _tag: 'Describe'; readonly tool: string; readonly server: string | undefined }
+  | { readonly _tag: 'Search'; readonly query: string; readonly regex: boolean; readonly server: string | undefined }
+  | { readonly _tag: 'List'; readonly server: string }
+  | { readonly _tag: 'Status' }
+
+/** Validates mutual exclusivity/orphan modifiers (`validateSelectors`) then classifies which operation to dispatch. */
+const classifySelector = (params: McpGatewayInput): Effect.Effect<McpSelector, ToolFailure> =>
+  Effect.try({
+    catch: (cause) => new ToolFailure({ message: errorMessage(cause) }),
+    try: (): McpSelector => {
+      validateSelectors(params)
+      if (params.tool !== undefined) {
+        return { _tag: 'Call', rawArgs: params.args, server: params.server, tool: params.tool }
       }
-      if (!manager) {
-        throw new Error('MCP is not initialized. Start or reload the Pi session and try again.')
+      if (params.connect !== undefined) {
+        return { _tag: 'Connect', server: params.connect }
       }
-      return manager
+      if (params.describe !== undefined) {
+        return { _tag: 'Describe', server: params.server, tool: params.describe }
+      }
+      if (params.search !== undefined) {
+        return { _tag: 'Search', query: params.search, regex: params.regex ?? false, server: params.server }
+      }
+      if (params.server !== undefined) {
+        return { _tag: 'List', server: params.server }
+      }
+      return { _tag: 'Status' }
+    },
+  })
+
+interface McpGatewayStateShape {
+  readonly generation: Ref.Ref<number>
+  readonly manager: Ref.Ref<Option.Option<McpGatewayManager>>
+  readonly initialization: Ref.Ref<Option.Option<Deferred.Deferred<void, unknown>>>
+}
+
+const makeState: Effect.Effect<McpGatewayStateShape> = Effect.gen(function* () {
+  return {
+    generation: yield* Ref.make(0),
+    initialization: yield* Ref.make<Option.Option<Deferred.Deferred<void, unknown>>>(Option.none()),
+    manager: yield* Ref.make<Option.Option<McpGatewayManager>>(Option.none()),
+  }
+})
+
+/** Mirrors `if (initialization) { await initialization }` then requires an installed manager. */
+const requireManager = (state: McpGatewayStateShape): Effect.Effect<McpGatewayManager, unknown> =>
+  Effect.gen(function* () {
+    const pending = yield* Ref.get(state.initialization)
+    if (Option.isSome(pending)) {
+      yield* Deferred.await(pending.value)
     }
+    const current = yield* Ref.get(state.manager)
+    if (Option.isNone(current)) {
+      return yield* Effect.fail(new ToolFailure({ message: 'MCP is not initialized. Start or reload the Pi session and try again.' }))
+    }
+    return current.value
+  })
 
-    pi.registerTool({
-      description:
-        "Access configured remote MCP capabilities through one lazy gateway. Use Pi's native tools directly whenever possible. Search or describe unfamiliar MCP tools before calling them.",
-      async execute(_toolCallId, params, signal) {
-        validateSelectors(params)
-        const activeManager = await requireManager()
+const dispatchGateway = (
+  configPath: string,
+  state: McpGatewayStateShape,
+  params: McpGatewayInput,
+  signal: AbortSignal | undefined
+): Effect.Effect<AgentToolResult<unknown>, unknown> =>
+  Effect.gen(function* () {
+    const selector = yield* classifySelector(params)
+    const manager = yield* requireManager(state)
 
-        if (params.tool !== undefined) {
-          return activeManager.call(params.tool, parseArgs(params.args), {
-            server: params.server,
-            signal,
+    return yield* Match.valueTags(selector, {
+      Call: (op) =>
+        Effect.gen(function* () {
+          const args = yield* Effect.try({
+            catch: (cause) => new ToolFailure({ message: errorMessage(cause) }),
+            try: () => parseArgs(op.rawArgs),
           })
-        }
+          return yield* callManager(() => manager.call(op.tool, args, { server: op.server, signal }))
+        }),
 
-        if (params.connect !== undefined) {
-          await activeManager.connect(params.connect, { signal })
-          return textResult(`Connected MCP server ${params.connect}.\nList tools with: mcp({ server: ${JSON.stringify(params.connect)} })`, {
-            server: params.connect,
-          })
-        }
+      Connect: (op) =>
+        Effect.gen(function* () {
+          yield* callManager(() => manager.connect(op.server, { signal }))
+          return yield* callManager(() =>
+            textResult(`Connected MCP server ${op.server}.\nList tools with: mcp({ server: ${JSON.stringify(op.server)} })`, { server: op.server })
+          )
+        }),
 
-        if (params.describe !== undefined) {
-          const description = await activeManager.describe(params.describe, {
-            server: params.server,
-            signal,
-          })
+      Describe: (op) =>
+        Effect.gen(function* () {
+          const description = yield* callManager(() => manager.describe(op.tool, { server: op.server, signal }))
           const summary = compactDescription(description.description)
           const lines = [
             `${description.name}${formatAnnotations(description.annotations)}`,
@@ -273,67 +348,135 @@ export const createMcpExtension = <TConfig>(dependencies: McpGatewayDependencies
             `Input schema: ${JSON.stringify(description.inputSchema ?? {})}`,
             `Call with: mcp({ tool: ${JSON.stringify(description.name)}, args: { ... } })`,
           ]
-          return textResult(lines.join('\n'), {
-            annotations: description.annotations,
-            server: description.server,
-            tool: description.name,
-          })
-        }
+          return yield* callManager(() =>
+            textResult(lines.join('\n'), {
+              annotations: description.annotations,
+              server: description.server,
+              tool: description.name,
+            })
+          )
+        }),
 
-        if (params.search !== undefined) {
-          const matches = await activeManager.search(params.search, {
-            limit: SEARCH_FETCH_LIMIT,
-            regex: params.regex ?? false,
-            server: params.server,
-            signal,
-          })
-          const capped = [...matches].toSorted(compareNames).slice(0, SEARCH_RESULT_LIMIT)
-          return textResult(formatTools(capped, `MCP search results (${capped.length}):`), {
-            query: params.search,
-            regex: params.regex ?? false,
-            resultsTruncated: matches.length > capped.length,
-            server: params.server,
-            tools: capped.map((tool) => ({
-              annotations: tool.annotations,
-              name: tool.name,
-              server: tool.server,
-            })),
-          })
-        }
-
-        if (params.server !== undefined) {
-          const tools = await activeManager.list(params.server, { signal })
+      List: (op) =>
+        Effect.gen(function* () {
+          const tools = yield* callManager(() => manager.list(op.server, { signal }))
           const sorted = [...tools].toSorted(compareNames)
           const capped = sorted.slice(0, LIST_RESULT_LIMIT)
-          return textResult(formatTools(capped, `MCP tools on ${params.server} (${capped.length} of ${sorted.length}):`), {
-            resultsTruncated: sorted.length > capped.length,
-            server: params.server,
-            tools: capped.map((tool) => ({
-              annotations: tool.annotations,
-              name: tool.name,
-              server: tool.server,
-            })),
-          })
-        }
+          return yield* callManager(() =>
+            textResult(formatTools(capped, `MCP tools on ${op.server} (${capped.length} of ${sorted.length}):`), {
+              resultsTruncated: sorted.length > capped.length,
+              server: op.server,
+              tools: capped.map((tool) => ({ annotations: tool.annotations, name: tool.name, server: tool.server })),
+            })
+          )
+        }),
 
-        const servers = [...(await activeManager.status())].toSorted(compareNames)
-        const lines = [
-          `MCP config: ${dependencies.configPath}`,
-          ...(servers.length === 0
-            ? ['(no configured servers)']
-            : servers.map((server) => `- ${server.name}: ${server.status}${server.error ? ` — ${server.error}` : ''}`)),
-          '',
-          'List one server with: mcp({ server: "<server-name>" })',
-        ]
-        return textResult(lines.join('\n'), {
-          configPath: dependencies.configPath,
-          resultsTruncated: servers.length > 30,
-          serverCount: servers.length,
-          servers: servers.slice(0, 30).map((server) => ({
-            name: server.name.slice(0, 128),
-            status: server.status,
-          })),
-        })
+      Search: (op) =>
+        Effect.gen(function* () {
+          const matches = yield* callManager(() =>
+            manager.search(op.query, { limit: SEARCH_FETCH_LIMIT, regex: op.regex, server: op.server, signal })
+          )
+          const capped = [...matches].toSorted(compareNames).slice(0, SEARCH_RESULT_LIMIT)
+          return yield* callManager(() =>
+            textResult(formatTools(capped, `MCP search results (${capped.length}):`), {
+              query: op.query,
+              regex: op.regex,
+              resultsTruncated: matches.length > capped.length,
+              server: op.server,
+              tools: capped.map((tool) => ({ annotations: tool.annotations, name: tool.name, server: tool.server })),
+            })
+          )
+        }),
+
+      Status: () =>
+        Effect.gen(function* () {
+          const servers = yield* callManager(() => Promise.resolve(manager.status()))
+          const sorted = [...servers].toSorted(compareNames)
+          const lines = [
+            `MCP config: ${configPath}`,
+            ...(sorted.length === 0
+              ? ['(no configured servers)']
+              : sorted.map((server) => `- ${server.name}: ${server.status}${server.error ? ` — ${server.error}` : ''}`)),
+            '',
+            'List one server with: mcp({ server: "<server-name>" })',
+          ]
+          return yield* callManager(() =>
+            textResult(lines.join('\n'), {
+              configPath,
+              resultsTruncated: sorted.length > 30,
+              serverCount: sorted.length,
+              servers: sorted.slice(0, 30).map((server) => ({ name: server.name.slice(0, 128), status: server.status })),
+            })
+          )
+        }),
+    })
+  })
+
+/** Build the extension with injectable config and manager dependencies for isolated tests. */
+export const createMcpExtension = <TConfig>(dependencies: McpGatewayDependencies<TConfig>) =>
+  function mcpGateway(pi: ExtensionAPI): void {
+    const state = Effect.runSync(makeState)
+
+    const startSession = (ctx: ExtensionContext): Effect.Effect<void, unknown> =>
+      Effect.gen(function* () {
+        const generation = yield* Ref.updateAndGet(state.generation, (value) => value + 1)
+        const previousManager = yield* Ref.getAndSet(state.manager, Option.none())
+        const deferred = yield* Deferred.make<void, unknown>()
+        yield* Ref.set(state.initialization, Option.some(deferred))
+
+        yield* Effect.gen(function* () {
+          if (Option.isSome(previousManager)) {
+            yield* callManager(() => previousManager.value.close())
+          }
+          const config = yield* callManager(() => dependencies.loadConfig())
+          const candidate = yield* callManager(() =>
+            Promise.resolve(
+              dependencies.createManager(config, {
+                callbacks: {
+                  onStatusChange: (update) => {
+                    if (Effect.runSync(Ref.get(state.generation)) === generation) {
+                      updateUiStatus(ctx, update)
+                    }
+                  },
+                },
+                pi,
+                policy: dependencies.policy ?? unrestrictedMcpPolicy,
+              })
+            )
+          )
+
+          if ((yield* Ref.get(state.generation)) !== generation) {
+            yield* callManager(() => candidate.close())
+            return
+          }
+          yield* Ref.set(state.manager, Option.some(candidate))
+        }).pipe(Effect.onExit((exit) => Deferred.done(deferred, exit)))
+      })
+
+    const stopSession = (ctx: ExtensionContext): Effect.Effect<void, unknown> =>
+      Effect.gen(function* () {
+        yield* Ref.update(state.generation, (value) => value + 1)
+        const pending = yield* Ref.get(state.initialization)
+        if (Option.isSome(pending)) {
+          yield* Deferred.await(pending.value).pipe(Effect.exit)
+        }
+        const current = yield* Ref.getAndSet(state.manager, Option.none())
+        yield* Effect.ensuring(
+          Option.isSome(current) ? callManager(() => current.value.close()) : Effect.void,
+          Effect.gen(function* () {
+            yield* Ref.set(state.initialization, Option.none())
+            yield* Effect.sync(() => status.clear(ctx))
+          })
+        )
+      })
+
+    pi.registerTool({
+      description:
+        "Access configured remote MCP capabilities through one lazy gateway. Use Pi's native tools directly whenever possible. Search or describe unfamiliar MCP tools before calling them.",
+      async execute(_toolCallId, params, signal) {
+        return Effect.runPromise(
+          dispatchGateway(dependencies.configPath, state, params, signal).pipe(Effect.catch((error) => Effect.fail(toRejection(error))))
+        )
       },
       label: 'MCP Gateway',
       name: 'mcp',
@@ -348,10 +491,11 @@ export const createMcpExtension = <TConfig>(dependencies: McpGatewayDependencies
     pi.registerCommand('mcp-auth', {
       description: 'Authenticate an OAuth-enabled MCP server. Usage: /mcp-auth [server]',
       getArgumentCompletions(prefix) {
-        if (!manager) {
+        const current = Effect.runSync(Ref.get(state.manager))
+        if (Option.isNone(current)) {
           return null
         }
-        const items = manager
+        const items = current.value
           .oauthServers()
           .filter((server) => server.startsWith(prefix))
           .toSorted((left, right) => left.localeCompare(right))
@@ -359,83 +503,43 @@ export const createMcpExtension = <TConfig>(dependencies: McpGatewayDependencies
         return items.length > 0 ? items : null
       },
       handler: async (args, ctx) => {
-        try {
-          const activeManager = await requireManager()
-          let server = args.trim()
-          if (!server) {
-            const servers = [...activeManager.oauthServers()].toSorted((left, right) => left.localeCompare(right))
-            if (servers.length === 0) {
-              ctx.ui.notify('No OAuth-enabled MCP servers are configured.', 'error')
-              return
-            }
-            const [onlyServer] = servers
-            if (servers.length === 1 && onlyServer) {
-              server = onlyServer
-            } else {
-              const selected = await ctx.ui.select('Authenticate MCP server', servers)
-              if (!selected) {
+        await Effect.runPromise(
+          Effect.gen(function* () {
+            const manager = yield* requireManager(state)
+            let server = args.trim()
+            if (!server) {
+              const servers = [...manager.oauthServers()].toSorted((left, right) => left.localeCompare(right))
+              if (servers.length === 0) {
+                ctx.ui.notify('No OAuth-enabled MCP servers are configured.', 'error')
                 return
               }
-              server = selected
+              const [onlyServer] = servers
+              if (servers.length === 1 && onlyServer) {
+                server = onlyServer
+              } else {
+                const selected = yield* callManager(() => ctx.ui.select('Authenticate MCP server', servers))
+                if (!selected) {
+                  return
+                }
+                server = selected
+              }
             }
-          }
 
-          await activeManager.authenticate(server)
-          ctx.ui.notify(`Authenticated and connected MCP server ${server}.`, 'info')
-        } catch (error) {
-          const reason = error instanceof Error ? error.message : String(error)
-          ctx.ui.notify(reason, 'error')
-        }
+            yield* callManager(() => manager.authenticate(server))
+            ctx.ui.notify(`Authenticated and connected MCP server ${server}.`, 'info')
+          }).pipe(
+            Effect.catch((error) => {
+              ctx.ui.notify(errorMessage(error), 'error')
+              return Effect.void
+            })
+          )
+        )
       },
     })
 
-    pi.on('session_start', (_event, ctx) => {
-      const generation = ++lifecycleGeneration
-      const previousManager = manager
-      manager = undefined
+    pi.on('session_start', (_event, ctx) => Effect.runPromise(startSession(ctx)))
 
-      const start = async () => {
-        if (previousManager) {
-          await previousManager.close()
-        }
-        const config = await dependencies.loadConfig()
-        const candidate = await dependencies.createManager(config, {
-          callbacks: {
-            onStatusChange: (update) => {
-              if (generation === lifecycleGeneration) {
-                updateUiStatus(ctx, update)
-              }
-            },
-          },
-          pi,
-          policy: dependencies.policy ?? unrestrictedMcpPolicy,
-        })
-
-        if (generation !== lifecycleGeneration) {
-          await candidate.close()
-          return
-        }
-        manager = candidate
-      }
-
-      initialization = start()
-      return initialization
-    })
-
-    pi.on('session_shutdown', async (_event, ctx) => {
-      ++lifecycleGeneration
-      try {
-        await initialization?.catch(() => undefined)
-        const activeManager = manager
-        manager = undefined
-        if (activeManager) {
-          await activeManager.close()
-        }
-      } finally {
-        initialization = undefined
-        status.clear(ctx)
-      }
-    })
+    pi.on('session_shutdown', (_event, ctx) => Effect.runPromise(stopSession(ctx)))
   }
 
 const globalConfigPath = join(homedir(), '.config', 'mcp', 'mcp.json')

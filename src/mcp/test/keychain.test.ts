@@ -1,8 +1,17 @@
 import { describe, expect, test } from 'bun:test'
 
+import { Effect, Option } from 'effect'
+
 import { asError, asOAuthCredentialPayload } from '#test-utils/casts'
 
-import { KeychainCredentialStore, MCP_OAUTH_KEYCHAIN_SERVICE, keychainAccount, type OAuthCredentialPayload } from '../keychain'
+import {
+  CredentialStoreEffect,
+  KeychainCredentialStore,
+  MCP_OAUTH_KEYCHAIN_SERVICE,
+  credentialStoreEffectLayer,
+  keychainAccount,
+  type OAuthCredentialPayload,
+} from '../keychain'
 
 type FailureMode = 'get' | 'set' | 'delete' | undefined
 
@@ -209,6 +218,26 @@ describe('Keychain OAuth credential store', () => {
       expect(asError(error).message).not.toContain('secret-token')
       expect(asError(error).message).not.toContain('access-secret')
     }
+  })
+
+  test('isolates server names that share one URL and exposes the Effect service as Option', async () => {
+    const keyring = inMemoryKeyring()
+    const store = new KeychainCredentialStore({ loadKeyring: keyring.loadKeyring })
+    await store.set('alpha', credential)
+    await store.set('beta', { ...credential, tokens: { access_token: 'beta-token', token_type: 'Bearer' } })
+
+    const alpha = await store.get('alpha', credential.serverUrl)
+    const beta = await store.get('beta', credential.serverUrl)
+    expect(alpha?.tokens?.access_token).toBe('access-secret')
+    expect(beta?.tokens?.access_token).toBe('beta-token')
+
+    const loaded = await Effect.runPromise(
+      Effect.gen(function* () {
+        const effectStore = yield* CredentialStoreEffect
+        return yield* effectStore.get('alpha', credential.serverUrl)
+      }).pipe(Effect.provide(credentialStoreEffectLayer({ loadKeyring: keyring.loadKeyring })))
+    )
+    expect(Option.isSome(loaded)).toBe(true)
   })
 
   test('redacts a native module loading failure', async () => {
