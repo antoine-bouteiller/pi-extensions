@@ -1,13 +1,15 @@
 import { afterAll, describe, expect, it } from 'bun:test'
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { NodeFileSystem } from '@effect/platform-node'
 import { Effect } from 'effect'
-import { type FileSystem } from 'effect/FileSystem'
+import { type FileSystem, layerNoop } from 'effect/FileSystem'
+import { systemError } from 'effect/PlatformError'
 
 import { assertUnprotectedPathEffect, isProtectedPath, ProtectedPathError, resolveProtectedPathEffect } from '../protected_paths.js'
+import { isRecord } from '../records.js'
 
 const roots: string[] = []
 // Realpath, because on macOS mkdtemp hands back /var/... while /var is a symlink to /private/var.
@@ -27,6 +29,8 @@ afterAll(async () => {
  * symlink-evasion cases exist to provide.
  */
 const run = <Success, Failure>(effect: Effect.Effect<Success, Failure, FileSystem>) => Effect.runPromise(Effect.provide(effect, NodeFileSystem.layer))
+
+const errnoCode = (failure: { readonly cause?: unknown }): unknown => (isRecord(failure.cause) ? failure.cause.code : undefined)
 
 describe('protected path resolution over FileSystem', () => {
   it('matches the callback implementation on plain paths', async () => {
@@ -82,6 +86,58 @@ describe('protected path resolution over FileSystem', () => {
 
     expect(failure).toBeInstanceOf(ProtectedPathError)
     expect(failure.message).toBe('Refusing to read protected path: .env')
+  })
+
+  /*
+   * ELOOP and EACCES are BadResource and PermissionDenied respectively. Neither is "missing", so
+   * both must abort the walk rather than be swallowed -- a swallowed ELOOP would let a symlink
+   * cycle read as an unprotected path.
+   */
+  it('propagates a symlink loop (ELOOP) instead of treating it as missing', async () => {
+    const root = await makeRoot()
+    await symlink(join(root, 'loop-b'), join(root, 'loop-a'))
+    await symlink(join(root, 'loop-a'), join(root, 'loop-b'))
+
+    const failure = await Effect.runPromise(resolveProtectedPathEffect('loop-a', root).pipe(Effect.flip, Effect.provide(NodeFileSystem.layer)))
+
+    expect(errnoCode(failure)).toBe('ELOOP')
+  })
+
+  it.skipIf(process.getuid?.() === 0)('propagates a permission error (EACCES) instead of treating it as missing', async () => {
+    const root = await makeRoot()
+    const locked = join(root, 'locked')
+    await mkdir(locked)
+    await writeFile(join(locked, '.env'), 'SECRET=1')
+    await chmod(locked, 0o000)
+
+    const failure = await Effect.runPromise(resolveProtectedPathEffect('locked/.env', root).pipe(Effect.flip, Effect.provide(NodeFileSystem.layer)))
+
+    await chmod(locked, 0o700)
+    expect(errnoCode(failure)).toBe('EACCES')
+  })
+
+  /*
+   * A stub filesystem is the only way to reach the parent === candidate branch: on a real disk the
+   * root always resolves, so the walk never runs out of ancestors.
+   */
+  it('terminates at the filesystem root when nothing resolves', async () => {
+    const everythingMissing = layerNoop({
+      realPath: (path: string) =>
+        Effect.fail(
+          systemError({
+            _tag: 'NotFound',
+            cause: Object.assign(new Error('ENOENT'), { code: 'ENOENT' }),
+            method: 'realPath',
+            module: 'FileSystem',
+            pathOrDescriptor: path,
+          })
+        ),
+    })
+
+    const resolution = await Effect.runPromise(resolveProtectedPathEffect('.env', '/nowhere/at/all').pipe(Effect.provide(everythingMissing)))
+
+    expect(resolution.canonicalPath).toBe('/nowhere/at/all/.env')
+    expect(resolution.protected).toBe(true)
   })
 
   it('returns the resolution for an unprotected path', async () => {

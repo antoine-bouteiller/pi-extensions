@@ -20,7 +20,13 @@ export const makeToolExecutor =
   <Params, Result>(body: (params: Params) => Effect.Effect<Result, ToolFailure, AppServices | HandlerServices>) =>
   async (_toolCallId: string, params: Params, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext): Promise<Result> =>
     runtime.runPromise(
-      body(params).pipe(
+      /*
+       * RunPromise inspects the signal only after it begins evaluating, and returns immediately for
+       * an effect that completes synchronously -- so a call cancelled before dispatch would still
+       * run the body's synchronous side effects. Suspending means the body is never constructed
+       * when the signal has already fired.
+       */
+      Effect.suspend(() => (signal?.aborted ? Effect.interrupt : body(params))).pipe(
         Effect.provide(perInvocation(ctx)),
         /*
          * A tool failure is expected, not a defect: reject with the same plain Error the
@@ -41,5 +47,9 @@ export const makeEventHandler =
   async (event: Event, ctx: ExtensionContext): Promise<Result> =>
     runtime.runPromise(body(event, ctx).pipe(Effect.provide(perInvocation(ctx))))
 
-export const withAbortSignal = <Value>(run: (signal: AbortSignal) => Promise<Value>): Effect.Effect<Value> =>
-  Effect.tryPromise({ catch: (cause) => cause, try: run }).pipe(Effect.orDie)
+/**
+ * Keeps the rejection in the error channel instead of dying, so callers can `catchAll` it and map
+ * it onto their own extension error rather than losing it as a defect.
+ */
+export const withAbortSignal = <Value>(run: (signal: AbortSignal) => Promise<Value>): Effect.Effect<Value, unknown> =>
+  Effect.tryPromise({ catch: (cause) => cause, try: run })

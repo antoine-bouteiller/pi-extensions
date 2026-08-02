@@ -64,12 +64,25 @@ describe('tool executor boundary', () => {
     await runtime.dispose()
   })
 
-  it('propagates a rejected promise from inside the effect', async () => {
+  it('keeps a promise rejection recoverable rather than turning it into a defect', async () => {
+    const recovered = await Effect.runPromise(
+      withAbortSignal(async () => {
+        throw new Error('network exploded')
+      }).pipe(Effect.catch((error) => Effect.succeed(asError(error).message)))
+    )
+
+    expect(recovered).toBe('network exploded')
+  })
+
+  it('lets a tool map a rejected promise onto its own failure message', async () => {
     const runtime = emptyRuntime()
     const execute = makeToolExecutor(runtime)(() =>
       withAbortSignal(async () => {
         throw new Error('network exploded')
-      }).pipe(Effect.map(() => 'unreachable'))
+      }).pipe(
+        Effect.map(() => 'unreachable'),
+        Effect.catch((error) => Effect.fail(new ToolFailure({ message: `fetch failed: ${asError(error).message}` })))
+      )
     )
 
     const rejection = await execute('call-2', {}, undefined, undefined, fakeContext().ctx).then(
@@ -77,7 +90,27 @@ describe('tool executor boundary', () => {
       (error: unknown) => error
     )
 
-    expect(rejection).toBeDefined()
+    expect(asError(rejection).message).toBe('fetch failed: network exploded')
+    await runtime.dispose()
+  })
+
+  it('never runs the body when the signal is already aborted', async () => {
+    const runtime = emptyRuntime()
+    const controller = new AbortController()
+    controller.abort()
+    let bodyRan = false
+
+    const execute = makeToolExecutor(runtime)(() => {
+      bodyRan = true
+      return Effect.succeed('should not happen')
+    })
+
+    const outcome = await execute('call-pre-abort', {}, controller.signal, undefined, fakeContext().ctx).then(
+      () => 'resolved',
+      () => 'rejected'
+    )
+
+    expect([outcome, bodyRan]).toEqual(['rejected', false])
     await runtime.dispose()
   })
 
@@ -209,5 +242,35 @@ describe('runtime disposal', () => {
 
     await runtime.dispose()
     expect([acquired, released]).toEqual([1, 1])
+  })
+
+  it('interrupts an in-flight fiber on disposal, and a replacement runtime still works', async () => {
+    class Counter extends Context.Service<Counter, { readonly id: string }>()('@test/Counter') {}
+    let released = 0
+    const layer = Layer.effect(Counter)(
+      Effect.acquireRelease(Effect.succeed({ id: 'counter' }), () =>
+        Effect.sync(() => {
+          released += 1
+        })
+      )
+    )
+
+    const runtime = ManagedRuntime.make(layer)
+    let interrupted = false
+    const pending = runtime.runPromise(Effect.sleep('1 hour').pipe(Effect.onInterrupt(() => Effect.sync(() => (interrupted = true))))).then(
+      () => 'resolved',
+      () => 'rejected'
+    )
+    await runtime.runPromise(Counter.pipe(Effect.map((counter) => counter.id)))
+
+    await runtime.dispose()
+
+    expect(await pending).toBe('rejected')
+    expect([interrupted, released]).toEqual([true, 1])
+
+    const replacement = ManagedRuntime.make(layer)
+    expect(await replacement.runPromise(Counter.pipe(Effect.map((counter) => counter.id)))).toBe('counter')
+    await replacement.dispose()
+    expect(released).toBe(2)
   })
 })

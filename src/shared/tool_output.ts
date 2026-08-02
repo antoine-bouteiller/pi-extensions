@@ -90,8 +90,9 @@ export const boundToolText = async (
   }
 }
 
-export const writePrivateTempFileEffect = (content: string, options: { prefix: string; filename?: string }): Effect.Effect<string> =>
-  Effect.promise(() => writePrivateTempFile(content, options))
+/** A failed spill stays in the error channel so callers can map it onto their own tool error. */
+export const writePrivateTempFileEffect = (content: string, options: { prefix: string; filename?: string }): Effect.Effect<string, unknown> =>
+  Effect.tryPromise({ catch: (cause) => cause, try: () => writePrivateTempFile(content, options) })
 
 interface BoundToolTextEffectOptions<Failure> extends TruncateOptions {
   saveFullOutput: (content: string) => Effect.Effect<string, Failure>
