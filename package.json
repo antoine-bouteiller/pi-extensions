@@ -14,7 +14,7 @@
     "knip": "knip",
     "lint": "oxlint --deny-warnings --report-unused-disable-directives .",
     "test": "bun test",
-    "test:coverage": "bun test ./tests --coverage --reporter=junit --reporter-outfile=./junit.xml",
+    "test:coverage": "bun test --coverage --reporter=junit --reporter-outfile=./junit.xml",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
