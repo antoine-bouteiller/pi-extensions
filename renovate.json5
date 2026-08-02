@@ -15,6 +15,13 @@
   minimumReleaseAge: '1 day',
   gitIgnoredAuthors: ['41898282+github-actions[bot]@users.noreply.github.com'],
   labels: ['renovate'],
+  packageRules: [
+    {
+      description: 'Effect is pinned to an exact beta for the duration of the v4 rewrite (.plan/effect-v4-rewrite). Re-enable once the rewrite lands.',
+      matchPackageNames: ['effect', '@effect/**'],
+      enabled: false,
+    },
+  ],
   'pre-commit': {
     enabled: true,
   },

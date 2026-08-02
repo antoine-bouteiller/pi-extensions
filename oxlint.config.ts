@@ -65,6 +65,9 @@ export default defineConfig({
     // zod schemas nest calls inherently; fs.ts exposes deliberate safe*Sync wrappers.
     'unicorn/max-nested-calls': 'off',
     'node/no-sync': 'off',
+
+    // `_tag` is Effect's discriminant on Exit, Cause, and tagged errors — reading it is public API.
+    'no-underscore-dangle': ['error', { allow: ['_tag'] }],
   },
   overrides: [
     {
