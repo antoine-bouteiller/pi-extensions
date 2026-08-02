@@ -208,7 +208,7 @@ describe('path-scoped injection', () => {
           details: {
             sections: [{ moveDest: 'src/moved.ts', path: 'src/main.ts' }],
           },
-          input: { patch: '[src/main.ts#ABCD]\nSWAP 1.=1:\n+next' },
+          input: { patch: '[src/main.ts#ABCD]\nPUT 1.=1:\n+next' },
           isError: false,
           toolCallId: 'call-2',
           toolName: 'hashline_write',
@@ -223,7 +223,7 @@ describe('path-scoped injection', () => {
           content: [],
           details: {},
           input: {
-            patch: '[src/one.ts#ABCD]\nSWAP 1.=1:\n+one\n[src/two.ts#EFGH]\nSWAP 1.=1:\n+two',
+            patch: '[src/one.ts#ABCD]\nPUT 1.=1:\n+one\n[src/two.ts#EFGH]\nPUT 1.=1:\n+two',
           },
           isError: false,
           toolCallId: 'call-3',

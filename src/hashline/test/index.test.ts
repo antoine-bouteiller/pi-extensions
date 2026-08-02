@@ -52,7 +52,7 @@ const header = async (tool: Tool, cwd: string, path: string): Promise<string> =>
   return output.content[0].text.split('\n', 1)[0]
 }
 
-const swap = (headerLine: string, line: number, replacement: string): string => `${headerLine}\nSWAP ${line}.=${line}:\n+${replacement}`
+const put = (headerLine: string, line: number, replacement: string): string => `${headerLine}\nPUT ${line}.=${line}:\n+${replacement}`
 
 describe('hashline extension', () => {
   test('registers anchored read and write tools', async () => {
@@ -73,12 +73,12 @@ describe('hashline extension', () => {
     await writeFile(path, 'first\nsecond\n')
     const currentHeader = await header(read, directory, 'sample.txt')
 
-    const result = await write.execute('write-1', { patch: swap(currentHeader, 2, 'changed') }, undefined, undefined, { cwd: directory })
+    const result = await write.execute('write-1', { patch: put(currentHeader, 2, 'changed') }, undefined, undefined, { cwd: directory })
     expect(result.content[0].text).toContain('update sample.txt')
     expect(await readFile(path, 'utf8')).toBe('first\nchanged\n')
 
     expect(
-      write.execute('stale', { patch: swap(currentHeader, 1, 'stale') }, undefined, undefined, {
+      write.execute('stale', { patch: put(currentHeader, 1, 'stale') }, undefined, undefined, {
         cwd: directory,
       })
     ).rejects.toThrow()
@@ -95,7 +95,7 @@ describe('hashline extension', () => {
     const firstHeader = await header(read, directory, 'first.txt')
     const secondHeader = await header(read, directory, 'second.txt')
 
-    await write.execute('multi', { patch: `${swap(firstHeader, 1, 'ONE')}\n${swap(secondHeader, 1, 'TWO')}` }, undefined, undefined, {
+    await write.execute('multi', { patch: `${put(firstHeader, 1, 'ONE')}\n${put(secondHeader, 1, 'TWO')}` }, undefined, undefined, {
       cwd: directory,
     })
     expect(await readFile(firstPath, 'utf8')).toBe('ONE\n')
@@ -105,7 +105,7 @@ describe('hashline extension', () => {
     const staleSecond = await header(read, directory, 'second.txt')
     await writeFile(secondPath, 'external\n')
     expect(
-      write.execute('multi-stale', { patch: `${swap(freshFirst, 1, 'again')}\n${swap(staleSecond, 1, 'bad')}` }, undefined, undefined, {
+      write.execute('multi-stale', { patch: `${put(freshFirst, 1, 'again')}\n${put(staleSecond, 1, 'bad')}` }, undefined, undefined, {
         cwd: directory,
       })
     ).rejects.toThrow()
@@ -121,8 +121,8 @@ describe('hashline extension', () => {
     const currentHeader = await header(read, directory, 'shared.txt')
 
     const outcomes = await Promise.allSettled([
-      write.execute('concurrent-a', { patch: swap(currentHeader, 1, 'alpha') }, undefined, undefined, { cwd: directory }),
-      write.execute('concurrent-b', { patch: swap(currentHeader, 1, 'beta') }, undefined, undefined, { cwd: directory }),
+      write.execute('concurrent-a', { patch: put(currentHeader, 1, 'alpha') }, undefined, undefined, { cwd: directory }),
+      write.execute('concurrent-b', { patch: put(currentHeader, 1, 'beta') }, undefined, undefined, { cwd: directory }),
     ])
 
     expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1)
@@ -139,8 +139,8 @@ describe('hashline extension', () => {
     const headerB = await header(read, directory, 'b.txt')
 
     const outcomes = await Promise.allSettled([
-      write.execute('ab', { patch: `${swap(headerA, 1, 'A1')}\n${swap(headerB, 1, 'B1')}` }, undefined, undefined, { cwd: directory }),
-      write.execute('reverse-order', { patch: `${swap(headerB, 1, 'B2')}\n${swap(headerA, 1, 'A2')}` }, undefined, undefined, { cwd: directory }),
+      write.execute('ab', { patch: `${put(headerA, 1, 'A1')}\n${put(headerB, 1, 'B1')}` }, undefined, undefined, { cwd: directory }),
+      write.execute('reverse-order', { patch: `${put(headerB, 1, 'B2')}\n${put(headerA, 1, 'A2')}` }, undefined, undefined, { cwd: directory }),
     ])
 
     expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1)
@@ -161,7 +161,7 @@ describe('hashline extension', () => {
     await Bun.sleep(0)
 
     const controller = new AbortController()
-    const pending = write.execute('cancelled', { patch: swap(currentHeader, 1, 'after') }, controller.signal, undefined, { cwd: directory })
+    const pending = write.execute('cancelled', { patch: put(currentHeader, 1, 'after') }, controller.signal, undefined, { cwd: directory })
     controller.abort()
     release()
     await holding
@@ -181,14 +181,14 @@ describe('hashline extension', () => {
       expect(read.execute('protected-read', { path }, undefined, undefined, { cwd: directory })).rejects.toThrow('protected path')
     }
     expect(
-      write.execute('protected-write', { patch: '[.env#0000]\nSWAP 1.=1:\n+TOKEN=changed' }, undefined, undefined, { cwd: directory })
+      write.execute('protected-write', { patch: '[.env#0000]\nPUT 1.=1:\n+TOKEN=changed' }, undefined, undefined, { cwd: directory })
     ).rejects.toThrow('protected path')
     expect(await readFile(secret, 'utf8')).toBe('TOKEN=secret\n')
   })
 
   test('documents native hashline operations instead of unified diffs', () => {
     const tools = setup()
-    expect(tools.write.description).toContain('SWAP')
+    expect(tools.write.description).toContain('PUT')
     expect(tools.write.promptGuidelines?.join(' ')).toContain('never use unified-diff')
   })
 })

@@ -7,7 +7,7 @@
       "dependencies": {
         "@modelcontextprotocol/sdk": "1.30.0",
         "@napi-rs/keyring": "1.3.0",
-        "@oh-my-pi/hashline": "17.1.6",
+        "@oh-my-pi/hashline": "17.2.2",
         "turndown": "7.2.4",
       },
       "devDependencies": {
@@ -160,19 +160,19 @@
 
     "@napi-rs/wasm-runtime": ["@napi-rs/wasm-runtime@1.2.2", "", { "dependencies": { "@tybys/wasm-util": "^0.10.3" }, "peerDependencies": { "@emnapi/core": "^1.7.1 || ^2.0.0-alpha.3", "@emnapi/runtime": "^1.7.1 || ^2.0.0-alpha.3" } }, "sha512-JfB4kuJQjaoHuCTseIINHtHWeJnvgEcxjwA5t/Y00ZgaOO1Crz3fjT/p8kT28zA/Caz7oiUMn3d6H2yOVCVwuw=="],
 
-    "@oh-my-pi/hashline": ["@oh-my-pi/hashline@17.1.6", "", { "dependencies": { "@oh-my-pi/pi-natives": "17.1.6", "lru-cache": "11.5.2" } }, "sha512-WykLrAa/5F1TUgOiDRrfZWLbO/gY4v9denNwhrg/Pouu2UdoyP/RQzG2S6zF2YdXFTqauc/+u04A0CGbcRa5Tw=="],
+    "@oh-my-pi/hashline": ["@oh-my-pi/hashline@17.2.2", "", { "dependencies": { "@oh-my-pi/pi-natives": "17.2.2", "lru-cache": "11.5.2" } }, "sha512-XlcwEyYcvZcmd0s8w93zhuRovxGWl0Vrvav4mvijkLLKB9dJAhs3KqqdBNPwPLfHTzbffavQnzXU1HKjjHQKZQ=="],
 
-    "@oh-my-pi/pi-natives": ["@oh-my-pi/pi-natives@17.1.6", "", { "optionalDependencies": { "@oh-my-pi/pi-natives-darwin-arm64": "17.1.6", "@oh-my-pi/pi-natives-darwin-x64": "17.1.6", "@oh-my-pi/pi-natives-linux-arm64": "17.1.6", "@oh-my-pi/pi-natives-linux-x64": "17.1.6", "@oh-my-pi/pi-natives-win32-x64": "17.1.6" } }, "sha512-3Z5/l1oNup1CSSO63lkoaUJUBFuBejSJZhXMrqkxszsKWe0QlLl2KHbW3kWBMZDZB8M90PjyeLElKi35BuKBaw=="],
+    "@oh-my-pi/pi-natives": ["@oh-my-pi/pi-natives@17.2.2", "", { "optionalDependencies": { "@oh-my-pi/pi-natives-darwin-arm64": "17.2.2", "@oh-my-pi/pi-natives-darwin-x64": "17.2.2", "@oh-my-pi/pi-natives-linux-arm64": "17.2.2", "@oh-my-pi/pi-natives-linux-x64": "17.2.2", "@oh-my-pi/pi-natives-win32-x64": "17.2.2" } }, "sha512-fRHdnyRvQCRNPz1TpZSN5y4bO1ukWYDfNCMYY3av18Ys+KLRXCrxWtNlB/icWHxq4eBWNUMP5MGMU4ZqETVrgw=="],
 
-    "@oh-my-pi/pi-natives-darwin-arm64": ["@oh-my-pi/pi-natives-darwin-arm64@17.1.6", "", { "os": "darwin", "cpu": "arm64" }, "sha512-VX1J7xVR6tivIOCmy33ASei+fAQzKbAZMASNR0EUV2UNgStvwAQNGvV6PIIRW/OOCRtVKj+52Me2vEe4lgEOEA=="],
+    "@oh-my-pi/pi-natives-darwin-arm64": ["@oh-my-pi/pi-natives-darwin-arm64@17.2.2", "", { "os": "darwin", "cpu": "arm64" }, "sha512-QUKbVGG5Aa11uNdTeXk/Mo0rP6KkUjNdzv/hMcPTItF4IfrRgUNJ/ITAnhzgxu65wndNYTGkMMKVVtMDBa8TYQ=="],
 
-    "@oh-my-pi/pi-natives-darwin-x64": ["@oh-my-pi/pi-natives-darwin-x64@17.1.6", "", { "os": "darwin", "cpu": "x64" }, "sha512-zT0ouwBx/4ejkPXoKP2RSsHW5UZp3muulB3dNCg/d2Sxlu6D0Rj9KuE669d48x6UUqUsUSLxAKqW3I0locDX1g=="],
+    "@oh-my-pi/pi-natives-darwin-x64": ["@oh-my-pi/pi-natives-darwin-x64@17.2.2", "", { "os": "darwin", "cpu": "x64" }, "sha512-JmcmEgMZFds7NU15UKTlLRg54FZcO8tuPwiKjDw4v78BVszrx9w5T2MVc4uQTgHZv+pTAAzWdOnocYKkAscPhQ=="],
 
-    "@oh-my-pi/pi-natives-linux-arm64": ["@oh-my-pi/pi-natives-linux-arm64@17.1.6", "", { "os": "linux", "cpu": "arm64" }, "sha512-2c+lkFOb1Wul5gMNPQNy8c9VJXaItWHSW4VqILUWF//7llwPoakgAnDK+vueABWNQc/UIZK3gwOhernWwpAJ8A=="],
+    "@oh-my-pi/pi-natives-linux-arm64": ["@oh-my-pi/pi-natives-linux-arm64@17.2.2", "", { "os": "linux", "cpu": "arm64" }, "sha512-XWockHzFMZzZL3UqXq3oby60vVmtyvRLLdj7EaS7+nkT/3cEiJhSk7qkEojAbuSwXioWq52tPA8lqJ9f8vyhlQ=="],
 
-    "@oh-my-pi/pi-natives-linux-x64": ["@oh-my-pi/pi-natives-linux-x64@17.1.6", "", { "os": "linux", "cpu": "x64" }, "sha512-Ks8LsN+dwYae7noTTpq5cuNehE+T0RCfQOQv3z/o2SjoFBpV9T4rm0CW41ijN9LF/AaVYIb4D92xOsROF7tmQw=="],
+    "@oh-my-pi/pi-natives-linux-x64": ["@oh-my-pi/pi-natives-linux-x64@17.2.2", "", { "os": "linux", "cpu": "x64" }, "sha512-P5JD5rpgeN3/MYKS613SMMdpq1F4FcW72l1SiN9UTQWJi+D71VmmslUbNvLrp6zwEVzOLG5M+cHL5y2XKB4BaQ=="],
 
-    "@oh-my-pi/pi-natives-win32-x64": ["@oh-my-pi/pi-natives-win32-x64@17.1.6", "", { "os": "win32", "cpu": "x64" }, "sha512-TE+Vf3L7QV4VvMUUp3vp/syE5gkGMXdnP/MUjlMYDitXqwi0zK4Qkl7U3Kxj7e/duKu1sL4MDDUXMpYCEJl/rQ=="],
+    "@oh-my-pi/pi-natives-win32-x64": ["@oh-my-pi/pi-natives-win32-x64@17.2.2", "", { "os": "win32", "cpu": "x64" }, "sha512-QregkQTNzOvxwE2tzJH9bqmNrL3lvWW9p+Kw74H/pW8mds3Grz4yA9/yUp53A9uaZgXo/0yYQbq7nYnZUwTv5g=="],
 
     "@opentelemetry/api": ["@opentelemetry/api@1.9.0", "", {}, "sha512-3giAOQvZiH5F9bMlMiv8+GSPMeqg0dbaeo58/0SlA9sxSqZhnUtxzX9/2FzyhS9sWQf5S0GJE0AKBrFqjpeYcg=="],
 
