@@ -32,6 +32,11 @@ export const statusBar = {
 
 export const formatStatusText = (item: StatusItem): string => (item.icon ? `${item.icon} ${item.text}` : item.text)
 
+/** Store-only write, for callers that mirror into Pi's registry themselves. */
+export const publishStatus = (key: string, item: StatusItem | undefined): void => {
+  statuses.publish(key, item)
+}
+
 export interface StatusChannel {
   set: (ctx: ExtensionContext, item: StatusItem) => void
   clear: (ctx: ExtensionContext) => void
