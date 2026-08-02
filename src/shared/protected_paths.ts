@@ -2,7 +2,7 @@ import { realpath } from 'node:fs/promises'
 import { basename, dirname, resolve } from 'node:path'
 
 /** Filenames that look like dotenv files but are intended to be public examples. */
-export const PUBLIC_ENV_FILENAMES = new Set(['.env.example', '.env.sample', '.env.template'])
+const PUBLIC_ENV_FILENAMES = new Set(['.env.example', '.env.sample', '.env.template'])
 
 const ALWAYS_PROTECTED_PATTERNS = [
   /(?<prefix>^|\/)\.ssh(?<suffix>\/|$)/,
@@ -39,7 +39,7 @@ export const resolveToolPath = (path: string, cwd: string): string => resolve(cw
  * This prevents `link-to-elsewhere/new-file` from evading path policy merely
  * because `new-file` has not been created yet.
  */
-export const canonicalizeNearestExisting = async (path: string): Promise<string> => {
+const canonicalizeNearestExisting = async (path: string): Promise<string> => {
   let candidate = resolve(path)
   const missingComponents: string[] = []
 
@@ -73,7 +73,7 @@ const matchesProtectedPolicy = (path: string): boolean => {
  * Checking both means neither a harmless-looking symlink to a credential nor
  * a credential-shaped symlink to a harmless file bypasses the policy.
  */
-export const resolveProtectedPath = async (path: string, cwd: string): Promise<ProtectedPathResolution> => {
+const resolveProtectedPath = async (path: string, cwd: string): Promise<ProtectedPathResolution> => {
   const absolutePath = resolveToolPath(path, cwd)
   const canonicalPath = await canonicalizeNearestExisting(absolutePath)
   return {

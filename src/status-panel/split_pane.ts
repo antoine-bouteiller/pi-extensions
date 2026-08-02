@@ -2,7 +2,7 @@ import { type OverlayOptions, type TUI } from '@earendil-works/pi-tui'
 
 export const DEFAULT_SIDEBAR_WIDTH = 44
 export const MIN_SIDEBAR_WIDTH = 28
-export const MAX_SIDEBAR_WIDTH = 72
+const MAX_SIDEBAR_WIDTH = 72
 export const MIN_MAIN_WIDTH = 64
 
 type RenderFunction = TUI['render']

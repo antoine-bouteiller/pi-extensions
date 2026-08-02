@@ -1,6 +1,6 @@
 import { type ThemeColor } from '@earendil-works/pi-coding-agent'
 
-export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number]
 
 export interface AvailableModel {
@@ -13,7 +13,7 @@ export interface ModelSelectorContext {
   parentModel: Readonly<AvailableModel>
 }
 
-export type ModelSelector = string | ((context: ModelSelectorContext) => string)
+type ModelSelector = string | ((context: ModelSelectorContext) => string)
 
 export interface AgentConfig {
   allowedTools: readonly string[]

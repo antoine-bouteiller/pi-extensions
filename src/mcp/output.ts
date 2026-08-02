@@ -4,7 +4,7 @@ import { boundToolText, writePrivateTempFile } from '../shared/tool_output.js'
 
 export type GatewayContent = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }
 
-export interface BoundedOutputDetails {
+interface BoundedOutputDetails {
   truncated: boolean
   fullOutputPath?: string
   outputLines?: number

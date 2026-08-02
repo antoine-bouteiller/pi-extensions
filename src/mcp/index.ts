@@ -9,7 +9,7 @@ import { loadGlobalMcpConfig } from './config.js'
 import { boundGatewayOutput } from './output.js'
 import { type McpGatewayPolicy, type McpPolicyRequest, type McpToolAnnotations } from './types.js'
 
-export type { McpGatewayPolicy, McpPolicyOperation, McpPolicyRequest, McpToolAnnotations } from './types.js'
+export type { McpGatewayPolicy, McpToolAnnotations } from './types.js'
 
 const SEARCH_RESULT_LIMIT = 30
 const SEARCH_FETCH_LIMIT = SEARCH_RESULT_LIMIT + 1
@@ -46,7 +46,7 @@ const McpGatewayParameters = Type.Object({
   tool: Type.Optional(Type.String({ description: 'Exposed MCP tool name to call.' })),
 })
 
-export interface McpServerStatus {
+interface McpServerStatus {
   name: string
   status: 'disconnected' | 'connecting' | 'connected' | 'needs-auth' | 'failed' | 'disabled'
   error?: string
@@ -92,7 +92,7 @@ export interface McpManagerCallbacks {
   onStatusChange: (update: McpStatusUpdate) => void
 }
 
-export interface McpManagerContext {
+interface McpManagerContext {
   callbacks: McpManagerCallbacks
   pi: ExtensionAPI
   policy: McpGatewayPolicy

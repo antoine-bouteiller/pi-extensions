@@ -2,7 +2,7 @@ import { lstat, readdir, realpath, rm as remove } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import { withFileMutationQueue, type ExtensionAPI } from '@earendil-works/pi-coding-agent'
-import { Type, type Static } from 'typebox'
+import { Type } from 'typebox'
 
 import { assertUnprotectedPath } from '../shared/protected_paths'
 
@@ -26,8 +26,6 @@ const SafeRmParams = Type.Object({
     })
   ),
 })
-
-export type SafeRmInput = Static<typeof SafeRmParams>
 
 interface AllowedRoot {
   lexical: string

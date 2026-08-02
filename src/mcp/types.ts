@@ -59,7 +59,5 @@ export interface DisabledServerConfig {
 export type McpServerConfig = StdioServerConfig | HttpServerConfig | DisabledServerConfig
 export type McpServerMap = Record<string, McpServerConfig>
 
-// Short aliases used by the connection manager and gateway.
+// Short alias used by the connection manager and gateway.
 export type ServerConfig = McpServerConfig
-export type ServerMap = McpServerMap
-export type ConnectionStatus = McpServerStatus

@@ -23,7 +23,7 @@ interface HookInput {
   }
 }
 
-export interface CheckerResult {
+interface CheckerResult {
   exitCode: number | undefined
   stdout: string
   stderr: string
@@ -79,7 +79,7 @@ const hookInput = (event: ToolResultEvent, ctx: ExtensionContext): HookInput | u
   }
 }
 
-export const runCommentChecker = (input: HookInput): Promise<CheckerResult> =>
+const runCommentChecker = (input: HookInput): Promise<CheckerResult> =>
   new Promise((resolve) => {
     const child = execFile('comment-checker', ['check'], { maxBuffer: MAX_OUTPUT_BYTES, timeout: PROCESS_TIMEOUT_MS }, (error, stdout, stderr) => {
       let exitCode: number | undefined = 0

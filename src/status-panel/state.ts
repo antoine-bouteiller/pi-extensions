@@ -20,7 +20,7 @@ export interface ModelInfoState {
   contextPercent: number | undefined
 }
 
-export interface PullRequestInfo {
+interface PullRequestInfo {
   number: number
   url: string
 }

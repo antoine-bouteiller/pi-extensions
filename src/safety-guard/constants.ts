@@ -1,14 +1,14 @@
-export type Severity = 'critical' | 'high'
-export type Category = 'database' | 'docker' | 'filesystem' | 'git' | 'package' | 'secrets' | 'system'
+type Severity = 'critical' | 'high'
+type Category = 'database' | 'docker' | 'filesystem' | 'git' | 'package' | 'secrets' | 'system'
 
-export interface DangerousPattern {
+interface DangerousPattern {
   pattern: RegExp
   label: string
   category: Category
   severity: Severity
 }
 
-export const CRITICAL_PATTERNS: DangerousPattern[] = [
+const CRITICAL_PATTERNS: DangerousPattern[] = [
   {
     category: 'filesystem',
     label: 'Recognized shell deletion is disabled; use the self-validating safe_rm tool instead',

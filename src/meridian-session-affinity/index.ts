@@ -39,7 +39,7 @@ const setCanonicalHeader = (headers: BeforeProviderHeadersEvent['headers'], name
   headers[name] = value
 }
 
-export const createMeridianSessionAffinityExtension = (pi: ExtensionAPI): void => {
+const createMeridianSessionAffinityExtension = (pi: ExtensionAPI): void => {
   pi.on('before_provider_headers', (event, ctx) => {
     if (!isMeridianRequest(event, ctx)) {
       return

@@ -31,24 +31,22 @@ import { inspectProcess, ownershipMatches, processAlive, processOwnerIsActive, t
 import { persistedProfileColor, resolveAgentConfig, type AgentProfileName, type AvailableModel, type ThinkingLevel } from './profiles.js'
 import { consumeFirstMatchingMailboxEvent, RpcJsonlDecoder } from './rpc.js'
 
-export type { ThinkingLevel } from './profiles.js'
-
 export { consumeFirstMatchingMailboxEvent, RpcJsonlDecoder } from './rpc.js'
 
-export const PACKAGE_BASENAME = 'pi-codex-subagents'
-export const SUBAGENT_DIR = join(getAgentDir(), PACKAGE_BASENAME)
+const PACKAGE_BASENAME = 'pi-codex-subagents'
+const SUBAGENT_DIR = join(getAgentDir(), PACKAGE_BASENAME)
 const CONFIG_PATH = join(SUBAGENT_DIR, 'config.json')
 const TEMP_ROOT = join(process.env.PI_SUBAGENT_TEMP_DIR || tmpdir(), PACKAGE_BASENAME, userInfo().username)
 const LEGACY_RUNS_DIR = join(TEMP_ROOT, 'runs')
 const SOCKET_DIR = join(TEMP_ROOT, 'sockets')
 
-export const DEFAULT_STARTUP_TIMEOUT_MS = 15_000
-export const DEFAULT_RETENTION_DAYS = 7
+const DEFAULT_STARTUP_TIMEOUT_MS = 15_000
+const DEFAULT_RETENTION_DAYS = 7
 const FINAL_STATUSES = new Set<AgentRuntimeStatus>(['completed', 'failed', 'interrupted'])
 
 export type AgentRuntimeStatus = 'starting' | 'running' | 'completed' | 'failed' | 'interrupted'
 
-export interface SubagentConfig {
+interface SubagentConfig {
   storageDir?: string
   retentionDays?: number
 }
@@ -165,7 +163,7 @@ export interface AgentCompletionEvent {
   isReadonly?: boolean
 }
 
-export interface AgentActivityEvent {
+interface AgentActivityEvent {
   parentSessionId: string
   agentName: string
   active: boolean
@@ -225,7 +223,7 @@ const normalizeConfig = (value: unknown): SubagentConfig => {
   }
 }
 
-export const loadSubagentConfig = (): SubagentConfig => {
+const loadSubagentConfig = (): SubagentConfig => {
   try {
     if (existsSync(CONFIG_PATH)) {
       return normalizeConfig(JSON.parse(readFileSync(CONFIG_PATH, 'utf8')))
@@ -584,7 +582,7 @@ export const getAgent = (name: string, parentSessionId: string): AgentInfo | und
   return readScopeInfos(parentSessionId).find((info) => info.taskName === taskName)
 }
 
-export interface PeekMarker {
+interface PeekMarker {
   pid: number
   startedAt: number
   token: string
@@ -635,7 +633,7 @@ const isRunActive = (agentId: string): boolean => isActive(agentId, 'active') ||
 
 export const isPeekActive = (agentId: string): boolean => isActive(agentId, 'peek')
 
-export interface SubagentMessage {
+interface SubagentMessage {
   role?: string
   content?: unknown
   stopReason?: string
@@ -643,7 +641,7 @@ export interface SubagentMessage {
   toolCallId?: string
 }
 
-export interface ActiveToolSnapshot {
+interface ActiveToolSnapshot {
   toolCallId: string
   toolName: string
   args: unknown
@@ -652,7 +650,7 @@ export interface ActiveToolSnapshot {
   isError?: boolean
 }
 
-export interface SyncBroadcastEvent {
+interface SyncBroadcastEvent {
   type: 'sync'
   activeTools: ActiveToolSnapshot[]
   partialMessage: SubagentMessage | undefined
@@ -678,8 +676,6 @@ export interface SubagentRpcEvent {
   isError?: boolean
   finalError?: string
 }
-
-export type BroadcastEvent = SyncBroadcastEvent | SubagentRpcEvent
 
 class SessionLogger {
   private stream: WriteStream | undefined = undefined

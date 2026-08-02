@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 
 import { createFakePi } from '#test-utils/fake_pi'
 
-import { createMeridianSessionAffinityExtension } from '../index.js'
+import createMeridianSessionAffinityExtension from '../index.js'
 
 const originalMeridianBaseUrl = process.env.MERIDIAN_BASE_URL
 

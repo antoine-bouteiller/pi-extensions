@@ -10,12 +10,12 @@ export class KeychainCredentialError extends Error {
   }
 }
 
-export type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject
-export interface JsonObject {
+type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject
+interface JsonObject {
   [key: string]: JsonValue | undefined
 }
 
-export interface OAuthTokens extends JsonObject {
+interface OAuthTokens extends JsonObject {
   access_token: string
   token_type: string
   refresh_token?: string
@@ -23,7 +23,7 @@ export interface OAuthTokens extends JsonObject {
   scope?: string
 }
 
-export interface OAuthClientInformation extends JsonObject {
+interface OAuthClientInformation extends JsonObject {
   client_id: string
   client_secret?: string
   client_id_issued_at?: number
@@ -88,9 +88,7 @@ const isJsonValue = (value: unknown): value is JsonValue => {
 }
 
 const malformed = (serverName: string): Error =>
-  new KeychainCredentialError(
-    `Stored OAuth credential for MCP server ${JSON.stringify(serverName)} is malformed; ` + 'delete it and authenticate again.'
-  )
+  new KeychainCredentialError(`Stored OAuth credential for MCP server ${JSON.stringify(serverName)} is malformed; delete it and authenticate again.`)
 
 const requireString = (value: Record<string, unknown>, field: string, serverName: string): string => {
   const result = value[field]
@@ -137,7 +135,7 @@ const validateClientInformation = (value: unknown, serverName: string): OAuthCli
   return value as OAuthClientInformation
 }
 
-export const validateCredentialPayload = (value: unknown, serverName: string): OAuthCredentialPayload => {
+const validateCredentialPayload = (value: unknown, serverName: string): OAuthCredentialPayload => {
   if (!isObject(value)) {
     throw malformed(serverName)
   }

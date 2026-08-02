@@ -1,0 +1,14 @@
+pre-commit:
+  parallel: true
+  jobs:
+    - name: Check Lockfile
+      run: bun install --frozen-lockfile --silent
+    - name: Check
+      glob: '*.{ts,js,mjs,cjs}'
+      run: bunx oxlint --fix --fix-suggestions {staged_files}
+      stage_fixed: true
+    - name: Format
+      run: bunx oxfmt {staged_files}
+      stage_fixed: true
+    - name: Knip
+      run: bun run knip

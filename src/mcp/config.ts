@@ -24,7 +24,7 @@ const OAUTH_FIELDS = new Set([
   'redirect_uri',
 ])
 
-export class McpConfigError extends Error {
+class McpConfigError extends Error {
   constructor(path: string, message: string) {
     super(`${path}: ${message}`)
     this.name = 'McpConfigError'
@@ -292,7 +292,7 @@ export const loadMcpConfigFile = async (path: string): Promise<McpServerMap> => 
   }
 }
 
-export const globalMcpConfigPath = (): string => join(homedir(), '.config', 'mcp', 'mcp.json')
+const globalMcpConfigPath = (): string => join(homedir(), '.config', 'mcp', 'mcp.json')
 
 /** Load only the standard user-global MCP configuration. */
 export const loadGlobalMcpConfig = (): Promise<McpServerMap> => loadMcpConfigFile(globalMcpConfigPath())

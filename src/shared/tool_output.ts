@@ -13,7 +13,7 @@ export interface Truncation {
   totalBytes: number
 }
 
-export type TruncateFrom = 'head' | 'tail'
+type TruncateFrom = 'head' | 'tail'
 
 export interface TruncateOptions {
   maxBytes: number

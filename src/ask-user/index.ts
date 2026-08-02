@@ -20,7 +20,7 @@ import {
   type EditorTheme,
   type Focusable,
 } from '@earendil-works/pi-tui'
-import { Type, type Static } from 'typebox'
+import { Type } from 'typebox'
 
 import {
   ASK_USER_PARAMETER_DESCRIPTIONS,
@@ -55,8 +55,6 @@ const AskUserParams = Type.Object({
   }),
 })
 
-export type AskUserInput = Static<typeof AskUserParams>
-
 interface AskUserDetails {
   question: string
   options: string[]
@@ -83,7 +81,7 @@ export default function askUser(pi: ExtensionAPI) {
   pi.registerTool({
     description: ASK_USER_TOOL_DESCRIPTION,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const reply = (text: string, answer: string | undefined = undefined, wasCustom = false) => ({
+      const reply = (text: string, answer?: string | undefined, wasCustom = false) => ({
         content: [{ text, type: 'text' as const }],
         details: {
           answer,

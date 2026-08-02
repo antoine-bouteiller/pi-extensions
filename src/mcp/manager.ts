@@ -153,7 +153,7 @@ const isSafeSearchRegex = (pattern: string): boolean => {
 }
 
 const isAbort = (error: unknown, signal?: AbortSignal): boolean =>
-  Boolean(signal?.aborted || (error instanceof Error && (error.name === 'AbortError' || /cancelled|aborted/i.test(error.message))))
+  signal?.aborted || (error instanceof Error && (error.name === 'AbortError' || /cancelled|aborted/i.test(error.message)))
 
 const isAuthorizationFailure = (error: unknown): boolean =>
   error instanceof UnauthorizedError ||
@@ -185,7 +185,7 @@ const isLegacyTransportCandidate = (error: unknown): boolean =>
   ((error.code !== undefined && [400, 404, 405, 406, 415].includes(error.code)) ||
     (error.code === -1 && /unexpected content type/i.test(error.message)))
 
-export const sanitizeToolPart = (value: string): string => {
+const sanitizeToolPart = (value: string): string => {
   const sanitized = value.replaceAll(/[^A-Za-z0-9_-]/g, '_')
   return sanitized || '_'
 }
@@ -321,7 +321,7 @@ export class McpManager {
   constructor(config: McpServerMap, options: McpManagerOptions) {
     this.options = options
     this.credentialStore = options.credentialStore ?? createKeychainCredentialStore()
-    this.createClient = options.createClient ?? (() => new Client({ name: 'pi-mcp-gateway', version: '1.0.0' }) as ClientLike)
+    this.createClient = options.createClient ?? (() => new Client({ name: 'pi-mcp-gateway', version: '1.0.0' }))
     this.createTransport = options.createTransport ?? this.defaultTransport.bind(this)
     this.connectTimeoutMs = options.connectTimeoutMs ?? CONNECT_TIMEOUT_MS
     this.requestTimeoutMs = options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS
@@ -874,7 +874,7 @@ export class McpManager {
       return { client, instructions: client.getInstructions(), tools, transport }
     } catch (error) {
       if (retainAuthorization && isAuthorizationFailure(error)) {
-        throw new PendingAuthorization(client, transport as Transport & { finishAuth?: (code: string) => Promise<void> })
+        throw new PendingAuthorization(client, transport)
       }
       await client.close().catch(() => undefined)
       throw error
