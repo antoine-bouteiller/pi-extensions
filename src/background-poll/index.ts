@@ -1,8 +1,9 @@
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
+import { Clock, Context, Deferred, Effect, Exit, type Fiber, HashMap, Layer, ManagedRuntime, Option, Ref, Scope, Semaphore } from 'effect'
 import { Type, type Static } from 'typebox'
 
-import { createStatusChannel } from '../shared/status_bar'
-import { truncateOutput, truncationNotice } from '../shared/tool_output'
+import { createStatusChannel } from '../shared/status_bar.js'
+import { truncateOutput, truncationNotice } from '../shared/tool_output.js'
 
 const status = createStatusChannel('background-poll', { icon: '⏳', priority: 20, tone: 'muted' })
 
@@ -31,12 +32,7 @@ const BackgroundPollParams = Type.Object({
   ),
 })
 
-export type BackgroundPollInput = Static<typeof BackgroundPollParams>
-
-interface PollTask {
-  controller: AbortController
-  label: string
-}
+type BackgroundPollInput = Static<typeof BackgroundPollParams>
 
 interface PollResultDetails {
   taskId: string
@@ -48,22 +44,27 @@ interface PollResultDetails {
   exitCode?: number
 }
 
-const sleep = (milliseconds: number, signal: AbortSignal): Promise<void> =>
-  new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      signal.removeEventListener('abort', onAbort)
-      resolve()
-    }, milliseconds)
+interface PollCommandResult {
+  readonly code: number
+  readonly stderr: string
+  readonly stdout: string
+}
 
-    const onAbort = () => {
-      clearTimeout(timer)
-      resolve()
-    }
+export interface PollLoopOptions {
+  readonly command: string
+  readonly exec: (timeoutMs: number) => Effect.Effect<PollCommandResult, unknown>
+  readonly intervalMs: number
+  readonly label: string
+  readonly taskId: string
+  readonly timeoutMs: number
+}
 
-    signal.addEventListener('abort', onAbort, { once: true })
-  })
+export interface PollLoopResult {
+  readonly details: PollResultDetails
+  readonly output: string
+}
 
-const formatOutput = (stdout: string, stderr: string): string => {
+export const formatPollOutput = (stdout: string, stderr: string): string => {
   const output = [stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join('\n')
   if (!output) {
     return '(command produced no output)'
@@ -74,135 +75,222 @@ const formatOutput = (stdout: string, stderr: string): string => {
     maxBytes: DEFAULT_MAX_BYTES,
     maxLines: DEFAULT_MAX_LINES,
   })
-  if (!truncated.truncated) {
-    return truncated.content
-  }
-
-  return truncated.content + truncationNotice(truncated, { from: 'tail' })
+  return truncated.truncated ? truncated.content + truncationNotice(truncated, { from: 'tail' }) : truncated.content
 }
 
-export default function backgroundPoll(pi: ExtensionAPI) {
-  const tasks = new Map<string, PollTask>()
-  let shuttingDown = false
-
-  const updateStatus = (ctx: ExtensionContext) => {
-    const count = tasks.size
-    if (count === 0) {
-      status.clear(ctx)
-      return
-    }
-    status.set(ctx, { text: `${count} background poll${count === 1 ? '' : 's'}` })
-  }
-
-  const OUTCOME_HEADLINES: Record<PollResultDetails['outcome'], string> = {
-    completed: 'Background poll completed',
-    error: 'Background poll failed',
-    'timed-out': 'Background poll timed out',
-  }
-
-  const wakeAgent = (details: PollResultDetails, output: string, ctx: ExtensionContext): void => {
-    if (shuttingDown) {
-      return
-    }
-
-    const headline = `${OUTCOME_HEADLINES[details.outcome]}: ${details.label}`
-
-    pi.sendMessage(
-      {
-        content: `${headline}\nTask: ${details.taskId}\nAttempts: ${details.attempts}\n\n${output}`,
-        customType: 'background-poll-result',
-        details,
-        display: true,
-      },
-      { deliverAs: 'followUp', triggerTurn: true }
-    )
-
-    if (ctx.hasUI) {
-      ctx.ui.notify(headline, details.outcome === 'completed' ? 'info' : 'warning')
-    }
-  }
-
-  const runPoll = async (taskId: string, params: BackgroundPollInput, ctx: ExtensionContext): Promise<void> => {
-    const task = tasks.get(taskId)
-    if (!task) {
-      return
-    }
-
-    const startedAt = Date.now()
-    const timeoutMs = (params.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000
-    const intervalMs = (params.interval_seconds ?? DEFAULT_INTERVAL_SECONDS) * 1000
+export const runPollLoop = (options: PollLoopOptions): Effect.Effect<PollLoopResult> =>
+  Effect.gen(function* () {
+    const startedAt = yield* Clock.currentTimeMillis
+    const deadline = startedAt + options.timeoutMs
     let attempts = 0
     let lastOutput = '(no poll attempt completed)'
 
-    try {
-      while (!task.controller.signal.aborted) {
-        const elapsedMs = Date.now() - startedAt
-        if (elapsedMs >= timeoutMs) {
-          wakeAgent(
-            {
-              attempts,
-              command: params.command,
-              elapsedMs,
-              label: task.label,
-              outcome: 'timed-out',
-              taskId,
-            },
-            lastOutput,
-            ctx
-          )
-          return
+    while (true) {
+      const now = yield* Clock.currentTimeMillis
+      if (now >= deadline) {
+        return {
+          details: {
+            attempts,
+            command: options.command,
+            elapsedMs: now - startedAt,
+            label: options.label,
+            outcome: 'timed-out' as const,
+            taskId: options.taskId,
+          },
+          output: lastOutput,
         }
-
-        attempts += 1
-        const result = await pi.exec('sh', ['-lc', params.command], {
-          signal: task.controller.signal,
-          timeout: Math.min(POLL_COMMAND_TIMEOUT_MS, Math.max(1, timeoutMs - elapsedMs)),
-        })
-        if (task.controller.signal.aborted) {
-          return
-        }
-
-        lastOutput = formatOutput(result.stdout, result.stderr)
-        if (result.code === 0) {
-          wakeAgent(
-            {
-              attempts,
-              command: params.command,
-              elapsedMs: Date.now() - startedAt,
-              exitCode: result.code,
-              label: task.label,
-              outcome: 'completed',
-              taskId,
-            },
-            lastOutput,
-            ctx
-          )
-          return
-        }
-
-        await sleep(Math.min(intervalMs, Math.max(1, timeoutMs - (Date.now() - startedAt))), task.controller.signal)
       }
-    } catch (error) {
-      if (task.controller.signal.aborted) {
-        return
+
+      attempts += 1
+      const commandResult = yield* Effect.result(options.exec(Math.min(POLL_COMMAND_TIMEOUT_MS, Math.max(1, deadline - now))))
+      if (commandResult._tag === 'Failure') {
+        const failedAt = yield* Clock.currentTimeMillis
+        return {
+          details: {
+            attempts,
+            command: options.command,
+            elapsedMs: failedAt - startedAt,
+            label: options.label,
+            outcome: 'error' as const,
+            taskId: options.taskId,
+          },
+          output: commandResult.failure instanceof Error ? commandResult.failure.message : String(commandResult.failure),
+        }
       }
-      wakeAgent(
-        {
-          attempts,
-          command: params.command,
-          elapsedMs: Date.now() - startedAt,
-          label: task.label,
-          outcome: 'error',
-          taskId,
-        },
-        error instanceof Error ? error.message : String(error),
-        ctx
-      )
-    } finally {
-      tasks.delete(taskId)
-      updateStatus(ctx)
+
+      lastOutput = formatPollOutput(commandResult.success.stdout, commandResult.success.stderr)
+      if (commandResult.success.code === 0) {
+        const completedAt = yield* Clock.currentTimeMillis
+        return {
+          details: {
+            attempts,
+            command: options.command,
+            elapsedMs: completedAt - startedAt,
+            exitCode: commandResult.success.code,
+            label: options.label,
+            outcome: 'completed' as const,
+            taskId: options.taskId,
+          },
+          output: lastOutput,
+        }
+      }
+
+      const afterAttempt = yield* Clock.currentTimeMillis
+      const remaining = deadline - afterAttempt
+      if (remaining > 0) {
+        yield* Effect.sleep(Math.min(Math.max(1, options.intervalMs), remaining))
+      }
     }
-  }
+  })
+
+interface PollStateShape {
+  readonly mutex: Semaphore.Semaphore
+  readonly sessionScope: Ref.Ref<Option.Option<Scope.Closeable>>
+  readonly tasks: Ref.Ref<HashMap.HashMap<string, Fiber.Fiber<void>>>
+}
+
+class PollState extends Context.Service<PollState, PollStateShape>()('@background-poll/State') {}
+
+const PollStateLive = Layer.effect(PollState)(
+  Effect.gen(function* () {
+    return {
+      mutex: yield* Semaphore.make(1),
+      sessionScope: yield* Ref.make<Option.Option<Scope.Closeable>>(Option.none()),
+      tasks: yield* Ref.make(HashMap.empty<string, Fiber.Fiber<void>>()),
+    }
+  })
+)
+
+const updateStatus = (state: PollStateShape, ctx: ExtensionContext): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const count = HashMap.size(yield* Ref.get(state.tasks))
+    yield* Effect.sync(() => {
+      if (count === 0) {
+        status.clear(ctx)
+      } else {
+        status.set(ctx, { text: `${count} background poll${count === 1 ? '' : 's'}` })
+      }
+    })
+  })
+
+const OUTCOME_HEADLINES: Record<PollResultDetails['outcome'], string> = {
+  completed: 'Background poll completed',
+  error: 'Background poll failed',
+  'timed-out': 'Background poll timed out',
+}
+
+const wakeAgent = (
+  pi: ExtensionAPI,
+  state: PollStateShape,
+  sessionScope: Scope.Closeable,
+  result: PollLoopResult,
+  ctx: ExtensionContext
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const current = yield* Ref.get(state.sessionScope)
+    if (Option.isNone(current) || current.value !== sessionScope) {
+      return
+    }
+
+    const { details, output } = result
+    const headline = `${OUTCOME_HEADLINES[details.outcome]}: ${details.label}`
+    yield* Effect.sync(() => {
+      pi.sendMessage(
+        {
+          content: `${headline}\nTask: ${details.taskId}\nAttempts: ${details.attempts}\n\n${output}`,
+          customType: 'background-poll-result',
+          details,
+          display: true,
+        },
+        { deliverAs: 'followUp', triggerTurn: true }
+      )
+      if (ctx.hasUI) {
+        ctx.ui.notify(headline, details.outcome === 'completed' ? 'info' : 'warning')
+      }
+    })
+  })
+
+const startSession = Effect.gen(function* () {
+  const state = yield* PollState
+  yield* state.mutex.withPermits(1)(
+    Effect.gen(function* () {
+      const next = yield* Scope.make()
+      const previous = yield* Ref.getAndSet(state.sessionScope, Option.some(next))
+      if (Option.isSome(previous)) {
+        yield* Scope.close(previous.value, Exit.void)
+      }
+    })
+  )
+})
+
+const stopSession = (ctx: ExtensionContext): Effect.Effect<void, never, PollState> =>
+  Effect.gen(function* () {
+    const state = yield* PollState
+    yield* state.mutex.withPermits(1)(
+      Effect.gen(function* () {
+        const current = yield* Ref.getAndSet(state.sessionScope, Option.none())
+        if (Option.isSome(current)) {
+          yield* Scope.close(current.value, Exit.void)
+        }
+        yield* Ref.set(state.tasks, HashMap.empty())
+        yield* updateStatus(state, ctx)
+      })
+    )
+  })
+
+const registerPoll = (
+  pi: ExtensionAPI,
+  toolCallId: string,
+  params: BackgroundPollInput,
+  ctx: ExtensionContext
+): Effect.Effect<void, Error, PollState> =>
+  Effect.gen(function* () {
+    const state = yield* PollState
+    yield* state.mutex.withPermits(1)(
+      Effect.gen(function* () {
+        const current = yield* Ref.get(state.sessionScope)
+        if (Option.isNone(current)) {
+          return yield* Effect.fail(new Error('Cannot register a background poll without an active session'))
+        }
+
+        const sessionScope = current.value
+        const taskId = `poll-${toolCallId}`
+        const label = params.label?.trim() || params.command
+        const start = yield* Deferred.make<void>()
+        const loop = Deferred.await(start).pipe(
+          Effect.andThen(
+            runPollLoop({
+              command: params.command,
+              exec: (timeoutMs) =>
+                Effect.tryPromise({
+                  catch: (cause) => cause,
+                  try: (signal) => pi.exec('sh', ['-lc', params.command], { signal, timeout: timeoutMs }),
+                }),
+              intervalMs: (params.interval_seconds ?? DEFAULT_INTERVAL_SECONDS) * 1000,
+              label,
+              taskId,
+              timeoutMs: (params.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000,
+            })
+          ),
+          Effect.flatMap((result) => wakeAgent(pi, state, sessionScope, result, ctx)),
+          Effect.ensuring(
+            Effect.gen(function* () {
+              yield* Ref.update(state.tasks, HashMap.remove(taskId))
+              yield* updateStatus(state, ctx)
+            })
+          )
+        )
+        const fiber = yield* Effect.forkIn(loop, sessionScope)
+        yield* Ref.update(state.tasks, HashMap.set(taskId, fiber))
+        yield* updateStatus(state, ctx)
+        yield* Deferred.succeed(start, undefined)
+        return undefined
+      })
+    )
+  })
+
+export default function backgroundPoll(pi: ExtensionAPI) {
+  const runtime = ManagedRuntime.make(PollStateLive)
 
   pi.registerTool({
     description:
@@ -211,22 +299,15 @@ export default function backgroundPoll(pi: ExtensionAPI) {
       if (signal?.aborted) {
         throw new Error('Background poll registration was cancelled')
       }
-      if (shuttingDown) {
-        throw new Error('Cannot register a background poll during shutdown')
-      }
 
+      await runtime.runPromise(registerPoll(pi, toolCallId, params, ctx))
       const taskId = `poll-${toolCallId}`
       const label = params.label?.trim() || params.command
-      const controller = new AbortController()
-      tasks.set(taskId, { controller, label })
-      updateStatus(ctx)
-      void runPoll(taskId, params, ctx)
-
       return {
         content: [
           {
             text: `Registered background poll ${taskId} (${label}). Stop now; the agent will be woken automatically when it completes, times out, or fails. Do not poll it manually.`,
-            type: 'text',
+            type: 'text' as const,
           },
         ],
         details: {
@@ -249,16 +330,6 @@ export default function backgroundPoll(pi: ExtensionAPI) {
     promptSnippet: 'Wait for an asynchronous condition without repeatedly polling or keeping the agent running',
   })
 
-  pi.on('session_start', () => {
-    shuttingDown = false
-  })
-
-  pi.on('session_shutdown', async (_event, ctx) => {
-    shuttingDown = true
-    for (const task of tasks.values()) {
-      task.controller.abort()
-    }
-    tasks.clear()
-    updateStatus(ctx)
-  })
+  pi.on('session_start', () => runtime.runPromise(startSession))
+  pi.on('session_shutdown', (_event, ctx) => runtime.runPromise(stopSession(ctx)))
 }
