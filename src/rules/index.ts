@@ -594,11 +594,14 @@ const refresh = (cwd: string, trusted: boolean, homeDirectory: string): Effect.E
 
     if (created) {
       yield* Effect.forkDetach(
-        Effect.gen(function* () {
-          const exit = yield* Effect.exit(discoverRulesEffect(cwd, trusted, homeDirectory))
-          yield* Deferred.done(slot.deferred, exit)
-          yield* Ref.update(state.activeDiscovery, (existing) => (existing === slot ? undefined : existing))
-        })
+        discoverRulesEffect(cwd, trusted, homeDirectory).pipe(
+          Effect.onExit((exit) =>
+            Effect.gen(function* () {
+              yield* Deferred.done(slot.deferred, exit)
+              yield* Ref.update(state.activeDiscovery, (existing) => (existing === slot ? undefined : existing))
+            })
+          )
+        )
       )
     }
 
@@ -643,34 +646,30 @@ export default function rulesExtension(pi: ExtensionAPI, environment: RulesEnvir
 
       const state = yield* RulesState
       const rules = yield* refresh(ctx.cwd, ctx.isProjectTrusted(), environment.homeDirectory)
-      const dynamicInjections = yield* Ref.get(state.dynamicInjections)
-
-      const pendingTargetsByRule = new Map<Rule, string[]>()
-      for (const rule of rules) {
-        if (rule.alwaysApply || rule.paths.length === 0) {
-          continue
-        }
-        const pendingTargets = targetPaths.filter(
-          (target) => matchesRule(rule, target, ctx.cwd) && !HashSet.has(dynamicInjections, `${target}\0${rule.realPath}\0${rule.contentHash}`)
-        )
-        if (pendingTargets.length > 0) {
-          pendingTargetsByRule.set(rule, pendingTargets)
-        }
-      }
-
       const displayTarget = normalizePath(relative(ctx.cwd, targetPaths[0] ?? ctx.cwd))
-      const formatted = formatRules([...pendingTargetsByRule.keys()], `\n\nAdditional rules matched for ${displayTarget}:\n\n`)
-      if (formatted.emitted.length > 0) {
-        yield* Ref.update(state.dynamicInjections, (current) => {
-          let next = current
-          for (const rule of formatted.emitted) {
-            for (const target of pendingTargetsByRule.get(rule) ?? []) {
-              next = HashSet.add(next, `${target}\0${rule.realPath}\0${rule.contentHash}`)
-            }
+      const formatted = yield* Ref.modify(state.dynamicInjections, (current) => {
+        const pendingTargetsByRule = new Map<Rule, string[]>()
+        for (const rule of rules) {
+          if (rule.alwaysApply || rule.paths.length === 0) {
+            continue
           }
-          return next
-        })
-      }
+          const pendingTargets = targetPaths.filter(
+            (target) => matchesRule(rule, target, ctx.cwd) && !HashSet.has(current, `${target}\0${rule.realPath}\0${rule.contentHash}`)
+          )
+          if (pendingTargets.length > 0) {
+            pendingTargetsByRule.set(rule, pendingTargets)
+          }
+        }
+
+        const nextFormatted = formatRules([...pendingTargetsByRule.keys()], `\n\nAdditional rules matched for ${displayTarget}:\n\n`)
+        let next = current
+        for (const rule of nextFormatted.emitted) {
+          for (const target of pendingTargetsByRule.get(rule) ?? []) {
+            next = HashSet.add(next, `${target}\0${rule.realPath}\0${rule.contentHash}`)
+          }
+        }
+        return [nextFormatted, next]
+      })
       return formatted.block ? { content: [...event.content, { text: formatted.block, type: 'text' as const }] } : undefined
     })
 

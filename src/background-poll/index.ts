@@ -146,6 +146,7 @@ export const runPollLoop = (options: PollLoopOptions): Effect.Effect<PollLoopRes
 interface PollStateShape {
   readonly mutex: Semaphore.Semaphore
   readonly sessionScope: Ref.Ref<Option.Option<Scope.Closeable>>
+  readonly shuttingDown: Ref.Ref<boolean>
   readonly tasks: Ref.Ref<HashMap.HashMap<string, Fiber.Fiber<void>>>
 }
 
@@ -156,6 +157,7 @@ const PollStateLive = Layer.effect(PollState)(
     return {
       mutex: yield* Semaphore.make(1),
       sessionScope: yield* Ref.make<Option.Option<Scope.Closeable>>(Option.none()),
+      shuttingDown: yield* Ref.make(false),
       tasks: yield* Ref.make(HashMap.empty<string, Fiber.Fiber<void>>()),
     }
   })
@@ -215,6 +217,7 @@ const startSession = Effect.gen(function* () {
   yield* state.mutex.withPermits(1)(
     Effect.gen(function* () {
       const next = yield* Scope.make()
+      yield* Ref.set(state.shuttingDown, false)
       const previous = yield* Ref.getAndSet(state.sessionScope, Option.some(next))
       if (Option.isSome(previous)) {
         yield* Scope.close(previous.value, Exit.void)
@@ -228,6 +231,7 @@ const stopSession = (ctx: ExtensionContext): Effect.Effect<void, never, PollStat
     const state = yield* PollState
     yield* state.mutex.withPermits(1)(
       Effect.gen(function* () {
+        yield* Ref.set(state.shuttingDown, true)
         const current = yield* Ref.getAndSet(state.sessionScope, Option.none())
         if (Option.isSome(current)) {
           yield* Scope.close(current.value, Exit.void)
@@ -250,7 +254,10 @@ const registerPoll = (
       Effect.gen(function* () {
         const current = yield* Ref.get(state.sessionScope)
         if (Option.isNone(current)) {
-          return yield* Effect.fail(new Error('Cannot register a background poll without an active session'))
+          const message = (yield* Ref.get(state.shuttingDown))
+            ? 'Cannot register a background poll during shutdown'
+            : 'Cannot register a background poll without an active session'
+          return yield* Effect.fail(new Error(message))
         }
 
         const sessionScope = current.value

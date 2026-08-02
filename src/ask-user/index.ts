@@ -89,19 +89,14 @@ interface AskUserResult {
   details: AskUserDetails
 }
 
-/**
- * The whole `ctx.ui.custom` interaction, wrapped in one `Effect.tryPromise`. `orDie` is deliberate:
- * the factory below always settles `done()` (on selection, submit, dismissal, or abort) and never
- * rejects, so a rejection here would be a genuine bug, not an expected/recoverable failure.
- */
 const showQuestion = (
   ctx: ExtensionContext,
   question: string,
   allOptions: DisplayOption[],
   uiSignal: AbortSignal | undefined
-): Effect.Effect<SelectionResult> =>
+): Effect.Effect<SelectionResult, Error> =>
   Effect.tryPromise({
-    catch: (cause) => cause,
+    catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
     try: () =>
       ctx.ui.custom<SelectionResult>((tui, theme, _kb, done) => {
         let optionIndex = 0
@@ -302,9 +297,12 @@ const showQuestion = (
           render,
         } satisfies Component & Focusable & { dispose: () => void }
       }),
-  }).pipe(Effect.orDie)
+  })
 
-const askUserEffect = (params: Static<typeof AskUserParams>, signal: AbortSignal | undefined): Effect.Effect<AskUserResult, ToolFailure, PiCtx> =>
+const askUserEffect = (
+  params: Static<typeof AskUserParams>,
+  signal: AbortSignal | undefined
+): Effect.Effect<AskUserResult, ToolFailure | Error, PiCtx> =>
   Effect.gen(function* () {
     const optionCount = params.options.length
     if (optionCount < MIN_OPTIONS || optionCount > MAX_OPTIONS) {
@@ -381,7 +379,7 @@ export default function askUser(pi: ExtensionAPI) {
       runtime.runPromise(
         askUserEffect(params, signal ?? undefined).pipe(
           Effect.provide(perInvocation(ctx)),
-          Effect.catchTag('ToolFailure', (failure) => Effect.fail(new Error(failure.message)))
+          Effect.catch((error) => Effect.fail(error instanceof ToolFailure ? new Error(error.message) : error))
         )
       ),
     label: 'Ask User',

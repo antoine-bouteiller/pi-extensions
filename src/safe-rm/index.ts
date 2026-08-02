@@ -212,7 +212,7 @@ const rejectOverlappingTargets = (targets: ValidatedTarget[]): Effect.Effect<voi
  * replace the exact rejection message tests and Pi both depend on with a generic interrupted-fiber
  * one.
  */
-const toRejection = (error: unknown): Error => (error instanceof Error ? new Error(error.message) : new Error(String(error)))
+const toRejection = (error: unknown): Error => (error instanceof Error ? error : new Error(String(error)))
 
 interface SafeRmToolParams {
   paths: string[]
@@ -263,7 +263,7 @@ export default function safeRm(pi: ExtensionAPI) {
             catch: (cause) => cause,
             try: () =>
               withFileMutationQueue(target.absolute, () =>
-                Effect.runPromise(
+                runtime.runPromise(
                   Effect.gen(function* () {
                     /*
                      * Deliberately a genuine second pass, not a reuse of validateTargetEffect: a parent may

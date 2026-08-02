@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 
 import { type AgentToolResult } from '@earendil-works/pi-coding-agent'
-import { Effect, Layer } from 'effect'
+import { type Clock, Effect, Layer } from 'effect'
+import { TestClock } from 'effect/testing'
 import { FetchHttpClient, type HttpClient } from 'effect/unstable/http'
 
 import { asError, asNarrowed, asTool } from '#test-utils/casts'
@@ -12,9 +13,9 @@ import { createWebfetchExtension, type WebfetchDetails, type WebfetchFetch, type
 const stubHttpClient = (fetchImpl: WebfetchFetch): Layer.Layer<HttpClient.HttpClient> =>
   Layer.mergeAll(FetchHttpClient.layer, Layer.succeed(FetchHttpClient.Fetch)(asNarrowed<typeof fetch, WebfetchFetch>(fetchImpl)))
 
-const createHarness = (fetchImpl: WebfetchFetch, saveFullOutput?: (content: string) => Effect.Effect<string, unknown>) => {
+const createHarness = (fetchImpl: WebfetchFetch, saveFullOutput?: (content: string) => Effect.Effect<string, unknown>, clock?: Clock.Clock) => {
   const fixture = createFakePi()
-  createWebfetchExtension({ httpClient: stubHttpClient(fetchImpl), saveFullOutput })(fixture.pi)
+  createWebfetchExtension({ clock, httpClient: stubHttpClient(fetchImpl), saveFullOutput })(fixture.pi)
   const tool = fixture.state.tools.get('webfetch')
 
   const execute = async (
@@ -40,6 +41,15 @@ const createHarness = (fetchImpl: WebfetchFetch, saveFullOutput?: (content: stri
 const text = (result: AgentToolResult<unknown>): string => {
   const [content] = result.content
   return content?.type === 'text' ? content.text : ''
+}
+
+const rejectionMessage = async (promise: Promise<unknown>): Promise<string> => {
+  try {
+    await promise
+    throw new Error('Expected promise to reject')
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error)
+  }
 }
 
 /** A `ReadableStream` body has no `Content-Length`, unlike the string-body doubles above. */
@@ -157,8 +167,8 @@ describe('webfetch', () => {
       return new Response('unexpected')
     })
 
-    expect(harness.execute({ url: 'file:///etc/passwd' })).rejects.toThrow('only supports HTTP and HTTPS')
-    expect(harness.execute({ url: 'not a url' })).rejects.toThrow('Invalid URL')
+    expect(await rejectionMessage(harness.execute({ url: 'file:///etc/passwd' }))).toContain('only supports HTTP and HTTPS')
+    expect(await rejectionMessage(harness.execute({ url: 'not a url' }))).toContain('Invalid URL')
     expect(calls).toBe(0)
   })
 
@@ -170,7 +180,7 @@ describe('webfetch', () => {
         })
     )
 
-    expect(harness.execute({ url: 'https://example.com/large' })).rejects.toThrow('download limit')
+    expect(await rejectionMessage(harness.execute({ url: 'https://example.com/large' }))).toContain('download limit')
   })
 
   test('cancels a no-Content-Length stream once it crosses the download limit mid-stream', async () => {
@@ -212,16 +222,33 @@ describe('webfetch', () => {
   })
 
   test('rejects with an exact message when the request exceeds its timeout', async () => {
-    const harness = createHarness(
-      (_url, init) =>
-        new Promise<Response>((_resolve, reject) => {
-          init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
-        })
-    )
+    const rejection = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const clock = yield* TestClock.make()
+          let markStarted: (() => void) | undefined
+          const started = new Promise<void>((resolve) => {
+            markStarted = resolve
+          })
+          const harness = createHarness(
+            (_url, init) =>
+              new Promise<Response>((_resolve, reject) => {
+                markStarted?.()
+                init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+              }),
+            undefined,
+            clock
+          )
+          const pending = harness.execute({ timeout: 0.05, url: 'https://example.com/slow' }).then(
+            () => undefined,
+            (error: unknown) => error
+          )
 
-    const rejection = await harness.execute({ timeout: 0.05, url: 'https://example.com/slow' }).then(
-      () => undefined,
-      (error: unknown) => error
+          yield* Effect.promise(() => started)
+          yield* clock.adjust('1 second')
+          return yield* Effect.promise(() => pending)
+        })
+      )
     )
 
     expect(asError(rejection).message).toBe('webfetch timed out after 1s')
@@ -248,6 +275,24 @@ describe('webfetch', () => {
       fullOutputPath: '/tmp/pi-webfetch-test/output.txt',
       outputTruncated: true,
     })
+  })
+
+  test('does not issue a request when cancellation happened before dispatch', async () => {
+    let requests = 0
+    const harness = createHarness(async () => {
+      requests += 1
+      return new Response('unexpected')
+    })
+    const controller = new AbortController()
+    controller.abort()
+
+    const rejection = await harness.execute({ url: 'https://example.com/cancelled' }, controller.signal).then(
+      () => undefined,
+      (error: unknown) => error
+    )
+
+    expect(asError(rejection).message).toBe('webfetch was cancelled')
+    expect(requests).toBe(0)
   })
 
   test('propagates cancellation as a concise, exact tool error, distinct from a timeout', async () => {

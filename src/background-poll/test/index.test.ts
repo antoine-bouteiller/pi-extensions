@@ -77,6 +77,15 @@ const startSession = async (fixture: ReturnType<typeof setup>): Promise<void> =>
   await fixture.handlers.get('session_start')?.({}, fixture.ctx)
 }
 
+const rejectionMessage = async (promise: Promise<unknown>): Promise<string> => {
+  try {
+    await promise
+    throw new Error('Expected promise to reject')
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error)
+  }
+}
+
 describe('background poll', () => {
   it('returns immediately, bounds command time, publishes status, and wakes the agent', async () => {
     const commandTimeouts: number[] = []
@@ -127,7 +136,7 @@ describe('background poll', () => {
   it('rejects registration without a live session scope', async () => {
     const fixture = setup(async () => ({ code: 0, stderr: '', stdout: 'ready' }))
 
-    expect(fixture.tool.execute('inactive', { command: 'check' }, undefined, undefined, fixture.ctx)).rejects.toThrow(
+    expect(await rejectionMessage(fixture.tool.execute('inactive', { command: 'check' }, undefined, undefined, fixture.ctx))).toBe(
       'Cannot register a background poll without an active session'
     )
   })
@@ -166,6 +175,9 @@ describe('background poll', () => {
 
     expect(fixture.messages).toHaveLength(0)
     expect(fixture.statuses.at(-1)).toBeUndefined()
+    expect(await rejectionMessage(fixture.tool.execute('late', { command: 'check-status' }, undefined, undefined, fixture.ctx))).toBe(
+      'Cannot register a background poll during shutdown'
+    )
   })
 
   it.effect('uses virtual time and stops retrying at the deadline', () =>

@@ -90,7 +90,7 @@ const hookInput = (event: ToolResultEvent, ctx: ExtensionContext): HookInput | u
 
 const runCommentChecker = (input: HookInput): Effect.Effect<CheckerResult> =>
   Effect.callback<CheckerResult>((resume) => {
-    const child = execFile('comment-checker', ['check'], { maxBuffer: MAX_OUTPUT_BYTES }, (error, stdout, stderr) => {
+    const child = execFile('comment-checker', ['check'], { maxBuffer: MAX_OUTPUT_BYTES, timeout: PROCESS_TIMEOUT_MS }, (error, stdout, stderr) => {
       let exitCode: number | undefined = 0
       if (typeof error?.code === 'number') {
         exitCode = error.code

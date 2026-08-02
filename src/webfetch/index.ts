@@ -1,6 +1,6 @@
 import { StringEnum } from '@earendil-works/pi-ai'
 import { type AgentToolResult, type ExtensionAPI, formatSize } from '@earendil-works/pi-coding-agent'
-import { Duration, Effect, type Layer, ManagedRuntime, Schema, Stream } from 'effect'
+import { Clock, Duration, Effect, Layer, ManagedRuntime, Schema, Stream } from 'effect'
 import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest, type HttpClientResponse } from 'effect/unstable/http'
 import TurndownService from 'turndown'
 import { Type, type Static } from 'typebox'
@@ -56,6 +56,7 @@ export interface WebfetchDetails {
 export type WebfetchFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 
 interface WebfetchDependencies {
+  clock?: Clock.Clock
   httpClient: Layer.Layer<HttpClient.HttpClient>
   saveFullOutput: (content: string) => Effect.Effect<string, unknown>
 }
@@ -370,18 +371,25 @@ const toRejection = (failure: unknown): Error => {
 
 export const createWebfetchExtension = (overrides: Partial<WebfetchDependencies> = {}): ((pi: ExtensionAPI) => void) => {
   const dependencies: WebfetchDependencies = {
+    ...(overrides.clock ? { clock: overrides.clock } : {}),
     httpClient: overrides.httpClient ?? FetchHttpClient.layer,
     saveFullOutput: overrides.saveFullOutput ?? ((content) => writePrivateTempFileEffect(content, { prefix: 'pi-webfetch-' })),
   }
 
   return function webfetchExtension(pi: ExtensionAPI): void {
-    const runtime = ManagedRuntime.make(dependencies.httpClient)
+    const runtime = ManagedRuntime.make(
+      dependencies.clock ? Layer.mergeAll(dependencies.httpClient, Layer.succeed(Clock.Clock)(dependencies.clock)) : dependencies.httpClient
+    )
 
     pi.registerTool({
       description: `Fetch an HTTP(S) URL and return its content as markdown, plain text, or raw HTML. HTML defaults to markdown. Downloads are limited to ${formatSize(MAX_DOWNLOAD_BYTES)}; output is truncated to ${MAX_OUTPUT_LINES} lines or ${formatSize(MAX_OUTPUT_BYTES)} and saved to a temporary file when larger.`,
       async execute(_toolCallId, params, signal, onUpdate) {
         return await runtime.runPromise(
-          fetchResult({ dependencies, onUpdate, params, signal }).pipe(Effect.catch((error) => Effect.fail(toRejection(error))))
+          Effect.suspend(() =>
+            signal?.aborted
+              ? Effect.fail(new ToolFailure({ message: 'webfetch was cancelled' }))
+              : fetchResult({ dependencies, onUpdate, params, signal })
+          ).pipe(Effect.catch((error) => Effect.fail(toRejection(error))))
         )
       },
       label: 'Web Fetch',

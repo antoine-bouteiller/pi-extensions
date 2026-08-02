@@ -260,9 +260,10 @@ const discoverResources = (
           (directory) => fs.remove(directory, { force: true, recursive: true }).pipe(Effect.orDie)
         ).pipe(Effect.provideService(Scope.Scope, resourceScope))
 
-        yield* writeCommandSkills(skillDirectory, commandsByLogicalName).pipe(Effect.onError(() => Scope.close(resourceScope, Exit.void)))
-
-        yield* Ref.set(state.activeSkillScope, Option.some(resourceScope))
+        yield* Effect.gen(function* () {
+          yield* writeCommandSkills(skillDirectory, commandsByLogicalName)
+          yield* Ref.set(state.activeSkillScope, Option.some(resourceScope))
+        }).pipe(Effect.onError(() => Scope.close(resourceScope, Exit.void)))
         return { skillPaths: [skillDirectory] }
       })
     )
