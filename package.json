@@ -14,6 +14,7 @@
     "knip": "knip",
     "lint": "oxlint --deny-warnings --report-unused-disable-directives .",
     "test": "bun test",
+    "test:coverage": "bun test ./tests --coverage --reporter=junit --reporter-outfile=./junit.xml",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -29,7 +30,7 @@
     "@types/bun": "1.3.14",
     "@types/node": "26.1.2",
     "@types/turndown": "5.0.6",
-    "knip": "^6.31.0",
+    "knip": "6.31.0",
     "lefthook": "^2.1.10",
     "oxfmt": "0.61.0",
     "oxlint": "1.76.0",
