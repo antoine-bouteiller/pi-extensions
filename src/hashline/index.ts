@@ -1,10 +1,13 @@
 import { relative } from 'node:path'
 
-import { withFileMutationQueue, type ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { formatHashlineHeader, formatNumberedLines, InMemorySnapshotStore, NodeFilesystem, normalizeToLF, Patch, Patcher } from '@oh-my-pi/hashline'
-import { Type } from 'typebox'
+import { Context, Effect, Layer, ManagedRuntime } from 'effect'
+import { Type, type Static } from 'typebox'
 
-import { assertUnprotectedPath, resolveToolPath, stripToolPathPrefix } from '../shared/protected_paths'
+import { perInvocation, type HandlerServices } from '../effect/runtime.js'
+import { PiCtx } from '../effect/services.js'
+import { assertUnprotectedPath, resolveToolPath, stripToolPathPrefix } from '../shared/protected_paths.js'
 
 const readSchema = Type.Object({
   path: Type.String({ description: 'Path to the file to read.' }),
@@ -17,7 +20,12 @@ const writeSchema = Type.Object({
   }),
 })
 
-const result = (text: string, details: Record<string, unknown> = {}) => ({
+interface ToolOutput {
+  content: { text: string; type: 'text' }[]
+  details: Record<string, unknown>
+}
+
+const result = (text: string, details: Record<string, unknown> = {}): ToolOutput => ({
   content: [{ text, type: 'text' as const }],
   details,
 })
@@ -103,23 +111,110 @@ const withMutationQueues = async <Result>(paths: readonly string[], callback: ()
   return acquire(0)
 }
 
+const readHashlineFile = async (
+  path: string,
+  cwd: string,
+  signal: AbortSignal | undefined,
+  snapshots: InMemorySnapshotStore
+): Promise<ToolOutput> => {
+  throwIfAborted(signal)
+  const resolution = await assertUnprotectedPath(path, cwd, 'read')
+  const fs = new CwdFilesystem(cwd, signal)
+  const text = await fs.readText(resolution.absolutePath)
+  const normalized = normalizeToLF(text)
+  const tag = snapshots.record(resolution.absolutePath, normalized)
+  const displayPath = relative(cwd, resolution.absolutePath) || '.'
+
+  return result(`${formatHashlineHeader(displayPath, tag)}\n${formatNumberedLines(normalized)}`, { hash: tag, path: displayPath })
+}
+
+const writeHashlinePatch = async (
+  patchText: string,
+  cwd: string,
+  signal: AbortSignal | undefined,
+  snapshots: InMemorySnapshotStore
+): Promise<ToolOutput> => {
+  throwIfAborted(signal)
+  const parsed = Patch.parse(patchText, { cwd })
+  const affectedPaths: string[] = []
+  for (const section of parsed.sections) {
+    affectedPaths.push(stripToolPathPrefix(section.path))
+    const { fileOp } = section
+    if (fileOp?.kind === 'move') {
+      affectedPaths.push(stripToolPathPrefix(fileOp.dest))
+    }
+  }
+  if (affectedPaths.length === 0) {
+    throw new Error('Hashline patch contains no file sections')
+  }
+
+  /*
+   * Resolve policy and lock keys before acquiring anything. Canonical keys
+   * make aliases take the same lock; sorting prevents multi-file deadlocks.
+   */
+  const lockPaths: string[] = []
+  for (const path of affectedPaths) {
+    const checked = await assertUnprotectedPath(path, cwd, 'write')
+    lockPaths.push(checked.canonicalPath)
+  }
+
+  return withMutationQueues(lockPaths, async () => {
+    throwIfAborted(signal)
+    /*
+     * Re-evaluate after waiting: a parent may have been replaced by a
+     * symlink while this operation was queued.
+     */
+    for (const path of affectedPaths) {
+      await assertUnprotectedPath(path, cwd, 'write')
+    }
+    throwIfAborted(signal)
+
+    const fs = new CwdFilesystem(cwd, signal)
+    const patcher = new Patcher({ fs, snapshots })
+    const applied = await patcher.apply(parsed)
+    throwIfAborted(signal)
+    const summary = applied.sections.map((section) => {
+      const target = relative(cwd, section.canonicalPath) || section.canonicalPath
+      return `${section.op} ${target} [${section.fileHash}]`
+    })
+
+    return result(summary.join('\n'), { sections: applied.sections })
+  })
+}
+
+/** Per-instance snapshot store, held as Layer state scoped to this extension's runtime. */
+class Snapshots extends Context.Service<Snapshots, InMemorySnapshotStore>()('@hashline/Snapshots') {}
+
 export default function hashline(pi: ExtensionAPI) {
-  const snapshots = new InMemorySnapshotStore()
+  const runtime = ManagedRuntime.make(Layer.succeed(Snapshots)(new InMemorySnapshotStore()))
+
+  /*
+   * Phase 1's makeToolExecutor doesn't hand the raw AbortSignal to the body, but hashline needs it
+   * for CwdFilesystem and the post-lock TOCTOU re-check, so this provides services locally instead.
+   *
+   * `{ signal }` is deliberately not passed to runPromise: that makes Effect interrupt the fiber the
+   * instant the signal fires, discarding the in-flight mutation-queue wait and replacing the
+   * cooperative `throwIfAborted` message below with Effect's generic interrupted-fiber one.
+   * Cancellation stays cooperative, as it was before this port.
+   */
+  const runTool =
+    <Params, Result>(body: (params: Params, signal: AbortSignal | undefined) => Effect.Effect<Result, unknown, HandlerServices | Snapshots>) =>
+    async (_toolCallId: string, params: Params, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext): Promise<Result> =>
+      runtime.runPromise(body(params, signal).pipe(Effect.provide(perInvocation(ctx))))
 
   pi.registerTool({
     description:
       'Read a file with stable line anchors and a content hash for hashline_write. Use this instead of read before editing a file with hashline. Protected credential paths are refused by this tool itself.',
-    async execute(_toolCallId, { path }, signal, _onUpdate, ctx) {
-      throwIfAborted(signal)
-      const resolution = await assertUnprotectedPath(path, ctx.cwd, 'read')
-      const fs = new CwdFilesystem(ctx.cwd, signal)
-      const text = await fs.readText(resolution.absolutePath)
-      const normalized = normalizeToLF(text)
-      const tag = snapshots.record(resolution.absolutePath, normalized)
-      const displayPath = relative(ctx.cwd, resolution.absolutePath) || '.'
-
-      return result(`${formatHashlineHeader(displayPath, tag)}\n${formatNumberedLines(normalized)}`, { hash: tag, path: displayPath })
-    },
+    execute: runTool<Static<typeof readSchema>, ToolOutput>(({ path }, signal) =>
+      Effect.gen(function* () {
+        const ctx = yield* PiCtx
+        const snapshots = yield* Snapshots
+        return yield* Effect.tryPromise({
+          catch: (cause) => cause,
+          try: () => readHashlineFile(path, ctx.cwd, signal, snapshots),
+        })
+      })
+    ),
     label: 'Hashline Read',
     name: 'hashline_read',
     parameters: readSchema,
@@ -128,54 +223,16 @@ export default function hashline(pi: ExtensionAPI) {
   pi.registerTool({
     description:
       'Apply a hashline patch produced from hashline_read. Use hashline operations (PUT, CUT, MV, or REM), not unified-diff @@ hunks. Patches are content-hash anchored, reject stale edits, and refuse protected credential paths.',
-    async execute(_toolCallId, { patch }, signal, _onUpdate, ctx) {
-      throwIfAborted(signal)
-      const parsed = Patch.parse(patch, { cwd: ctx.cwd })
-      const affectedPaths: string[] = []
-      for (const section of parsed.sections) {
-        affectedPaths.push(stripToolPathPrefix(section.path))
-        const { fileOp } = section
-        if (fileOp?.kind === 'move') {
-          affectedPaths.push(stripToolPathPrefix(fileOp.dest))
-        }
-      }
-      if (affectedPaths.length === 0) {
-        throw new Error('Hashline patch contains no file sections')
-      }
-
-      /*
-       * Resolve policy and lock keys before acquiring anything. Canonical keys
-       * make aliases take the same lock; sorting prevents multi-file deadlocks.
-       */
-      const lockPaths: string[] = []
-      for (const path of affectedPaths) {
-        const checked = await assertUnprotectedPath(path, ctx.cwd, 'write')
-        lockPaths.push(checked.canonicalPath)
-      }
-
-      return withMutationQueues(lockPaths, async () => {
-        throwIfAborted(signal)
-        /*
-         * Re-evaluate after waiting: a parent may have been replaced by a
-         * symlink while this operation was queued.
-         */
-        for (const path of affectedPaths) {
-          await assertUnprotectedPath(path, ctx.cwd, 'write')
-        }
-        throwIfAborted(signal)
-
-        const fs = new CwdFilesystem(ctx.cwd, signal)
-        const patcher = new Patcher({ fs, snapshots })
-        const applied = await patcher.apply(parsed)
-        throwIfAborted(signal)
-        const summary = applied.sections.map((section) => {
-          const target = relative(ctx.cwd, section.canonicalPath) || section.canonicalPath
-          return `${section.op} ${target} [${section.fileHash}]`
+    execute: runTool<Static<typeof writeSchema>, ToolOutput>(({ patch }, signal) =>
+      Effect.gen(function* () {
+        const ctx = yield* PiCtx
+        const snapshots = yield* Snapshots
+        return yield* Effect.tryPromise({
+          catch: (cause) => cause,
+          try: () => writeHashlinePatch(patch, ctx.cwd, signal, snapshots),
         })
-
-        return result(summary.join('\n'), { sections: applied.sections })
       })
-    },
+    ),
     label: 'Hashline Write',
     name: 'hashline_write',
     parameters: writeSchema,
