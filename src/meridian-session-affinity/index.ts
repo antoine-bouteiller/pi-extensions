@@ -1,4 +1,8 @@
 import { type BeforeProviderHeadersEvent, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
+import { Effect, ManagedRuntime } from 'effect'
+
+import { makeEventHandler } from '../effect/runtime.js'
+import { piLayer } from '../effect/services.js'
 
 const DEFAULT_MERIDIAN_BASE_URL = 'http://127.0.0.1:3456'
 const MERIDIAN_AGENT_HEADER = 'x-meridian-agent'
@@ -39,8 +43,8 @@ const setCanonicalHeader = (headers: BeforeProviderHeadersEvent['headers'], name
   headers[name] = value
 }
 
-const createMeridianSessionAffinityExtension = (pi: ExtensionAPI): void => {
-  pi.on('before_provider_headers', (event, ctx) => {
+const applySessionAffinity = (event: BeforeProviderHeadersEvent, ctx: ExtensionContext): Effect.Effect<void> =>
+  Effect.sync(() => {
     if (!isMeridianRequest(event, ctx)) {
       return
     }
@@ -52,6 +56,10 @@ const createMeridianSessionAffinityExtension = (pi: ExtensionAPI): void => {
 
     setCanonicalHeader(event.headers, SESSION_AFFINITY_HEADER, sessionId)
   })
+
+const createMeridianSessionAffinityExtension = (pi: ExtensionAPI): void => {
+  const runtime = ManagedRuntime.make(piLayer(pi))
+  pi.on('before_provider_headers', makeEventHandler(runtime)(applySessionAffinity))
 }
 
 export default createMeridianSessionAffinityExtension
