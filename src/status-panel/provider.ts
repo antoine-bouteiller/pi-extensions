@@ -1,3 +1,6 @@
+import { Type, type Static } from 'typebox'
+import { Check } from 'typebox/value'
+
 import { progressBar } from './render'
 import { type ProviderQuota, type QuotaWindow } from './state'
 
@@ -72,22 +75,25 @@ export class AnthropicQuotaPoller {
 }
 
 /** One usage window as reported by the gateway, with `utilization` as a 0..1 fraction. */
-interface GatewayQuotaWindow {
-  type?: string
-  utilization?: number
-  resetsAt?: number
-}
+const GatewayQuotaWindowSchema = Type.Object({
+  resetsAt: Type.Optional(Type.Number()),
+  type: Type.Optional(Type.String()),
+  utilization: Type.Optional(Type.Number()),
+})
 
-interface GatewayQuotaProfile {
-  id?: string
-  isActive?: boolean
-  windows?: GatewayQuotaWindow[]
-}
+const GatewayQuotaProfileSchema = Type.Object({
+  id: Type.Optional(Type.String()),
+  isActive: Type.Optional(Type.Boolean()),
+  windows: Type.Optional(Type.Array(GatewayQuotaWindowSchema)),
+})
 
-interface GatewayQuotaResponse {
-  profiles?: GatewayQuotaProfile[]
-  activeProfile?: string
-}
+const GatewayQuotaResponseSchema = Type.Object({
+  activeProfile: Type.Optional(Type.String()),
+  profiles: Type.Optional(Type.Array(GatewayQuotaProfileSchema)),
+})
+
+type GatewayQuotaProfile = Static<typeof GatewayQuotaProfileSchema>
+type GatewayQuotaResponse = Static<typeof GatewayQuotaResponseSchema>
 
 const activeProfile = (usage: GatewayQuotaResponse): GatewayQuotaProfile | undefined => {
   const profiles = usage.profiles ?? []
@@ -132,7 +138,11 @@ export const fetchAnthropicQuota = async (
     if (!response.ok) {
       return undefined
     }
-    const profile = activeProfile((await response.json()) as GatewayQuotaResponse)
+    const payload: unknown = await response.json()
+    if (!Check(GatewayQuotaResponseSchema, payload)) {
+      return undefined
+    }
+    const profile = activeProfile(payload)
     if (!profile) {
       return undefined
     }

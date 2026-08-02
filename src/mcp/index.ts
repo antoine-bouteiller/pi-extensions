@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { type AgentToolResult, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 
+import { isRecord } from '../shared/records.js'
 import { createStatusChannel } from '../shared/status_bar.js'
 import { loadGlobalMcpConfig } from './config.js'
 import { boundGatewayOutput } from './output.js'
@@ -132,10 +133,10 @@ const parseArgs = (args: unknown): Record<string, unknown> => {
   if (parsed === undefined) {
     return {}
   }
-  if (parsed === null || Array.isArray(parsed) || typeof parsed !== 'object') {
+  if (!isRecord(parsed) || Array.isArray(parsed)) {
     throw new Error('mcp args must be a JSON object, not an array, scalar, or null')
   }
-  return parsed as Record<string, unknown>
+  return parsed
 }
 
 const compareNames = (left: { name: string }, right: { name: string }): number => left.name.localeCompare(right.name)
@@ -446,17 +447,7 @@ const productionDependencies: McpGatewayDependencies<Awaited<ReturnType<typeof l
      * Keep the manager behind the session lifecycle boundary: importing this entrypoint and
      * registering the gateway must not initialize MCP SDK transports or native OAuth storage.
      */
-    const managerModulePath = './manager.js'
-    const { McpManager: Manager } = (await import(managerModulePath)) as {
-      McpManager: new (
-        loadedConfig: Awaited<ReturnType<typeof loadGlobalMcpConfig>>,
-        options: {
-          onStatusChange: (update: McpStatusUpdate) => void
-          openUrl: (url: string, signal?: AbortSignal) => Promise<void>
-          policy: McpGatewayPolicy
-        }
-      ) => McpGatewayManager
-    }
+    const { McpManager: Manager } = await import('./manager.js')
     return new Manager(config, {
       onStatusChange: callbacks.onStatusChange,
       async openUrl(url: string, signal?: AbortSignal) {

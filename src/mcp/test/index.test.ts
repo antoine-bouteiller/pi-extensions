@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 
 import { type AgentToolResult } from '@earendil-works/pi-coding-agent'
 
+import { asCommand, asTool } from '#test-utils/casts'
 import { createFakePi } from '#test-utils/fake_pi'
 
 import {
@@ -129,15 +130,17 @@ const createHarness = (overrides: Partial<McpGatewayManager> = {}) => {
   const execute = async (params: Record<string, unknown>, signal?: AbortSignal) => {
     const tool = fixture.state.tools.get('mcp')
     expect(tool).toBeDefined()
-    const executeTool = tool?.execute as (id: string, input: Record<string, unknown>, signal?: AbortSignal) => Promise<AgentToolResult<unknown>>
-    return executeTool('call-1', params, signal)
+    const executeTool = asTool<{
+      execute: (id: string, input: Record<string, unknown>, signal?: AbortSignal) => Promise<AgentToolResult<unknown>>
+    }>(tool)
+    return executeTool.execute('call-1', params, signal)
   }
 
   const invokeCommand = async (args = '', commandContext: unknown = context()) => {
     const command = fixture.state.commands.get('mcp-auth')
     expect(command).toBeDefined()
-    const handler = command?.handler as (args: string, ctx: unknown) => Promise<void>
-    return handler(args, commandContext)
+    const authCommand = asCommand<{ handler: (args: string, ctx: unknown) => Promise<void> }>(command)
+    return authCommand.handler(args, commandContext)
   }
 
   return {
@@ -408,10 +411,10 @@ describe('MCP gateway registration and lifecycle', () => {
     const harness = createHarness()
     await harness.start()
 
-    await expect(harness.execute({ search: 'two', tool: 'one' })).rejects.toThrow('Ambiguous mcp request')
-    await expect(harness.execute({ connect: 'one', server: 'two' })).rejects.toThrow('connect already names the server')
-    await expect(harness.execute({ args: {} })).rejects.toThrow('args can only be used with tool')
-    await expect(harness.execute({ regex: true })).rejects.toThrow('regex can only be used with search')
+    expect(harness.execute({ search: 'two', tool: 'one' })).rejects.toThrow('Ambiguous mcp request')
+    expect(harness.execute({ connect: 'one', server: 'two' })).rejects.toThrow('connect already names the server')
+    expect(harness.execute({ args: {} })).rejects.toThrow('args can only be used with tool')
+    expect(harness.execute({ regex: true })).rejects.toThrow('regex can only be used with search')
     expect(callsFor(harness, 'call')).toHaveLength(0)
     expect(callsFor(harness, 'search')).toHaveLength(0)
   })
@@ -420,9 +423,9 @@ describe('MCP gateway registration and lifecycle', () => {
     const harness = createHarness()
     await harness.start()
 
-    await expect(harness.execute({ args: '{', tool: 'one' })).rejects.toThrow('valid JSON')
+    expect(harness.execute({ args: '{', tool: 'one' })).rejects.toThrow('valid JSON')
     for (const args of ['null', '[]', '42', '"value"', JSON.parse('null') as unknown, [], 42]) {
-      await expect(harness.execute({ args, tool: 'one' })).rejects.toThrow('must be a JSON object')
+      expect(harness.execute({ args, tool: 'one' })).rejects.toThrow('must be a JSON object')
     }
     expect(callsFor(harness, 'call')).toHaveLength(0)
   })

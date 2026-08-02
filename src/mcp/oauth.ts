@@ -1,6 +1,5 @@
 import { randomBytes } from 'node:crypto'
 import { createServer } from 'node:http'
-import { type AddressInfo } from 'node:net'
 
 import { UnauthorizedError, type OAuthClientProvider, type OAuthDiscoveryState } from '@modelcontextprotocol/sdk/client/auth.js'
 import { type OAuthClientInformationMixed, type OAuthClientMetadata, type OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js'
@@ -192,8 +191,8 @@ export const startOAuthCallback = async (options: OAuthCallbackOptions): Promise
     throw new Error(reason, { cause: error })
   }
 
-  const address = server.address() as AddressInfo | null
-  if (!address) {
+  const address = server.address()
+  if (!address || typeof address === 'string') {
     await close()
     throw new Error('Could not determine the OAuth callback listener address')
   }
@@ -255,27 +254,27 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
       }
     }
     const credential = await this.load()
-    return credential?.clientInformation as OAuthClientInformationMixed | undefined
+    return credential?.clientInformation
   }
 
   async saveClientInformation(clientInformation: OAuthClientInformationMixed): Promise<void> {
     await this.update((credential) => ({
       serverUrl: this.options.serverUrl,
       ...credential,
-      clientInformation: clientInformation as OAuthCredentialPayload['clientInformation'],
+      clientInformation,
     }))
   }
 
   async tokens(): Promise<OAuthTokens | undefined> {
     const credential = await this.load()
-    return credential?.tokens as OAuthTokens | undefined
+    return credential?.tokens
   }
 
   async saveTokens(tokens: OAuthTokens): Promise<void> {
     await this.update((credential) => ({
       serverUrl: this.options.serverUrl,
       ...credential,
-      tokens: tokens as OAuthCredentialPayload['tokens'],
+      tokens,
     }))
   }
 

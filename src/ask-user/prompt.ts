@@ -41,7 +41,7 @@ export const buildAskUserResultMessage = (
     case 'custom': {
       return `User wrote their own answer: ${outcome.answer}`
     }
-    case 'selected': {
+    default: {
       return `User selected option ${outcome.index}: ${outcome.answer}`
     }
   }

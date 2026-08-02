@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 
+import { asError, asOAuthCredentialPayload } from '#test-utils/casts'
+
 import { KeychainCredentialStore, MCP_OAUTH_KEYCHAIN_SERVICE, keychainAccount, type OAuthCredentialPayload } from '../keychain'
 
 type FailureMode = 'get' | 'set' | 'delete' | undefined
@@ -23,9 +25,7 @@ const inMemoryKeyring = (initial: Record<string, string> = {}, failure?: Failure
         throw new Error('native failure containing secret-token')
       }
       if (!values.has(this.account)) {
-        const error = new Error('No matching entry found') as Error & { code: string }
-        error.code = 'NoEntry'
-        throw error
+        throw Object.assign(new Error('No matching entry found'), { code: 'NoEntry' })
       }
       const stored = values.get(this.account)
       if (stored === undefined) {
@@ -48,9 +48,7 @@ const inMemoryKeyring = (initial: Record<string, string> = {}, failure?: Failure
         throw new Error('native delete failure containing secret-token')
       }
       if (!values.delete(this.account)) {
-        const error = new Error('item not found') as Error & { code: string }
-        error.code = 'NoEntry'
-        throw error
+        throw Object.assign(new Error('item not found'), { code: 'NoEntry' })
       }
     }
   }
@@ -171,19 +169,19 @@ describe('Keychain OAuth credential store', () => {
     ]) {
       const keyring = inMemoryKeyring({ [keychainAccount('slack')]: serialized })
       const store = new KeychainCredentialStore({ loadKeyring: keyring.loadKeyring })
-      await expect(store.get('slack', credential.serverUrl)).rejects.toThrow('credential for MCP server "slack" is malformed')
+      expect(store.get('slack', credential.serverUrl)).rejects.toThrow('credential for MCP server "slack" is malformed')
     }
   })
 
   test('validates payloads before writing to Keychain', async () => {
     const keyring = inMemoryKeyring()
     const store = new KeychainCredentialStore({ loadKeyring: keyring.loadKeyring })
-    const malformed = {
+    const malformed = asOAuthCredentialPayload({
       serverUrl: credential.serverUrl,
       tokens: { access_token: 'secret' },
-    } as unknown as OAuthCredentialPayload
+    })
 
-    await expect(store.set('slack', malformed)).rejects.toThrow('is malformed')
+    expect(store.set('slack', malformed)).rejects.toThrow('is malformed')
     expect(keyring.calls).toEqual([])
   })
 
@@ -207,9 +205,9 @@ describe('Keychain OAuth credential store', () => {
       }
 
       expect(error).toBeInstanceOf(Error)
-      expect((error as Error).message).toContain('Ensure Keychain is available and unlocked')
-      expect((error as Error).message).not.toContain('secret-token')
-      expect((error as Error).message).not.toContain('access-secret')
+      expect(asError(error).message).toContain('Ensure Keychain is available and unlocked')
+      expect(asError(error).message).not.toContain('secret-token')
+      expect(asError(error).message).not.toContain('access-secret')
     }
   })
 
@@ -220,11 +218,11 @@ describe('Keychain OAuth credential store', () => {
       },
     })
 
-    await expect(store.get('slack', credential.serverUrl)).rejects.toThrow('Ensure Keychain is available and unlocked')
+    expect(store.get('slack', credential.serverUrl)).rejects.toThrow('Ensure Keychain is available and unlocked')
     try {
       await store.get('slack', credential.serverUrl)
     } catch (error) {
-      expect((error as Error).message).not.toContain('/private/secret/path')
+      expect(asError(error).message).not.toContain('/private/secret/path')
     }
   })
 })

@@ -143,7 +143,7 @@ const resolveCommandNames = (commandsByLogicalName: Map<string, MarkdownFile>): 
 }
 
 const formatCommandSkill = (name: string, command: CommandFrontmatter): string => {
-  const argumentCompatibility = command.body.match(/\$(?:ARGUMENTS|[1-9]\d*)\b/)
+  const argumentCompatibility = /\$(?:ARGUMENTS|[1-9]\d*)\b/.exec(command.body)
     ? 'Pi appends invocation arguments as a final `User: <arguments>` line. Treat those arguments as `$ARGUMENTS`, and their shell-style positional words as `$1`, `$2`, and so on. If no `User:` line is present, the arguments are empty.\n\n'
     : ''
   return `---\nname: ${name}\ndescription: ${JSON.stringify(command.description)}\n---\n\n${argumentCompatibility}${command.body}`
@@ -201,7 +201,7 @@ export default function claudeCodeExtension(
       }
 
       if (commandsByLogicalName.size === 0) {
-        return
+        return undefined
       }
 
       const skillDirectory = await mkdtemp(join(environment.temporaryDirectory, 'pi-claude-command-skills-'))

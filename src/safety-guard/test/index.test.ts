@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { asExtensionApi } from '#test-utils/casts'
 
 import safetyGuard from '../index'
 
@@ -38,14 +38,16 @@ type Handler = (event: FakeToolCallEvent, ctx: FakeContext) => Promise<GuardResu
 const setup = () => {
   let handler: Handler | undefined
   const emitted: [string, unknown][] = []
-  safetyGuard({
-    events: { emit: (event: string, data: unknown) => emitted.push([event, data]) },
-    on: (event: string, callback: Handler) => {
-      if (event === 'tool_call') {
-        handler = callback
-      }
-    },
-  } as unknown as ExtensionAPI)
+  safetyGuard(
+    asExtensionApi({
+      events: { emit: (event: string, data: unknown) => emitted.push([event, data]) },
+      on: (event: string, callback: Handler) => {
+        if (event === 'tool_call') {
+          handler = callback
+        }
+      },
+    })
+  )
   if (!handler) {
     throw new Error('tool_call handler was not registered')
   }

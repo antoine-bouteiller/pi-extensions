@@ -3,6 +3,7 @@ import { readdir } from 'node:fs/promises'
 import { join, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
+import { asResult } from '#test-utils/casts'
 import { createFakePi } from '#test-utils/fake_pi'
 
 import askUser from '../src/ask-user/index.js'
@@ -69,7 +70,7 @@ describe('extension entrypoints', () => {
         expect(await importsExtensionFactory(path), path).toBeTrue()
         continue
       }
-      const module = (await import(pathToFileURL(path).href)) as { default?: unknown }
+      const module = asResult<{ default?: unknown }>(await import(pathToFileURL(path).href))
       expect(module.default, path).toBeFunction()
     }
   })

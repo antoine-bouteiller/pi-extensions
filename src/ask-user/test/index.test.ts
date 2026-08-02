@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 
 import { CURSOR_MARKER, visibleWidth, type Component, type Focusable } from '@earendil-works/pi-tui'
 
+import { asTool } from '#test-utils/casts'
 import { createFakePi } from '#test-utils/fake_pi'
 
 import askUser from '../index'
@@ -59,7 +60,7 @@ const setup = () => {
 
   const fakePi = createFakePi()
   askUser(fakePi.pi)
-  const tool = fakePi.state.tools.get('ask_user') as unknown as AskUserTool
+  const tool = asTool<AskUserTool>(fakePi.state.tools.get('ask_user'))
 
   return {
     get component() {

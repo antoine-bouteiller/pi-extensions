@@ -1,8 +1,8 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
 type EventHandler = (...args: unknown[]) => unknown
-type ToolDefinition = { name: string } & Record<string, unknown>
-type CommandDefinition = Record<string, unknown>
+export type ToolDefinition = { name: string } & Record<string, unknown>
+export type CommandDefinition = Record<string, unknown>
 
 export interface FakePiState {
   handlers: Map<string, EventHandler[]>
@@ -84,6 +84,7 @@ export const createFakePi = (
     },
   }
 
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- single audited cast: the Proxy forwards every ExtensionAPI member dynamically.
   const pi = new Proxy(target, {
     get(object, property, receiver) {
       if (Reflect.has(object, property)) {

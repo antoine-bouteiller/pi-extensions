@@ -64,13 +64,11 @@ const paint = (theme: SidebarTheme, role: PaletteRole, text: string) => {
 const bold = (theme: SidebarTheme, text: string) => theme.bold?.(text) ?? text
 
 const ANSI_PATTERN = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g')
-
 const sanitize = (text: string) =>
-  [...text.replace(ANSI_PATTERN, '')]
-    .map((character) => {
-      const code = character.charCodeAt(0)
-      return code < 32 || code === 127 ? ' ' : character
-    })
+  Array.from(text.replace(ANSI_PATTERN, ''), (character) => {
+    const code = character.charCodeAt(0)
+    return code < 32 || code === 127 ? ' ' : character
+  })
     .join('')
     .replaceAll(/\s+/g, ' ')
     .trim()
@@ -133,7 +131,7 @@ const contextRole = (percent: number | undefined): PaletteRole => {
 
 const agentRows = (state: SidebarState, width: number, theme: SidebarTheme) => {
   const working = state.activity === 'working'
-  const status = bold(theme, paint(theme, working ? 'working' : 'ready', `${working ? '◆ Working' : '● Ready'}`))
+  const status = bold(theme, paint(theme, working ? 'working' : 'ready', working ? '◆ Working' : '● Ready'))
   const model = paint(theme, 'primary', sanitize(state.model.modelId) || 'no model')
   const metadata = [state.model.provider, state.model.thinking]
     .map((value) => sanitize(value).toUpperCase())

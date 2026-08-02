@@ -71,8 +71,9 @@ export const createSplitPaneController = (options: SplitPaneOptions = {}): Split
         throw new Error('Status panel is already attached to another TUI')
       }
       tui = nextTui
-      originalRender = nextTui.render
+      // oxlint-disable-next-line typescript/unbound-method -- deliberate render swizzle: the original is kept to restore on dispose and is only ever invoked with an explicit receiver.
       const previousRender = nextTui.render
+      originalRender = previousRender
       wrappedRender = function (this: TUI, terminalWidth: number): string[] {
         const reservedWidth = effectiveWidth(terminalWidth)
         syncOverlayWidth(terminalWidth)

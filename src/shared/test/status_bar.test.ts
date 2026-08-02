@@ -1,19 +1,19 @@
 import { describe, expect, test } from 'bun:test'
 
-import { type ExtensionContext } from '@earendil-works/pi-coding-agent'
+import { asExtensionContext } from '#test-utils/casts'
 
 import { createStatusChannel, formatStatusText, statusBar } from '../status_bar'
 
 const createContext = (hasUI = true) => {
   const written: { key: string; value: unknown }[] = []
-  const ctx = {
+  const ctx = asExtensionContext({
     hasUI,
     ui: {
       setStatus(key: string, value: unknown) {
         written.push({ key, value })
       },
     },
-  } as unknown as ExtensionContext
+  })
   return { ctx, written }
 }
 

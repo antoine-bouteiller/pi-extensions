@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto'
 
+import { Type, type Static } from 'typebox'
+import { Check } from 'typebox/value'
+
 export const MCP_OAUTH_KEYCHAIN_SERVICE = 'pi-mcp.oauth'
 
 /** A bounded, redacted message that is safe to surface to the user/model. */
@@ -15,23 +18,26 @@ interface JsonObject {
   [key: string]: JsonValue | undefined
 }
 
-interface OAuthTokens extends JsonObject {
-  access_token: string
-  token_type: string
-  refresh_token?: string
-  expires_in?: number
-  scope?: string
-}
+const OAuthTokensSchema = Type.Object({
+  access_token: Type.String({ minLength: 1 }),
+  expires_in: Type.Optional(Type.Number()),
+  refresh_token: Type.Optional(Type.String()),
+  scope: Type.Optional(Type.String()),
+  token_type: Type.String({ minLength: 1 }),
+})
 
-interface OAuthClientInformation extends JsonObject {
-  client_id: string
-  client_secret?: string
-  client_id_issued_at?: number
-  client_secret_expires_at?: number
-  registration_access_token?: string
-  registration_client_uri?: string
-  token_endpoint_auth_method?: string
-}
+const OAuthClientInformationSchema = Type.Object({
+  client_id: Type.String({ minLength: 1 }),
+  client_id_issued_at: Type.Optional(Type.Number()),
+  client_secret: Type.Optional(Type.String()),
+  client_secret_expires_at: Type.Optional(Type.Number()),
+  registration_access_token: Type.Optional(Type.String()),
+  registration_client_uri: Type.Optional(Type.String()),
+  token_endpoint_auth_method: Type.Optional(Type.String()),
+})
+
+type OAuthTokens = Static<typeof OAuthTokensSchema>
+type OAuthClientInformation = Static<typeof OAuthClientInformationSchema>
 
 export interface OAuthCredentialPayload {
   serverUrl: string
@@ -98,41 +104,18 @@ const requireString = (value: Record<string, unknown>, field: string, serverName
   return result
 }
 
-const optionalString = (value: Record<string, unknown>, field: string, serverName: string): void => {
-  if (value[field] !== undefined && typeof value[field] !== 'string') {
-    throw malformed(serverName)
-  }
-}
-
-const optionalNumber = (value: Record<string, unknown>, field: string, serverName: string): void => {
-  if (value[field] !== undefined && (typeof value[field] !== 'number' || !Number.isFinite(value[field]))) {
-    throw malformed(serverName)
-  }
-}
-
 const validateTokens = (value: unknown, serverName: string): OAuthTokens => {
-  if (!isObject(value) || !isJsonValue(value)) {
+  if (!isObject(value) || !isJsonValue(value) || !Check(OAuthTokensSchema, value)) {
     throw malformed(serverName)
   }
-  requireString(value, 'access_token', serverName)
-  requireString(value, 'token_type', serverName)
-  optionalString(value, 'refresh_token', serverName)
-  optionalString(value, 'scope', serverName)
-  optionalNumber(value, 'expires_in', serverName)
-  return value as OAuthTokens
+  return value
 }
 
 const validateClientInformation = (value: unknown, serverName: string): OAuthClientInformation => {
-  if (!isObject(value) || !isJsonValue(value)) {
+  if (!isObject(value) || !isJsonValue(value) || !Check(OAuthClientInformationSchema, value)) {
     throw malformed(serverName)
   }
-  requireString(value, 'client_id', serverName)
-  for (const field of ['client_secret', 'registration_access_token', 'registration_client_uri', 'token_endpoint_auth_method']) {
-    optionalString(value, field, serverName)
-  }
-  optionalNumber(value, 'client_id_issued_at', serverName)
-  optionalNumber(value, 'client_secret_expires_at', serverName)
-  return value as OAuthClientInformation
+  return value
 }
 
 const validateCredentialPayload = (value: unknown, serverName: string): OAuthCredentialPayload => {
@@ -187,7 +170,12 @@ const loadProductionKeyring = async (): Promise<KeyringModule> => {
   // Keep this specifier indirect so merely loading the MCP extension does not initialize
   // The native keyring package (and so the package can be installed in the dependency step).
   const packageName = '@napi-rs/keyring'
-  return (await import(packageName)) as KeyringModule
+  const loaded: unknown = await import(packageName)
+  if (!isObject(loaded) || typeof loaded.Entry !== 'function') {
+    throw new KeychainCredentialError('The @napi-rs/keyring native module is unavailable or malformed; reinstall it and retry.')
+  }
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- a constructor signature has no schema equivalent; `Entry` is verified constructible above.
+  return { Entry: loaded.Entry as KeyringModule['Entry'] }
 }
 
 export class KeychainCredentialStore implements CredentialStore {

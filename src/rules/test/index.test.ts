@@ -3,6 +3,9 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
+import { type ToolResultEvent } from '@earendil-works/pi-coding-agent'
+
+import { asResult } from '#test-utils/casts'
 import { createFakePi } from '#test-utils/fake_pi'
 
 import rulesExtension, { extractToolPaths, parseRuleFrontmatter } from '../index'
@@ -42,18 +45,20 @@ const createFixture = async () => {
   })
   const invoke = async <Result>(name: string, event: unknown, trusted = true) => {
     const results = await fakePi.emit(name, event, context(trusted))
-    return results[0] as Result | undefined
+    return asResult<Result | undefined>(results[0])
   }
 
   return { fakePi, homeDirectory, invoke, projectDirectory }
 }
 
-const readEvent = (path: string) => ({
+const readEvent = (path: string): ToolResultEvent => ({
   content: [{ text: 'file contents', type: 'text' }],
-  details: {},
+  details: undefined,
   input: { path },
   isError: false,
+  toolCallId: 'call-1',
   toolName: 'read',
+  type: 'tool_result',
 })
 
 describe('rule parsing', () => {
@@ -195,7 +200,7 @@ describe('path-scoped injection', () => {
   })
 
   test('extracts built-in and hashline file paths', () => {
-    expect(extractToolPaths(readEvent('src/main.ts') as never, '/project')).toEqual(['/project/src/main.ts'])
+    expect(extractToolPaths(readEvent('src/main.ts'), '/project')).toEqual(['/project/src/main.ts'])
     expect(
       extractToolPaths(
         {
@@ -205,8 +210,10 @@ describe('path-scoped injection', () => {
           },
           input: { patch: '[src/main.ts#ABCD]\nSWAP 1.=1:\n+next' },
           isError: false,
+          toolCallId: 'call-2',
           toolName: 'hashline_write',
-        } as never,
+          type: 'tool_result',
+        },
         '/project'
       )
     ).toEqual(['/project/src/main.ts', '/project/src/moved.ts'])
@@ -219,8 +226,10 @@ describe('path-scoped injection', () => {
             patch: '[src/one.ts#ABCD]\nSWAP 1.=1:\n+one\n[src/two.ts#EFGH]\nSWAP 1.=1:\n+two',
           },
           isError: false,
+          toolCallId: 'call-3',
           toolName: 'hashline_write',
-        } as never,
+          type: 'tool_result',
+        },
         '/project'
       )
     ).toEqual(['/project/src/one.ts', '/project/src/two.ts'])

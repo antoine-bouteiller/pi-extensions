@@ -5,6 +5,7 @@ import { join } from 'node:path'
 
 import { withFileMutationQueue } from '@earendil-works/pi-coding-agent'
 
+import { asTool } from '#test-utils/casts'
 import { createFakePi } from '#test-utils/fake_pi'
 
 import hashline from '../index'
@@ -35,8 +36,8 @@ const setup = (): { read: Tool; write: Tool } => {
   const { pi, state } = createFakePi()
   hashline(pi)
   return {
-    read: state.tools.get('hashline_read') as unknown as Tool,
-    write: state.tools.get('hashline_write') as unknown as Tool,
+    read: asTool<Tool>(state.tools.get('hashline_read')),
+    write: asTool<Tool>(state.tools.get('hashline_write')),
   }
 }
 
@@ -76,7 +77,7 @@ describe('hashline extension', () => {
     expect(result.content[0].text).toContain('update sample.txt')
     expect(await readFile(path, 'utf8')).toBe('first\nchanged\n')
 
-    await expect(
+    expect(
       write.execute('stale', { patch: swap(currentHeader, 1, 'stale') }, undefined, undefined, {
         cwd: directory,
       })
@@ -103,7 +104,7 @@ describe('hashline extension', () => {
     const freshFirst = await header(read, directory, 'first.txt')
     const staleSecond = await header(read, directory, 'second.txt')
     await writeFile(secondPath, 'external\n')
-    await expect(
+    expect(
       write.execute('multi-stale', { patch: `${swap(freshFirst, 1, 'again')}\n${swap(staleSecond, 1, 'bad')}` }, undefined, undefined, {
         cwd: directory,
       })
@@ -165,7 +166,7 @@ describe('hashline extension', () => {
     release()
     await holding
 
-    await expect(pending).rejects.toThrow('aborted')
+    expect(pending).rejects.toThrow('aborted')
     expect(await readFile(path, 'utf8')).toBe('before\n')
   })
 
@@ -177,9 +178,9 @@ describe('hashline extension', () => {
     await symlink(secret, join(directory, 'ordinary.txt'))
 
     for (const path of ['.env', '@.env', 'ordinary.txt']) {
-      await expect(read.execute('protected-read', { path }, undefined, undefined, { cwd: directory })).rejects.toThrow('protected path')
+      expect(read.execute('protected-read', { path }, undefined, undefined, { cwd: directory })).rejects.toThrow('protected path')
     }
-    await expect(
+    expect(
       write.execute('protected-write', { patch: '[.env#0000]\nSWAP 1.=1:\n+TOKEN=changed' }, undefined, undefined, { cwd: directory })
     ).rejects.toThrow('protected path')
     expect(await readFile(secret, 'utf8')).toBe('TOKEN=secret\n')

@@ -61,14 +61,14 @@ describe('OAuth callback', () => {
       port: await freePort(),
     })
     await fetch(`${errorCallback.redirectUrl}?error=access_denied&error_description=nope&state=state`)
-    await expect(errorCallback.waitForCode()).rejects.toThrow('access_denied')
+    expect(errorCallback.waitForCode()).rejects.toThrow('access_denied')
 
     const timeoutCallback = await startOAuthCallback({
       expectedState: 'state',
       port: await freePort(),
       timeoutMs: 5,
     })
-    await expect(timeoutCallback.waitForCode()).rejects.toThrow('timed out')
+    expect(timeoutCallback.waitForCode()).rejects.toThrow('timed out')
 
     const controller = new AbortController()
     const cancelled = await startOAuthCallback({
@@ -77,23 +77,23 @@ describe('OAuth callback', () => {
       signal: controller.signal,
     })
     controller.abort()
-    await expect(cancelled.waitForCode()).rejects.toThrow('cancelled')
+    expect(cancelled.waitForCode()).rejects.toThrow('cancelled')
 
     const occupiedPort = await freePort()
     const first = await startOAuthCallback({ expectedState: 'one', port: occupiedPort })
-    await expect(startOAuthCallback({ expectedState: 'two', port: occupiedPort })).rejects.toThrow('already in use')
+    expect(startOAuthCallback({ expectedState: 'two', port: occupiedPort })).rejects.toThrow('already in use')
     await first.close()
   })
 
   test('rejects non-loopback or mismatched redirect URIs', async () => {
-    await expect(
+    expect(
       startOAuthCallback({
         expectedState: 'state',
         port: 1234,
         redirectUri: 'https://example.test/callback',
       })
     ).rejects.toThrow('loopback')
-    await expect(
+    expect(
       startOAuthCallback({
         expectedState: 'state',
         port: 1234,
@@ -158,7 +158,7 @@ describe('Keychain OAuth provider', () => {
       serverUrl: 'https://mcp.example.test/mcp',
       store: new MemoryStore(),
     })
-    await expect(provider.redirectToAuthorization(new URL('https://auth.test'))).rejects.toThrow('/mcp-auth')
+    expect(provider.redirectToAuthorization(new URL('https://auth.test'))).rejects.toThrow('/mcp-auth')
 
     const state = createOAuthState()
     const interactive = new KeychainOAuthProvider({

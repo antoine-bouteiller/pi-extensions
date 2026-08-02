@@ -204,6 +204,6 @@ describe('global MCP config parsing', () => {
     expect(() => parseMcpConfigText('{ nope', 'fixture.json')).toThrow('fixture.json: contains malformed JSON')
     const path = await temporaryPath('malformed.json')
     await writeFile(path, '{ nope')
-    await expect(loadMcpConfigFile(path)).rejects.toThrow('contains malformed JSON')
+    expect(loadMcpConfigFile(path)).rejects.toThrow('contains malformed JSON')
   })
 })

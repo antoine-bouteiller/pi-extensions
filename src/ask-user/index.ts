@@ -20,7 +20,8 @@ import {
   type EditorTheme,
   type Focusable,
 } from '@earendil-works/pi-tui'
-import { Type } from 'typebox'
+import { Type, type Static } from 'typebox'
+import { Check } from 'typebox/value'
 
 import {
   ASK_USER_PARAMETER_DESCRIPTIONS,
@@ -55,13 +56,15 @@ const AskUserParams = Type.Object({
   }),
 })
 
-interface AskUserDetails {
-  question: string
-  options: string[]
-  answer: string | undefined
-  wasCustom: boolean
-  cancelled: boolean
-}
+const AskUserDetailsSchema = Type.Object({
+  answer: Type.Optional(Type.String()),
+  cancelled: Type.Boolean(),
+  options: Type.Array(Type.String()),
+  question: Type.String(),
+  wasCustom: Type.Boolean(),
+})
+
+type AskUserDetails = Static<typeof AskUserDetailsSchema>
 
 type SelectionResult =
   | {
@@ -81,7 +84,7 @@ export default function askUser(pi: ExtensionAPI) {
   pi.registerTool({
     description: ASK_USER_TOOL_DESCRIPTION,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const reply = (text: string, answer?: string | undefined, wasCustom = false) => ({
+      const reply = (text: string, answer?: string, wasCustom = false) => ({
         content: [{ text, type: 'text' as const }],
         details: {
           answer,
@@ -352,7 +355,7 @@ export default function askUser(pi: ExtensionAPI) {
       return new Text(text, 0, 0)
     },
     renderResult(result, _options, theme, _context) {
-      const details = result.details as AskUserDetails | undefined
+      const details = Check(AskUserDetailsSchema, result.details) ? result.details : undefined
       if (!details) {
         const [first] = result.content
         return new Text(first?.type === 'text' ? first.text : '', 0, 0)

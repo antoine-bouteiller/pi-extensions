@@ -6,6 +6,8 @@ import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import { type ExtensionAPI, type ToolResultEvent } from '@earendil-works/pi-coding-agent'
 
+import { isRecord } from '../shared/records.js'
+
 const RULE_DIRECTORIES = ['.claude/rules', '.agents/rules'] as const
 const RULE_EXTENSIONS = new Set(['.md', '.mdc'])
 const EXCLUDED_DIRECTORIES = new Set(['.git', '.next', '.turbo', 'build', 'coverage', 'dist', 'node_modules'])
@@ -521,8 +523,7 @@ const matchesRule = (rule: Rule, targetPath: string, cwd: string): boolean => {
   }
 }
 
-const record = (value: unknown): Record<string, unknown> | undefined =>
-  typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : undefined
+const record = (value: unknown): Record<string, unknown> | undefined => (isRecord(value) ? value : undefined)
 
 const stringProperty = (value: unknown, property: string): string | undefined => {
   const candidate = record(value)?.[property]
@@ -612,7 +613,7 @@ export default function rulesExtension(pi: ExtensionAPI, environment: RulesEnvir
   pi.on('tool_result', async (event, ctx) => {
     const targetPaths = extractToolPaths(event, ctx.cwd)
     if (targetPaths.length === 0) {
-      return
+      return undefined
     }
 
     const rules = await refresh(ctx.cwd, ctx.isProjectTrusted())

@@ -7,6 +7,10 @@ export default defineConfig({
     style: 'error',
     suspicious: 'error',
   },
+  options: {
+    typeAware: true,
+    typeCheck: true,
+  },
   env: {
     builtin: true,
     commonjs: true,

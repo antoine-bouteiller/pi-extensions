@@ -12,6 +12,8 @@ import {
   type ThemeColor,
 } from '@earendil-works/pi-coding-agent'
 import { Container, matchesKey, truncateToWidth, visibleWidth, type TUI } from '@earendil-works/pi-tui'
+import { Type } from 'typebox'
+import { Check } from 'typebox/value'
 
 import { getSocketPath, isPeekActive, type AgentInfo } from './core.js'
 import { persistedProfileColor } from './profiles.js'
@@ -98,6 +100,174 @@ type PeekSocketEvent =
   | ToolExecutionUpdateEvent
   | ToolExecutionEndEvent
   | AgentSettledEvent
+
+const TextContentSchema = Type.Object({
+  text: Type.String(),
+  textSignature: Type.Optional(Type.String()),
+  type: Type.Literal('text'),
+})
+
+const ThinkingContentSchema = Type.Object({
+  redacted: Type.Optional(Type.Boolean()),
+  thinking: Type.String(),
+  thinkingSignature: Type.Optional(Type.String()),
+  type: Type.Literal('thinking'),
+})
+
+const ImageContentSchema = Type.Object({
+  data: Type.String(),
+  mimeType: Type.String(),
+  type: Type.Literal('image'),
+})
+
+const ToolCallSchema = Type.Object({
+  arguments: Type.Record(Type.String(), Type.Unknown()),
+  id: Type.String(),
+  name: Type.String(),
+  thoughtSignature: Type.Optional(Type.String()),
+  type: Type.Literal('toolCall'),
+})
+
+const UsageSchema = Type.Object({
+  cacheRead: Type.Number(),
+  cacheWrite: Type.Number(),
+  cacheWrite1h: Type.Optional(Type.Number()),
+  cost: Type.Object({
+    cacheRead: Type.Number(),
+    cacheWrite: Type.Number(),
+    input: Type.Number(),
+    output: Type.Number(),
+    total: Type.Number(),
+  }),
+  input: Type.Number(),
+  output: Type.Number(),
+  reasoning: Type.Optional(Type.Number()),
+  totalTokens: Type.Number(),
+})
+
+const AssistantMessageDiagnosticSchema = Type.Object({
+  details: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+  error: Type.Optional(
+    Type.Object({
+      code: Type.Optional(Type.Union([Type.String(), Type.Number()])),
+      message: Type.String(),
+      name: Type.Optional(Type.String()),
+      stack: Type.Optional(Type.String()),
+    })
+  ),
+  timestamp: Type.Number(),
+  type: Type.String(),
+})
+
+const StopReasonSchema = Type.Union([
+  Type.Literal('stop'),
+  Type.Literal('length'),
+  Type.Literal('toolUse'),
+  Type.Literal('error'),
+  Type.Literal('aborted'),
+])
+
+const UserMessageSchema = Type.Object({
+  content: Type.Union([Type.String(), Type.Array(Type.Union([TextContentSchema, ImageContentSchema]))]),
+  role: Type.Literal('user'),
+  timestamp: Type.Number(),
+})
+
+const AssistantMessageSchema = Type.Object({
+  api: Type.String(),
+  content: Type.Array(Type.Union([TextContentSchema, ThinkingContentSchema, ToolCallSchema])),
+  diagnostics: Type.Optional(Type.Array(AssistantMessageDiagnosticSchema)),
+  errorMessage: Type.Optional(Type.String()),
+  model: Type.String(),
+  provider: Type.String(),
+  responseId: Type.Optional(Type.String()),
+  responseModel: Type.Optional(Type.String()),
+  role: Type.Literal('assistant'),
+  stopReason: StopReasonSchema,
+  timestamp: Type.Number(),
+  usage: UsageSchema,
+})
+
+const ToolResultMessageSchema = Type.Object({
+  addedToolNames: Type.Optional(Type.Array(Type.String())),
+  content: Type.Array(Type.Union([TextContentSchema, ImageContentSchema])),
+  details: Type.Optional(Type.Unknown()),
+  isError: Type.Boolean(),
+  role: Type.Literal('toolResult'),
+  timestamp: Type.Number(),
+  toolCallId: Type.String(),
+  toolName: Type.String(),
+  usage: Type.Optional(UsageSchema),
+})
+
+const MessageSchema = Type.Union([UserMessageSchema, AssistantMessageSchema, ToolResultMessageSchema])
+
+const ToolExecutionResultPayloadSchema = Type.Object({
+  content: Type.Array(
+    Type.Object({
+      data: Type.Optional(Type.String()),
+      mimeType: Type.Optional(Type.String()),
+      text: Type.Optional(Type.String()),
+      type: Type.String(),
+    })
+  ),
+  details: Type.Optional(Type.Unknown()),
+})
+
+const ActiveToolEventSchema = Type.Object({
+  args: Type.Unknown(),
+  isError: Type.Optional(Type.Boolean()),
+  partialResult: Type.Optional(ToolExecutionResultPayloadSchema),
+  result: Type.Optional(ToolExecutionResultPayloadSchema),
+  toolCallId: Type.String(),
+  toolName: Type.String(),
+})
+
+const PeekSocketEventSchema = Type.Union([
+  Type.Object({
+    activeTools: Type.Optional(Type.Array(ActiveToolEventSchema)),
+    partialMessage: Type.Optional(AssistantMessageSchema),
+    status: Type.Optional(Type.Union([Type.Literal('thinking'), Type.Literal('streaming'), Type.Literal('tool'), Type.Literal('done')])),
+    type: Type.Literal('sync'),
+    userMessage: Type.Optional(MessageSchema),
+  }),
+  Type.Object({
+    message: MessageSchema,
+    type: Type.Literal('message_start'),
+  }),
+  Type.Object({
+    assistantMessageEvent: Type.Optional(Type.Object({ type: Type.Optional(Type.String()) })),
+    message: MessageSchema,
+    type: Type.Literal('message_update'),
+  }),
+  Type.Object({
+    message: MessageSchema,
+    type: Type.Literal('message_end'),
+  }),
+  Type.Object({
+    args: Type.Unknown(),
+    toolCallId: Type.String(),
+    toolName: Type.String(),
+    type: Type.Literal('tool_execution_start'),
+  }),
+  Type.Object({
+    args: Type.Unknown(),
+    partialResult: ToolExecutionResultPayloadSchema,
+    toolCallId: Type.String(),
+    toolName: Type.String(),
+    type: Type.Literal('tool_execution_update'),
+  }),
+  Type.Object({
+    isError: Type.Boolean(),
+    result: ToolExecutionResultPayloadSchema,
+    toolCallId: Type.String(),
+    toolName: Type.String(),
+    type: Type.Literal('tool_execution_end'),
+  }),
+  Type.Object({
+    type: Type.Literal('agent_settled'),
+  }),
+])
 
 const STATUS_ICONS: Record<PeekStatus, string> = {
   done: '✓',
@@ -273,10 +443,14 @@ export class SubagentPeekOverlay {
           if (!line.trim()) {
             continue
           }
+          let parsed: unknown
           try {
-            this.handleEvent(JSON.parse(line) as PeekSocketEvent)
+            parsed = JSON.parse(line)
           } catch {
-            // Best effort; a malformed event line is dropped.
+            parsed = undefined
+          }
+          if (Check(PeekSocketEventSchema, parsed)) {
+            this.handleEvent(parsed)
           }
         }
       })

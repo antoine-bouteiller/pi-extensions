@@ -1,19 +1,19 @@
 import { describe, expect, test } from 'bun:test'
 
-import { type ExtensionContext, type ReadonlyFooterDataProvider } from '@earendil-works/pi-coding-agent'
+import { asExtensionContext, asFooterDataProvider } from '#test-utils/casts'
 
 import { createStatusChannel } from '../../shared/status_bar'
 import { collectStatuses, statusLines } from '../statuses'
 
-const ctx = {
+const ctx = asExtensionContext({
   hasUI: true,
   ui: { setStatus: () => undefined },
-} as unknown as ExtensionContext
+})
 
 const footerData = (entries: Record<string, string>) =>
-  ({
+  asFooterDataProvider({
     getExtensionStatuses: () => new Map(Object.entries(entries)),
-  }) as unknown as ReadonlyFooterDataProvider
+  })
 
 describe('collectStatuses', () => {
   test('renders a shared-channel status once despite the mirror into pi', () => {

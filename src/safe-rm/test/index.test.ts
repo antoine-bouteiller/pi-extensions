@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { asTool } from '#test-utils/casts'
 import { createFakePi } from '#test-utils/fake_pi'
 
 import safeRm from '../index'
@@ -29,7 +30,7 @@ afterEach(async () => {
 const setup = (): Tool => {
   const { pi, state } = createFakePi()
   safeRm(pi)
-  return state.tools.get('safe_rm') as unknown as Tool
+  return asTool<Tool>(state.tools.get('safe_rm'))
 }
 
 const workspace = async () => {
@@ -58,7 +59,7 @@ describe('safe rm', () => {
     const { cwd } = await workspace()
     await writeFile(join(cwd, 'keep.txt'), 'content')
 
-    await expect(
+    expect(
       setup().execute('call-2', { paths: ['keep.txt', '/etc/hosts'] }, undefined, undefined, {
         cwd,
       })
@@ -77,20 +78,18 @@ describe('safe rm', () => {
     await mkdir(externalMetadata, { recursive: true })
     await writeFile(join(externalMetadata, 'config'), '[core]')
 
-    await expect(setup().execute('call-3', { paths: ['build'] }, undefined, undefined, { cwd })).rejects.toThrow('recursive: true')
-    await expect(
+    expect(setup().execute('call-3', { paths: ['build'] }, undefined, undefined, { cwd })).rejects.toThrow('recursive: true')
+    expect(
       setup().execute('call-4', { paths: ['.git'], recursive: true }, undefined, undefined, {
         cwd,
       })
     ).rejects.toThrow('Git metadata')
-    await expect(
+    expect(
       setup().execute('call-5', { paths: ['repository'], recursive: true }, undefined, undefined, {
         cwd,
       })
     ).rejects.toThrow('Git repository')
-    await expect(setup().execute('call-6', { paths: [join(externalMetadata, 'config')] }, undefined, undefined, { cwd })).rejects.toThrow(
-      'Git metadata'
-    )
+    expect(setup().execute('call-6', { paths: [join(externalMetadata, 'config')] }, undefined, undefined, { cwd })).rejects.toThrow('Git metadata')
     expect(await Bun.file(join(externalMetadata, 'config')).exists()).toBeTrue()
   })
 
@@ -98,7 +97,7 @@ describe('safe rm', () => {
     const { cwd } = await workspace()
     await symlink('/etc', join(cwd, 'outside'))
 
-    await expect(setup().execute('call-7', { paths: ['outside/hosts'] }, undefined, undefined, { cwd })).rejects.toThrow('escapes an allowed root')
+    expect(setup().execute('call-7', { paths: ['outside/hosts'] }, undefined, undefined, { cwd })).rejects.toThrow('escapes an allowed root')
   })
 
   test('refuses direct, nested, and symlink-aliased credentials', async () => {
@@ -111,7 +110,7 @@ describe('safe rm', () => {
     await symlink(credential, join(cwd, 'ordinary.txt'))
 
     for (const params of [{ paths: ['.env'] }, { paths: ['@.env'] }, { paths: ['ordinary.txt'] }, { paths: ['output'], recursive: true }]) {
-      await expect(setup().execute('credential', params, undefined, undefined, { cwd })).rejects.toThrow('protected path')
+      expect(setup().execute('credential', params, undefined, undefined, { cwd })).rejects.toThrow('protected path')
     }
 
     expect(await Bun.file(join(cwd, '.env')).exists()).toBeTrue()
@@ -124,9 +123,7 @@ describe('safe rm', () => {
     await mkdir(join(cwd, 'artifacts', 'checkout', '.git'), { recursive: true })
     await writeFile(join(cwd, 'artifacts', 'checkout', '.git', 'config'), '[core]')
 
-    await expect(setup().execute('nested-git', { paths: ['artifacts'], recursive: true }, undefined, undefined, { cwd })).rejects.toThrow(
-      'Git repository'
-    )
+    expect(setup().execute('nested-git', { paths: ['artifacts'], recursive: true }, undefined, undefined, { cwd })).rejects.toThrow('Git repository')
     expect(await Bun.file(join(cwd, 'artifacts', 'checkout', '.git', 'config')).exists()).toBeTrue()
   })
 
@@ -136,7 +133,7 @@ describe('safe rm', () => {
     const controller = new AbortController()
     controller.abort()
 
-    await expect(setup().execute('cancelled', { paths: ['keep.txt'] }, controller.signal, undefined, { cwd })).rejects.toThrow('cancelled')
+    expect(setup().execute('cancelled', { paths: ['keep.txt'] }, controller.signal, undefined, { cwd })).rejects.toThrow('cancelled')
     expect(await Bun.file(join(cwd, 'keep.txt')).exists()).toBeTrue()
   })
 })

@@ -3,8 +3,10 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, utimesSync, wr
 import { userInfo } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { type ExtensionAPI, type Theme } from '@earendil-works/pi-coding-agent'
-import { visibleWidth, type TUI } from '@earendil-works/pi-tui'
+import { type Theme } from '@earendil-works/pi-coding-agent'
+import { visibleWidth } from '@earendil-works/pi-tui'
+
+import { asExtensionApi, asNarrowed, asTheme, asTui } from '#test-utils/casts'
 
 const TEST_AGENT_DIR = '/tmp/pi-codex-subagents-tests'
 const FAKE_RPC_CHILD = join(import.meta.dir, 'fixtures', 'fake_rpc_child.js')
@@ -12,7 +14,7 @@ const TEST_TEMP_DIR = join(TEST_AGENT_DIR, 'temp')
 process.env.PI_SUBAGENT_TEMP_DIR = TEST_TEMP_DIR
 
 const codingAgent = await import('@earendil-works/pi-coding-agent')
-mock.module('@earendil-works/pi-coding-agent', () => ({
+await mock.module('@earendil-works/pi-coding-agent', () => ({
   ...codingAgent,
   CONFIG_DIR_NAME: '.pi',
   getAgentDir: () => TEST_AGENT_DIR,
@@ -287,7 +289,7 @@ describe('child process lifecycle', () => {
     rmSync(scope, { force: true, recursive: true })
     const manager = createAgentManager()
     try {
-      await expect(
+      expect(
         manager.spawnAgent({
           ...spawnParams(parentSessionId, 'worker', 'must not start'),
           availableModels: AVAILABLE_MODELS.filter((model) => model.id !== 'claude-sonnet-5'),
@@ -402,7 +404,7 @@ describe('child process lifecycle', () => {
       },
     })
     try {
-      await expect(manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'must not start'))).rejects.toThrow('already being created')
+      expect(manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'must not start'))).rejects.toThrow('already being created')
       expect(replaced).toBe(true)
       expect(JSON.parse(readFileSync(lockFile, 'utf8'))).toMatchObject({
         pid: process.pid,
@@ -760,7 +762,7 @@ describe('completion delivery', () => {
       await waitUntil(() => manager.getAgentInfo('fast', parentSessionId).status === 'completed')
       expect(completions).toEqual([])
       controller.abort(new Error('cancelled'))
-      await expect(wait).rejects.toThrow('aborted')
+      expect(wait).rejects.toThrow('aborted')
       await waitUntil(() => completions.some((event) => event.agentName === '/fast'))
       expect(completions.filter((event) => event.agentName === '/fast')).toHaveLength(1)
     } finally {
@@ -789,7 +791,7 @@ describe('completion delivery', () => {
 
       const settled = manager.getAgentInfo('worker', parentSessionId)
       const rejectedAt = activity.length
-      await expect(manager.sendMessage(parentSessionId, 'worker', 'reject restart')).rejects.toThrow('fake prompt rejection')
+      expect(manager.sendMessage(parentSessionId, 'worker', 'reject restart')).rejects.toThrow('fake prompt rejection')
       expect(manager.getAgentInfo('worker', parentSessionId)).toMatchObject({
         completedAt: settled.completedAt,
         finalResponse: settled.finalResponse,
@@ -883,7 +885,7 @@ describe('extension completion delivery and TUI', () => {
     const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
     rmSync(scope, { force: true, recursive: true })
     const { default: subagentExtension } = await import('../index.js')
-    subagentExtension(pi as unknown as ExtensionAPI, { piCommand: { command: FAKE_RPC_CHILD } })
+    subagentExtension(asExtensionApi(pi), { piCommand: { command: FAKE_RPC_CHILD } })
     const emit = async (name: string, event: unknown = {}) => {
       for (const handler of handlers.get(name) ?? []) {
         await handler(event, ctx)
@@ -1024,15 +1026,15 @@ describe('subagent peek overlay', () => {
       taskName: 'a-very-long-agent-name',
       updatedAt: now,
     }
-    const tui = {
+    const tui = asTui({
       requestRender() {
         /* No-op stub; tests only assert on rendered output. */
       },
       terminal: { columns, rows },
-    } as unknown as TUI
-    const theme = {
+    })
+    const theme = asTheme({
       fg: (_color: string, text: string) => text,
-    } as unknown as Theme
+    })
     return new SubagentPeekOverlay({
       done: () => {
         /* No-op stub; navigation is not exercised in these tests. */
@@ -1046,7 +1048,7 @@ describe('subagent peek overlay', () => {
   test('initially follows a long transcript at the end', () => {
     const overlay = createOverlay()
     try {
-      const internals = overlay as unknown as PeekOverlayInternals
+      const internals = asNarrowed<PeekOverlayInternals, typeof overlay>(overlay)
       internals.cachedLines = Array.from({ length: 30 }, (_value, index) => `line-${index}`)
       internals.cachedWidth = 38
 
@@ -1063,12 +1065,12 @@ describe('subagent peek overlay', () => {
     const overlay = createOverlay()
     try {
       const colors: string[] = []
-      ;(overlay as unknown as PeekOverlayInternals).theme = {
+      asNarrowed<PeekOverlayInternals, typeof overlay>(overlay).theme = asTheme({
         fg(color: string, text: string) {
           colors.push(color)
           return text
         },
-      } as Theme
+      })
       overlay.render(40)
       expect(colors).toContain('warning')
       expect(colors).toContain('success')
@@ -1080,7 +1082,7 @@ describe('subagent peek overlay', () => {
   test('keeps every frame line within a narrow render width', () => {
     const overlay = createOverlay(12, 14)
     try {
-      const internals = overlay as unknown as PeekOverlayInternals
+      const internals = asNarrowed<PeekOverlayInternals, typeof overlay>(overlay)
       internals.cachedLines = ['content that is much wider than the overlay']
       internals.cachedWidth = 10
 
@@ -1098,7 +1100,7 @@ describe('completion mailbox', () => {
     const manager = createAgentManager()
     const controller = new AbortController()
     setTimeout(() => controller.abort(new Error('cancelled')), 10)
-    await expect(manager.waitAgent('empty-parent', undefined, controller.signal)).rejects.toThrow('cancelled')
+    expect(manager.waitAgent('empty-parent', undefined, controller.signal)).rejects.toThrow('cancelled')
     await manager.shutdown()
   })
 

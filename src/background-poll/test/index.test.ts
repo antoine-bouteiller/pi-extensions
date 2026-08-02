@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 
+import { asExtensionApi } from '#test-utils/casts'
+
 import backgroundPoll from '../index'
 
 interface ToolResult {
@@ -29,17 +31,19 @@ const setup = (execResults: { stdout: string; stderr: string; code: number }[]) 
     messageSent = resolve
   })
 
-  backgroundPoll({
-    exec: async () => execResults.shift() ?? { code: 1, stderr: 'not ready', stdout: '' },
-    on: (event: string, handler: Handler) => handlers.set(event, handler),
-    registerTool: (definition: Tool) => {
-      tool = definition
-    },
-    sendMessage: (message: Record<string, unknown>, options: Record<string, unknown>) => {
-      messages.push({ message, options })
-      messageSent?.()
-    },
-  } as unknown as Parameters<typeof backgroundPoll>[0])
+  backgroundPoll(
+    asExtensionApi({
+      exec: async () => execResults.shift() ?? { code: 1, stderr: 'not ready', stdout: '' },
+      on: (event: string, handler: Handler) => handlers.set(event, handler),
+      registerTool: (definition: Tool) => {
+        tool = definition
+      },
+      sendMessage: (message: Record<string, unknown>, options: Record<string, unknown>) => {
+        messages.push({ message, options })
+        messageSent?.()
+      },
+    })
+  )
 
   const statuses: unknown[] = []
   const ctx = {

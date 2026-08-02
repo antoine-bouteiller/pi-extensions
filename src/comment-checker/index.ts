@@ -2,6 +2,8 @@ import { execFile } from 'node:child_process'
 
 import { type ExtensionAPI, type ExtensionContext, type ToolResultEvent } from '@earendil-works/pi-coding-agent'
 
+import { isRecord } from '../shared/records.js'
+
 const MAX_OUTPUT_BYTES = 64 * 1024
 const PROCESS_TIMEOUT_MS = 30_000
 
@@ -31,8 +33,7 @@ interface CheckerResult {
 
 export type CheckerRunner = (input: HookInput) => Promise<CheckerResult>
 
-const record = (value: unknown): Record<string, unknown> | undefined =>
-  typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : undefined
+const record = (value: unknown): Record<string, unknown> | undefined => (isRecord(value) ? value : undefined)
 
 const hookInput = (event: ToolResultEvent, ctx: ExtensionContext): HookInput | undefined => {
   if (event.isError) {

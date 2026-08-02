@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
+import { asResult } from '#test-utils/casts'
 import { createFakePi } from '#test-utils/fake_pi'
 
 import claudeCodeExtension, { parseCommandFrontmatter } from '../index'
@@ -44,7 +45,7 @@ const createFixture = async () => {
   })
   const invoke = async <Result>(name: string, event: unknown, eventContext: unknown) => {
     const results = await fakePi.emit(name, event, eventContext)
-    return results[0] as Result
+    return asResult<Result>(results[0])
   }
 
   return { context, homeDirectory, invoke, projectDirectory }

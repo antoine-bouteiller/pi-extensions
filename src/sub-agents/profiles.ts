@@ -1,6 +1,6 @@
 import { type ThemeColor } from '@earendil-works/pi-coding-agent'
 
-const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number]
 
 export interface AvailableModel {
@@ -215,7 +215,7 @@ export const resolveAgentConfig = (
   })
 }
 
-const THEME_COLORS = new Set<ThemeColor>([
+export const THEME_COLOR_VALUES = [
   'accent',
   'border',
   'borderAccent',
@@ -262,7 +262,9 @@ const THEME_COLORS = new Set<ThemeColor>([
   'thinkingXhigh',
   'thinkingMax',
   'bashMode',
-])
+] as const satisfies readonly ThemeColor[]
+
+const THEME_COLORS: ReadonlySet<string> = new Set<ThemeColor>(THEME_COLOR_VALUES)
 
 export const configuredProfileColor = (profile: unknown): ThemeColor => {
   if (typeof profile !== 'string') {
@@ -272,5 +274,7 @@ export const configuredProfileColor = (profile: unknown): ThemeColor => {
   return config ? (config.color ?? 'accent') : 'muted'
 }
 
+const isThemeColor = (value: unknown): value is ThemeColor => typeof value === 'string' && THEME_COLORS.has(value)
+
 export const persistedProfileColor = (profile: unknown, color: unknown): ThemeColor =>
-  typeof profile === 'string' && THEME_COLORS.has(color as ThemeColor) ? (color as ThemeColor) : 'muted'
+  typeof profile === 'string' && isThemeColor(color) ? color : 'muted'

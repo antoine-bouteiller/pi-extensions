@@ -11,6 +11,8 @@ import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamable
 import { type Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { type JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
 
+import { asError, asNarrowed } from '#test-utils/casts'
+
 import { readonlyMcpPolicy } from '../index.js'
 import { KeychainCredentialError, type CredentialStore } from '../keychain.js'
 import { McpManager } from '../manager.js'
@@ -108,7 +110,7 @@ const harness = (
           calls.closes += 1
         },
         async connect(transport: Transport) {
-          const fake = transport as FakeTransport
+          const fake = asNarrowed<FakeTransport, Transport>(transport)
           calls.connects.push(fake.kind)
           await options.connect?.(fake, fake.provider)
         },
@@ -230,7 +232,7 @@ describe('MCP manager', () => {
         throw new UnauthorizedError()
       },
     })
-    await expect(unauthorized.manager.list('remote')).rejects.toThrow()
+    expect(unauthorized.manager.list('remote')).rejects.toThrow()
     expect(unauthorized.calls.connects).toEqual(['streamable-http', 'streamable-http'])
 
     const broken = harness({
@@ -239,7 +241,7 @@ describe('MCP manager', () => {
         throw new StreamableHTTPError(500, 'broken')
       },
     })
-    await expect(broken.manager.list('remote')).rejects.toThrow()
+    expect(broken.manager.list('remote')).rejects.toThrow()
     expect(broken.calls.connects).toEqual(['streamable-http'])
   })
 
@@ -290,7 +292,7 @@ describe('MCP manager', () => {
     })
 
     expect(fixture.manager.oauthServers()).toEqual([])
-    await expect(fixture.manager.list('remote')).rejects.toThrow()
+    expect(fixture.manager.list('remote')).rejects.toThrow()
     expect(fixture.calls.connects).toEqual(['streamable-http'])
     expect(fixture.calls.keychainReads).toBe(0)
   })
@@ -400,8 +402,8 @@ describe('MCP manager', () => {
     await fixture.manager.call('linear_get_issue', {})
 
     for (const denied of ['create_issue', 'dangerous_read', 'mystery']) {
-      await expect(fixture.manager.describe(denied, { server: 'linear' })).rejects.toThrow('read-only policy')
-      await expect(fixture.manager.call(denied, {}, { server: 'linear' })).rejects.toThrow(`MCP tool "${denied}" on server "linear"`)
+      expect(fixture.manager.describe(denied, { server: 'linear' })).rejects.toThrow('read-only policy')
+      expect(fixture.manager.call(denied, {}, { server: 'linear' })).rejects.toThrow(`MCP tool "${denied}" on server "linear"`)
     }
     expect(fixture.calls.toolCalls.map((call) => call.name)).toEqual(['get_issue'])
   })
@@ -432,8 +434,8 @@ describe('MCP manager', () => {
       await fixture.manager.call(tool, {}, { server: 'dbx' })
     }
     for (const tool of denied) {
-      await expect(fixture.manager.describe(tool, { server: 'dbx' })).rejects.toThrow('read-only policy')
-      await expect(fixture.manager.call(tool, {}, { server: 'dbx' })).rejects.toThrow('read-only policy')
+      expect(fixture.manager.describe(tool, { server: 'dbx' })).rejects.toThrow('read-only policy')
+      expect(fixture.manager.call(tool, {}, { server: 'dbx' })).rejects.toThrow('read-only policy')
     }
     expect(fixture.calls.toolCalls.map((call) => call.name)).toEqual(allowed)
 
@@ -447,7 +449,7 @@ describe('MCP manager', () => {
       policy: readonlyMcpPolicy,
     })
     expect(await impersonator.manager.list('other')).toEqual([])
-    await expect(impersonator.manager.call('other_dbx_list_tables', {})).rejects.toThrow('read-only policy')
+    expect(impersonator.manager.call('other_dbx_list_tables', {})).rejects.toThrow('read-only policy')
   })
 
   test('passes the requested operation and canonical names to policy callbacks', async () => {
@@ -498,7 +500,7 @@ describe('MCP manager', () => {
         },
       },
     })
-    await expect(collision.manager.list('local')).rejects.toThrow('collision')
+    expect(collision.manager.list('local')).rejects.toThrow('collision')
 
     const cursor = harness({
       pages: {
@@ -506,17 +508,17 @@ describe('MCP manager', () => {
         root: { nextCursor: 'again', tools: [] },
       },
     })
-    await expect(cursor.manager.list('local')).rejects.toThrow('repeated a tools cursor')
+    expect(cursor.manager.list('local')).rejects.toThrow('repeated a tools cursor')
 
     const regex = harness()
     for (const unsafe of ['[', 'a*a*a*a*a*a*a*a*b', '(a+)+$']) {
-      await expect(regex.manager.search(unsafe, { regex: true })).rejects.toThrow('regular expression')
+      expect(regex.manager.search(unsafe, { regex: true })).rejects.toThrow('regular expression')
     }
 
     const toolError = harness({
       callResult: { content: [{ text: 'remote failed', type: 'text' }], isError: true },
     })
-    await expect(toolError.manager.call('local_echo', {})).rejects.toThrow('remote failed')
+    expect(toolError.manager.call('local_echo', {})).rejects.toThrow('remote failed')
 
     const oversizedError = harness({
       callResult: {
@@ -528,7 +530,7 @@ describe('MCP manager', () => {
       await oversizedError.manager.call('local_echo', {})
       throw new Error('expected oversized MCP error')
     } catch (error) {
-      const { message } = error as Error
+      const { message } = asError(error)
       expect(Buffer.byteLength(message, 'utf8')).toBeLessThanOrEqual(DEFAULT_MAX_BYTES)
       expect(message).toContain('Full output saved to:')
     }
@@ -553,7 +555,7 @@ describe('MCP manager', () => {
         if (!provider) {
           throw new Error('provider missing')
         }
-        provider.saveCodeVerifier('verifier')
+        await provider.saveCodeVerifier('verifier')
         const state = await provider.state?.()
         await provider.redirectToAuthorization(new URL(`https://auth.test/start?state=${encodeURIComponent(state ?? '')}`))
         transport.finish = (code: string) => {
@@ -638,7 +640,7 @@ describe('MCP manager', () => {
       },
     })
     await fixture.manager.connect('same.name')
-    await expect(fixture.manager.authenticate('same_name')).rejects.toThrow('collision')
+    expect(fixture.manager.authenticate('same_name')).rejects.toThrow('collision')
     expect(fixture.manager.status().find((server) => server.name === 'same_name')?.status).toBe('failed')
     expect(fixture.calls.closes).toBe(1)
   })
@@ -677,7 +679,7 @@ describe('MCP manager', () => {
         throw new StreamableHTTPError(500, 'response leaked bearer secret-token')
       },
     })
-    await expect(transport.manager.connect('remote')).rejects.not.toThrow('secret-token')
+    expect(transport.manager.connect('remote')).rejects.not.toThrow('secret-token')
     expect(JSON.stringify(transport.manager.status())).not.toContain('secret-token')
 
     const request = harness({
@@ -685,7 +687,7 @@ describe('MCP manager', () => {
         throw new Error('SDK failure leaked client_secret=secret-token')
       },
     })
-    await expect(request.manager.call('local_echo', {})).rejects.not.toThrow('secret-token')
+    expect(request.manager.call('local_echo', {})).rejects.not.toThrow('secret-token')
 
     const keychain = harness({
       config: {
@@ -706,7 +708,7 @@ describe('MCP manager', () => {
         },
       },
     })
-    await expect(keychain.manager.connect('remote')).rejects.toThrow('Ensure Keychain is available and unlocked')
+    expect(keychain.manager.connect('remote')).rejects.toThrow('Ensure Keychain is available and unlocked')
   })
 
   test('cancelling the sole connection waiter aborts and closes the shared attempt', async () => {
@@ -715,7 +717,7 @@ describe('MCP manager', () => {
     const connecting = fixture.manager.connect('local', { signal: controller.signal })
     await Promise.resolve()
     controller.abort()
-    await expect(connecting).rejects.toThrow()
+    expect(connecting).rejects.toThrow()
     await Bun.sleep(0)
     expect(fixture.calls.closes).toBe(1)
   })
@@ -725,7 +727,7 @@ describe('MCP manager', () => {
     const connecting = fixture.manager.connect('local')
     await Promise.resolve()
     await fixture.manager.close()
-    await expect(connecting).rejects.toThrow()
+    expect(connecting).rejects.toThrow()
     expect(fixture.calls.closes).toBe(1)
   })
 

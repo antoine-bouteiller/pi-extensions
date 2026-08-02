@@ -87,7 +87,7 @@ const turndown = (): TurndownService => {
 
 const articleHtml = (html: string): string => {
   for (const tag of ['article', 'main', 'body'] as const) {
-    const match = html.match(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`, 'i'))
+    const match = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`, 'i').exec(html)
     if (match?.[1]) {
       return match[1]
     }
@@ -96,7 +96,7 @@ const articleHtml = (html: string): string => {
 }
 
 const pageTitle = (html: string): string | undefined => {
-  const match = html.match(/<title\b[^>]*>(?<title>[\s\S]*?)<\/title>/i)
+  const match = /<title\b[^>]*>(?<title>[\s\S]*?)<\/title>/i.exec(html)
   const captured = match?.groups?.title
   if (!captured) {
     return undefined

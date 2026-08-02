@@ -13,10 +13,12 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import { Text, matchesKey, truncateToWidth, visibleWidth, type TUI } from '@earendil-works/pi-tui'
 import { type Static, Type } from 'typebox'
+import { Check } from 'typebox/value'
 
 import { runningAgents } from '../shared/agent_activity.js'
 import { truncateOutput, truncationNotice } from '../shared/tool_output.js'
 import {
+  AgentCompletionEventSchema,
   AgentManager,
   type AgentCompletionEvent,
   type AgentInfo,
@@ -25,7 +27,12 @@ import {
   writeFullToolOutput,
 } from './core.js'
 import { SubagentPeekOverlay } from './peek.js'
-import { AGENT_PROFILE_NAMES, configuredProfileColor, getAgentProfilesDescription, persistedProfileColor, type AgentProfileName } from './profiles.js'
+import { AGENT_PROFILE_NAMES, configuredProfileColor, getAgentProfilesDescription, persistedProfileColor } from './profiles.js'
+
+const WaitAgentDetailsSchema = Type.Object({
+  event: Type.Optional(AgentCompletionEventSchema),
+  message: Type.Optional(Type.String()),
+})
 
 const textResult = <TDetails>(text: string, details: TDetails): AgentToolResult<TDetails> => ({
   content: [{ text, type: 'text' as const }],
@@ -76,7 +83,7 @@ const parentSessionId = (ctx: ExtensionContext): string => {
   if (!id) {
     throw new Error('The parent Pi session has no session id.')
   }
-  return String(id)
+  return id
 }
 
 const formatDuration = (ms: number): string => {
@@ -303,10 +310,10 @@ ${getAgentProfilesDescription()}`
       }
       try {
         const result = await manager.spawnAgent({
-          agent_type: params.agent_type as AgentProfileName,
+          agent_type: params.agent_type,
           availableModels: availableModels.map((model) => ({
-            id: String(model.id),
-            provider: String(model.provider),
+            id: model.id,
+            provider: model.provider,
           })),
           cwd: ctx.cwd,
           message: params.message,
@@ -364,7 +371,7 @@ ${getAgentProfilesDescription()}`
 
   pi.on('before_agent_start', (event) => {
     if (process.env.PI_SUBAGENT_OWNER_TOKEN !== undefined) {
-      return
+      return undefined
     }
     return { systemPrompt: event.systemPrompt + DELEGATION_GUIDANCE }
   })
@@ -419,7 +426,7 @@ ${getAgentProfilesDescription()}`
       if (result.isError) {
         return new Text(theme.fg('error', '✗ wait failed'), 0, 0)
       }
-      const details = result.details as { event?: AgentCompletionEvent; message?: string } | undefined
+      const details = Check(WaitAgentDetailsSchema, result.details) ? result.details : undefined
       const event = details?.event
       if (!event) {
         return new Text(theme.fg('success', details?.message || 'done'), 0, 0)

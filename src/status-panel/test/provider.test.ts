@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 
+import { asFetch } from '#test-utils/casts'
+
 import { AnthropicQuotaPoller, fetchAnthropicQuota, quotaFromHeaders } from '../provider'
 import { type ProviderQuota } from '../state'
 
@@ -12,16 +14,17 @@ const deferred = <Value>() => {
 }
 
 const fakeTimers = () => {
-  let nextId = 1
-  const handlers = new Map<number, () => void>()
+  const handlers = new Map<ReturnType<typeof setInterval>, () => void>()
   return {
     cancel(timer: ReturnType<typeof setInterval>) {
-      handlers.delete(timer as unknown as number)
+      clearInterval(timer)
+      handlers.delete(timer)
     },
     schedule(handler: () => void) {
-      const id = nextId++
-      handlers.set(id, handler)
-      return id as unknown as ReturnType<typeof setInterval>
+      // Max delay so this never actually fires; tick() drives callbacks manually.
+      const timer = setInterval(() => undefined, 2 ** 31 - 1)
+      handlers.set(timer, handler)
+      return timer
     },
     get size() {
       return handlers.size
@@ -46,7 +49,7 @@ describe('Anthropic quota provider', () => {
     const controller = new AbortController()
     let requestedUrl = ''
     let requestedInit: RequestInit | undefined
-    const fakeFetch = ((input: string | URL | Request, init?: RequestInit) => {
+    const fakeFetch = asFetch((input, init) => {
       requestedUrl = String(input)
       requestedInit = init
       return gatewayResponse({
@@ -63,7 +66,7 @@ describe('Anthropic quota provider', () => {
           },
         ],
       })
-    }) as typeof fetch
+    })
 
     const quota = await fetchAnthropicQuota('http://127.0.0.1:3456', controller.signal, fakeFetch)
     if (!quota) {
@@ -89,7 +92,7 @@ describe('Anthropic quota provider', () => {
   })
 
   test('reads the active profile rather than the first one', async () => {
-    const fakeFetch = (() =>
+    const fakeFetch = asFetch(() =>
       gatewayResponse({
         activeProfile: 'work',
         profiles: [
@@ -103,7 +106,8 @@ describe('Anthropic quota provider', () => {
             ],
           },
         ],
-      })) as unknown as typeof fetch
+      })
+    )
 
     const quota = await fetchAnthropicQuota('http://gateway', undefined, fakeFetch)
     expect(quota?.percent).toBe(50)
@@ -111,25 +115,26 @@ describe('Anthropic quota provider', () => {
 
   test('strips trailing slashes from the configured base URL', async () => {
     let requestedUrl = ''
-    const fakeFetch = ((input: string | URL | Request) => {
+    const fakeFetch = asFetch((input) => {
       requestedUrl = String(input)
       return gatewayResponse({ profiles: [] })
-    }) as typeof fetch
+    })
 
     await fetchAnthropicQuota('http://127.0.0.1:3456/', undefined, fakeFetch)
     expect(requestedUrl).toBe('http://127.0.0.1:3456/v1/usage/quota/all')
   })
 
   test('returns null without a base URL, and for unsuccessful or malformed responses', async () => {
-    const unusable = (() => {
+    const unusable = asFetch(() => {
       throw new Error('should not be called')
-    }) as unknown as typeof fetch
-    const unsuccessful = (() => Promise.resolve(new Response(undefined, { status: 404 }))) as unknown as typeof fetch
-    const malformed = (() =>
+    })
+    const unsuccessful = asFetch(() => Promise.resolve(new Response(undefined, { status: 404 })))
+    const malformed = asFetch(() =>
       gatewayResponse({
         profiles: [{ isActive: true, windows: [{ type: 'five_hour', utilization: 0.1 }] }],
-      })) as unknown as typeof fetch
-    const empty = (() => gatewayResponse({ profiles: [] })) as unknown as typeof fetch
+      })
+    )
+    const empty = asFetch(() => gatewayResponse({ profiles: [] }))
 
     expect(await fetchAnthropicQuota('', undefined, unusable)).toBeUndefined()
     expect(await fetchAnthropicQuota('http://gateway', undefined, unsuccessful)).toBeUndefined()

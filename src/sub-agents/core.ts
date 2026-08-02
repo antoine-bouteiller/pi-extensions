@@ -26,9 +26,20 @@ import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
 import { getAgentDir, type ThemeColor } from '@earendil-works/pi-coding-agent'
+import { Type, type Static } from 'typebox'
+import { Check } from 'typebox/value'
 
+import { isRecord } from '../shared/records.js'
 import { inspectProcess, ownershipMatches, processAlive, processOwnerIsActive, type ProcessSnapshot } from './process_ownership.js'
-import { persistedProfileColor, resolveAgentConfig, type AgentProfileName, type AvailableModel, type ThinkingLevel } from './profiles.js'
+import {
+  persistedProfileColor,
+  resolveAgentConfig,
+  THEME_COLOR_VALUES,
+  THINKING_LEVELS,
+  type AgentProfileName,
+  type AvailableModel,
+  type ThinkingLevel,
+} from './profiles.js'
 import { consumeFirstMatchingMailboxEvent, RpcJsonlDecoder } from './rpc.js'
 
 export { consumeFirstMatchingMailboxEvent, RpcJsonlDecoder } from './rpc.js'
@@ -44,7 +55,57 @@ const DEFAULT_STARTUP_TIMEOUT_MS = 15_000
 const DEFAULT_RETENTION_DAYS = 7
 const FINAL_STATUSES = new Set<AgentRuntimeStatus>(['completed', 'failed', 'interrupted'])
 
-export type AgentRuntimeStatus = 'starting' | 'running' | 'completed' | 'failed' | 'interrupted'
+const AGENT_RUNTIME_STATUSES = ['starting', 'running', 'completed', 'failed', 'interrupted'] as const
+export type AgentRuntimeStatus = (typeof AGENT_RUNTIME_STATUSES)[number]
+
+const ThinkingLevelSchema = Type.Enum(THINKING_LEVELS)
+const ThemeColorSchema = Type.Enum(THEME_COLOR_VALUES)
+const AgentRuntimeStatusSchema = Type.Enum(AGENT_RUNTIME_STATUSES)
+
+const ChildProcessOwnershipSchema = Type.Object({
+  ownerPid: Type.Number(),
+  ownerProcessIdentity: Type.Optional(Type.String()),
+  pid: Type.Number(),
+  processIdentity: Type.String(),
+  startedAt: Type.Number(),
+  token: Type.String(),
+})
+
+// Older on-disk records may predate a field added later; readInfoFile reconstructs those instead of rejecting the record.
+const StoredAgentInfoSchema = Type.Object({
+  agentType: Type.Optional(Type.String()),
+  allowedTools: Type.Optional(Type.Array(Type.String())),
+  canonicalName: Type.Optional(Type.String()),
+  childProcess: Type.Optional(ChildProcessOwnershipSchema),
+  closedAt: Type.Optional(Type.Number()),
+  color: Type.Optional(ThemeColorSchema),
+  completedAt: Type.Optional(Type.Number()),
+  createdAt: Type.Number(),
+  cwd: Type.Optional(Type.String()),
+  error: Type.Optional(Type.String()),
+  finalResponse: Type.Optional(Type.String()),
+  id: Type.String(),
+  infoFile: Type.Optional(Type.String()),
+  isReadonly: Type.Optional(Type.Boolean()),
+  lastActivity: Type.Optional(Type.Number()),
+  lastTaskMessage: Type.Optional(Type.String()),
+  logFile: Type.Optional(Type.String()),
+  messageCount: Type.Optional(Type.Number()),
+  model: Type.Optional(Type.String()),
+  modelId: Type.Optional(Type.String()),
+  parentSessionFile: Type.Optional(Type.String()),
+  parentSessionId: Type.Optional(Type.String()),
+  profile: Type.Optional(Type.String()),
+  prompt: Type.Optional(Type.String()),
+  provider: Type.Optional(Type.String()),
+  sessionFile: Type.Optional(Type.String()),
+  startedAt: Type.Optional(Type.Number()),
+  status: Type.Union([AgentRuntimeStatusSchema, Type.Literal('closed')]),
+  taskName: Type.String(),
+  thinking: Type.Optional(ThinkingLevelSchema),
+  tools: Type.Optional(Type.String()),
+  updatedAt: Type.Number(),
+})
 
 interface SubagentConfig {
   storageDir?: string
@@ -150,18 +211,20 @@ interface LiveAgent {
   candidateError?: string
 }
 
-export interface AgentCompletionEvent {
-  id: string
-  parentSessionId: string
-  agentName: string
-  status: AgentRuntimeStatus
-  finalResponse?: string
-  error?: string
-  createdAt: number
-  profile?: string
-  color: ThemeColor
-  isReadonly?: boolean
-}
+export const AgentCompletionEventSchema = Type.Object({
+  agentName: Type.String(),
+  color: ThemeColorSchema,
+  createdAt: Type.Number(),
+  error: Type.Optional(Type.String()),
+  finalResponse: Type.Optional(Type.String()),
+  id: Type.String(),
+  isReadonly: Type.Optional(Type.Boolean()),
+  parentSessionId: Type.String(),
+  profile: Type.Optional(Type.String()),
+  status: AgentRuntimeStatusSchema,
+})
+
+export type AgentCompletionEvent = Static<typeof AgentCompletionEventSchema>
 
 interface AgentActivityEvent {
   parentSessionId: string
@@ -211,10 +274,10 @@ const expandHome = (value: string): string => {
 }
 
 const normalizeConfig = (value: unknown): SubagentConfig => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+  if (!isRecord(value) || Array.isArray(value)) {
     return {}
   }
-  const raw = value as Record<string, unknown>
+  const raw = value
   const retentionDays =
     typeof raw.retentionDays === 'number' && Number.isFinite(raw.retentionDays) && raw.retentionDays >= 0 ? raw.retentionDays : undefined
   return {
@@ -435,13 +498,16 @@ const normalizeTaskName = (name: string): string => {
 
 const taskLockFile = (parentSessionId: string, taskName: string): string => join(scopeDir(parentSessionId), `.task-${taskStorageKey(taskName)}.lock`)
 
+const TaskLockOwnerSchema = Type.Object({
+  pid: Type.Optional(Type.Number()),
+  processIdentity: Type.Optional(Type.String()),
+  token: Type.Optional(Type.String()),
+})
+
 const taskLockIsActive = (parentSessionId: string, taskName: string): boolean => {
   try {
-    const owner = JSON.parse(readFileSync(taskLockFile(parentSessionId, taskName), 'utf8')) as {
-      pid?: number
-      processIdentity?: string
-    }
-    return processOwnerIsActive(owner)
+    const owner: unknown = JSON.parse(readFileSync(taskLockFile(parentSessionId, taskName), 'utf8'))
+    return Check(TaskLockOwnerSchema, owner) && processOwnerIsActive(owner)
   } catch {
     return false
   }
@@ -455,7 +521,8 @@ interface TaskLockOwner {
 
 const parseTaskLockOwner = (content: string): TaskLockOwner => {
   try {
-    return JSON.parse(content) as TaskLockOwner
+    const parsed: unknown = JSON.parse(content)
+    return Check(TaskLockOwnerSchema, parsed) ? parsed : {}
   } catch {
     return {}
   }
@@ -528,21 +595,36 @@ const saveInfo = (info: AgentInfo): void => {
   renameSync(temporary, info.infoFile)
 }
 
+const closedStoredStatus = (parsed: Static<typeof StoredAgentInfoSchema>): AgentRuntimeStatus => {
+  if (parsed.error) {
+    return 'failed'
+  }
+  return parsed.finalResponse === undefined ? 'interrupted' : 'completed'
+}
+
 const readInfoFile = (file: string): AgentInfo | undefined => {
   try {
-    const info = JSON.parse(readFileSync(file, 'utf8')) as Omit<AgentInfo, 'status'> & {
-      status: AgentRuntimeStatus | 'closed'
-      closedAt?: number
+    const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'))
+    if (!Check(StoredAgentInfoSchema, parsed)) {
+      return undefined
     }
-    if (info.status === 'closed') {
-      if (info.error) {
-        info.status = 'failed'
-      } else {
-        info.status = info.finalResponse === undefined ? 'interrupted' : 'completed'
-      }
-      delete info.closedAt
+    const status: AgentRuntimeStatus = parsed.status === 'closed' ? closedStoredStatus(parsed) : parsed.status
+    const info: AgentInfo & { closedAt?: number } = {
+      ...parsed,
+      canonicalName: parsed.canonicalName ?? canonicalAgentName(parsed.taskName),
+      cwd: parsed.cwd ?? '',
+      infoFile: parsed.infoFile ?? file,
+      logFile: parsed.logFile ?? '',
+      messageCount: parsed.messageCount ?? 0,
+      model: parsed.model ?? '',
+      modelId: parsed.modelId ?? '',
+      parentSessionId: parsed.parentSessionId ?? '',
+      provider: parsed.provider ?? '',
+      sessionFile: parsed.sessionFile ?? '',
+      status,
     }
-    return info as AgentInfo
+    delete info.closedAt
+    return info
   } catch {
     return undefined
   }
@@ -588,6 +670,14 @@ interface PeekMarker {
   token: string
 }
 
+const PeekMarkerSchema = Type.Object({
+  pid: Type.Number(),
+  startedAt: Type.Number(),
+  token: Type.String(),
+})
+
+const PeekMarkerPartialSchema = Type.Partial(PeekMarkerSchema)
+
 export const getSocketPath = (agentId: string): string =>
   process.platform === 'win32' ? `\\\\.\\pipe\\${PACKAGE_BASENAME}-${userInfo().username}-${agentId}` : join(SOCKET_DIR, `${agentId}.sock`)
 
@@ -601,8 +691,8 @@ const clearActive = (agentId: string, kind: 'active' | 'peek', owner?: Pick<Peek
   const file = markerPath(agentId, kind)
   try {
     if (owner && existsSync(file)) {
-      const current = JSON.parse(readFileSync(file, 'utf8')) as Partial<PeekMarker>
-      if (current.pid !== owner.pid || current.token !== owner.token) {
+      const current: unknown = JSON.parse(readFileSync(file, 'utf8'))
+      if (!Check(PeekMarkerPartialSchema, current) || current.pid !== owner.pid || current.token !== owner.token) {
         return
       }
     }
@@ -618,7 +708,10 @@ const isActive = (agentId: string, kind: 'active' | 'peek'): boolean => {
     if (!existsSync(file)) {
       return false
     }
-    const marker = JSON.parse(readFileSync(file, 'utf8')) as PeekMarker
+    const marker: unknown = JSON.parse(readFileSync(file, 'utf8'))
+    if (!Check(PeekMarkerSchema, marker)) {
+      return false
+    }
     if (processAlive(marker.pid)) {
       return true
     }
@@ -676,6 +769,32 @@ export interface SubagentRpcEvent {
   isError?: boolean
   finalError?: string
 }
+
+const SubagentMessageSchema = Type.Object({
+  content: Type.Optional(Type.Unknown()),
+  errorMessage: Type.Optional(Type.String()),
+  role: Type.Optional(Type.String()),
+  stopReason: Type.Optional(Type.String()),
+  toolCallId: Type.Optional(Type.String()),
+})
+
+const SubagentRpcEventSchema = Type.Object({
+  args: Type.Optional(Type.Unknown()),
+  assistantMessageEvent: Type.Optional(Type.Object({ type: Type.Optional(Type.String()) })),
+  data: Type.Optional(Type.Unknown()),
+  error: Type.Optional(Type.String()),
+  finalError: Type.Optional(Type.String()),
+  id: Type.Optional(Type.String()),
+  isError: Type.Optional(Type.Boolean()),
+  message: Type.Optional(SubagentMessageSchema),
+  messages: Type.Optional(Type.Array(SubagentMessageSchema)),
+  partialResult: Type.Optional(Type.Unknown()),
+  result: Type.Optional(Type.Unknown()),
+  success: Type.Optional(Type.Boolean()),
+  toolCallId: Type.Optional(Type.String()),
+  toolName: Type.Optional(Type.String()),
+  type: Type.String(),
+})
 
 class SessionLogger {
   private stream: WriteStream | undefined = undefined
@@ -1457,10 +1576,11 @@ export class AgentManager {
       return Promise.reject(new Error(`Agent ${live.info.taskName} process is not available.`))
     }
     const id = `req-${++live.reqId}`
+    const commandType = typeof command.type === 'string' ? command.type : 'unknown'
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         live.pending.delete(id)
-        reject(new Error(`Timed out waiting for child Pi RPC command: ${String(command.type ?? 'unknown')}`))
+        reject(new Error(`Timed out waiting for child Pi RPC command: ${commandType}`))
       }, timeoutMs)
       live.pending.set(id, { reject, resolve, timer })
       live.proc.stdin.write(`${JSON.stringify({ id, ...command })}\n`, (error) => {
@@ -1611,13 +1731,17 @@ export class AgentManager {
     if (!line.trim()) {
       return
     }
-    let event: SubagentRpcEvent
+    let parsed: unknown
     try {
-      event = JSON.parse(line) as SubagentRpcEvent
+      parsed = JSON.parse(line)
     } catch {
+      parsed = undefined
+    }
+    if (!Check(SubagentRpcEventSchema, parsed)) {
       live.logger.info('rpc', 'ignored invalid JSON line', { line: line.slice(0, 1000) })
       return
     }
+    const event = parsed
     live.broadcaster.broadcast(event)
     if (event.type === 'response') {
       this.handleResponseEvent(live, event)

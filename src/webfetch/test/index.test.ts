@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 
 import { type AgentToolResult } from '@earendil-works/pi-coding-agent'
 
+import { asTool } from '#test-utils/casts'
 import { createFakePi } from '#test-utils/fake_pi'
 
 import { createWebfetchExtension, type WebfetchDetails, type WebfetchFetch, type WebfetchInput } from '../index.js'
@@ -17,13 +18,15 @@ const createHarness = (fetch: WebfetchFetch, saveFullOutput?: (content: string) 
     onUpdate?: (result: AgentToolResult<unknown>) => void
   ): Promise<AgentToolResult<WebfetchDetails>> => {
     expect(tool).toBeDefined()
-    const run = tool?.execute as (
-      id: string,
-      input: WebfetchInput,
-      signal?: AbortSignal,
-      onUpdate?: (result: AgentToolResult<unknown>) => void
-    ) => Promise<AgentToolResult<WebfetchDetails>>
-    return await run('call-1', params, signal, onUpdate)
+    const run = asTool<{
+      execute: (
+        id: string,
+        input: WebfetchInput,
+        signal?: AbortSignal,
+        onUpdate?: (result: AgentToolResult<unknown>) => void
+      ) => Promise<AgentToolResult<WebfetchDetails>>
+    }>(tool)
+    return await run.execute('call-1', params, signal, onUpdate)
   }
 
   return { execute, fixture, tool }
@@ -133,8 +136,8 @@ describe('webfetch', () => {
       return new Response('unexpected')
     })
 
-    await expect(harness.execute({ url: 'file:///etc/passwd' })).rejects.toThrow('only supports HTTP and HTTPS')
-    await expect(harness.execute({ url: 'not a url' })).rejects.toThrow('Invalid URL')
+    expect(harness.execute({ url: 'file:///etc/passwd' })).rejects.toThrow('only supports HTTP and HTTPS')
+    expect(harness.execute({ url: 'not a url' })).rejects.toThrow('Invalid URL')
     expect(calls).toBe(0)
   })
 
@@ -146,7 +149,7 @@ describe('webfetch', () => {
         })
     )
 
-    await expect(harness.execute({ url: 'https://example.com/large' })).rejects.toThrow('download limit')
+    expect(harness.execute({ url: 'https://example.com/large' })).rejects.toThrow('download limit')
   })
 
   test('truncates large model output and saves the complete text', async () => {
@@ -185,6 +188,6 @@ describe('webfetch', () => {
 
     controller.abort()
 
-    await expect(pending).rejects.toThrow('webfetch was cancelled')
+    expect(pending).rejects.toThrow('webfetch was cancelled')
   })
 })

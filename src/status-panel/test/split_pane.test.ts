@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 
-import { type TUI } from '@earendil-works/pi-tui'
+import { asTui } from '#test-utils/casts'
 
 import { createSplitPaneController, DEFAULT_SIDEBAR_WIDTH, MIN_MAIN_WIDTH, MIN_SIDEBAR_WIDTH } from '../split_pane'
 
@@ -8,13 +8,13 @@ const fakeTui = () => {
   let renders = 0
   return {
     renderCount: () => renders,
-    tui: {
+    tui: asTui({
       render: (width: number) => [`main:${width}`],
       requestRender: () => {
         renders += 1
       },
       terminal: { columns: 120 },
-    } as unknown as TUI,
+    }),
   }
 }
 
@@ -57,6 +57,7 @@ describe('status panel split pane', () => {
 
   test('hide and dispose restore full-width rendering', () => {
     const { tui, renderCount } = fakeTui()
+    // oxlint-disable-next-line typescript/unbound-method -- identity check: the swizzled render must be restored to this exact reference on dispose.
     const originalRender = tui.render
     const split = createSplitPaneController()
     split.show()
@@ -67,6 +68,7 @@ describe('status panel split pane', () => {
     split.show()
     expect(tui.render(120)).toEqual([`main:${120 - DEFAULT_SIDEBAR_WIDTH}`])
     split.dispose()
+    // oxlint-disable-next-line typescript/unbound-method -- identity check, not a call.
     expect(tui.render).toBe(originalRender)
     expect(tui.render(120)).toEqual(['main:120'])
     expect(renderCount()).toBeGreaterThan(0)

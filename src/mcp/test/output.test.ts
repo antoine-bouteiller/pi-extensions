@@ -25,8 +25,12 @@ describe('MCP gateway output', () => {
 
     expect(result.details.truncated).toBeTrue()
     expect(result.content).toContainEqual(image)
-    expect(result.content[0]?.type).toBe('text')
-    const visibleText = (result.content[0] as { text: string }).text
+    const [firstBlock] = result.content
+    expect(firstBlock?.type).toBe('text')
+    if (firstBlock?.type !== 'text') {
+      throw new Error('expected text content')
+    }
+    const visibleText = firstBlock.text
     expect(visibleText).not.toContain(marker)
     expect(Buffer.byteLength(visibleText, 'utf8')).toBeLessThanOrEqual(DEFAULT_MAX_BYTES)
     expect(visibleText.split('\n').length).toBeLessThanOrEqual(DEFAULT_MAX_LINES)

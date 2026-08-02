@@ -6,6 +6,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { type Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 
+import { isRecord } from '../shared/records.js'
 import { KeychainCredentialError, createKeychainCredentialStore, type CredentialStore } from './keychain.js'
 import { KeychainOAuthProvider, createOAuthState, oauthCallbackPort, startOAuthCallback, type OAuthCallback, type OpenUrl } from './oauth.js'
 import { boundGatewayOutput, type GatewayContent } from './output.js'
@@ -269,8 +270,8 @@ const convertContentBlock = (item: unknown): GatewayContent | undefined => {
   if (block.type === 'image' && typeof block.data === 'string' && typeof block.mimeType === 'string') {
     return { data: block.data, mimeType: block.mimeType, type: 'image' }
   }
-  if (block.type === 'resource' && typeof block.resource === 'object' && block.resource) {
-    const resource = block.resource as Record<string, unknown>
+  if (block.type === 'resource' && isRecord(block.resource)) {
+    const { resource } = block
     if (typeof resource.text === 'string') {
       return { text: resource.text, type: 'text' }
     }
@@ -351,7 +352,7 @@ export class McpManager {
       .toSorted((left, right) => left.localeCompare(right))
   }
 
-  async connect(server: string, options: { signal?: AbortSignal } = {}): Promise<unknown> {
+  async connect(server: string, options: { signal?: AbortSignal } = {}): Promise<ConnectedServer> {
     const runtime = this.runtime(server)
     if (runtime.connection) {
       return runtime.connection
@@ -724,7 +725,7 @@ export class McpManager {
   }
 
   private async toolsForServer(server: string, signal?: AbortSignal): Promise<ToolMetadata[]> {
-    const connection = (await this.connect(server, { signal })) as ConnectedServer
+    const connection = await this.connect(server, { signal })
     return connection.tools
   }
 
@@ -960,6 +961,7 @@ export class McpManager {
         requestInit,
       })
     }
+    // oxlint-disable-next-line typescript/no-deprecated -- streamable-http is preferred above; this is the deliberate fallback for servers still speaking SSE.
     return new SSEClientTransport(new URL(config.url), {
       authProvider,
       requestInit,
