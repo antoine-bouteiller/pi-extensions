@@ -2,6 +2,6 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": ["extension.ts", "**/test/**/*.test.ts"],
   "project": ["src/**/*.ts", "test/**/*.ts"],
-  "ignoreDependencies": ["@napi-rs/keyring"],
+  "ignoreDependencies": ["@napi-rs/keyring", "lefthook"],
   "ignoreBinaries": ["comment-checker"]
 }
