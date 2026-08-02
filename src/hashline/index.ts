@@ -13,7 +13,7 @@ const readSchema = Type.Object({
 const writeSchema = Type.Object({
   patch: Type.String({
     description:
-      'A hashline patch. Start with [path#TAG], then use SWAP N.=M: with +replacement rows, DEL N.=M, or INS.PRE/POST N: with +inserted rows. Unified-diff @@ hunks are invalid.',
+      'A hashline patch. Start with [path#TAG], then use PUT N.=M: with +replacement rows, CUT N.=M, or PUT <N:/PUT >N: with +inserted rows. Unified-diff @@ hunks are invalid.',
   }),
 })
 
@@ -127,7 +127,7 @@ export default function hashline(pi: ExtensionAPI) {
 
   pi.registerTool({
     description:
-      'Apply a hashline patch produced from hashline_read. Use hashline operations (SWAP, DEL, or INS), not unified-diff @@ hunks. Patches are content-hash anchored, reject stale edits, and refuse protected credential paths.',
+      'Apply a hashline patch produced from hashline_read. Use hashline operations (PUT, CUT, MV, or REM), not unified-diff @@ hunks. Patches are content-hash anchored, reject stale edits, and refuse protected credential paths.',
     async execute(_toolCallId, { patch }, signal, _onUpdate, ctx) {
       throwIfAborted(signal)
       const parsed = Patch.parse(patch, { cwd: ctx.cwd })
@@ -181,7 +181,7 @@ export default function hashline(pi: ExtensionAPI) {
     parameters: writeSchema,
     promptGuidelines: [
       'Use hashline_read before hashline_write so every section has a current [path#TAG] anchor.',
-      'In hashline_write, replace lines with `SWAP N.=M:` followed by `+` body rows; never use unified-diff `@@` headers.',
+      'In hashline_write, replace lines with `PUT N.=M:` followed by `+` body rows; never use unified-diff `@@` headers.',
       'Use hashline_write for targeted edits; use the built-in write tool when creating a new file from scratch.',
     ],
   })
