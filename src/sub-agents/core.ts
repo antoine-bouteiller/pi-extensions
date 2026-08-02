@@ -1489,12 +1489,19 @@ export class AgentManager {
     })
   }
 
+  /**
+   * Wait for an identity that survives two consecutive reads. A launcher such as a shebang
+   * script or a bin shim replaces the command line in place while keeping the PID, so the
+   * first readable identity can describe the launcher instead of the child Pi process.
+   */
   private async verifyChildOwnership(pid: number, token: string): Promise<ProcessSnapshot> {
+    let previous: ProcessSnapshot | undefined
     for (let attempt = 0; attempt < 20; attempt++) {
       const candidate = inspectProcess(pid, token)
-      if (candidate && candidate.tokenMatches !== false) {
+      if (candidate && candidate.tokenMatches !== false && candidate.identity === previous?.identity) {
         return candidate
       }
+      previous = candidate
       await delay(10)
     }
     throw new Error('Unable to verify child Pi process ownership.')
@@ -1556,8 +1563,16 @@ export class AgentManager {
         startedAt: Date.now(),
         token: childToken,
       }
+      const provisionalOwnership = info.childProcess
       saveInfo(info)
       await this.sendCommand(live, { type: 'get_state' }, DEFAULT_STARTUP_TIMEOUT_MS)
+      // The answered round trip proves the child reached its final program.
+      // Its identity can no longer change underneath a later reconciliation.
+      const settled = inspectProcess(proc.pid, childToken)
+      if (settled && settled.tokenMatches !== false && settled.identity !== provisionalOwnership.processIdentity) {
+        info.childProcess = { ...provisionalOwnership, processIdentity: settled.identity }
+        saveInfo(info)
+      }
       if (initialMessage) {
         await this.prompt(live, initialMessage, displayMessage)
       }
