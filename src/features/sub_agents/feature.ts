@@ -11,7 +11,7 @@ import {
   type ThemeColor,
   type ToolRenderResultOptions,
 } from '@earendil-works/pi-coding-agent'
-import { Text, matchesKey, truncateToWidth } from '@earendil-works/pi-tui'
+import { Text, isKeyRelease, isKeyRepeat, matchesKey, truncateToWidth } from '@earendil-works/pi-tui'
 import { Effect } from 'effect'
 import { type Static, Type } from 'typebox'
 import { Check } from 'typebox/value'
@@ -145,7 +145,13 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: 
   const completionMessageType = 'pi-codex-subagent-completion'
   let activeContext: PiExtensionContext | undefined
   const activeAgents = new Map<string, { profile?: string; color: ThemeColor }>()
+  let armedEscapeUnsubscribe: (() => void) | undefined
 
+  const clearEscapeArm = (): void => {
+    const unsubscribe = armedEscapeUnsubscribe
+    armedEscapeUnsubscribe = undefined
+    unsubscribe?.()
+  }
   const isCurrentSession = (parentId: string) => {
     try {
       return activeContext && parentSessionId(activeContext) === parentId
@@ -373,6 +379,7 @@ ${getAgentProfilesDescription()}`
   pi.on('session_start', (_event, ctx) =>
     runtime.runPromise(
       Effect.gen(function* () {
+        clearEscapeArm()
         activeContext = ctx
         activeAgents.clear()
         yield* Effect.tryPromise({ catch: (cause) => cause, try: () => manager.ready() })
@@ -399,6 +406,7 @@ ${getAgentProfilesDescription()}`
         activeContext = undefined
         activeAgents.clear()
         publishAgentActivity()
+        clearEscapeArm()
         yield* Effect.tryPromise({ catch: (cause) => cause, try: () => manager.shutdown() })
       })
     )
@@ -705,14 +713,61 @@ ${getAgentProfilesDescription()}`
     includeAll?: boolean
   }
 
+  /** Second Escape interrupts the just-viewed agent; any other key disarms it. */
+  const armEscapeInterrupt = (ctx: PiExtensionContext, target: string, currentParentId: string): void => {
+    if (ctx.mode !== 'tui') {
+      return
+    }
+    clearEscapeArm()
+    armedEscapeUnsubscribe = ctx.ui.onTerminalInput((data) => {
+      if (isKeyRelease(data) || isKeyRepeat(data)) {
+        return undefined
+      }
+      if (!matchesKey(data, 'escape')) {
+        clearEscapeArm()
+        return undefined
+      }
+      clearEscapeArm()
+      let agent: AgentInfo
+      try {
+        agent = manager.getAgentInfo(target, currentParentId)
+      } catch {
+        return undefined
+      }
+      const { status } = agent
+      if (status !== 'starting' && status !== 'running') {
+        return undefined
+      }
+      void manager.interruptAgent(currentParentId, target).catch((error: unknown) => {
+        ctx.ui.notify(error instanceof Error ? error.message : String(error), 'error')
+      })
+      return { consume: true }
+    })
+  }
+
+  const armViewedAgentInterrupt = (ctx: PiExtensionContext, info: AgentInfo, includeAll: boolean): void => {
+    if (includeAll) {
+      return
+    }
+    try {
+      const currentParentId = parentSessionId(ctx)
+      if (info.parentSessionId === currentParentId) {
+        armEscapeInterrupt(ctx, info.canonicalName, currentParentId)
+      }
+    } catch {
+      // The parent session may have changed while the viewer was open.
+    }
+  }
+
   const openAgentOverlay = async (options: OpenAgentOverlayOptions): Promise<void> => {
     const { ctx, task } = options
     const scopeId = options.scopeId ?? parentSessionId(ctx)
     const includeAll = options.includeAll ?? false
     if (ctx.mode !== 'tui') {
-      ctx.ui.notify('Subagent overlays require interactive TUI mode.', 'warning')
+      ctx.ui.notify('Subagent views require interactive TUI mode.', 'warning')
       return
     }
+    clearEscapeArm()
     let info: AgentInfo
     try {
       info = manager.getAgentInfo(task, scopeId)
@@ -722,19 +777,21 @@ ${getAgentProfilesDescription()}`
     }
 
     while (true) {
-      const navigation = await ctx.ui.custom<'previous' | 'next' | undefined>(
+      const navigation = await ctx.ui.custom<'previous' | 'next' | 'back' | undefined>(
         (tui, theme, _keybindings, done) => new SubagentPeekOverlay({ done, info, theme, tui }),
         {
           overlay: true,
           overlayOptions: {
-            anchor: 'right-center',
-            margin: { bottom: 2, right: 2, top: 2 },
-            maxHeight: 60,
-            minWidth: 50,
-            width: '45%',
+            anchor: 'top-left',
+            maxHeight: '100%',
+            width: '100%',
           },
         }
       )
+      if (navigation === 'back') {
+        armViewedAgentInterrupt(ctx, info, includeAll)
+        return
+      }
       if (navigation !== 'previous' && navigation !== 'next') {
         return
       }

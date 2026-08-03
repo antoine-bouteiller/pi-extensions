@@ -1003,9 +1003,20 @@ describe('extension completion delivery and status activity', () => {
   processTest('registers commands, publishes status activity, and delivers bounded notifications', async () => {
     const handlers = new Map<string, FakeHandler[]>()
     const tools = new Map<string, FakeToolDefinition>()
-    const commands = new Map<string, unknown>()
+    interface FakeCommand {
+      handler: (args: string | undefined, ctx: unknown) => Promise<void>
+    }
+    interface FakeViewer {
+      handleInput: (data: string) => void
+    }
+    type FakeTerminalInputHandler = (data: string) => { consume?: boolean; data?: string } | undefined
+
+    const commands = new Map<string, FakeCommand>()
     const renderers = new Map<string, FakeRenderer>()
     const sentMessages: { message: FakeMessage; options: unknown }[] = []
+    let terminalInputHandler: FakeTerminalInputHandler | undefined
+    let viewer: FakeViewer | undefined
+    let viewerOptions: { overlay?: boolean; overlayOptions?: unknown } | undefined
     const requireTool = (name: string): FakeToolDefinition => {
       const tool = tools.get(name)
       if (!tool) {
@@ -1032,7 +1043,7 @@ describe('extension completion delivery and status activity', () => {
         entries.push(handler)
         handlers.set(name, entries)
       },
-      registerCommand(name: string, command: unknown) {
+      registerCommand(name: string, command: FakeCommand) {
         commands.set(name, command)
       },
       registerMessageRenderer(name: string, renderer: FakeRenderer) {
@@ -1046,6 +1057,13 @@ describe('extension completion delivery and status activity', () => {
       },
     }
     const parentSessionId = 'index-integration-parent'
+    const viewerTui = asTui({
+      requestRender() {
+        /* No-op stub; the test drives the viewer directly. */
+      },
+      terminal: { columns: 80, rows: 24 },
+    })
+    const viewerTheme = asTheme({ fg: (_color: string, text: string) => text })
     const ctx = {
       cwd: TEST_AGENT_DIR,
       mode: 'tui',
@@ -1055,7 +1073,26 @@ describe('extension completion delivery and status activity', () => {
         getSessionFile: () => join(TEST_AGENT_DIR, 'parent.jsonl'),
         getSessionId: () => parentSessionId,
       },
-      ui: {},
+      ui: {
+        custom(
+          factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: unknown) => void) => FakeViewer,
+          options: { overlay?: boolean; overlayOptions?: unknown }
+        ) {
+          viewerOptions = options
+          return new Promise<unknown>((resolve) => {
+            viewer = factory(viewerTui, viewerTheme, {}, resolve)
+          })
+        },
+        notify() {
+          /* Interrupt failures are not expected in this integration test. */
+        },
+        onTerminalInput(handler: FakeTerminalInputHandler) {
+          terminalInputHandler = handler
+          return () => {
+            terminalInputHandler = undefined
+          }
+        },
+      },
     }
     const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
     rmSync(scope, { force: true, recursive: true })
@@ -1152,6 +1189,23 @@ describe('extension completion delivery and status activity', () => {
         ctx
       )
       expect(runningAgents.list().map((agent) => agent.name)).toEqual(['/hold-scout', '/hold-library'])
+
+      const subagentCommand = commands.get('subagent')
+      if (!subagentCommand) {
+        throw new Error('subagent command was not registered')
+      }
+      const viewing = subagentCommand.handler('hold-scout', ctx)
+      await waitUntil(() => viewer !== undefined)
+      expect(viewerOptions).toMatchObject({
+        overlay: true,
+        overlayOptions: { anchor: 'top-left', maxHeight: '100%', width: '100%' },
+      })
+      viewer?.handleInput('\x1b')
+      await viewing
+      expect(terminalInputHandler?.('\x1b[27;1:3u')).toBeUndefined()
+      expect(runningAgents.list().some((agent) => agent.name === '/hold-scout')).toBe(true)
+      expect(terminalInputHandler?.('\x1b')).toEqual({ consume: true })
+      await waitUntil(() => !runningAgents.list().some((agent) => agent.name === '/hold-scout'))
       await waitUntil(() => sentMessages.some(({ message }) => message.content.includes('"status": "inactive"')))
       const inactivity = sentMessages.find(({ message }) => message.content.includes('"status": "inactive"'))
       expect(inactivity?.options).toEqual({ deliverAs: 'steer', triggerTurn: true })
@@ -1171,7 +1225,13 @@ interface PeekOverlayInternals {
 }
 
 describe('subagent peek overlay', () => {
-  const createOverlay = (columns = 80, rows = 20) => {
+  const createOverlay = (
+    columns = 80,
+    rows = 20,
+    done: (navigation?: 'previous' | 'next' | 'back') => void = () => {
+      /* No-op by default; navigation tests pass a callback. */
+    }
+  ) => {
     const now = Date.now()
     const info = {
       canonicalName: '/a-very-long-agent-name',
@@ -1203,9 +1263,7 @@ describe('subagent peek overlay', () => {
       fg: (_color: string, text: string) => text,
     })
     return new SubagentPeekOverlay({
-      done: () => {
-        /* No-op stub; navigation is not exercised in these tests. */
-      },
+      done,
       info,
       theme,
       tui,
@@ -1220,9 +1278,10 @@ describe('subagent peek overlay', () => {
       internals.cachedWidth = 38
 
       const rendered = overlay.render(40)
-      expect(internals.scrollOffset).toBe(18)
-      expect(rendered[1]).toContain('line-18')
-      expect(rendered[12]).toContain('line-29')
+      expect(rendered).toHaveLength(20)
+      expect(internals.scrollOffset).toBe(14)
+      expect(rendered[1]).toContain('line-14')
+      expect(rendered[16]).toContain('line-29')
     } finally {
       overlay.dispose()
     }
@@ -1259,6 +1318,13 @@ describe('subagent peek overlay', () => {
     } finally {
       overlay.dispose()
     }
+  })
+
+  test('escape returns to the parent without treating q as an interrupt arm', () => {
+    const navigation: ('previous' | 'next' | 'back' | undefined)[] = []
+    createOverlay(80, 20, (result) => navigation.push(result)).handleInput('\x1b')
+    createOverlay(80, 20, (result) => navigation.push(result)).handleInput('q')
+    expect(navigation).toEqual(['back', undefined])
   })
 })
 

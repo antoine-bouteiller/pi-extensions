@@ -1,6 +1,6 @@
 # pi-codex-subagents
 
-Codex-shaped, session-scoped subagents for [Pi](https://github.com/earendil-works/pi). Spawn isolated child Pi processes, receive their final responses automatically, steer active work, and inspect sessions in a live overlay.
+Codex-shaped, session-scoped subagents for [Pi](https://github.com/earendil-works/pi). Spawn isolated child Pi processes, receive their final responses automatically, steer active work, and inspect sessions in a live full-chat view.
 
 Requires Pi 0.80.4 or newer and Node.js 22.19 or newer.
 
@@ -90,7 +90,7 @@ While agents are starting or running, the wide status panel shows them in its `S
 
 `/subagents` and `/agents` browse agents in the current session. Press Tab to switch to the read-only all-sessions view. `/subagent <task-name>` opens one current-session agent directly.
 
-The overlay uses the child working directory for tool rendering and synchronizes in-progress output when opened midway through a run. Use Left/Right to switch between agents in the current browser scope.
+The full-chat view uses the child working directory for tool rendering and synchronizes in-progress output when opened midway through a run. Use Left/Right to switch between agents in the current browser scope. Escape returns to the parent chat; press Escape again immediately to interrupt the agent you just viewed. Any other key disarms that second-Escape action.
 
 Child RPC processes are terminated after completion, failure, or interruption so settled agents do not keep consuming memory. `send_message` starts a fresh child process with the persisted session and continues from there. On startup, the extension also reconciles and terminates validated owned children left behind by an earlier extension process.
 

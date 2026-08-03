@@ -282,14 +282,14 @@ export interface SubagentPeekOverlayOptions {
   tui: TUI
   theme: Theme
   info: AgentInfo
-  done: (navigation?: 'previous' | 'next') => void
+  done: (navigation?: 'previous' | 'next' | 'back') => void
 }
 
 export class SubagentPeekOverlay {
   private readonly tui: TUI
   private readonly theme: Theme
   private readonly info: AgentInfo
-  private readonly done: (navigation?: 'previous' | 'next') => void
+  private readonly done: (navigation?: 'previous' | 'next' | 'back') => void
   private readonly sessionFile: string
   private readonly cwd: string
   private readonly modelName: string
@@ -706,7 +706,12 @@ export class SubagentPeekOverlay {
   }
 
   private handleNavigationInput(data: string): boolean {
-    if (matchesKey(data, 'escape') || matchesKey(data, 'ctrl+c') || data === 'q') {
+    if (matchesKey(data, 'escape')) {
+      this.dispose()
+      this.done('back')
+      return true
+    }
+    if (matchesKey(data, 'ctrl+c') || data === 'q') {
       this.dispose()
       this.done()
       return true
@@ -802,8 +807,7 @@ export class SubagentPeekOverlay {
     const lines = [this.theme.fg('border', '╭') + this.renderHeader(innerWidth) + this.theme.fg('border', '╮')]
 
     const contentLines = this.getContentLines(innerWidth)
-    const maxHeight = Math.min(60, Math.max(8, this.tui.terminal.rows - 4))
-    const maxVisible = Math.max(4, maxHeight - 4)
+    const maxVisible = Math.max(4, this.tui.terminal.rows - 4)
     const maxScroll = Math.max(0, contentLines.length - maxVisible)
     this.scrollOffset = Math.min(this.scrollOffset, maxScroll)
     const visible = contentLines.slice(this.scrollOffset, this.scrollOffset + maxVisible)
@@ -821,7 +825,7 @@ export class SubagentPeekOverlay {
         : `${contentLines.length}L`
     const followIcon = this.followMode ? this.theme.fg('success', '●') : this.theme.fg('dim', '○')
     lines.push(this.theme.fg('border', `├${'─'.repeat(innerWidth)}┤`))
-    const footer = ` ${scrollInfo} ${followIcon} │ ←/→ agent │ j/k scroll │ g/G top/end │ q close `
+    const footer = ` ${scrollInfo} ${followIcon} │ esc back/again stop │ ←/→ agent │ j/k scroll │ g/G top/end │ q close `
     const clippedFooter = truncateToWidth(footer, innerWidth, '')
     lines.push(
       this.theme.fg('border', '│') +
