@@ -3,7 +3,9 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { loadMcpConfigFile, parseMcpConfig, parseMcpConfigText } from '../config'
+import { Effect } from 'effect'
+
+import { loadMcpConfigFile, loadMcpConfigFileEffect, parseMcpConfig, parseMcpConfigEffect, parseMcpConfigText } from '../config'
 
 const temporaryDirectories: string[] = []
 afterEach(async () => {
@@ -178,6 +180,13 @@ describe('global MCP config parsing', () => {
     ).toThrow('mcpServers.remote.headers.X-Test')
   })
 
+  test('tolerates unknown root fields while keeping exact nested validation precedence', async () => {
+    expect(await Effect.runPromise(parseMcpConfigEffect({ futureRootField: true, mcpServers: { local: { command: 'server' } } }))).toEqual({
+      local: { command: 'server', type: 'stdio' },
+    })
+    expect(() => parseMcpConfig({ mcpServers: { local: { command: 42, resources: true } } })).toThrow('mcpServers.local.resources: is not supported')
+  })
+
   test('rejects unsupported fields instead of silently widening the format', () => {
     expect(() => parseMcpConfig({ mcpServers: { local: { command: 'server', resources: true } } })).toThrow('mcpServers.local.resources')
     expect(() =>
@@ -196,6 +205,9 @@ describe('global MCP config parsing', () => {
     const path = await temporaryPath('mcp.json')
     await writeFile(path, JSON.stringify({ mcpServers: { local: { command: 'server' } } }))
     expect(await loadMcpConfigFile(path)).toEqual({
+      local: { command: 'server', type: 'stdio' },
+    })
+    expect(await Effect.runPromise(loadMcpConfigFileEffect(path))).toEqual({
       local: { command: 'server', type: 'stdio' },
     })
   })

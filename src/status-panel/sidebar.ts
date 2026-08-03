@@ -2,6 +2,7 @@ import { basename } from 'node:path'
 
 import { type ExtensionContext, type ThemeColor } from '@earendil-works/pi-coding-agent'
 import { getCapabilities, truncateToWidth, visibleWidth, type Component, type OverlayHandle } from '@earendil-works/pi-tui'
+import { Effect, Exit, Ref, Scope } from 'effect'
 
 import { type RunningAgent } from '../shared/agent_activity'
 import { formatStatusText, type StatusEntry, type StatusTone } from '../shared/status_bar'
@@ -385,68 +386,102 @@ interface SidebarControllerOptions {
   ctx: ExtensionContext
   getState: () => SidebarState
   onError?: (error: unknown) => void
+  redrawMs?: number
 }
 
+const getRef = <Value>(ref: Ref.Ref<Value>): Value => Effect.runSync(Ref.get(ref))
+const setRef = <Value>(ref: Ref.Ref<Value>, value: Value): void => Effect.runSync(Ref.set(ref, value))
+
+const unrefSleep = (milliseconds: number): Effect.Effect<void> =>
+  Effect.callback<void>((resume) => {
+    const timer = setTimeout(() => resume(Effect.void), milliseconds)
+    timer.unref?.()
+    return Effect.sync(() => clearTimeout(timer))
+  })
+
 export const createSidebarController = (options: SidebarControllerOptions): SidebarController => {
-  let enabled = false
-  let disposed = false
-  let generation = 0
-  let overlayHandle: OverlayHandle | undefined
-  let requestOverlayRender: (() => void) | undefined
-  let timer: ReturnType<typeof setInterval> | undefined
+  const enabledRef = Effect.runSync(Ref.make(false))
+  const disposedRef = Effect.runSync(Ref.make(false))
+  const generationRef = Effect.runSync(Ref.make(0))
+  const overlayHandleRef = Effect.runSync(Ref.make<OverlayHandle | undefined>(undefined))
+  const requestOverlayRenderRef = Effect.runSync(Ref.make<(() => void) | undefined>(undefined))
+  const redrawScopeRef = Effect.runSync(Ref.make<Scope.Closeable | undefined>(undefined))
   const split: SplitPaneController = createSplitPaneController({ onError: options.onError })
 
-  const stopTimer = () => {
-    if (timer) {
-      clearInterval(timer)
-    }
-    timer = undefined
-  }
-
-  const startTimer = () => {
-    if (timer || options.getState().activity !== 'working') {
+  const stopRedraw = () => {
+    const scope = getRef(redrawScopeRef)
+    if (!scope) {
       return
     }
-    timer = setInterval(() => requestOverlayRender?.(), 400)
-    timer.unref?.()
+    setRef(redrawScopeRef, undefined)
+    Effect.runFork(Scope.close(scope, Exit.void))
+  }
+
+  const startRedraw = (requestRender: () => void, currentGeneration: number) => {
+    if (getRef(redrawScopeRef) || options.getState().activity !== 'working') {
+      return
+    }
+    const scope = Effect.runSync(Scope.make())
+    setRef(redrawScopeRef, scope)
+    Effect.runFork(
+      Effect.forkScoped(
+        Effect.gen(function* () {
+          while (getRef(enabledRef) && getRef(generationRef) === currentGeneration && options.getState().activity === 'working') {
+            yield* unrefSleep(options.redrawMs ?? 400)
+            if (getRef(enabledRef) && getRef(generationRef) === currentGeneration && options.getState().activity === 'working') {
+              requestRender()
+            }
+          }
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (getRef(redrawScopeRef) === scope) {
+                setRef(redrawScopeRef, undefined)
+              }
+            })
+          )
+        )
+      ).pipe(Effect.provideService(Scope.Scope, scope))
+    )
   }
 
   const hide = () => {
-    if (!enabled && !overlayHandle) {
+    if (!getRef(enabledRef) && !getRef(overlayHandleRef)) {
       return
     }
-    enabled = false
-    generation += 1
-    stopTimer()
-    const handle = overlayHandle
-    overlayHandle = undefined
-    requestOverlayRender = undefined
+    setRef(enabledRef, false)
+    Effect.runSync(Ref.update(generationRef, (value) => value + 1))
+    stopRedraw()
+    const handle = getRef(overlayHandleRef)
+    setRef(overlayHandleRef, undefined)
+    setRef(requestOverlayRenderRef, undefined)
     handle?.hide()
     split.hide()
   }
 
   const show = () => {
-    if (disposed || enabled || options.ctx.mode !== 'tui') {
+    if (getRef(disposedRef) || getRef(enabledRef) || options.ctx.mode !== 'tui') {
       return
     }
-    enabled = true
-    const currentGeneration = ++generation
+    setRef(enabledRef, true)
+    const currentGeneration = Effect.runSync(Ref.updateAndGet(generationRef, (value) => value + 1))
+    const isCurrent = () => getRef(generationRef) === currentGeneration
     split.show()
     try {
       const pending = options.ctx.ui.custom<void>(
         (tui, theme) => {
-          let attached = true
-          try {
-            split.attach(tui)
-          } catch (error) {
-            attached = false
-            options.onError?.(error)
-            enabled = false
-            split.hide()
-          }
-          if (attached && enabled && generation === currentGeneration) {
-            requestOverlayRender = () => tui.requestRender()
-            startTimer()
+          if (getRef(enabledRef) && isCurrent()) {
+            try {
+              split.attach(tui)
+              const requestRender = () => tui.requestRender()
+              setRef(requestOverlayRenderRef, requestRender)
+              startRedraw(requestRender, currentGeneration)
+            } catch (error) {
+              options.onError?.(error)
+              setRef(enabledRef, false)
+              stopRedraw()
+              split.hide()
+            }
           }
           return {
             invalidate() {
@@ -463,8 +498,8 @@ export const createSidebarController = (options: SidebarControllerOptions): Side
         },
         {
           onHandle: (handle) => {
-            if (enabled && generation === currentGeneration) {
-              overlayHandle = handle
+            if (getRef(enabledRef) && isCurrent()) {
+              setRef(overlayHandleRef, handle)
             } else {
               handle.hide()
             }
@@ -476,17 +511,18 @@ export const createSidebarController = (options: SidebarControllerOptions): Side
       void pending
         .catch((error: unknown) => options.onError?.(error))
         .finally(() => {
-          if (generation !== currentGeneration) {
+          if (!isCurrent()) {
             return
           }
-          enabled = false
-          stopTimer()
-          overlayHandle = undefined
-          requestOverlayRender = undefined
+          setRef(enabledRef, false)
+          stopRedraw()
+          setRef(overlayHandleRef, undefined)
+          setRef(requestOverlayRenderRef, undefined)
           split.hide()
         })
     } catch (error) {
-      enabled = false
+      setRef(enabledRef, false)
+      stopRedraw()
       split.hide()
       options.onError?.(error)
     }
@@ -494,25 +530,26 @@ export const createSidebarController = (options: SidebarControllerOptions): Side
 
   return {
     dispose() {
-      if (disposed) {
+      if (getRef(disposedRef)) {
         return
       }
-      disposed = true
+      setRef(disposedRef, true)
       hide()
       split.dispose()
     },
     hide,
-    isVisible: () => enabled,
+    isVisible: () => getRef(enabledRef),
     requestRender() {
+      const requestOverlayRender = getRef(requestOverlayRenderRef)
       if (requestOverlayRender) {
         requestOverlayRender()
+        if (options.getState().activity === 'working') {
+          startRedraw(requestOverlayRender, getRef(generationRef))
+        } else {
+          stopRedraw()
+        }
       } else {
         split.requestRender()
-      }
-      if (options.getState().activity === 'working') {
-        startTimer()
-      } else {
-        stopTimer()
       }
     },
     show,

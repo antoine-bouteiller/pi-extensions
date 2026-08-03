@@ -12,9 +12,11 @@ import {
   type ToolRenderResultOptions,
 } from '@earendil-works/pi-coding-agent'
 import { Text, matchesKey, truncateToWidth, visibleWidth, type TUI } from '@earendil-works/pi-tui'
+import { Effect } from 'effect'
 import { type Static, Type } from 'typebox'
 import { Check } from 'typebox/value'
 
+import { type AppRuntime, getOrCreateProcessRuntime } from '../effect/app_runtime.js'
 import { runningAgents } from '../shared/agent_activity.js'
 import { truncateOutput, truncationNotice } from '../shared/tool_output.js'
 import {
@@ -137,7 +139,7 @@ Keep work in your own context when it is a couple of tool calls, when it depends
 
 type PiExtensionContext = ExtensionContext | ExtensionCommandContext
 
-const subAgentsExtension = (pi: ExtensionAPI, managerOptions: AgentManagerOptions = {}): void => {
+export const register = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: AgentManagerOptions = {}): void => {
   const widgetKey = 'pi-codex-subagents'
   const completionMessageType = 'pi-codex-subagent-completion'
   let activeContext: PiExtensionContext | undefined
@@ -293,39 +295,43 @@ Returns after the child accepts its initial task. Continue with independent work
 Available agent profiles:
 ${getAgentProfilesDescription()}`
     },
-    async execute(
+    execute(
       _toolCallId: string,
       params: SpawnAgentParams,
       _signal: AbortSignal | undefined,
       _onUpdate: AgentToolUpdateCallback<SpawnAgentResultDetails> | undefined,
       ctx: ExtensionContext
     ) {
-      const currentModel = ctx.model
-      if (!currentModel?.provider || !currentModel?.id) {
-        throw new Error('spawn_agent failed: the parent has no active provider/model pair.')
-      }
-      const availableModels = ctx.modelRegistry.getAvailable()
-      if (!Array.isArray(availableModels)) {
-        throw new Error('spawn_agent failed: authenticated model availability is unavailable.')
-      }
-      try {
-        const result = await manager.spawnAgent({
-          agent_type: params.agent_type,
-          availableModels: availableModels.map((model) => ({
-            id: model.id,
-            provider: model.provider,
-          })),
-          cwd: ctx.cwd,
-          message: params.message,
-          parentModel: { id: currentModel.id, provider: currentModel.provider },
-          parentSessionFile: ctx.sessionManager.getSessionFile(),
-          parentSessionId: parentSessionId(ctx),
-          task_name: params.task_name,
+      return runtime.runPromise(
+        Effect.gen(function* () {
+          const currentModel = ctx.model
+          if (!currentModel?.provider || !currentModel?.id) {
+            return yield* Effect.fail(new Error('spawn_agent failed: the parent has no active provider/model pair.'))
+          }
+          const availableModels = ctx.modelRegistry.getAvailable()
+          if (!Array.isArray(availableModels)) {
+            return yield* Effect.fail(new Error('spawn_agent failed: authenticated model availability is unavailable.'))
+          }
+          const result = yield* Effect.tryPromise({
+            catch: (cause) => new Error(`spawn_agent failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause }),
+            try: () =>
+              manager.spawnAgent({
+                agent_type: params.agent_type,
+                availableModels: availableModels.map((model) => ({
+                  id: model.id,
+                  provider: model.provider,
+                })),
+                cwd: ctx.cwd,
+                message: params.message,
+                parentModel: { id: currentModel.id, provider: currentModel.provider },
+                parentSessionFile: ctx.sessionManager.getSessionFile(),
+                parentSessionId: parentSessionId(ctx),
+                task_name: params.task_name,
+              }),
+          })
+          return textResult(`Spawned ${result.task_name}.`, result)
         })
-        return textResult(`Spawned ${result.task_name}.`, result)
-      } catch (error) {
-        throw new Error(`spawn_agent failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
-      }
+      )
     },
     label: 'Spawn Agent',
     name: 'spawn_agent',
@@ -354,56 +360,62 @@ ${getAgentProfilesDescription()}`
     },
   }
 
-  pi.on('session_start', async (_event, ctx) => {
-    activeContext = ctx
-    activeAgents.clear()
-    await manager.ready()
-    if (activeContext !== ctx) {
-      return
-    }
-    for (const entry of manager.listAgents(undefined, parentSessionId(ctx))) {
-      if (entry.agent_status === 'starting' || entry.agent_status === 'running') {
-        activeAgents.set(entry.agent_name, { color: entry.color, profile: entry.profile })
-      }
-    }
-    refreshAgentWidget()
-  })
+  pi.on('session_start', (_event, ctx) =>
+    runtime.runPromise(
+      Effect.gen(function* () {
+        activeContext = ctx
+        activeAgents.clear()
+        yield* Effect.tryPromise({ catch: (cause) => cause, try: () => manager.ready() })
+        if (activeContext !== ctx) {
+          return
+        }
+        for (const entry of manager.listAgents(undefined, parentSessionId(ctx))) {
+          if (entry.agent_status === 'starting' || entry.agent_status === 'running') {
+            activeAgents.set(entry.agent_name, { color: entry.color, profile: entry.profile })
+          }
+        }
+        refreshAgentWidget()
+      })
+    )
+  )
 
-  pi.on('before_agent_start', (event) => {
-    if (process.env.PI_SUBAGENT_OWNER_TOKEN !== undefined) {
-      return undefined
-    }
-    return { systemPrompt: event.systemPrompt + DELEGATION_GUIDANCE }
-  })
+  pi.on('before_agent_start', (event) =>
+    process.env.PI_SUBAGENT_OWNER_TOKEN === undefined ? { systemPrompt: event.systemPrompt + DELEGATION_GUIDANCE } : undefined
+  )
 
-  pi.on('session_shutdown', async () => {
-    if (activeContext?.mode === 'tui') {
-      activeContext.ui.setWidget(widgetKey, undefined)
-    }
-    activeContext = undefined
-    activeAgents.clear()
-    refreshAgentWidget()
-    await manager.shutdown()
-  })
+  pi.on('session_shutdown', () =>
+    runtime.runPromise(
+      Effect.gen(function* () {
+        if (activeContext?.mode === 'tui') {
+          activeContext.ui.setWidget(widgetKey, undefined)
+        }
+        activeContext = undefined
+        activeAgents.clear()
+        refreshAgentWidget()
+        yield* Effect.tryPromise({ catch: (cause) => cause, try: () => manager.shutdown() })
+      })
+    )
+  )
 
   pi.registerTool(spawnAgentTool)
 
   pi.registerTool({
     description:
       'Wait for one session-owned agent completion, or for the next completion if targets is omitted. Use only when your next action depends on that response; otherwise continue working and let completion arrive automatically. Returns one final response. Use wait_all_agents when every target must finish.',
-    async execute(_id: string, params, signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
-      try {
-        const result = await manager.waitAgent(parentSessionId(ctx), parseTargets(params.targets), signal)
-        return boundedTextResult(JSON.stringify(result, undefined, 2), {
-          event: result.event,
-          message: result.message,
+    execute(_id: string, params, signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
+      return runtime.runPromise(
+        Effect.tryPromise({
+          catch: (cause): unknown =>
+            signal?.aborted ? cause : new Error(`wait_agent failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause }),
+          try: async () => {
+            const result = await manager.waitAgent(parentSessionId(ctx), parseTargets(params.targets), signal)
+            return boundedTextResult(JSON.stringify(result, undefined, 2), {
+              event: result.event,
+              message: result.message,
+            })
+          },
         })
-      } catch (error) {
-        if (signal?.aborted) {
-          throw error
-        }
-        throw new Error(`wait_agent failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
-      }
+      )
     },
     label: 'Wait Agent',
     name: 'wait_agent',
@@ -452,19 +464,20 @@ ${getAgentProfilesDescription()}`
   pi.registerTool({
     description:
       'Wait until all targeted session-owned agents reach a final status. Use only when your next action depends on every response; otherwise continue working and let completions arrive automatically. Returns their final text responses.',
-    async execute(_id: string, params, signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
-      try {
-        const result = await manager.waitAllAgents(parentSessionId(ctx), parseTargets(params.targets), signal)
-        return boundedTextResult(JSON.stringify(result, undefined, 2), {
-          message: result.message,
-          responses: result.responses,
+    execute(_id: string, params, signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
+      return runtime.runPromise(
+        Effect.tryPromise({
+          catch: (cause): unknown =>
+            signal?.aborted ? cause : new Error(`wait_all_agents failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause }),
+          try: async () => {
+            const result = await manager.waitAllAgents(parentSessionId(ctx), parseTargets(params.targets), signal)
+            return boundedTextResult(JSON.stringify(result, undefined, 2), {
+              message: result.message,
+              responses: result.responses,
+            })
+          },
         })
-      } catch (error) {
-        if (signal?.aborted) {
-          throw error
-        }
-        throw new Error(`wait_all_agents failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
-      }
+      )
     },
     label: 'Wait All Agents',
     name: 'wait_all_agents',
@@ -494,9 +507,13 @@ ${getAgentProfilesDescription()}`
   pi.registerTool({
     description:
       'List agents owned by the current parent session. Set include_all only for an explicit read-only historical listing across parent sessions.',
-    async execute(_id: string, params, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
-      const agents = manager.listAgents(params.path_prefix, parentSessionId(ctx), params.include_all === true)
-      return boundedTextResult(JSON.stringify({ agents }, undefined, 2), { agents })
+    execute(_id: string, params, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
+      return runtime.runPromise(
+        Effect.sync(() => {
+          const agents = manager.listAgents(params.path_prefix, parentSessionId(ctx), params.include_all === true)
+          return boundedTextResult(JSON.stringify({ agents }, undefined, 2), { agents })
+        })
+      )
     },
     label: 'List Agents',
     name: 'list_agents',
@@ -524,19 +541,22 @@ ${getAgentProfilesDescription()}`
 
   pi.registerTool({
     description: "Read one current-session agent's latest final raw text response. Tool calls and intermediate assistant text are excluded.",
-    async execute(_id: string, params, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
-      try {
-        const result = manager.readAgentResponse(cleanTarget(params.target), parentSessionId(ctx))
-        return boundedTextResult(JSON.stringify(result, undefined, 2), {
-          agent_name: result.agent_name,
-          color: result.color,
-          is_readonly: result.is_readonly,
-          profile: result.profile,
-          status: result.status,
+    execute(_id: string, params, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
+      return runtime.runPromise(
+        Effect.try({
+          catch: (cause) => new Error(`read_agent_response failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause }),
+          try: () => {
+            const result = manager.readAgentResponse(cleanTarget(params.target), parentSessionId(ctx))
+            return boundedTextResult(JSON.stringify(result, undefined, 2), {
+              agent_name: result.agent_name,
+              color: result.color,
+              is_readonly: result.is_readonly,
+              profile: result.profile,
+              status: result.status,
+            })
+          },
         })
-      } catch (error) {
-        throw new Error(`read_agent_response failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
-      }
+      )
     },
     label: 'Read Agent Response',
     name: 'read_agent_response',
@@ -569,20 +589,23 @@ ${getAgentProfilesDescription()}`
 
   pi.registerTool({
     description: 'Send a message to a session-owned agent. Steers the current run when active; otherwise starts a new turn.',
-    async execute(_id: string, params, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
-      try {
-        const result = await manager.sendMessage(parentSessionId(ctx), cleanTarget(params.target), params.message)
-        const info = manager.getAgentInfo(cleanTarget(params.target), parentSessionId(ctx))
-        return textResult(result.delivery === 'steer' ? 'Message steered into the running agent.' : 'Message started a new agent turn.', {
-          ...result,
-          color: persistedProfileColor(info.profile, info.color),
-          is_readonly: info.isReadonly,
-          profile: info.profile,
-          target: params.target,
+    execute(_id: string, params, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
+      return runtime.runPromise(
+        Effect.tryPromise({
+          catch: (cause) => new Error(`send_message failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause }),
+          try: async () => {
+            const result = await manager.sendMessage(parentSessionId(ctx), cleanTarget(params.target), params.message)
+            const info = manager.getAgentInfo(cleanTarget(params.target), parentSessionId(ctx))
+            return textResult(result.delivery === 'steer' ? 'Message steered into the running agent.' : 'Message started a new agent turn.', {
+              ...result,
+              color: persistedProfileColor(info.profile, info.color),
+              is_readonly: info.isReadonly,
+              profile: info.profile,
+              target: params.target,
+            })
+          },
         })
-      } catch (error) {
-        throw new Error(`send_message failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
-      }
+      )
     },
     label: 'Send Message',
     name: 'send_message',
@@ -617,22 +640,25 @@ ${getAgentProfilesDescription()}`
 
   pi.registerTool({
     description: "Abort a session-owned agent's current turn while keeping its session available for later send_message calls.",
-    async execute(_id: string, params, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
-      try {
-        const sessionId = parentSessionId(ctx)
-        const target = cleanTarget(params.target)
-        const result = await manager.interruptAgent(sessionId, target)
-        const info = manager.getAgentInfo(target, sessionId)
-        return textResult('Interrupt request handled.', {
-          ...result,
-          color: persistedProfileColor(info.profile, info.color),
-          is_readonly: info.isReadonly,
-          profile: info.profile,
-          target: params.target,
+    execute(_id: string, params, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
+      return runtime.runPromise(
+        Effect.tryPromise({
+          catch: (cause) => new Error(`interrupt_agent failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause }),
+          try: async () => {
+            const sessionId = parentSessionId(ctx)
+            const target = cleanTarget(params.target)
+            const result = await manager.interruptAgent(sessionId, target)
+            const info = manager.getAgentInfo(target, sessionId)
+            return textResult('Interrupt request handled.', {
+              ...result,
+              color: persistedProfileColor(info.profile, info.color),
+              is_readonly: info.isReadonly,
+              profile: info.profile,
+              target: params.target,
+            })
+          },
         })
-      } catch (error) {
-        throw new Error(`interrupt_agent failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
-      }
+      )
     },
     label: 'Interrupt Agent',
     name: 'interrupt_agent',
@@ -882,6 +908,10 @@ ${getAgentProfilesDescription()}`
     description: 'Browse subagents',
     handler: async (_args, ctx) => browseAgents(ctx),
   })
+}
+
+const subAgentsExtension = (pi: ExtensionAPI, managerOptions: AgentManagerOptions = {}): void => {
+  register(pi, getOrCreateProcessRuntime(), managerOptions)
 }
 
 export default subAgentsExtension

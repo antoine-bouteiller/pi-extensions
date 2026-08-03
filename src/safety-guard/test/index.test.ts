@@ -3,8 +3,10 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { asExtensionApi } from '#test-utils/casts'
+import { asExtensionApi, asResult } from '#test-utils/casts'
 
+import { publishStatus, statusBar } from '../../shared/status_bar.js'
+import { SAFETY_STATUS_KEY } from '../constants.js'
 import safetyGuard from '../index'
 
 const temporaryDirectories: string[] = []
@@ -34,16 +36,20 @@ interface GuardResult {
 }
 
 type Handler = (event: FakeToolCallEvent, ctx: FakeContext) => Promise<GuardResult | undefined>
+type SessionStartHandler = (event: Record<string, never>, ctx: FakeContext) => Promise<void>
 
 const setup = () => {
   let handler: Handler | undefined
+  let sessionStart: SessionStartHandler | undefined
   const emitted: [string, unknown][] = []
   safetyGuard(
     asExtensionApi({
       events: { emit: (event: string, data: unknown) => emitted.push([event, data]) },
-      on: (event: string, callback: Handler) => {
+      on: (event: string, callback: unknown) => {
         if (event === 'tool_call') {
-          handler = callback
+          handler = asResult<Handler>(callback)
+        } else if (event === 'session_start') {
+          sessionStart = asResult<SessionStartHandler>(callback)
         }
       },
     })
@@ -51,7 +57,10 @@ const setup = () => {
   if (!handler) {
     throw new Error('tool_call handler was not registered')
   }
-  return { emitted, handler }
+  if (!sessionStart) {
+    throw new Error('session_start handler was not registered')
+  }
+  return { emitted, handler, sessionStart }
 }
 
 const event = (command: string) => ({ input: { command }, toolName: 'bash' })
@@ -212,5 +221,21 @@ describe('safety guard', () => {
       ['herdr:blocked', { active: true, label: 'Elevated privileges (sudo)' }],
       ['herdr:blocked', { active: false }],
     ])
+  })
+
+  test('publishes a status-bar entry on session_start', async () => {
+    const { sessionStart } = setup()
+    try {
+      await sessionStart({}, { cwd: '/work/project', hasUI: false })
+      expect(statusBar.list().find((entry) => entry.key === SAFETY_STATUS_KEY)).toEqual({
+        icon: '🛡️',
+        key: SAFETY_STATUS_KEY,
+        priority: 10,
+        text: 'cmd-guard',
+        tone: 'success',
+      })
+    } finally {
+      publishStatus(SAFETY_STATUS_KEY, undefined)
+    }
   })
 })

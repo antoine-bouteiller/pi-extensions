@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from 'bun:test'
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { userInfo } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -20,8 +20,17 @@ await mock.module('@earendil-works/pi-coding-agent', () => ({
   getAgentDir: () => TEST_AGENT_DIR,
 }))
 
-const { AgentManager, RpcJsonlDecoder, consumeFirstMatchingMailboxEvent, getAgent, getRunsDir, getSocketPath, parentScopeKey, taskStorageKey } =
-  await import('../core.js')
+const {
+  AgentManager,
+  RpcJsonlDecoder,
+  consumeFirstMatchingMailboxEvent,
+  getAgent,
+  getRunsDir,
+  getSocketPath,
+  parentScopeKey,
+  taskStorageKey,
+  writeFullToolOutput,
+} = await import('../core.js')
 const { SubagentPeekOverlay } = await import('../peek.js')
 
 const requireChildProcess = <ChildProcess>(childProcess: ChildProcess | undefined): ChildProcess => {
@@ -242,6 +251,72 @@ describe('run storage', () => {
       rmSync(configFile, { force: true })
     }
   })
+
+  test('creates the default run and socket directories with 0700 permissions', async () => {
+    if (process.platform === 'win32') {
+      return
+    }
+    rmSync(configFile, { force: true })
+    rmSync(join(packageDir, 'runs'), { force: true, recursive: true })
+    const socketDir = join(TEST_TEMP_DIR, 'pi-codex-subagents', userInfo().username, 'sockets')
+    rmSync(socketDir, { force: true, recursive: true })
+    const manager = createAgentManager()
+    try {
+      expect(statSync(getRunsDir()).mode & 0o777).toBe(0o700)
+      expect(statSync(socketDir).mode & 0o777).toBe(0o700)
+    } finally {
+      await manager.shutdown()
+    }
+  })
+
+  test('creates the _outputs directory with 0700 permissions', () => {
+    if (process.platform === 'win32') {
+      return
+    }
+    rmSync(configFile, { force: true })
+    const outputsDir = join(getRunsDir(), '_outputs')
+    rmSync(outputsDir, { force: true, recursive: true })
+    try {
+      writeFullToolOutput('characterization content')
+      expect(statSync(outputsDir).mode & 0o777).toBe(0o700)
+    } finally {
+      rmSync(outputsDir, { force: true, recursive: true })
+    }
+  })
+
+  test('chmods a freshly created configured storage root to 0700', async () => {
+    if (process.platform === 'win32') {
+      return
+    }
+    rmSync(fixtureDir, { force: true, recursive: true })
+    writeFileSync(configFile, JSON.stringify({ storageDir: fixtureDir }))
+    const manager = createAgentManager()
+    try {
+      expect(statSync(fixtureDir).mode & 0o777).toBe(0o700)
+    } finally {
+      await manager.shutdown()
+      rmSync(fixtureDir, { force: true, recursive: true })
+      rmSync(configFile, { force: true })
+    }
+  })
+
+  test('does not tighten permissions on a pre-existing configured storage root', async () => {
+    if (process.platform === 'win32') {
+      return
+    }
+    rmSync(fixtureDir, { force: true, recursive: true })
+    mkdirSync(fixtureDir, { recursive: true })
+    chmodSync(fixtureDir, 0o755)
+    writeFileSync(configFile, JSON.stringify({ storageDir: fixtureDir }))
+    const manager = createAgentManager()
+    try {
+      expect(statSync(fixtureDir).mode & 0o777).toBe(0o755)
+    } finally {
+      await manager.shutdown()
+      rmSync(fixtureDir, { force: true, recursive: true })
+      rmSync(configFile, { force: true })
+    }
+  })
 })
 
 const waitUntil = async (predicate: () => boolean, timeoutMs = 12_000): Promise<void> => {
@@ -414,6 +489,41 @@ describe('child process lifecycle', () => {
       await manager.shutdown()
       rmSync(scope, { force: true, recursive: true })
       rmSync(configFile, { force: true })
+    }
+  })
+
+  processTest('does not unlink a live lock that replaces the lock this caller is normally releasing', async () => {
+    const parentSessionId = 'lock-release-race'
+    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+    const lockFile = join(scope, `.task-${taskStorageKey('worker')}.lock`)
+    rmSync(scope, { force: true, recursive: true })
+    let replaced = false
+    const manager = createAgentManager({
+      beforeReleaseTaskLockRemoval(file: string) {
+        if (replaced || file !== lockFile) {
+          return
+        }
+        replaced = true
+        renameSync(file, `${file}.displaced`)
+        writeFileSync(
+          file,
+          JSON.stringify({
+            createdAt: Date.now(),
+            pid: process.pid,
+            token: 'concurrent-winner',
+          })
+        )
+      },
+    })
+    try {
+      await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold release race'))
+      expect(replaced).toBe(true)
+      expect(manager.getAgentInfo('worker', parentSessionId).status).toBe('running')
+      expect(JSON.parse(readFileSync(lockFile, 'utf8'))).toMatchObject({ token: 'concurrent-winner' })
+      await manager.interruptAgent(parentSessionId, 'worker')
+    } finally {
+      await manager.shutdown()
+      rmSync(scope, { force: true, recursive: true })
     }
   })
 
@@ -806,6 +916,32 @@ describe('completion delivery', () => {
       expect(activity.slice(restartAt)).toContain(true)
       await manager.interruptAgent(parentSessionId, 'worker')
       expect(activity.at(-1)).toBe(false)
+    } finally {
+      await manager.shutdown()
+      rmSync(scope, { force: true, recursive: true })
+    }
+  })
+
+  processTest('routes one completion to only the first of two waiting callers', async () => {
+    const parentSessionId = 'two-waiters'
+    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+    rmSync(scope, { force: true, recursive: true })
+    const manager = createAgentManager()
+    const secondController = new AbortController()
+    try {
+      await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'first'))
+      let secondSettled = false
+      const first = manager.waitAgent(parentSessionId, ['worker'])
+      const second = manager.waitAgent(parentSessionId, ['worker'], secondController.signal).finally(() => {
+        secondSettled = true
+      })
+      const firstResult = await first
+      expect(firstResult.event).toMatchObject({ agentName: '/worker', status: 'completed' })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(secondSettled).toBe(false)
+      secondController.abort(new Error('no second completion is coming'))
+      expect(second).rejects.toThrow('no second completion is coming')
+      await waitUntil(() => secondSettled)
     } finally {
       await manager.shutdown()
       rmSync(scope, { force: true, recursive: true })

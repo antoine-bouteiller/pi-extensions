@@ -15,6 +15,13 @@
   minimumReleaseAge: '1 day',
   gitIgnoredAuthors: ['41898282+github-actions[bot]@users.noreply.github.com'],
   labels: ['renovate'],
+  packageRules: [
+    {
+      description: 'Require human review for Effect updates while v4 is in beta',
+      matchPackageNames: ['effect', '@effect/**'],
+      automerge: false,
+    },
+  ],
   'pre-commit': {
     enabled: true,
   },

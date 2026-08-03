@@ -1,3 +1,4 @@
+import { Duration, Effect, Fiber, Ref } from 'effect'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
@@ -6,73 +7,77 @@ import { type ProviderQuota, type QuotaWindow } from './state'
 
 export type QuotaFetcher = (baseUrl: string, signal: AbortSignal) => Promise<ProviderQuota | undefined>
 
-type TimerHandle = ReturnType<typeof setInterval>
-
-interface AnthropicQuotaPollerOptions {
-  refreshMs: number
-  fetchQuota?: QuotaFetcher
-  schedule?: (callback: () => void, delay: number) => TimerHandle
-  cancel?: (timer: TimerHandle) => void
+export interface QuotaPoller {
+  readonly start: (baseUrl: string) => Effect.Effect<void>
+  readonly stop: Effect.Effect<void>
 }
 
-/** Polls one request at a time and prevents an old session's result from being published. */
-export class AnthropicQuotaPoller {
-  private readonly fetchQuota: QuotaFetcher
-  private readonly onQuota: (quota: ProviderQuota | undefined) => void
-  private readonly refreshMs: number
-  private readonly schedule: (callback: () => void, delay: number) => TimerHandle
-  private readonly cancel: (timer: TimerHandle) => void
-  private generation = 0
-  private timer: TimerHandle | undefined
-  private request: AbortController | undefined
-  private baseUrl = ''
-
-  constructor(onQuota: (quota: ProviderQuota | undefined) => void, options: AnthropicQuotaPollerOptions) {
-    this.onQuota = onQuota
-    this.refreshMs = options.refreshMs
-    this.fetchQuota = options.fetchQuota ?? ((baseUrl, signal) => fetchAnthropicQuota(baseUrl, signal))
-    this.schedule = options.schedule ?? setInterval
-    this.cancel = options.cancel ?? clearInterval
-  }
-
-  start(baseUrl: string) {
-    this.stop()
-    this.baseUrl = baseUrl
-    const { generation } = this
-    void this.refresh(generation)
-    this.timer = this.schedule(() => void this.refresh(generation), this.refreshMs)
-  }
-
-  stop() {
-    this.generation += 1
-    if (this.timer !== undefined) {
-      this.cancel(this.timer)
-    }
-    this.timer = undefined
-    this.request?.abort()
-    this.request = undefined
-  }
-
-  private async refresh(generation: number) {
-    if (generation !== this.generation || this.request) {
-      return
-    }
-    const request = new AbortController()
-    this.request = request
-    try {
-      const quota = await this.fetchQuota(this.baseUrl, request.signal)
-      if (generation === this.generation && !request.signal.aborted) {
-        this.onQuota(quota)
-      }
-    } catch {
-      // A stopped poll normally rejects when its AbortSignal is handled by fetch.
-    } finally {
-      if (this.request === request) {
-        this.request = undefined
-      }
-    }
-  }
+export interface QuotaPollerOptions {
+  readonly refreshMs: number
+  readonly fetchQuota?: QuotaFetcher
 }
+
+/**
+ * Polls one request at a time and prevents a stopped generation's result from being published.
+ * The polling cadence ticks independently of how long any single request takes -- each tick forks
+ * its own `refresh` attempt rather than awaiting the previous one -- so the in-flight guard below
+ * is load-bearing, not redundant: without it, a slow gateway would let requests overlap.
+ */
+export const makeQuotaPoller = (onQuota: (quota: ProviderQuota | undefined) => void, options: QuotaPollerOptions): Effect.Effect<QuotaPoller> =>
+  Effect.gen(function* () {
+    const fetchQuota = options.fetchQuota ?? ((baseUrl, signal) => fetchAnthropicQuota(baseUrl, signal))
+    const generationRef = yield* Ref.make(0)
+    const requestRef = yield* Ref.make<AbortController | undefined>(undefined)
+    const fiberRef = yield* Ref.make<Fiber.Fiber<void> | undefined>(undefined)
+
+    const refresh = (generation: number, baseUrl: string): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const currentGeneration = yield* Ref.get(generationRef)
+        const inFlight = yield* Ref.get(requestRef)
+        if (generation !== currentGeneration || inFlight) {
+          return
+        }
+        const request = new AbortController()
+        yield* Ref.set(requestRef, request)
+        yield* Effect.gen(function* () {
+          const outcome = yield* Effect.result(Effect.tryPromise({ catch: (cause) => cause, try: () => fetchQuota(baseUrl, request.signal) }))
+          if (outcome._tag === 'Success') {
+            const stillCurrent = (yield* Ref.get(generationRef)) === generation && !request.signal.aborted
+            if (stillCurrent) {
+              yield* Effect.sync(() => onQuota(outcome.success)).pipe(Effect.catchCause(() => Effect.void))
+            }
+          }
+        }).pipe(Effect.ensuring(Ref.update(requestRef, (current) => (current === request ? undefined : current))))
+      })
+
+    const pollLoop = (generation: number, baseUrl: string): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        while (true) {
+          yield* Effect.forkChild(refresh(generation, baseUrl), { startImmediately: true })
+          yield* Effect.sleep(Duration.millis(options.refreshMs))
+        }
+      })
+
+    const stop: Effect.Effect<void> = Effect.gen(function* () {
+      yield* Ref.update(generationRef, (value) => value + 1)
+      const request = yield* Ref.getAndSet(requestRef, undefined)
+      request?.abort()
+      const fiber = yield* Ref.getAndSet(fiberRef, undefined)
+      if (fiber) {
+        yield* Fiber.interrupt(fiber)
+      }
+    })
+
+    const start = (baseUrl: string): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        yield* stop
+        const generation = yield* Ref.get(generationRef)
+        const fiber = yield* Effect.forkDetach(pollLoop(generation, baseUrl), { startImmediately: true })
+        yield* Ref.set(fiberRef, fiber)
+      })
+
+    return { start, stop }
+  })
 
 /** One usage window as reported by the gateway, with `utilization` as a 0..1 fraction. */
 const GatewayQuotaWindowSchema = Type.Object({

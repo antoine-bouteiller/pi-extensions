@@ -12,8 +12,7 @@ import {
   type ThemeColor,
 } from '@earendil-works/pi-coding-agent'
 import { Container, matchesKey, truncateToWidth, visibleWidth, type TUI } from '@earendil-works/pi-tui'
-import { Type } from 'typebox'
-import { Check } from 'typebox/value'
+import { Effect, Exit, Fiber, Schema, Scope } from 'effect'
 
 import { getSocketPath, isPeekActive, type AgentInfo } from './core.js'
 import { persistedProfileColor } from './profiles.js'
@@ -101,173 +100,169 @@ type PeekSocketEvent =
   | ToolExecutionEndEvent
   | AgentSettledEvent
 
-const TextContentSchema = Type.Object({
-  text: Type.String(),
-  textSignature: Type.Optional(Type.String()),
-  type: Type.Literal('text'),
+const TextContentSchema = Schema.Struct({
+  text: Schema.String,
+  textSignature: Schema.optional(Schema.String),
+  type: Schema.Literal('text'),
 })
 
-const ThinkingContentSchema = Type.Object({
-  redacted: Type.Optional(Type.Boolean()),
-  thinking: Type.String(),
-  thinkingSignature: Type.Optional(Type.String()),
-  type: Type.Literal('thinking'),
+const ThinkingContentSchema = Schema.Struct({
+  redacted: Schema.optional(Schema.Boolean),
+  thinking: Schema.String,
+  thinkingSignature: Schema.optional(Schema.String),
+  type: Schema.Literal('thinking'),
 })
 
-const ImageContentSchema = Type.Object({
-  data: Type.String(),
-  mimeType: Type.String(),
-  type: Type.Literal('image'),
+const ImageContentSchema = Schema.Struct({
+  data: Schema.String,
+  mimeType: Schema.String,
+  type: Schema.Literal('image'),
 })
 
-const ToolCallSchema = Type.Object({
-  arguments: Type.Record(Type.String(), Type.Unknown()),
-  id: Type.String(),
-  name: Type.String(),
-  thoughtSignature: Type.Optional(Type.String()),
-  type: Type.Literal('toolCall'),
+const ToolCallSchema = Schema.Struct({
+  arguments: Schema.Record(Schema.String, Schema.Unknown),
+  id: Schema.String,
+  name: Schema.String,
+  thoughtSignature: Schema.optional(Schema.String),
+  type: Schema.Literal('toolCall'),
 })
 
-const UsageSchema = Type.Object({
-  cacheRead: Type.Number(),
-  cacheWrite: Type.Number(),
-  cacheWrite1h: Type.Optional(Type.Number()),
-  cost: Type.Object({
-    cacheRead: Type.Number(),
-    cacheWrite: Type.Number(),
-    input: Type.Number(),
-    output: Type.Number(),
-    total: Type.Number(),
+const UsageSchema = Schema.Struct({
+  cacheRead: Schema.Number,
+  cacheWrite: Schema.Number,
+  cacheWrite1h: Schema.optional(Schema.Number),
+  cost: Schema.Struct({
+    cacheRead: Schema.Number,
+    cacheWrite: Schema.Number,
+    input: Schema.Number,
+    output: Schema.Number,
+    total: Schema.Number,
   }),
-  input: Type.Number(),
-  output: Type.Number(),
-  reasoning: Type.Optional(Type.Number()),
-  totalTokens: Type.Number(),
+  input: Schema.Number,
+  output: Schema.Number,
+  reasoning: Schema.optional(Schema.Number),
+  totalTokens: Schema.Number,
 })
 
-const AssistantMessageDiagnosticSchema = Type.Object({
-  details: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-  error: Type.Optional(
-    Type.Object({
-      code: Type.Optional(Type.Union([Type.String(), Type.Number()])),
-      message: Type.String(),
-      name: Type.Optional(Type.String()),
-      stack: Type.Optional(Type.String()),
+const AssistantMessageDiagnosticSchema = Schema.Struct({
+  details: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  error: Schema.optional(
+    Schema.Struct({
+      code: Schema.optional(Schema.Union([Schema.String, Schema.Number])),
+      message: Schema.String,
+      name: Schema.optional(Schema.String),
+      stack: Schema.optional(Schema.String),
     })
   ),
-  timestamp: Type.Number(),
-  type: Type.String(),
+  timestamp: Schema.Number,
+  type: Schema.String,
 })
 
-const StopReasonSchema = Type.Union([
-  Type.Literal('stop'),
-  Type.Literal('length'),
-  Type.Literal('toolUse'),
-  Type.Literal('error'),
-  Type.Literal('aborted'),
-])
+const StopReasonSchema = Schema.Literals(['stop', 'length', 'toolUse', 'error', 'aborted'] as const)
 
-const UserMessageSchema = Type.Object({
-  content: Type.Union([Type.String(), Type.Array(Type.Union([TextContentSchema, ImageContentSchema]))]),
-  role: Type.Literal('user'),
-  timestamp: Type.Number(),
+const UserMessageSchema = Schema.Struct({
+  content: Schema.Union([Schema.String, Schema.Array(Schema.Union([TextContentSchema, ImageContentSchema]))]),
+  role: Schema.Literal('user'),
+  timestamp: Schema.Number,
 })
 
-const AssistantMessageSchema = Type.Object({
-  api: Type.String(),
-  content: Type.Array(Type.Union([TextContentSchema, ThinkingContentSchema, ToolCallSchema])),
-  diagnostics: Type.Optional(Type.Array(AssistantMessageDiagnosticSchema)),
-  errorMessage: Type.Optional(Type.String()),
-  model: Type.String(),
-  provider: Type.String(),
-  responseId: Type.Optional(Type.String()),
-  responseModel: Type.Optional(Type.String()),
-  role: Type.Literal('assistant'),
+const AssistantMessageSchema = Schema.Struct({
+  api: Schema.String,
+  content: Schema.Array(Schema.Union([TextContentSchema, ThinkingContentSchema, ToolCallSchema])),
+  diagnostics: Schema.optional(Schema.Array(AssistantMessageDiagnosticSchema)),
+  errorMessage: Schema.optional(Schema.String),
+  model: Schema.String,
+  provider: Schema.String,
+  responseId: Schema.optional(Schema.String),
+  responseModel: Schema.optional(Schema.String),
+  role: Schema.Literal('assistant'),
   stopReason: StopReasonSchema,
-  timestamp: Type.Number(),
+  timestamp: Schema.Number,
   usage: UsageSchema,
 })
 
-const ToolResultMessageSchema = Type.Object({
-  addedToolNames: Type.Optional(Type.Array(Type.String())),
-  content: Type.Array(Type.Union([TextContentSchema, ImageContentSchema])),
-  details: Type.Optional(Type.Unknown()),
-  isError: Type.Boolean(),
-  role: Type.Literal('toolResult'),
-  timestamp: Type.Number(),
-  toolCallId: Type.String(),
-  toolName: Type.String(),
-  usage: Type.Optional(UsageSchema),
+const ToolResultMessageSchema = Schema.Struct({
+  addedToolNames: Schema.optional(Schema.Array(Schema.String)),
+  content: Schema.Array(Schema.Union([TextContentSchema, ImageContentSchema])),
+  details: Schema.optional(Schema.Unknown),
+  isError: Schema.Boolean,
+  role: Schema.Literal('toolResult'),
+  timestamp: Schema.Number,
+  toolCallId: Schema.String,
+  toolName: Schema.String,
+  usage: Schema.optional(UsageSchema),
 })
 
-const MessageSchema = Type.Union([UserMessageSchema, AssistantMessageSchema, ToolResultMessageSchema])
+const MessageSchema = Schema.Union([UserMessageSchema, AssistantMessageSchema, ToolResultMessageSchema])
 
-const ToolExecutionResultPayloadSchema = Type.Object({
-  content: Type.Array(
-    Type.Object({
-      data: Type.Optional(Type.String()),
-      mimeType: Type.Optional(Type.String()),
-      text: Type.Optional(Type.String()),
-      type: Type.String(),
+const ToolExecutionResultPayloadSchema = Schema.Struct({
+  content: Schema.Array(
+    Schema.Struct({
+      data: Schema.optional(Schema.String),
+      mimeType: Schema.optional(Schema.String),
+      text: Schema.optional(Schema.String),
+      type: Schema.String,
     })
   ),
-  details: Type.Optional(Type.Unknown()),
+  details: Schema.optional(Schema.Unknown),
 })
 
-const ActiveToolEventSchema = Type.Object({
-  args: Type.Unknown(),
-  isError: Type.Optional(Type.Boolean()),
-  partialResult: Type.Optional(ToolExecutionResultPayloadSchema),
-  result: Type.Optional(ToolExecutionResultPayloadSchema),
-  toolCallId: Type.String(),
-  toolName: Type.String(),
+const ActiveToolEventSchema = Schema.Struct({
+  args: Schema.Unknown,
+  isError: Schema.optional(Schema.Boolean),
+  partialResult: Schema.optional(ToolExecutionResultPayloadSchema),
+  result: Schema.optional(ToolExecutionResultPayloadSchema),
+  toolCallId: Schema.String,
+  toolName: Schema.String,
 })
 
-const PeekSocketEventSchema = Type.Union([
-  Type.Object({
-    activeTools: Type.Optional(Type.Array(ActiveToolEventSchema)),
-    partialMessage: Type.Optional(AssistantMessageSchema),
-    status: Type.Optional(Type.Union([Type.Literal('thinking'), Type.Literal('streaming'), Type.Literal('tool'), Type.Literal('done')])),
-    type: Type.Literal('sync'),
-    userMessage: Type.Optional(MessageSchema),
+const PeekSocketEventSchema = Schema.Union([
+  Schema.Struct({
+    activeTools: Schema.optional(Schema.Array(ActiveToolEventSchema)),
+    partialMessage: Schema.optional(AssistantMessageSchema),
+    status: Schema.optional(Schema.Literals(['thinking', 'streaming', 'tool', 'done'] as const)),
+    type: Schema.Literal('sync'),
+    userMessage: Schema.optional(MessageSchema),
   }),
-  Type.Object({
+  Schema.Struct({
     message: MessageSchema,
-    type: Type.Literal('message_start'),
+    type: Schema.Literal('message_start'),
   }),
-  Type.Object({
-    assistantMessageEvent: Type.Optional(Type.Object({ type: Type.Optional(Type.String()) })),
+  Schema.Struct({
+    assistantMessageEvent: Schema.optional(Schema.Struct({ type: Schema.optional(Schema.String) })),
     message: MessageSchema,
-    type: Type.Literal('message_update'),
+    type: Schema.Literal('message_update'),
   }),
-  Type.Object({
+  Schema.Struct({
     message: MessageSchema,
-    type: Type.Literal('message_end'),
+    type: Schema.Literal('message_end'),
   }),
-  Type.Object({
-    args: Type.Unknown(),
-    toolCallId: Type.String(),
-    toolName: Type.String(),
-    type: Type.Literal('tool_execution_start'),
+  Schema.Struct({
+    args: Schema.Unknown,
+    toolCallId: Schema.String,
+    toolName: Schema.String,
+    type: Schema.Literal('tool_execution_start'),
   }),
-  Type.Object({
-    args: Type.Unknown(),
+  Schema.Struct({
+    args: Schema.Unknown,
     partialResult: ToolExecutionResultPayloadSchema,
-    toolCallId: Type.String(),
-    toolName: Type.String(),
-    type: Type.Literal('tool_execution_update'),
+    toolCallId: Schema.String,
+    toolName: Schema.String,
+    type: Schema.Literal('tool_execution_update'),
   }),
-  Type.Object({
-    isError: Type.Boolean(),
+  Schema.Struct({
+    isError: Schema.Boolean,
     result: ToolExecutionResultPayloadSchema,
-    toolCallId: Type.String(),
-    toolName: Type.String(),
-    type: Type.Literal('tool_execution_end'),
+    toolCallId: Schema.String,
+    toolName: Schema.String,
+    type: Schema.Literal('tool_execution_end'),
   }),
-  Type.Object({
-    type: Type.Literal('agent_settled'),
+  Schema.Struct({
+    type: Schema.Literal('agent_settled'),
   }),
 ])
+
+const isPeekSocketEvent = Schema.is(PeekSocketEventSchema)
 
 const STATUS_ICONS: Record<PeekStatus, string> = {
   done: '✓',
@@ -304,12 +299,14 @@ export class SubagentPeekOverlay {
   private scrollOffset = Number.MAX_SAFE_INTEGER
   private followMode = true
   private socket: Socket | undefined = undefined
+  private socketScope: Scope.Closeable | undefined = undefined
   private socketBuffer = ''
   private status: PeekStatus = 'done'
   private streamingComponent: AssistantMessageComponent | undefined = undefined
   private streamingMessage: AssistantMessage | undefined = undefined
   private readonly pendingTools = new Map<string, ToolExecutionComponent>()
-  private pollInterval: ReturnType<typeof setInterval> | undefined = undefined
+  private disposed = false
+  private pollFiber: Fiber.Fiber<never> | undefined = undefined
   private lastConnectAttemptAt = 0
   private cachedLines: string[] | undefined = undefined
   private cachedWidth: number | undefined = undefined
@@ -327,7 +324,7 @@ export class SubagentPeekOverlay {
     if (isPeekActive(options.info.id)) {
       this.connectSocket()
     }
-    this.pollInterval = setInterval(() => this.poll(), 200)
+    this.pollFiber = Effect.runFork(Effect.forever(Effect.delay(Effect.sync(() => this.poll()).pipe(Effect.catchCause(() => Effect.void)), 200)))
   }
 
   private loadSession(): void {
@@ -414,49 +411,66 @@ export class SubagentPeekOverlay {
       .join('\n')
   }
 
+  /** Releases the scope only if it is still the caller's current connection, so a closed-then-superseded socket cannot tear down a newer one. */
+  private releaseSocketScope(scope: Scope.Closeable): void {
+    if (this.socketScope !== scope) {
+      return
+    }
+    this.socketScope = undefined
+    this.socket = undefined
+    Effect.runFork(Scope.close(scope, Exit.void))
+  }
+
   private connectSocket(): void {
     this.lastConnectAttemptAt = Date.now()
+    const scope = Effect.runSync(Scope.make())
+    let socket: Socket
     try {
-      const socket = connect(getSocketPath(this.info.id))
-      this.socket = socket
-      this.socketBuffer = ''
-      socket.on('error', () => {
-        if (this.socket === socket) {
-          this.socket = undefined
-        }
-      })
-      socket.on('close', () => {
-        if (this.socket === socket) {
-          this.socket = undefined
-        }
-        this.status = 'done'
-        this.cleanupStreaming()
-        this.loadSession()
-        this.rebuildChat()
-        this.tui.requestRender()
-      })
-      socket.on('data', (data) => {
-        this.socketBuffer += data.toString()
-        const lines = this.socketBuffer.split('\n')
-        this.socketBuffer = lines.pop() ?? ''
-        for (const line of lines) {
-          if (!line.trim()) {
-            continue
-          }
-          let parsed: unknown
-          try {
-            parsed = JSON.parse(line)
-          } catch {
-            parsed = undefined
-          }
-          if (Check(PeekSocketEventSchema, parsed)) {
-            this.handleEvent(parsed)
-          }
-        }
-      })
+      socket = Effect.runSync(
+        Effect.acquireRelease(
+          Effect.sync(() => connect(getSocketPath(this.info.id))),
+          (connectedSocket) => Effect.sync(() => connectedSocket.destroy())
+        ).pipe(Effect.provideService(Scope.Scope, scope))
+      )
     } catch {
-      this.socket = undefined
+      Effect.runFork(Scope.close(scope, Exit.void))
+      return
     }
+    this.socket = socket
+    this.socketScope = scope
+    this.socketBuffer = ''
+    socket.on('error', () => this.releaseSocketScope(scope))
+    socket.on('close', () => {
+      this.releaseSocketScope(scope)
+      if (this.disposed) {
+        return
+      }
+      this.status = 'done'
+      this.cleanupStreaming()
+      this.loadSession()
+      this.rebuildChat()
+      this.tui.requestRender()
+    })
+    socket.on('data', (data) => {
+      this.socketBuffer += data.toString()
+      const lines = this.socketBuffer.split('\n')
+      this.socketBuffer = lines.pop() ?? ''
+      for (const line of lines) {
+        if (!line.trim()) {
+          continue
+        }
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(line)
+        } catch {
+          parsed = undefined
+        }
+        if (isPeekSocketEvent(parsed)) {
+          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- isPeekSocketEvent already validated this shape; only the readonly/mutable modifier differs from the hand-written event union.
+          this.handleEvent(parsed as PeekSocketEvent)
+        }
+      }
+    })
   }
 
   private handleSyncEvent(event: SyncEvent): void {
@@ -666,6 +680,9 @@ export class SubagentPeekOverlay {
   }
 
   private poll(): void {
+    if (this.disposed) {
+      return
+    }
     if (!this.socket && isPeekActive(this.info.id) && Date.now() - this.lastConnectAttemptAt >= 2000) {
       this.connectSocket()
     }
@@ -817,11 +834,13 @@ export class SubagentPeekOverlay {
   }
 
   dispose(): void {
-    if (this.pollInterval) {
-      clearInterval(this.pollInterval)
+    this.disposed = true
+    if (this.pollFiber) {
+      Effect.runFork(Fiber.interrupt(this.pollFiber))
+      this.pollFiber = undefined
     }
-    this.pollInterval = undefined
-    this.socket?.end()
-    this.socket = undefined
+    if (this.socketScope) {
+      this.releaseSocketScope(this.socketScope)
+    }
   }
 }

@@ -8,7 +8,7 @@ interface DangerousPattern {
   severity: Severity
 }
 
-const CRITICAL_PATTERNS: DangerousPattern[] = [
+const CRITICAL_PATTERNS = [
   {
     category: 'filesystem',
     label: 'Recognized shell deletion is disabled; use the self-validating safe_rm tool instead',
@@ -52,9 +52,9 @@ const CRITICAL_PATTERNS: DangerousPattern[] = [
     pattern: /\b(?:ip6tables|iptables)\s+-F\b/i,
     severity: 'critical',
   },
-]
+] as const satisfies readonly DangerousPattern[]
 
-const HIGH_PATTERNS: DangerousPattern[] = [
+const HIGH_PATTERNS = [
   {
     category: 'filesystem',
     label: 'Destructive file operation',
@@ -170,9 +170,9 @@ const HIGH_PATTERNS: DangerousPattern[] = [
       /\b(?:awk|cat|cp|grep|rg|sed)\b[^\n;&|]*(?:\.aws\/(?:config|credentials)|\.config\/(?:gcloud|gh\/hosts\.yml)|\.env(?:\.[^\s;&|]+)?|\.git-credentials|\.kube\/config|\.netrc|\.npmrc|\.pypirc|auth\.json|id_(?:ed25519|rsa)|\.(?:kdbx|key|p12|pem)\b)/i,
     severity: 'high',
   },
-]
+] as const satisfies readonly DangerousPattern[]
 
-export const ALL_PATTERNS = [...CRITICAL_PATTERNS, ...HIGH_PATTERNS]
+export const ALL_PATTERNS = [...CRITICAL_PATTERNS, ...HIGH_PATTERNS] as const satisfies readonly DangerousPattern[]
 
 export const COMMAND_EXCERPT_CONTEXT_LINES = 2
 export const COMMAND_EXCERPT_MAX_LENGTH = 240

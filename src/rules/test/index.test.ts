@@ -114,15 +114,18 @@ describe('rule loading', () => {
     const fixture = await createFixture()
     const rulesDirectory = join(fixture.projectDirectory, '.agents/rules')
     const outside = join(fixture.projectDirectory, '..', 'outside.md')
+    const outsideDirectory = join(fixture.projectDirectory, '..', 'outside-rules')
     await Promise.all([
       writeFixture(join(rulesDirectory, 'safe.md'), 'Safe rule'),
       writeFixture(join(rulesDirectory, 'malformed.md'), '---\npaths: [src/**\n---\nUnsafe'),
       writeFixture(outside, 'Escaped rule'),
+      writeFixture(join(outsideDirectory, 'directory-escape.md'), 'Directory escaped rule'),
     ])
     await Promise.all([
       symlink(join(rulesDirectory, 'safe.md'), join(rulesDirectory, 'alias.md')),
       symlink(rulesDirectory, join(rulesDirectory, 'cycle')),
       symlink(outside, join(rulesDirectory, 'escape.md')),
+      symlink(outsideDirectory, join(rulesDirectory, 'escape-directory')),
     ])
 
     const result = await fixture.invoke<PromptResult>('before_agent_start', {
@@ -131,6 +134,7 @@ describe('rule loading', () => {
     expect(result?.systemPrompt.match(/Safe rule/g)).toHaveLength(1)
     expect(result?.systemPrompt).not.toContain('Unsafe')
     expect(result?.systemPrompt).not.toContain('Escaped rule')
+    expect(result?.systemPrompt).not.toContain('Directory escaped rule')
   })
 
   test('truncates oversized rules with a pointer to the source', async () => {
@@ -170,6 +174,18 @@ describe('path-scoped injection', () => {
     await writeFixture(rulePath, '---\npaths: src/**/*.ts\n---\nUse even stricter TypeScript.')
     const changed = await fixture.invoke<ToolResult>('tool_result', readEvent('src/lib/main.ts'))
     expect(changed?.content.at(-1)?.text).toContain('Use even stricter TypeScript.')
+  })
+
+  test('atomically deduplicates concurrent matching tool results', async () => {
+    const fixture = await createFixture()
+    await writeFixture(join(fixture.projectDirectory, '.agents/rules/concurrent.md'), '---\npaths: src/**\n---\nConcurrent rule.')
+
+    const results = await Promise.all([
+      fixture.invoke<ToolResult>('tool_result', readEvent('src/main.ts')),
+      fixture.invoke<ToolResult>('tool_result', readEvent('src/main.ts')),
+    ])
+
+    expect(results.filter((result) => result !== undefined)).toHaveLength(1)
   })
 
   test('does not suppress matching rules omitted by the injection budget', async () => {

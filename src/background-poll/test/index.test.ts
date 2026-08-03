@@ -1,8 +1,12 @@
-import { describe, expect, test } from 'bun:test'
+import { expect } from 'bun:test'
 
+import { Effect, Fiber } from 'effect'
+import { TestClock } from 'effect/testing'
+
+import { describe, it } from '#test-utils/bun_effect'
 import { asExtensionApi } from '#test-utils/casts'
 
-import backgroundPoll from '../index'
+import backgroundPoll, { formatPollOutput, runPollLoop } from '../index.js'
 
 interface ToolResult {
   content: { text: string; type: string }[]
@@ -22,10 +26,18 @@ interface Tool {
 
 type Handler = (event: unknown, ctx: Record<string, unknown>) => Promise<void> | void
 
-const setup = (execResults: { stdout: string; stderr: string; code: number }[]) => {
+type Exec = (
+  command: string,
+  args: string[],
+  options: { signal?: AbortSignal; timeout?: number }
+) => Promise<{ stdout: string; stderr: string; code: number }>
+
+const setup = (exec: Exec) => {
   let tool: Tool | undefined
   const handlers = new Map<string, Handler>()
   const messages: { message: Record<string, unknown>; options: Record<string, unknown> }[] = []
+  const notifications: { message: string; level: string }[] = []
+  const statuses: unknown[] = []
   let messageSent: (() => void) | undefined
   const sent = new Promise<void>((resolve) => {
     messageSent = resolve
@@ -33,7 +45,7 @@ const setup = (execResults: { stdout: string; stderr: string; code: number }[]) 
 
   backgroundPoll(
     asExtensionApi({
-      exec: async () => execResults.shift() ?? { code: 1, stderr: 'not ready', stdout: '' },
+      exec,
       on: (event: string, handler: Handler) => handlers.set(event, handler),
       registerTool: (definition: Tool) => {
         tool = definition
@@ -45,11 +57,10 @@ const setup = (execResults: { stdout: string; stderr: string; code: number }[]) 
     })
   )
 
-  const statuses: unknown[] = []
   const ctx = {
     hasUI: true,
     ui: {
-      notify: () => undefined,
+      notify: (message: string, level: string) => notifications.push({ level, message }),
       setStatus: (_key: string, value: unknown) => statuses.push(value),
       theme: { fg: (_color: string, value: string) => value },
     },
@@ -59,24 +70,35 @@ const setup = (execResults: { stdout: string; stderr: string; code: number }[]) 
     throw new Error('background-poll did not register a tool')
   }
 
-  return { ctx, handlers, messages, sent, statuses, tool }
+  return { ctx, handlers, messages, notifications, sent, statuses, tool }
+}
+
+const startSession = async (fixture: ReturnType<typeof setup>): Promise<void> => {
+  await fixture.handlers.get('session_start')?.({}, fixture.ctx)
+}
+
+const rejectionMessage = async (promise: Promise<unknown>): Promise<string> => {
+  try {
+    await promise
+    throw new Error('Expected promise to reject')
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error)
+  }
 }
 
 describe('background poll', () => {
-  test('returns immediately and wakes the agent after a successful poll', async () => {
-    const fixture = setup([
-      { code: 1, stderr: 'pending', stdout: '' },
-      { code: 0, stderr: '', stdout: 'ready' },
-    ])
+  it('returns immediately, bounds command time, publishes status, and wakes the agent', async () => {
+    const commandTimeouts: number[] = []
+    const longOutput = `${Array.from({ length: 2100 }, (_unused, index) => `line-${index}`).join('\n')}\nready-at-tail`
+    const fixture = setup(async (_command, _args, options) => {
+      commandTimeouts.push(options.timeout ?? -1)
+      return { code: 0, stderr: '', stdout: longOutput }
+    })
+    await startSession(fixture)
 
     const result = await fixture.tool.execute(
       'call-1',
-      {
-        command: 'check-status',
-        interval_seconds: 0,
-        label: 'deployment',
-        timeout_seconds: 10,
-      },
+      { command: 'check-status', interval_seconds: 1, label: 'deployment', timeout_seconds: 10 },
       undefined,
       undefined,
       fixture.ctx
@@ -84,33 +106,112 @@ describe('background poll', () => {
 
     expect(result.terminate).toBeTrue()
     expect(result.content[0].text).toContain('Stop now')
+    expect(fixture.statuses).toContain('⏳ 1 background poll')
 
     await fixture.sent
+    expect(commandTimeouts).toEqual([10_000])
     expect(fixture.messages).toHaveLength(1)
     expect(fixture.messages[0].message.content).toContain('Background poll completed: deployment')
-    expect(fixture.messages[0].message.content).toContain('ready')
+    expect(fixture.messages[0].message.content).toContain('ready-at-tail')
+    expect(fixture.messages[0].message.content).toContain('showing the last')
     expect(fixture.messages[0].options).toEqual({ deliverAs: 'followUp', triggerTurn: true })
+    expect(fixture.notifications).toEqual([{ level: 'info', message: 'Background poll completed: deployment' }])
+    expect(fixture.statuses.at(-1)).toBeUndefined()
   })
 
-  test('aborts active polling when the session shuts down', async () => {
-    const fixture = setup([{ code: 1, stderr: 'pending', stdout: '' }])
+  it('reports command failures as error outcomes', async () => {
+    const fixture = setup(async () => {
+      throw new Error('checker exploded')
+    })
+    await startSession(fixture)
 
-    await fixture.tool.execute(
-      'call-2',
-      {
-        command: 'check-status',
-        interval_seconds: 60,
-        timeout_seconds: 120,
-      },
-      undefined,
-      undefined,
-      fixture.ctx
+    await fixture.tool.execute('error', { command: 'fail' }, undefined, undefined, fixture.ctx)
+    await fixture.sent
+
+    expect(fixture.messages[0].message.content).toContain('Background poll failed: fail')
+    expect(fixture.messages[0].message.content).toContain('checker exploded')
+    expect(fixture.notifications[0]?.level).toBe('warning')
+  })
+
+  it('rejects registration without a live session scope', async () => {
+    const fixture = setup(async () => ({ code: 0, stderr: '', stdout: 'ready' }))
+
+    expect(await rejectionMessage(fixture.tool.execute('inactive', { command: 'check' }, undefined, undefined, fixture.ctx))).toBe(
+      'Cannot register a background poll without an active session'
     )
+  })
 
+  it('replaces the session scope and accepts registrations in the new session', async () => {
+    const fixture = setup((_command, args, options) => {
+      if (args[1] === 'new-check') {
+        return Promise.resolve({ code: 0, stderr: '', stdout: 'new session ready' })
+      }
+      return new Promise((resolve) => {
+        options.signal?.addEventListener('abort', () => resolve({ code: 1, stderr: 'stopped', stdout: '' }), { once: true })
+      })
+    })
+    await startSession(fixture)
+    await fixture.tool.execute('old', { command: 'old-check' }, undefined, undefined, fixture.ctx)
+
+    await startSession(fixture)
+    await fixture.tool.execute('new', { command: 'new-check' }, undefined, undefined, fixture.ctx)
+    await fixture.sent
+
+    expect(fixture.messages).toHaveLength(1)
+    expect(fixture.messages[0].message.content).toContain('new session ready')
+  })
+
+  it('suppresses completion and clears status when the session shuts down', async () => {
+    const fixture = setup(
+      (_command, _args, options) =>
+        new Promise((resolve) => {
+          options.signal?.addEventListener('abort', () => resolve({ code: 1, stderr: 'stopped', stdout: '' }), { once: true })
+        })
+    )
+    await startSession(fixture)
+
+    await fixture.tool.execute('call-2', { command: 'check-status', interval_seconds: 60, timeout_seconds: 120 }, undefined, undefined, fixture.ctx)
     await fixture.handlers.get('session_shutdown')?.({}, fixture.ctx)
-    await Bun.sleep(5)
 
     expect(fixture.messages).toHaveLength(0)
     expect(fixture.statuses.at(-1)).toBeUndefined()
+    expect(await rejectionMessage(fixture.tool.execute('late', { command: 'check-status' }, undefined, undefined, fixture.ctx))).toBe(
+      'Cannot register a background poll during shutdown'
+    )
+  })
+
+  it.effect('uses virtual time and stops retrying at the deadline', () =>
+    Effect.gen(function* () {
+      let attempts = 0
+      const fiber = yield* Effect.forkChild(
+        runPollLoop({
+          command: 'check',
+          exec: () =>
+            Effect.sync(() => {
+              attempts += 1
+              return { code: 1, stderr: 'not ready', stdout: '' }
+            }),
+          intervalMs: 1000,
+          label: 'bounded',
+          taskId: 'poll-test',
+          timeoutMs: 3000,
+        })
+      )
+
+      yield* TestClock.adjust('3 seconds')
+      const result = yield* Fiber.join(fiber)
+
+      expect(result.details.outcome).toBe('timed-out')
+      expect(result.details.elapsedMs).toBe(3000)
+      expect(result.details.attempts).toBe(3)
+      expect(attempts).toBe(3)
+    })
+  )
+
+  it('keeps the tail when output is truncated', () => {
+    const output = formatPollOutput(`${'head\n'.repeat(3000)}tail`, '')
+
+    expect(output).toContain('tail')
+    expect(output).toContain('showing the last')
   })
 })

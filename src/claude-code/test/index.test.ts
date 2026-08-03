@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -48,7 +48,7 @@ const createFixture = async () => {
     return asResult<Result>(results[0])
   }
 
-  return { context, homeDirectory, invoke, projectDirectory }
+  return { context, homeDirectory, invoke, projectDirectory, temporaryDirectory }
 }
 
 const generatedSkills = async (skillDirectory: string): Promise<Map<string, string>> => {
@@ -193,5 +193,23 @@ describe('Claude Code compatibility', () => {
 
     await fixture.invoke('session_shutdown', {}, context)
     expect(await pathExists(secondDirectory)).toBeFalse()
+  })
+
+  test.skipIf(process.getuid?.() === 0)('cleans up the generated skill directory and rethrows when a command cannot be read', async () => {
+    const fixture = await createFixture()
+    const commandPath = join(fixture.homeDirectory, '.claude/commands/broken.md')
+    await writeFixture(commandPath, 'Broken command')
+    await chmod(commandPath, 0o000)
+
+    let rejection: unknown
+    try {
+      await fixture.invoke('resources_discover', { cwd: fixture.projectDirectory }, fixture.context(false))
+    } catch (error) {
+      rejection = error
+    }
+
+    await chmod(commandPath, 0o600)
+    expect(rejection).toBeInstanceOf(Error)
+    expect(await readdir(fixture.temporaryDirectory)).toEqual([])
   })
 })

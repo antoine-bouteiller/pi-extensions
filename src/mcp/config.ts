@@ -2,6 +2,8 @@ import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
+import { Effect, Schema } from 'effect'
+
 import {
   type DisabledServerConfig,
   type HttpServerConfig,
@@ -24,12 +26,43 @@ const OAUTH_FIELDS = new Set([
   'redirect_uri',
 ])
 
-class McpConfigError extends Error {
-  constructor(path: string, message: string) {
-    super(`${path}: ${message}`)
-    this.name = 'McpConfigError'
+class McpConfigError extends Schema.TaggedErrorClass<McpConfigError>()('McpConfigError', {
+  message: Schema.String,
+  path: Schema.String,
+}) {
+  constructor(path: string, reason: string) {
+    super({ message: `${path}: ${reason}`, path })
   }
 }
+
+const StringMapSchema = Schema.Record(Schema.String, Schema.String)
+const OAuthSchema = Schema.Struct({
+  callbackPort: Schema.optional(Schema.Number),
+  clientId: Schema.optional(Schema.String),
+  clientSecret: Schema.optional(Schema.String),
+  redirectUri: Schema.optional(Schema.String),
+  scope: Schema.optional(Schema.String),
+})
+const StdioServerSchema = Schema.Struct({
+  args: Schema.optional(Schema.Array(Schema.String)),
+  command: Schema.String,
+  cwd: Schema.optional(Schema.String),
+  disabled: Schema.optional(Schema.Boolean),
+  env: Schema.optional(StringMapSchema),
+  type: Schema.Literal('stdio'),
+})
+const HttpServerSchema = Schema.Struct({
+  disabled: Schema.optional(Schema.Boolean),
+  headers: Schema.optional(StringMapSchema),
+  oauth: Schema.optional(OAuthSchema),
+  type: Schema.Literal('http'),
+  url: Schema.String,
+})
+const DisabledServerSchema = Schema.Struct({ disabled: Schema.Literal(true) })
+
+/** Canonical server schema. Input aliases and validation precedence are normalized before decoding. */
+const McpServerSchema = Schema.Union([StdioServerSchema, HttpServerSchema, DisabledServerSchema])
+const McpServerMapSchema = Schema.Record(Schema.String, McpServerSchema)
 
 const isObject = (value: unknown): value is Record<string, unknown> => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -269,6 +302,18 @@ export const parseMcpConfig = (value: unknown): McpServerMap => {
   )
 }
 
+/** Effect boundary for callers that want typed configuration failures without changing legacy error text. */
+export const parseMcpConfigEffect = (value: unknown): Effect.Effect<McpServerMap, McpConfigError> =>
+  Effect.try({
+    catch: (cause) =>
+      cause instanceof McpConfigError ? cause : new McpConfigError('mcpServers', cause instanceof Error ? cause.message : String(cause)),
+    try: () => {
+      const parsed = parseMcpConfig(value)
+      Schema.decodeUnknownSync(McpServerMapSchema, { onExcessProperty: 'error' })(parsed)
+      return parsed
+    },
+  })
+
 /** Parse JSON text without adding JSONC or interpolation semantics. */
 export const parseMcpConfigText = (text: string, source = 'MCP config'): McpServerMap => {
   let value: unknown
@@ -291,6 +336,9 @@ export const loadMcpConfigFile = async (path: string): Promise<McpServerMap> => 
     throw error
   }
 }
+
+export const loadMcpConfigFileEffect = (path: string): Effect.Effect<McpServerMap, unknown> =>
+  Effect.tryPromise({ catch: (cause) => cause, try: () => loadMcpConfigFile(path) })
 
 const globalMcpConfigPath = (): string => join(homedir(), '.config', 'mcp', 'mcp.json')
 

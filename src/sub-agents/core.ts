@@ -26,11 +26,19 @@ import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
 import { getAgentDir, type ThemeColor } from '@earendil-works/pi-coding-agent'
+import { Clock, Deferred, Effect, Exit, HashMap, Option, Ref, Scope } from 'effect'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
 import { isRecord } from '../shared/records.js'
-import { inspectProcess, ownershipMatches, processAlive, processOwnerIsActive, type ProcessSnapshot } from './process_ownership.js'
+import {
+  nodeProcessProbe,
+  processAlive,
+  processInspectorFromProbe,
+  processOwnerIsActive,
+  type ProcessInspectorShape,
+  type ProcessSnapshot,
+} from './process_ownership.js'
 import {
   persistedProfileColor,
   resolveAgentConfig,
@@ -187,18 +195,12 @@ export interface SpawnAgentParams {
   parentModel: AvailableModel
 }
 
-interface PendingRequest {
-  resolve: (data: unknown) => void
-  reject: (error: Error) => void
-  timer: ReturnType<typeof setTimeout>
-}
-
 interface LiveAgent {
   info: AgentInfo
   proc: ChildProcessWithoutNullStreams
   broadcaster: EventBroadcaster
   logger: SessionLogger
-  pending: Map<string, PendingRequest>
+  pending: Ref.Ref<HashMap.HashMap<string, Deferred.Deferred<unknown, Error>>>
   reqId: number
   stderr: string
   expectedExit: boolean
@@ -209,6 +211,8 @@ interface LiveAgent {
   termination?: Promise<void>
   candidateResponse: string
   candidateError?: string
+  /** Manager-owned scope for this child's lifetime; closed explicitly in finishProcess so returning from spawnAgent never tears the child down. */
+  scope: Scope.Closeable
 }
 
 export const AgentCompletionEventSchema = Type.Object({
@@ -247,6 +251,12 @@ export interface AgentManagerOptions {
   childEnv?: NodeJS.ProcessEnv
   /** Test hook invoked after a dead lock is inspected but before its instance is revalidated. */
   beforeReclaimTaskLockRemoval?: (lockFile: string) => void
+  /** Test hook invoked after a held lock is released normally but before its instance is revalidated. */
+  beforeReleaseTaskLockRemoval?: (lockFile: string) => void
+  /** Override process identity inspection so tests can drive Linux/Darwin/Windows branches on any host. */
+  processInspector?: ProcessInspectorShape
+  /** Override the platform used to choose between POSIX signals and Windows taskkill for tests. */
+  platform?: NodeJS.Platform
 }
 
 interface Waiter {
@@ -567,10 +577,11 @@ const reclaimDeadTaskLock = (lockFile: string, beforeRevalidate?: (lockFile: str
   }
 }
 
-const releaseTaskLock = (lockFile: string, ownedFd: number, token: string): void => {
+const releaseTaskLock = (lockFile: string, ownedFd: number, token: string, beforeRevalidate?: (lockFile: string) => void): void => {
   let currentFd: number | undefined
   try {
     const ownedStat = fstatSync(ownedFd)
+    beforeRevalidate?.(lockFile)
     currentFd = openSync(lockFile, 'r')
     const currentStat = fstatSync(currentFd)
     const currentOwner = parseTaskLockOwner(readFileSync(currentFd, 'utf8'))
@@ -1122,6 +1133,37 @@ const buildChildArgs = (launch: { command: string; prefixArgs: string[] }, info:
   return args
 }
 
+const waitForOwnedExitEffect = (inspector: ProcessInspectorShape, ownership: ChildProcessOwnership, timeoutMs: number): Effect.Effect<boolean> =>
+  Effect.gen(function* () {
+    const deadline = (yield* Clock.currentTimeMillis) + timeoutMs
+    while ((yield* Clock.currentTimeMillis) < deadline) {
+      if (!(yield* inspector.ownershipMatches(ownership))) {
+        return true
+      }
+      yield* Effect.sleep(25)
+    }
+    return !(yield* inspector.ownershipMatches(ownership))
+  })
+
+/**
+ * Wait for an identity that survives two consecutive reads. A launcher such as a shebang
+ * script or a bin shim replaces the command line in place while keeping the PID, so the
+ * first readable identity can describe the launcher instead of the child Pi process.
+ */
+const verifyChildOwnershipEffect = (inspector: ProcessInspectorShape, pid: number, token: string): Effect.Effect<ProcessSnapshot, Error> =>
+  Effect.gen(function* () {
+    let previous: ProcessSnapshot | undefined
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const candidate = yield* inspector.inspect(pid, token)
+      if (candidate && candidate.tokenMatches !== false && candidate.identity === previous?.identity) {
+        return candidate
+      }
+      previous = candidate
+      yield* Effect.sleep(10)
+    }
+    return yield* Effect.fail(new Error('Unable to verify child Pi process ownership.'))
+  })
+
 const buildChildEnv = (info: AgentInfo, childToken: string, extraChildEnv: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv => {
   const childEnv = { ...process.env, ...extraChildEnv }
   delete childEnv.PI_SESSION_ID
@@ -1146,12 +1188,17 @@ export class AgentManager {
   }>()
   private readonly defaultWaitAllTargets = new Map<string, Set<string>>()
   private readonly shutdownController = new AbortController()
-  private readonly ownerProcessIdentity = inspectProcess(process.pid)?.identity
+  private readonly inspector: ProcessInspectorShape
+  private readonly platform: NodeJS.Platform
+  private readonly ownerProcessIdentity: string | undefined
   private readonly reconciliation: Promise<void>
   private readonly options: AgentManagerOptions
 
   constructor(options: AgentManagerOptions = {}) {
     this.options = options
+    this.inspector = options.processInspector ?? processInspectorFromProbe(nodeProcessProbe)
+    this.platform = options.platform ?? process.platform
+    this.ownerProcessIdentity = Effect.runSync(this.inspector.inspect(process.pid))?.identity
     ensureBaseDirs()
     pruneExpiredRuns()
     this.reconciliation = this.reconcilePersistedChildren()
@@ -1193,23 +1240,16 @@ export class AgentManager {
     }
   }
 
-  private async waitForOwnedExit(ownership: ChildProcessOwnership, timeoutMs: number): Promise<boolean> {
-    const deadline = Date.now() + timeoutMs
-    while (Date.now() < deadline) {
-      if (!ownershipMatches(ownership)) {
-        return true
-      }
-      await delay(25)
-    }
-    return !ownershipMatches(ownership)
+  private waitForOwnedExit(ownership: ChildProcessOwnership, timeoutMs: number): Promise<boolean> {
+    return Effect.runPromise(waitForOwnedExitEffect(this.inspector, ownership, timeoutMs))
   }
 
   private signalOwnedProcess(ownership: ChildProcessOwnership, signal: NodeJS.Signals): void {
-    if (!ownershipMatches(ownership)) {
+    if (!Effect.runSync(this.inspector.ownershipMatches(ownership))) {
       return
     }
     try {
-      if (process.platform === 'win32') {
+      if (this.platform === 'win32') {
         process.kill(ownership.pid, signal)
       } else {
         process.kill(-ownership.pid, signal)
@@ -1228,11 +1268,11 @@ export class AgentManager {
     if (!ownership) {
       return
     }
-    if (!ownershipMatches(ownership)) {
+    if (!Effect.runSync(this.inspector.ownershipMatches(ownership))) {
       this.clearChildOwnership(info, ownership.token)
       return
     }
-    if (process.platform === 'win32') {
+    if (this.platform === 'win32') {
       await new Promise<void>((finished) => {
         const killer = spawn('taskkill', ['/pid', String(ownership.pid), '/T', '/F'], {
           stdio: 'ignore',
@@ -1248,7 +1288,7 @@ export class AgentManager {
         await this.waitForOwnedExit(ownership, 1000)
       }
     }
-    if (ownershipMatches(ownership)) {
+    if (Effect.runSync(this.inspector.ownershipMatches(ownership))) {
       throw new Error(`Unable to terminate owned child process for ${info.canonicalName}.`)
     }
     this.clearChildOwnership(info, ownership.token)
@@ -1268,7 +1308,7 @@ export class AgentManager {
         continue
       }
       try {
-        if (!ownershipMatches(ownership)) {
+        if (!Effect.runSync(this.inspector.ownershipMatches(ownership))) {
           if (info.status === 'starting' || info.status === 'running') {
             info.status = 'interrupted'
             info.lastActivity = Date.now()
@@ -1278,7 +1318,7 @@ export class AgentManager {
           this.clearChildOwnership(info, ownership.token)
           continue
         }
-        const ownerSnapshot = inspectProcess(ownership.ownerPid)
+        const ownerSnapshot = Effect.runSync(this.inspector.inspect(ownership.ownerPid))
         const ownerStillActive =
           ownership.ownerPid !== process.pid &&
           ownerSnapshot &&
@@ -1393,7 +1433,7 @@ export class AgentManager {
       }
     } finally {
       if (lock !== undefined) {
-        releaseTaskLock(lockFile, lock, lockToken)
+        releaseTaskLock(lockFile, lock, lockToken, this.options.beforeReleaseTaskLockRemoval)
       }
     }
   }
@@ -1430,11 +1470,14 @@ export class AgentManager {
       live.info = persisted
       live.finalizedRun = true
     }
-    for (const [requestId, pending] of live.pending) {
-      clearTimeout(pending.timer)
-      pending.reject(error ?? new Error('Child Pi process exited before responding.'))
-      live.pending.delete(requestId)
-    }
+    Effect.runSync(
+      Effect.gen(function* () {
+        const pending = yield* Ref.getAndSet(live.pending, HashMap.empty())
+        for (const [, deferred] of HashMap.entries(pending)) {
+          yield* Deferred.fail(deferred, error ?? new Error('Child Pi process exited before responding.'))
+        }
+      })
+    )
     if (!live.expectedExit && !live.finalizedRun && !FINAL_STATUSES.has(live.info.status)) {
       this.markFailed(live, error?.message ?? 'Child Pi process exited unexpectedly.')
     }
@@ -1445,9 +1488,7 @@ export class AgentManager {
     if (this.live.get(live.info.id) === live) {
       this.live.delete(live.info.id)
     }
-    live.broadcaster.stop()
-    live.logger.close()
-    this.teardownChildStreams(live)
+    Effect.runSync(Scope.close(live.scope, Exit.void))
     live.resolveExit()
   }
 
@@ -1489,24 +1530,6 @@ export class AgentManager {
     })
   }
 
-  /**
-   * Wait for an identity that survives two consecutive reads. A launcher such as a shebang
-   * script or a bin shim replaces the command line in place while keeping the PID, so the
-   * first readable identity can describe the launcher instead of the child Pi process.
-   */
-  private async verifyChildOwnership(pid: number, token: string): Promise<ProcessSnapshot> {
-    let previous: ProcessSnapshot | undefined
-    for (let attempt = 0; attempt < 20; attempt++) {
-      const candidate = inspectProcess(pid, token)
-      if (candidate && candidate.tokenMatches !== false && candidate.identity === previous?.identity) {
-        return candidate
-      }
-      previous = candidate
-      await delay(10)
-    }
-    throw new Error('Unable to verify child Pi process ownership.')
-  }
-
   private async startLiveAgent(info: AgentInfo, initialMessage?: string, displayMessage?: string): Promise<LiveAgent> {
     if (info.status !== 'starting' && info.status !== 'running') {
       this.notifyStatusChange({ ...info, lastActivity: Date.now(), status: 'starting' })
@@ -1529,6 +1552,7 @@ export class AgentManager {
     const exitPromise = new Promise<void>((markExited) => {
       resolveExit = markExited
     })
+    const scope = Effect.runSync(Scope.make())
     const live: LiveAgent = {
       broadcaster,
       candidateResponse: '',
@@ -1537,13 +1561,24 @@ export class AgentManager {
       finalizedRun: false,
       info,
       logger,
-      pending: new Map(),
+      pending: Effect.runSync(Ref.make(HashMap.empty())),
       proc,
       processFinished: false,
       reqId: 0,
       resolveExit,
+      scope,
       stderr: '',
     }
+    Effect.runSync(
+      Scope.addFinalizer(
+        scope,
+        Effect.sync(() => {
+          live.broadcaster.stop()
+          live.logger.close()
+          this.teardownChildStreams(live)
+        })
+      )
+    )
     this.live.set(info.id, live)
     const decoder = new RpcJsonlDecoder()
     this.wireChildProcess(live, decoder)
@@ -1552,7 +1587,7 @@ export class AgentManager {
       if (!proc.pid) {
         throw new Error('Child Pi process did not provide a PID.')
       }
-      const snapshot = await this.verifyChildOwnership(proc.pid, childToken)
+      const snapshot = await Effect.runPromise(verifyChildOwnershipEffect(this.inspector, proc.pid, childToken))
       // Persist ownership before the first RPC round trip. If this process crashes while
       // The child is starting, the next manager can identify and terminate the orphan.
       info.childProcess = {
@@ -1568,7 +1603,7 @@ export class AgentManager {
       await this.sendCommand(live, { type: 'get_state' }, DEFAULT_STARTUP_TIMEOUT_MS)
       // The answered round trip proves the child reached its final program.
       // Its identity can no longer change underneath a later reconciliation.
-      const settled = inspectProcess(proc.pid, childToken)
+      const settled = await Effect.runPromise(this.inspector.inspect(proc.pid, childToken))
       if (settled && settled.tokenMatches !== false && settled.identity !== provisionalOwnership.processIdentity) {
         info.childProcess = { ...provisionalOwnership, processIdentity: settled.identity }
         saveInfo(info)
@@ -1592,25 +1627,25 @@ export class AgentManager {
     }
     const id = `req-${++live.reqId}`
     const commandType = typeof command.type === 'string' ? command.type : 'unknown'
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        live.pending.delete(id)
-        reject(new Error(`Timed out waiting for child Pi RPC command: ${commandType}`))
-      }, timeoutMs)
-      live.pending.set(id, { reject, resolve, timer })
-      live.proc.stdin.write(`${JSON.stringify({ id, ...command })}\n`, (error) => {
-        if (!error) {
-          return
-        }
-        const pending = live.pending.get(id)
-        if (!pending) {
-          return
-        }
-        clearTimeout(pending.timer)
-        live.pending.delete(id)
-        pending.reject(error)
+    const payload = `${JSON.stringify({ id, ...command })}\n`
+    const wait = Effect.gen(function* () {
+      const deferred = yield* Deferred.make<unknown, Error>()
+      yield* Ref.update(live.pending, HashMap.set(id, deferred))
+      yield* Effect.sync(() => {
+        live.proc.stdin.write(payload, (error) => {
+          if (error) {
+            Effect.runSync(Deferred.fail(deferred, error))
+          }
+        })
       })
+      return yield* Deferred.await(deferred)
     })
+    return Effect.runPromise(
+      Effect.timeoutOrElse(wait, {
+        duration: timeoutMs,
+        orElse: () => Effect.fail(new Error(`Timed out waiting for child Pi RPC command: ${commandType}`)),
+      }).pipe(Effect.ensuring(Ref.update(live.pending, HashMap.remove(id))))
+    )
   }
 
   private async prompt(live: LiveAgent, message: string, displayMessage?: string): Promise<void> {
@@ -1662,17 +1697,23 @@ export class AgentManager {
   }
 
   private handleResponseEvent(live: LiveAgent, event: SubagentRpcEvent): void {
-    const pending = event.id ? live.pending.get(event.id) : undefined
-    if (!pending) {
+    const { id } = event
+    if (!id) {
       return
     }
-    clearTimeout(pending.timer)
-    live.pending.delete(event.id ?? '')
-    if (event.success) {
-      pending.resolve(event.data)
-    } else {
-      pending.reject(new Error(event.error || 'RPC command failed'))
-    }
+    Effect.runSync(
+      Effect.gen(function* () {
+        const pending = yield* Ref.get(live.pending)
+        const deferred = HashMap.get(pending, id)
+        if (Option.isNone(deferred)) {
+          return
+        }
+        yield* Ref.update(live.pending, HashMap.remove(id))
+        yield* event.success
+          ? Deferred.succeed(deferred.value, event.data)
+          : Deferred.fail(deferred.value, new Error(event.error || 'RPC command failed'))
+      })
+    )
   }
 
   private handleAgentStart(live: LiveAgent): void {
@@ -2101,7 +2142,7 @@ export class AgentManager {
 
   private signalProcessTree(live: LiveAgent, signal: NodeJS.Signals): void {
     try {
-      if (process.platform !== 'win32' && live.proc.pid) {
+      if (this.platform !== 'win32' && live.proc.pid) {
         process.kill(-live.proc.pid, signal)
       } else {
         live.proc.kill(signal)
@@ -2116,7 +2157,7 @@ export class AgentManager {
   }
 
   private async forceKillWindowsTree(live: LiveAgent): Promise<void> {
-    if (process.platform !== 'win32' || !live.proc.pid) {
+    if (this.platform !== 'win32' || !live.proc.pid) {
       return
     }
     await new Promise<void>((resolve) => {
@@ -2154,7 +2195,7 @@ export class AgentManager {
         await Promise.race([live.exitPromise, delay(1000)])
       }
       if (!live.processFinished) {
-        if (process.platform === 'win32') {
+        if (this.platform === 'win32') {
           await this.forceKillWindowsTree(live)
         } else {
           this.signalProcessTree(live, 'SIGKILL')

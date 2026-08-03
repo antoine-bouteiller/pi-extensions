@@ -2,7 +2,9 @@ import { describe, expect, test } from 'bun:test'
 
 import { visibleWidth } from '@earendil-works/pi-tui'
 
-import { renderSidebarLines, type SidebarState } from '../sidebar'
+import { asExtensionContext } from '#test-utils/casts'
+
+import { createSidebarController, renderSidebarLines, type SidebarState } from '../sidebar'
 
 const theme = {
   bold: (text: string) => text,
@@ -171,5 +173,137 @@ describe('sidebar rendering', () => {
     const text = stripAnsi(renderSidebarLines({ height: 20, state: unavailable, theme, width: 44 }).join('\n'))
 
     expect(text).toContain('Context unavailable')
+  })
+})
+
+interface FakeOverlayHandle {
+  hide: () => void
+}
+
+interface CustomCall {
+  factory: (
+    tui: unknown,
+    theme: unknown,
+    keybindings: unknown,
+    done: (value: void) => void
+  ) => { render: (width: number) => string[]; invalidate: () => void }
+  options: { onHandle?: (handle: FakeOverlayHandle) => void }
+  resolve: (value: void) => void
+}
+
+const fakeTui = (onRender: () => void = () => undefined) => ({
+  render: (_width: number) => [],
+  requestRender: onRender,
+  terminal: { columns: 120, rows: 30 },
+})
+
+const controllerTheme = { bold: (text: string) => text, fg: (_color: string, text: string) => text }
+
+const flushMicrotasks = async () => {
+  await Promise.resolve()
+  await Promise.resolve()
+}
+
+describe('sidebar controller overlay race', () => {
+  test('does not let a stale generation clobber a newer overlay once it is active', async () => {
+    const calls: CustomCall[] = []
+    const hiddenHandles: string[] = []
+    const renderRequests: string[] = []
+    const firstTui = fakeTui(() => renderRequests.push('first'))
+    const secondTui = fakeTui(() => renderRequests.push('second'))
+    const ctx = asExtensionContext({
+      mode: 'tui',
+      ui: {
+        custom: (factory: CustomCall['factory'], options: CustomCall['options']) =>
+          new Promise<void>((resolve) => {
+            calls.push({ factory, options, resolve })
+          }),
+      },
+    })
+
+    const sidebar = createSidebarController({ ctx, getState: () => state })
+
+    sidebar.show()
+    expect(calls).toHaveLength(1)
+    const [first] = calls
+    if (!first) {
+      throw new Error('expected a first overlay request')
+    }
+
+    sidebar.hide()
+    sidebar.show()
+    expect(calls).toHaveLength(2)
+    const [, second] = calls
+    if (!second) {
+      throw new Error('expected a second overlay request')
+    }
+
+    // The newer overlay attaches and is accepted first.
+    second.factory(secondTui, controllerTheme, {}, second.resolve)
+    const secondHandle: FakeOverlayHandle = { hide: () => hiddenHandles.push('second') }
+    second.options.onHandle?.(secondHandle)
+    expect(sidebar.isVisible()).toBeTrue()
+
+    // The stale first generation now delivers its callbacks late: attach, onHandle, and the custom() promise settling via .finally().
+    first.factory(firstTui, controllerTheme, {}, first.resolve)
+    const firstHandle: FakeOverlayHandle = { hide: () => hiddenHandles.push('first') }
+    first.options.onHandle?.(firstHandle)
+    first.resolve()
+    await flushMicrotasks()
+    sidebar.requestRender()
+
+    expect(hiddenHandles).toEqual(['first'])
+    expect(renderRequests).not.toContain('first')
+    expect(renderRequests.at(-1)).toBe('second')
+    expect(sidebar.isVisible()).toBeTrue()
+
+    sidebar.dispose()
+  })
+
+  test('redraws only while working and stops the redraw fiber on dispose', async () => {
+    const calls: CustomCall[] = []
+    let renderRequests = 0
+    let currentState: SidebarState = { ...state, activity: 'ready' }
+    const tui = fakeTui(() => {
+      renderRequests += 1
+    })
+    const ctx = asExtensionContext({
+      mode: 'tui',
+      ui: {
+        custom: (factory: CustomCall['factory'], options: CustomCall['options']) =>
+          new Promise<void>((resolve) => {
+            calls.push({ factory, options, resolve })
+          }),
+      },
+    })
+    const sidebar = createSidebarController({ ctx, getState: () => currentState, redrawMs: 10 })
+
+    sidebar.show()
+    const [overlay] = calls
+    if (!overlay) {
+      throw new Error('expected an overlay request')
+    }
+    overlay.factory(tui, controllerTheme, {}, overlay.resolve)
+    const idleRenders = renderRequests
+    await Bun.sleep(30)
+    expect(renderRequests).toBe(idleRenders)
+
+    currentState = { ...currentState, activity: 'working' }
+    sidebar.requestRender()
+    await Bun.sleep(30)
+    expect(renderRequests).toBeGreaterThan(idleRenders + 1)
+
+    currentState = { ...currentState, activity: 'ready' }
+    await Bun.sleep(15)
+    currentState = { ...currentState, activity: 'working' }
+    sidebar.requestRender()
+    const rendersAtRestart = renderRequests
+    await Bun.sleep(15)
+    expect(renderRequests).toBeGreaterThan(rendersAtRestart)
+
+    sidebar.dispose()
+    const rendersAfterDispose = renderRequests
+    await Bun.sleep(30)
+    expect(renderRequests).toBe(rendersAfterDispose)
   })
 })

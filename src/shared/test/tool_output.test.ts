@@ -1,7 +1,16 @@
 import { describe, expect, test } from 'bun:test'
 import { readFile, stat } from 'node:fs/promises'
 
-import { boundToolText, truncateOutput, truncationNotice, writePrivateTempFile } from '../tool_output'
+import { Effect } from 'effect'
+
+import {
+  boundToolText,
+  boundToolTextEffect,
+  truncateOutput,
+  truncationNotice,
+  writePrivateTempFile,
+  writePrivateTempFileEffect,
+} from '../tool_output'
 
 const lines = (count: number) => Array.from({ length: count }, (_value, index) => `line ${index}`).join('\n')
 
@@ -89,5 +98,57 @@ describe('boundToolText', () => {
     expect(result.fullOutputPath).toBe('/tmp/full.txt')
     expect(result.text).toContain('Full output saved to: /tmp/full.txt')
     expect(result.text.split('\n').length).toBeLessThanOrEqual(50)
+  })
+})
+
+describe('effect wrappers', () => {
+  test('writePrivateTempFileEffect still writes owner-only content', async () => {
+    const path = await Effect.runPromise(writePrivateTempFileEffect('secret', { prefix: 'tool-output-effect-' }))
+
+    const stats = await stat(path)
+    expect(await readFile(path, 'utf8')).toBe('secret')
+    expect(stats.mode & 0o777).toBe(0o600)
+  })
+
+  test('boundToolTextEffect matches the callback version, spill and all', async () => {
+    const text = lines(500)
+    const options = { maxBytes: 100_000, maxLines: 50, noticeBytes: 0, noticeLines: 4 }
+
+    const expected = await boundToolText(text, {
+      ...options,
+      saveFullOutput: () => Promise.resolve('/tmp/full.txt'),
+    })
+    const actual = await Effect.runPromise(boundToolTextEffect(text, { ...options, saveFullOutput: () => Effect.succeed('/tmp/full.txt') }))
+
+    expect(actual).toEqual(expected)
+  })
+
+  test('boundToolTextEffect skips the spill when the text already fits', async () => {
+    let saves = 0
+    const result = await Effect.runPromise(
+      boundToolTextEffect('short', {
+        maxBytes: 1000,
+        maxLines: 10,
+        saveFullOutput: () =>
+          Effect.sync(() => {
+            saves += 1
+            return '/tmp/unused.txt'
+          }),
+      })
+    )
+
+    expect([result.truncated, result.text, saves]).toEqual([false, 'short', 0])
+  })
+
+  test('boundToolTextEffect propagates a failure from the spill', async () => {
+    const failure = await Effect.runPromise(
+      boundToolTextEffect(lines(500), {
+        maxBytes: 100_000,
+        maxLines: 50,
+        saveFullOutput: () => Effect.fail('disk full' as const),
+      }).pipe(Effect.flip)
+    )
+
+    expect(failure).toBe('disk full')
   })
 })

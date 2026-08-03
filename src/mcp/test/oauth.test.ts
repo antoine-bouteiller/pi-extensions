@@ -1,8 +1,10 @@
 import { describe, expect, test } from 'bun:test'
 import { createServer } from 'node:http'
 
+import { Effect } from 'effect'
+
 import { type CredentialStore, type OAuthCredentialPayload } from '../keychain.js'
-import { KeychainOAuthProvider, createOAuthState, startOAuthCallback } from '../oauth.js'
+import { KeychainOAuthProvider, createOAuthState, startOAuthCallback, startOAuthCallbackScoped } from '../oauth.js'
 
 const freePort = async (): Promise<number> => {
   const server = createServer()
@@ -53,6 +55,29 @@ describe('OAuth callback', () => {
     const goodResponse = await fetch(`${callback.redirectUrl}?code=good&state=right`)
     expect(goodResponse.status).toBe(200)
     expect(await callback.waitForCode()).toBe('good')
+  })
+
+  test('HTML-escapes reflected OAuth errors and releases scoped listeners', async () => {
+    const port = await freePort()
+    const callback = await startOAuthCallback({ expectedState: 'state', port })
+    const payload = `<script>alert("x")</script>&'`
+    const response = await fetch(
+      `${callback.redirectUrl}?error=${encodeURIComponent(payload)}&error_description=${encodeURIComponent(payload)}&state=state`
+    )
+    const html = await response.text()
+    expect(html).not.toContain('<script>')
+    expect(html).toContain('&lt;script&gt;')
+    expect(html).toContain('&amp;')
+    const callbackFailure = await callback.waitForCode().then(
+      () => '',
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    )
+    expect(callbackFailure).toContain('<script>')
+
+    const scopedPort = await freePort()
+    await Effect.runPromise(Effect.scoped(startOAuthCallbackScoped({ expectedState: 'scoped', port: scopedPort })))
+    const replacement = await startOAuthCallback({ expectedState: 'replacement', port: scopedPort })
+    await replacement.close()
   })
 
   test('handles OAuth errors, timeout, cancellation, and occupied ports', async () => {

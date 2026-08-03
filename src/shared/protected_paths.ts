@@ -1,6 +1,10 @@
 import { realpath } from 'node:fs/promises'
 import { basename, dirname, resolve } from 'node:path'
 
+import { Effect, Schema } from 'effect'
+import { FileSystem } from 'effect/FileSystem'
+import { type PlatformError } from 'effect/PlatformError'
+
 /** Filenames that look like dotenv files but are intended to be public examples. */
 const PUBLIC_ENV_FILENAMES = new Set(['.env.example', '.env.sample', '.env.template'])
 
@@ -91,7 +95,69 @@ export const isProtectedPath = async (path: string, cwd: string): Promise<boolea
 export const assertUnprotectedPath = async (path: string, cwd: string, operation: string): Promise<ProtectedPathResolution> => {
   const resolution = await resolveProtectedPath(path, cwd)
   if (resolution.protected) {
-    throw new Error(`Refusing to ${operation} protected path: ${path}`)
+    throw new Error(protectedPathMessage(path, operation))
   }
   return resolution
 }
+
+const protectedPathMessage = (path: string, operation: string): string => `Refusing to ${operation} protected path: ${path}`
+
+export class ProtectedPathError extends Schema.TaggedErrorClass<ProtectedPathError>()('ProtectedPathError', {
+  message: Schema.String,
+  path: Schema.String,
+}) {}
+
+/*
+ * Effect maps ENOENT to `NotFound` but ENOTDIR to `BadResource`, the same reason it gives EISDIR
+ * and ELOOP. Branching on the reason would either stop walking past a non-directory component or,
+ * worse, treat a symlink loop as a missing path. Match on the errno the PlatformError still
+ * carries in `cause`, so this stays byte-for-byte the predicate the callback version uses.
+ */
+const isMissingPlatformError = (error: PlatformError): boolean => isMissingPathError(error.cause)
+
+const canonicalizeNearestExistingEffect = (path: string): Effect.Effect<string, PlatformError, FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem
+    let candidate = resolve(path)
+    const missingComponents: string[] = []
+
+    while (true) {
+      const existing = yield* fs.realPath(candidate).pipe(
+        Effect.map((resolved): string | undefined => resolved),
+        Effect.catchIf(isMissingPlatformError, () => Effect.succeed(undefined))
+      )
+      if (existing !== undefined) {
+        return resolve(existing, ...missingComponents)
+      }
+      const parent = dirname(candidate)
+      if (parent === candidate) {
+        return resolve(path)
+      }
+      missingComponents.unshift(basename(candidate))
+      candidate = parent
+    }
+  })
+
+export const resolveProtectedPathEffect = (path: string, cwd: string): Effect.Effect<ProtectedPathResolution, PlatformError, FileSystem> =>
+  Effect.gen(function* () {
+    const absolutePath = resolveToolPath(path, cwd)
+    const canonicalPath = yield* canonicalizeNearestExistingEffect(absolutePath)
+    return {
+      absolutePath,
+      canonicalPath,
+      protected: matchesProtectedPolicy(absolutePath) || matchesProtectedPolicy(canonicalPath),
+    }
+  })
+
+export const assertUnprotectedPathEffect = (
+  path: string,
+  cwd: string,
+  operation: string
+): Effect.Effect<ProtectedPathResolution, PlatformError | ProtectedPathError, FileSystem> =>
+  Effect.gen(function* () {
+    const resolution = yield* resolveProtectedPathEffect(path, cwd)
+    if (resolution.protected) {
+      return yield* Effect.fail(new ProtectedPathError({ message: protectedPathMessage(path, operation), path }))
+    }
+    return resolution
+  })

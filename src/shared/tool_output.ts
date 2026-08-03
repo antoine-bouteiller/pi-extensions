@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { formatSize, truncateHead, truncateTail } from '@earendil-works/pi-coding-agent'
+import { Effect } from 'effect'
 
 export interface Truncation {
   content: string
@@ -88,3 +89,37 @@ export const boundToolText = async (
     truncation,
   }
 }
+
+/** A failed spill stays in the error channel so callers can map it onto their own tool error. */
+export const writePrivateTempFileEffect = (content: string, options: { prefix: string; filename?: string }): Effect.Effect<string, unknown> =>
+  Effect.tryPromise({ catch: (cause) => cause, try: () => writePrivateTempFile(content, options) })
+
+interface BoundToolTextEffectOptions<Failure> extends TruncateOptions {
+  saveFullOutput: (content: string) => Effect.Effect<string, Failure>
+  noticeBytes?: number
+  noticeLines?: number
+}
+
+export const boundToolTextEffect = <Failure = never>(
+  text: string,
+  { maxBytes, maxLines, from = 'head', saveFullOutput, noticeBytes = 2048, noticeLines = 4 }: BoundToolTextEffectOptions<Failure>
+): Effect.Effect<BoundedText, Failure> =>
+  Effect.gen(function* () {
+    const initial = truncateOutput(text, { from, maxBytes, maxLines })
+    if (!initial.truncated) {
+      return { text, truncated: false, truncation: initial }
+    }
+
+    const fullOutputPath = yield* saveFullOutput(text)
+    const truncation = truncateOutput(text, {
+      from,
+      maxBytes: maxBytes - noticeBytes,
+      maxLines: maxLines - noticeLines,
+    })
+    return {
+      fullOutputPath,
+      text: truncation.content + truncationNotice(truncation, { from, fullOutputPath }),
+      truncated: true,
+      truncation,
+    }
+  })

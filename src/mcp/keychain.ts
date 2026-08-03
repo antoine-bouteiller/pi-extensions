@@ -1,15 +1,17 @@
 import { createHash } from 'node:crypto'
 
+import { Context, Effect, Layer, Option, Schema } from 'effect'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
 export const MCP_OAUTH_KEYCHAIN_SERVICE = 'pi-mcp.oauth'
 
 /** A bounded, redacted message that is safe to surface to the user/model. */
-export class KeychainCredentialError extends Error {
+export class KeychainCredentialError extends Schema.TaggedErrorClass<KeychainCredentialError>()('KeychainCredentialError', {
+  message: Schema.String,
+}) {
   constructor(message: string) {
-    super(message)
-    this.name = 'KeychainCredentialError'
+    super({ message })
   }
 }
 
@@ -51,6 +53,15 @@ export interface CredentialStore {
   set: (serverName: string, credential: OAuthCredentialPayload) => Promise<void>
   delete: (serverName: string) => Promise<void>
 }
+
+interface CredentialStoreEffectShape {
+  readonly delete: (serverName: string) => Effect.Effect<void, KeychainCredentialError>
+  readonly get: (serverName: string, serverUrl: string) => Effect.Effect<Option.Option<OAuthCredentialPayload>, KeychainCredentialError>
+  readonly set: (serverName: string, credential: OAuthCredentialPayload) => Effect.Effect<void, KeychainCredentialError>
+}
+
+/** Effect-native credential boundary; the Promise interface remains as the MCP SDK adapter. */
+export class CredentialStoreEffect extends Context.Service<CredentialStoreEffect, CredentialStoreEffectShape>()('@pi/mcp/CredentialStore') {}
 
 interface KeyringEntry {
   getPassword: () => string | null | Promise<string | null>
@@ -244,3 +255,18 @@ export class KeychainCredentialStore implements CredentialStore {
 }
 
 export const createKeychainCredentialStore = (options: KeychainCredentialStoreOptions = {}): CredentialStore => new KeychainCredentialStore(options)
+
+const asKeychainError = (cause: unknown): KeychainCredentialError =>
+  cause instanceof KeychainCredentialError ? cause : new KeychainCredentialError('macOS Keychain OAuth credential operation failed.')
+
+export const credentialStoreEffectLayer = (options: KeychainCredentialStoreOptions = {}): Layer.Layer<CredentialStoreEffect> => {
+  const store = createKeychainCredentialStore(options)
+  return Layer.succeed(CredentialStoreEffect)({
+    delete: (serverName) => Effect.tryPromise({ catch: asKeychainError, try: () => store.delete(serverName) }),
+    get: (serverName, serverUrl) =>
+      Effect.tryPromise({ catch: asKeychainError, try: () => store.get(serverName, serverUrl) }).pipe(
+        Effect.map((value) => (value === undefined ? Option.none() : Option.some(value)))
+      ),
+    set: (serverName, credential) => Effect.tryPromise({ catch: asKeychainError, try: () => store.set(serverName, credential) }),
+  })
+}

@@ -10,12 +10,13 @@ import { UnauthorizedError, type OAuthClientProvider } from '@modelcontextprotoc
 import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { type Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { type JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
+import { Effect } from 'effect'
 
 import { asError, asNarrowed } from '#test-utils/casts'
 
 import { readonlyMcpPolicy } from '../index.js'
 import { KeychainCredentialError, type CredentialStore } from '../keychain.js'
-import { McpManager } from '../manager.js'
+import { McpManager, McpManagerService, mcpManagerLayer } from '../manager.js'
 import { type McpGatewayPolicy, type McpServerMap } from '../types.js'
 
 class FakeTransport {
@@ -729,6 +730,18 @@ describe('MCP manager', () => {
     await fixture.manager.close()
     expect(connecting).rejects.toThrow()
     expect(fixture.calls.closes).toBe(1)
+  })
+
+  test('can be owned by an Effect Layer without connecting at construction', async () => {
+    const statuses = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const manager = yield* McpManagerService
+          return manager.status()
+        }).pipe(Effect.provide(mcpManagerLayer({}, { openUrl: async () => undefined })))
+      )
+    )
+    expect(statuses).toEqual([])
   })
 
   test('close is idempotent and closes connected clients', async () => {

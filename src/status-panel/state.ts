@@ -45,3 +45,17 @@ export const emptyGitInfoState = (): GitInfoState => ({
   changedFiles: 0,
   pullRequest: undefined,
 })
+
+export interface PanelState {
+  activity: 'ready' | 'working'
+  model: ModelInfoState
+  git: GitInfoState
+  quota: ProviderQuota | undefined
+}
+
+export const emptyPanelState = (): PanelState => ({
+  activity: 'ready',
+  git: emptyGitInfoState(),
+  model: emptyModelInfoState(),
+  quota: undefined,
+})

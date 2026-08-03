@@ -5,7 +5,7 @@ import { type AgentToolResult } from '@earendil-works/pi-coding-agent'
 import { asCommand, asTool } from '#test-utils/casts'
 import { createFakePi } from '#test-utils/fake_pi'
 
-import {
+import mcp, {
   createMcpExtension,
   mcpPolicyFromEnvironment,
   readonlyMcpPolicy,
@@ -466,5 +466,15 @@ describe('MCP gateway registration and lifecycle', () => {
     permitClose.resolve()
     await Promise.all([starting, shuttingDown])
     expect(statuses.at(-1)).toEqual({ key: 'mcp', value: undefined })
+  })
+})
+
+describe('standalone direct-load default', () => {
+  test('registers the mcp tool and mcp-auth command without touching MCP transports', () => {
+    const fixture = createFakePi()
+    mcp(fixture.pi)
+
+    expect(fixture.state.tools.has('mcp')).toBeTrue()
+    expect(fixture.state.commands.has('mcp-auth')).toBeTrue()
   })
 })

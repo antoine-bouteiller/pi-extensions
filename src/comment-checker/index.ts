@@ -1,7 +1,10 @@
 import { execFile } from 'node:child_process'
 
 import { type ExtensionAPI, type ExtensionContext, type ToolResultEvent } from '@earendil-works/pi-coding-agent'
+import { Context, Effect } from 'effect'
 
+import { type AppRuntime, getOrCreateProcessRuntime } from '../effect/app_runtime.js'
+import { makeEventHandler } from '../effect/runtime.js'
 import { isRecord } from '../shared/records.js'
 
 const MAX_OUTPUT_BYTES = 64 * 1024
@@ -32,6 +35,12 @@ interface CheckerResult {
 }
 
 export type CheckerRunner = (input: HookInput) => Promise<CheckerResult>
+
+interface CommandRunnerShape {
+  readonly run: (input: HookInput) => Effect.Effect<CheckerResult, unknown>
+}
+
+class CommandRunner extends Context.Service<CommandRunner, CommandRunnerShape>()('@comment-checker/CommandRunner') {}
 
 const record = (value: unknown): Record<string, unknown> | undefined => (isRecord(value) ? value : undefined)
 
@@ -80,8 +89,8 @@ const hookInput = (event: ToolResultEvent, ctx: ExtensionContext): HookInput | u
   }
 }
 
-const runCommentChecker = (input: HookInput): Promise<CheckerResult> =>
-  new Promise((resolve) => {
+const runCommentChecker = (input: HookInput): Effect.Effect<CheckerResult> =>
+  Effect.callback<CheckerResult>((resume) => {
     const child = execFile('comment-checker', ['check'], { maxBuffer: MAX_OUTPUT_BYTES, timeout: PROCESS_TIMEOUT_MS }, (error, stdout, stderr) => {
       let exitCode: number | undefined = 0
       if (typeof error?.code === 'number') {
@@ -89,24 +98,34 @@ const runCommentChecker = (input: HookInput): Promise<CheckerResult> =>
       } else if (error) {
         exitCode = undefined
       }
-      resolve({
-        exitCode,
-        stderr,
-        stdout,
-      })
+      resume(Effect.succeed({ exitCode, stderr, stdout }))
     })
     child.stdin?.on('error', () => undefined)
     child.stdin?.end(JSON.stringify(input))
-  })
+    return Effect.sync(() => {
+      child.kill()
+    })
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: PROCESS_TIMEOUT_MS,
+      orElse: () => Effect.succeed({ exitCode: undefined, stderr: '', stdout: '' }),
+    })
+  )
 
-export default function commentChecker(pi: ExtensionAPI, runner: CheckerRunner = runCommentChecker) {
-  pi.on('tool_result', async (event, ctx) => {
+const productionRunner: CommandRunnerShape = { run: runCommentChecker }
+
+const checkerResult = (
+  event: ToolResultEvent,
+  ctx: ExtensionContext
+): Effect.Effect<{ content: ToolResultEvent['content'] } | undefined, unknown, CommandRunner> =>
+  Effect.gen(function* () {
     const input = hookInput(event, ctx)
     if (!input) {
       return undefined
     }
 
-    const result = await runner(input)
+    const runner = yield* CommandRunner
+    const result = yield* runner.run(input)
     if (result.exitCode !== 2) {
       return undefined
     }
@@ -120,4 +139,20 @@ export default function commentChecker(pi: ExtensionAPI, runner: CheckerRunner =
       content: [...event.content, { text: `\n\n${warning}`, type: 'text' as const }],
     }
   })
+
+export const register = (pi: ExtensionAPI, runtime: AppRuntime, runner?: CheckerRunner): void => {
+  const commandRunner: CommandRunnerShape = runner
+    ? { run: (input) => Effect.tryPromise({ catch: (cause) => cause, try: () => runner(input) }) }
+    : productionRunner
+
+  pi.on(
+    'tool_result',
+    makeEventHandler(runtime)((event: ToolResultEvent, ctx: ExtensionContext) =>
+      checkerResult(event, ctx).pipe(Effect.provideService(CommandRunner, commandRunner))
+    )
+  )
+}
+
+export default function commentChecker(pi: ExtensionAPI, runner?: CheckerRunner): void {
+  register(pi, getOrCreateProcessRuntime(), runner)
 }
