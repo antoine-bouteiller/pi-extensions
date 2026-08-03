@@ -1,8 +1,9 @@
 import { type ExtensionAPI, type ExtensionContext, type ReadonlyFooterDataProvider } from '@earendil-works/pi-coding-agent'
-import { Effect, Layer, ManagedRuntime, Ref } from 'effect'
+import { Effect, Ref } from 'effect'
 
+import { type AppRuntime, getOrCreateProcessRuntime } from '../effect/app_runtime.js'
 import { makeEventHandler } from '../effect/runtime.js'
-import { AgentActivity, AgentActivityLive, StatusBar, StatusBarLive } from '../shared/services.js'
+import { AgentActivity, StatusBar } from '../shared/services.js'
 import { renderFooterLines } from './footer'
 import { fetchGitInfo } from './git'
 import { makeQuotaPoller, quotaFromHeaders, type QuotaFetcher, type QuotaPoller } from './provider'
@@ -18,12 +19,11 @@ interface StatusPanelDependencies {
   fetchAnthropicQuota?: QuotaFetcher
 }
 
-export default function statusPanel(pi: ExtensionAPI, dependencies: StatusPanelDependencies = {}) {
+export const register = (pi: ExtensionAPI, runtime: AppRuntime, dependencies: StatusPanelDependencies = {}): void => {
   if (process.env.PI_SUBAGENT_OWNER_TOKEN !== undefined) {
     return
   }
 
-  const runtime = ManagedRuntime.make(Layer.mergeAll(StatusBarLive, AgentActivityLive))
   const agentActivity = runtime.runSync(AgentActivity)
   const statusBar = runtime.runSync(StatusBar)
   const stateRef = Effect.runSync(Ref.make<PanelState>(emptyPanelState()))
@@ -251,4 +251,8 @@ export default function statusPanel(pi: ExtensionAPI, dependencies: StatusPanelD
       })
     )
   )
+}
+
+export default function statusPanel(pi: ExtensionAPI, dependencies: StatusPanelDependencies = {}): void {
+  register(pi, getOrCreateProcessRuntime(), dependencies)
 }

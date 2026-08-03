@@ -84,15 +84,12 @@ export const createFakePi = (
     },
   }
 
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- single audited cast: the Proxy forwards every ExtensionAPI member dynamically.
-  const pi = new Proxy(target, {
-    get(object, property, receiver) {
-      if (Reflect.has(object, property)) {
-        return Reflect.get(object, property, receiver)
-      }
-      return () => undefined
-    },
-  }) as unknown as ExtensionAPI
+  /*
+   * No Proxy: a real ExtensionAPI method this fixture does not implement should throw "is not a
+   * function" at the call site, not silently no-op and hide the gap.
+   */
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- opaque host cast: `target` covers only the ExtensionAPI surface these tests exercise.
+  const pi = target as unknown as ExtensionAPI
 
   return {
     async emit(name, event = {}, context = {}) {

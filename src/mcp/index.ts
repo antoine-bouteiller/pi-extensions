@@ -5,6 +5,7 @@ import { type AgentToolResult, type ExtensionAPI, type ExtensionContext } from '
 import { Deferred, Effect, Match, Option, Ref } from 'effect'
 import { Type, type Static } from 'typebox'
 
+import { type AppRuntime, getOrCreateProcessRuntime } from '../effect/app_runtime.js'
 import { ToolFailure } from '../effect/errors.js'
 import { isRecord } from '../shared/records.js'
 import { createStatusChannel } from '../shared/status_bar.js'
@@ -413,7 +414,7 @@ const dispatchGateway = (
   })
 
 /** Build the extension with injectable config and manager dependencies for isolated tests. */
-export const createMcpExtension = <TConfig>(dependencies: McpGatewayDependencies<TConfig>) =>
+export const createMcpExtension = <TConfig>(dependencies: McpGatewayDependencies<TConfig>, runtime: AppRuntime = getOrCreateProcessRuntime()) =>
   function mcpGateway(pi: ExtensionAPI): void {
     const state = Effect.runSync(makeState)
 
@@ -474,7 +475,7 @@ export const createMcpExtension = <TConfig>(dependencies: McpGatewayDependencies
       description:
         "Access configured remote MCP capabilities through one lazy gateway. Use Pi's native tools directly whenever possible. Search or describe unfamiliar MCP tools before calling them.",
       async execute(_toolCallId, params, signal) {
-        return Effect.runPromise(
+        return runtime.runPromise(
           dispatchGateway(dependencies.configPath, state, params, signal).pipe(Effect.catch((error) => Effect.fail(toRejection(error))))
         )
       },
@@ -503,7 +504,7 @@ export const createMcpExtension = <TConfig>(dependencies: McpGatewayDependencies
         return items.length > 0 ? items : null
       },
       handler: async (args, ctx) => {
-        await Effect.runPromise(
+        await runtime.runPromise(
           Effect.gen(function* () {
             const manager = yield* requireManager(state)
             let server = args.trim()
@@ -537,9 +538,9 @@ export const createMcpExtension = <TConfig>(dependencies: McpGatewayDependencies
       },
     })
 
-    pi.on('session_start', (_event, ctx) => Effect.runPromise(startSession(ctx)))
+    pi.on('session_start', (_event, ctx) => runtime.runPromise(startSession(ctx)))
 
-    pi.on('session_shutdown', (_event, ctx) => Effect.runPromise(stopSession(ctx)))
+    pi.on('session_shutdown', (_event, ctx) => runtime.runPromise(stopSession(ctx)))
   }
 
 const globalConfigPath = join(homedir(), '.config', 'mcp', 'mcp.json')
@@ -567,4 +568,8 @@ const productionDependencies: McpGatewayDependencies<Awaited<ReturnType<typeof l
   policy: mcpPolicyFromEnvironment(),
 }
 
-export default createMcpExtension(productionDependencies)
+export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => createMcpExtension(productionDependencies, runtime)(pi)
+
+export default function mcp(pi: ExtensionAPI): void {
+  register(pi, getOrCreateProcessRuntime())
+}

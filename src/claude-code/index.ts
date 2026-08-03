@@ -2,11 +2,11 @@ import { homedir, tmpdir } from 'node:os'
 import { extname, join, relative, sep } from 'node:path'
 
 import { type ExtensionAPI, type ExtensionContext, type SessionShutdownEvent } from '@earendil-works/pi-coding-agent'
-import { NodeFileSystem } from '@effect/platform-node'
-import { Context, Effect, Exit, Layer, ManagedRuntime, Option, Ref, Scope, Semaphore } from 'effect'
+import { Context, Effect, Exit, Option, Ref, Scope, Semaphore } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
 import { type PlatformError } from 'effect/PlatformError'
 
+import { type AppRuntime, getOrCreateProcessRuntime } from '../effect/app_runtime.js'
 import { makeEventHandler } from '../effect/runtime.js'
 
 /*
@@ -208,15 +208,6 @@ interface DiscoveryStateShape {
 
 class DiscoveryState extends Context.Service<DiscoveryState, DiscoveryStateShape>()('@claude-code/DiscoveryState') {}
 
-const DiscoveryStateLive: Layer.Layer<DiscoveryState> = Layer.effect(DiscoveryState)(
-  Effect.gen(function* () {
-    return {
-      activeSkillScope: yield* Ref.make<Option.Option<Scope.Closeable>>(Option.none()),
-      mutex: yield* Semaphore.make(1),
-    }
-  })
-)
-
 const releaseActiveSkillDirectory = (state: DiscoveryStateShape): Effect.Effect<void> =>
   Effect.gen(function* () {
     const current = yield* Ref.getAndSet(state.activeSkillScope, Option.none())
@@ -275,18 +266,36 @@ const shutdownDiscoveryResources = (_event: SessionShutdownEvent, _ctx: Extensio
     yield* state.mutex.withPermits(1)(releaseActiveSkillDirectory(state))
   })
 
+export const register = (
+  pi: ExtensionAPI,
+  runtime: AppRuntime,
+  environment: ClaudeCodeEnvironment = { homeDirectory: homedir(), temporaryDirectory: tmpdir() }
+): void => {
+  const discoveryState: DiscoveryStateShape = Effect.runSync(
+    Effect.gen(function* () {
+      return {
+        activeSkillScope: yield* Ref.make<Option.Option<Scope.Closeable>>(Option.none()),
+        mutex: yield* Semaphore.make(1),
+      }
+    })
+  )
+
+  pi.on(
+    'resources_discover',
+    makeEventHandler(runtime)((event, ctx) => discoverResources(event, ctx, environment).pipe(Effect.provideService(DiscoveryState, discoveryState)))
+  )
+  pi.on(
+    'session_shutdown',
+    makeEventHandler(runtime)((event, ctx) => shutdownDiscoveryResources(event, ctx).pipe(Effect.provideService(DiscoveryState, discoveryState)))
+  )
+}
+
 export default function claudeCodeExtension(
   pi: ExtensionAPI,
   environment: ClaudeCodeEnvironment = {
     homeDirectory: homedir(),
     temporaryDirectory: tmpdir(),
   }
-) {
-  const runtime = ManagedRuntime.make(Layer.mergeAll(DiscoveryStateLive, NodeFileSystem.layer))
-
-  pi.on(
-    'resources_discover',
-    makeEventHandler(runtime)((event, ctx) => discoverResources(event, ctx, environment))
-  )
-  pi.on('session_shutdown', makeEventHandler(runtime)(shutdownDiscoveryResources))
+): void {
+  register(pi, getOrCreateProcessRuntime(), environment)
 }

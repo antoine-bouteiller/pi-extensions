@@ -5,6 +5,7 @@ import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest, type H
 import TurndownService from 'turndown'
 import { Type, type Static } from 'typebox'
 
+import { type AppRuntime, getOrCreateProcessRuntime } from '../effect/app_runtime.js'
 import { ToolFailure } from '../effect/errors.js'
 import { boundToolTextEffect, writePrivateTempFileEffect } from '../shared/tool_output.js'
 
@@ -369,22 +370,33 @@ const toRejection = (failure: unknown): Error => {
   return new Error(String(failure))
 }
 
-export const createWebfetchExtension = (overrides: Partial<WebfetchDependencies> = {}): ((pi: ExtensionAPI) => void) => {
+/**
+ * Overriding `httpClient`/`clock` (tests only) builds a dedicated runtime from those layers
+ * instead of the shared `AppRuntime`, since the whole point of the override is isolation from the
+ * real `FetchHttpClient.layer` the shared runtime carries.
+ */
+export const createWebfetchExtension = (
+  overrides: Partial<WebfetchDependencies> = {},
+  runtime: AppRuntime = getOrCreateProcessRuntime()
+): ((pi: ExtensionAPI) => void) => {
   const dependencies: WebfetchDependencies = {
     ...(overrides.clock ? { clock: overrides.clock } : {}),
     httpClient: overrides.httpClient ?? FetchHttpClient.layer,
     saveFullOutput: overrides.saveFullOutput ?? ((content) => writePrivateTempFileEffect(content, { prefix: 'pi-webfetch-' })),
   }
+  const hasOverride = overrides.clock !== undefined || overrides.httpClient !== undefined
 
   return function webfetchExtension(pi: ExtensionAPI): void {
-    const runtime = ManagedRuntime.make(
-      dependencies.clock ? Layer.mergeAll(dependencies.httpClient, Layer.succeed(Clock.Clock)(dependencies.clock)) : dependencies.httpClient
-    )
+    const executor = hasOverride
+      ? ManagedRuntime.make(
+          dependencies.clock ? Layer.mergeAll(dependencies.httpClient, Layer.succeed(Clock.Clock)(dependencies.clock)) : dependencies.httpClient
+        )
+      : runtime
 
     pi.registerTool({
       description: `Fetch an HTTP(S) URL and return its content as markdown, plain text, or raw HTML. HTML defaults to markdown. Downloads are limited to ${formatSize(MAX_DOWNLOAD_BYTES)}; output is truncated to ${MAX_OUTPUT_LINES} lines or ${formatSize(MAX_OUTPUT_BYTES)} and saved to a temporary file when larger.`,
       async execute(_toolCallId, params, signal, onUpdate) {
-        return await runtime.runPromise(
+        return await executor.runPromise(
           Effect.suspend(() =>
             signal?.aborted
               ? Effect.fail(new ToolFailure({ message: 'webfetch was cancelled' }))
@@ -403,4 +415,8 @@ export const createWebfetchExtension = (overrides: Partial<WebfetchDependencies>
   }
 }
 
-export default createWebfetchExtension()
+export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => createWebfetchExtension({}, runtime)(pi)
+
+export default function webfetch(pi: ExtensionAPI): void {
+  register(pi, getOrCreateProcessRuntime())
+}

@@ -12,10 +12,11 @@ import {
   type ToolRenderResultOptions,
 } from '@earendil-works/pi-coding-agent'
 import { Text, matchesKey, truncateToWidth, visibleWidth, type TUI } from '@earendil-works/pi-tui'
-import { Effect, Layer, ManagedRuntime } from 'effect'
+import { Effect } from 'effect'
 import { type Static, Type } from 'typebox'
 import { Check } from 'typebox/value'
 
+import { type AppRuntime, getOrCreateProcessRuntime } from '../effect/app_runtime.js'
 import { runningAgents } from '../shared/agent_activity.js'
 import { truncateOutput, truncationNotice } from '../shared/tool_output.js'
 import {
@@ -138,8 +139,7 @@ Keep work in your own context when it is a couple of tool calls, when it depends
 
 type PiExtensionContext = ExtensionContext | ExtensionCommandContext
 
-const subAgentsExtension = (pi: ExtensionAPI, managerOptions: AgentManagerOptions = {}): void => {
-  const runtime = ManagedRuntime.make(Layer.empty)
+export const register = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: AgentManagerOptions = {}): void => {
   const widgetKey = 'pi-codex-subagents'
   const completionMessageType = 'pi-codex-subagent-completion'
   let activeContext: PiExtensionContext | undefined
@@ -908,6 +908,10 @@ ${getAgentProfilesDescription()}`
     description: 'Browse subagents',
     handler: async (_args, ctx) => browseAgents(ctx),
   })
+}
+
+const subAgentsExtension = (pi: ExtensionAPI, managerOptions: AgentManagerOptions = {}): void => {
+  register(pi, getOrCreateProcessRuntime(), managerOptions)
 }
 
 export default subAgentsExtension

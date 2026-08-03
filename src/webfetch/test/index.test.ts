@@ -8,7 +8,7 @@ import { FetchHttpClient, type HttpClient } from 'effect/unstable/http'
 import { asError, asNarrowed, asTool } from '#test-utils/casts'
 import { createFakePi } from '#test-utils/fake_pi'
 
-import { createWebfetchExtension, type WebfetchDetails, type WebfetchFetch, type WebfetchInput } from '../index.js'
+import webfetch, { createWebfetchExtension, type WebfetchDetails, type WebfetchFetch, type WebfetchInput } from '../index.js'
 
 const stubHttpClient = (fetchImpl: WebfetchFetch): Layer.Layer<HttpClient.HttpClient> =>
   Layer.mergeAll(FetchHttpClient.layer, Layer.succeed(FetchHttpClient.Fetch)(asNarrowed<typeof fetch, WebfetchFetch>(fetchImpl)))
@@ -325,5 +325,14 @@ describe('webfetch streaming (unbounded)', () => {
     const result = await harness.execute({ url: 'https://example.com/ok' })
 
     expect(result.details.downloadedBytes).toBe(1024 * 10)
+  })
+})
+
+describe('standalone direct-load default', () => {
+  test('registers the webfetch tool', () => {
+    const fixture = createFakePi()
+    webfetch(fixture.pi)
+
+    expect(fixture.state.tools.has('webfetch')).toBeTrue()
   })
 })

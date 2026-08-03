@@ -12,11 +12,11 @@ import {
   type SessionTreeEvent,
   type ToolResultEvent,
 } from '@earendil-works/pi-coding-agent'
-import { NodeFileSystem } from '@effect/platform-node'
-import { Context, Deferred, Effect, HashSet, Layer, ManagedRuntime, Ref } from 'effect'
+import { Context, Deferred, Effect, HashSet, Ref } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
 import { type PlatformError } from 'effect/PlatformError'
 
+import { type AppRuntime, getOrCreateProcessRuntime } from '../effect/app_runtime.js'
 import { makeEventHandler } from '../effect/runtime.js'
 import { isRecord } from '../shared/records.js'
 
@@ -561,15 +561,6 @@ interface RulesStateShape {
 
 class RulesState extends Context.Service<RulesState, RulesStateShape>()('@rules/State') {}
 
-const RulesStateLive: Layer.Layer<RulesState> = Layer.effect(RulesState)(
-  Effect.gen(function* () {
-    return {
-      activeDiscovery: yield* Ref.make<DiscoverySlot | undefined>(undefined),
-      dynamicInjections: yield* Ref.make(HashSet.empty<string>()),
-    }
-  })
-)
-
 /**
  * `activeDiscovery` only coalesces concurrent scans that share a (cwd, trusted) key; it is cleared
  * the moment that scan settles. There is no persistent discovery cache, so every later call rescans
@@ -617,8 +608,18 @@ const clearDynamicInjections = (
     yield* Ref.set(state.dynamicInjections, HashSet.empty<string>())
   })
 
-export default function rulesExtension(pi: ExtensionAPI, environment: RulesEnvironment = { homeDirectory: homedir() }) {
-  const runtime = ManagedRuntime.make(Layer.mergeAll(RulesStateLive, NodeFileSystem.layer))
+export const register = (pi: ExtensionAPI, runtime: AppRuntime, environment: RulesEnvironment = { homeDirectory: homedir() }): void => {
+  const rulesState = Effect.runSync(
+    Effect.gen(function* () {
+      return {
+        activeDiscovery: yield* Ref.make<DiscoverySlot | undefined>(undefined),
+        dynamicInjections: yield* Ref.make(HashSet.empty<string>()),
+      }
+    })
+  )
+  const withRulesState = <Success, Failure>(
+    effect: Effect.Effect<Success, Failure, RulesState | FileSystem>
+  ): Effect.Effect<Success, Failure, FileSystem> => effect.pipe(Effect.provideService(RulesState, rulesState))
 
   const beforeAgentStart = (
     event: BeforeAgentStartEvent,
@@ -673,9 +674,28 @@ export default function rulesExtension(pi: ExtensionAPI, environment: RulesEnvir
       return formatted.block ? { content: [...event.content, { text: formatted.block, type: 'text' as const }] } : undefined
     })
 
-  pi.on('session_start', makeEventHandler(runtime)(clearDynamicInjections))
-  pi.on('session_compact', makeEventHandler(runtime)(clearDynamicInjections))
-  pi.on('session_tree', makeEventHandler(runtime)(clearDynamicInjections))
-  pi.on('before_agent_start', makeEventHandler(runtime)(beforeAgentStart))
-  pi.on('tool_result', makeEventHandler(runtime)(toolResult))
+  pi.on(
+    'session_start',
+    makeEventHandler(runtime)((event, ctx) => withRulesState(clearDynamicInjections(event, ctx)))
+  )
+  pi.on(
+    'session_compact',
+    makeEventHandler(runtime)((event, ctx) => withRulesState(clearDynamicInjections(event, ctx)))
+  )
+  pi.on(
+    'session_tree',
+    makeEventHandler(runtime)((event, ctx) => withRulesState(clearDynamicInjections(event, ctx)))
+  )
+  pi.on(
+    'before_agent_start',
+    makeEventHandler(runtime)((event, ctx) => withRulesState(beforeAgentStart(event, ctx)))
+  )
+  pi.on(
+    'tool_result',
+    makeEventHandler(runtime)((event, ctx) => withRulesState(toolResult(event, ctx)))
+  )
+}
+
+export default function rulesExtension(pi: ExtensionAPI, environment: RulesEnvironment = { homeDirectory: homedir() }): void {
+  register(pi, getOrCreateProcessRuntime(), environment)
 }

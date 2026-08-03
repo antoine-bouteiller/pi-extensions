@@ -3,9 +3,10 @@ import { lstat, readdir, realpath, rm as remove } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import { withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
-import { Effect, Layer, ManagedRuntime, Result } from 'effect'
+import { Effect, Result } from 'effect'
 import { Type } from 'typebox'
 
+import { type AppRuntime, getOrCreateProcessRuntime } from '../effect/app_runtime.js'
 import { assertUnprotectedPath } from '../shared/protected_paths.js'
 import {
   CancelledError,
@@ -224,8 +225,7 @@ interface ToolOutput {
   details: SafeRmDetails
 }
 
-export default function safeRm(pi: ExtensionAPI) {
-  const runtime = ManagedRuntime.make(Layer.empty)
+export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
   const runTool =
     <Params, Result>(body: (params: Params, signal: AbortSignal | undefined, ctx: ExtensionContext) => Effect.Effect<Result, unknown>) =>
     async (_toolCallId: string, params: Params, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext): Promise<Result> =>
@@ -297,4 +297,8 @@ export default function safeRm(pi: ExtensionAPI) {
     ],
     promptSnippet: 'Remove files or directories through validated literal paths',
   })
+}
+
+export default function safeRm(pi: ExtensionAPI): void {
+  register(pi, getOrCreateProcessRuntime())
 }

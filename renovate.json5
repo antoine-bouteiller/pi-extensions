@@ -17,9 +17,9 @@
   labels: ['renovate'],
   packageRules: [
     {
-      description: 'Effect is pinned to an exact beta for the duration of the v4 rewrite (.plan/effect-v4-rewrite). Re-enable once the rewrite lands.',
+      description: 'Require human review for Effect updates while v4 is in beta',
       matchPackageNames: ['effect', '@effect/**'],
-      enabled: false,
+      automerge: false,
     },
   ],
   'pre-commit': {

@@ -2,9 +2,10 @@ import { relative } from 'node:path'
 
 import { withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { formatHashlineHeader, formatNumberedLines, InMemorySnapshotStore, NodeFilesystem, normalizeToLF, Patch, Patcher } from '@oh-my-pi/hashline'
-import { Context, Effect, Layer, ManagedRuntime } from 'effect'
+import { Context, Effect } from 'effect'
 import { Type, type Static } from 'typebox'
 
+import { type AppRuntime, getOrCreateProcessRuntime } from '../effect/app_runtime.js'
 import { perInvocation, type HandlerServices } from '../effect/runtime.js'
 import { PiCtx } from '../effect/services.js'
 import { assertUnprotectedPath, resolveToolPath, stripToolPathPrefix } from '../shared/protected_paths.js'
@@ -182,11 +183,10 @@ const writeHashlinePatch = async (
   })
 }
 
-/** Per-instance snapshot store, held as Layer state scoped to this extension's runtime. */
 class Snapshots extends Context.Service<Snapshots, InMemorySnapshotStore>()('@hashline/Snapshots') {}
 
-export default function hashline(pi: ExtensionAPI) {
-  const runtime = ManagedRuntime.make(Layer.succeed(Snapshots)(new InMemorySnapshotStore()))
+export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
+  const snapshotsStore = new InMemorySnapshotStore()
 
   /*
    * Phase 1's makeToolExecutor doesn't hand the raw AbortSignal to the body, but hashline needs it
@@ -200,7 +200,7 @@ export default function hashline(pi: ExtensionAPI) {
   const runTool =
     <Params, Result>(body: (params: Params, signal: AbortSignal | undefined) => Effect.Effect<Result, unknown, HandlerServices | Snapshots>) =>
     async (_toolCallId: string, params: Params, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext): Promise<Result> =>
-      runtime.runPromise(body(params, signal).pipe(Effect.provide(perInvocation(ctx))))
+      runtime.runPromise(body(params, signal).pipe(Effect.provideService(Snapshots, snapshotsStore), Effect.provide(perInvocation(ctx))))
 
   pi.registerTool({
     description:
@@ -242,4 +242,8 @@ export default function hashline(pi: ExtensionAPI) {
       'Use hashline_write for targeted edits; use the built-in write tool when creating a new file from scratch.',
     ],
   })
+}
+
+export default function hashline(pi: ExtensionAPI): void {
+  register(pi, getOrCreateProcessRuntime())
 }

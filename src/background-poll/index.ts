@@ -1,7 +1,8 @@
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
-import { Clock, Context, Deferred, Effect, Exit, type Fiber, HashMap, Layer, ManagedRuntime, Option, Ref, Scope, Semaphore } from 'effect'
+import { Clock, Context, Deferred, Effect, Exit, type Fiber, HashMap, Option, Ref, Scope, Semaphore } from 'effect'
 import { Type, type Static } from 'typebox'
 
+import { type AppRuntime, getOrCreateProcessRuntime } from '../effect/app_runtime.js'
 import { createStatusChannel } from '../shared/status_bar.js'
 import { truncateOutput, truncationNotice } from '../shared/tool_output.js'
 
@@ -152,17 +153,6 @@ interface PollStateShape {
 
 class PollState extends Context.Service<PollState, PollStateShape>()('@background-poll/State') {}
 
-const PollStateLive = Layer.effect(PollState)(
-  Effect.gen(function* () {
-    return {
-      mutex: yield* Semaphore.make(1),
-      sessionScope: yield* Ref.make<Option.Option<Scope.Closeable>>(Option.none()),
-      shuttingDown: yield* Ref.make(false),
-      tasks: yield* Ref.make(HashMap.empty<string, Fiber.Fiber<void>>()),
-    }
-  })
-)
-
 const updateStatus = (state: PollStateShape, ctx: ExtensionContext): Effect.Effect<void> =>
   Effect.gen(function* () {
     const count = HashMap.size(yield* Ref.get(state.tasks))
@@ -296,8 +286,17 @@ const registerPoll = (
     )
   })
 
-export default function backgroundPoll(pi: ExtensionAPI) {
-  const runtime = ManagedRuntime.make(PollStateLive)
+export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
+  const pollState: PollStateShape = Effect.runSync(
+    Effect.gen(function* () {
+      return {
+        mutex: yield* Semaphore.make(1),
+        sessionScope: yield* Ref.make<Option.Option<Scope.Closeable>>(Option.none()),
+        shuttingDown: yield* Ref.make(false),
+        tasks: yield* Ref.make(HashMap.empty<string, Fiber.Fiber<void>>()),
+      }
+    })
+  )
 
   pi.registerTool({
     description:
@@ -307,7 +306,7 @@ export default function backgroundPoll(pi: ExtensionAPI) {
         throw new Error('Background poll registration was cancelled')
       }
 
-      await runtime.runPromise(registerPoll(pi, toolCallId, params, ctx))
+      await runtime.runPromise(registerPoll(pi, toolCallId, params, ctx).pipe(Effect.provideService(PollState, pollState)))
       const taskId = `poll-${toolCallId}`
       const label = params.label?.trim() || params.command
       return {
@@ -337,6 +336,10 @@ export default function backgroundPoll(pi: ExtensionAPI) {
     promptSnippet: 'Wait for an asynchronous condition without repeatedly polling or keeping the agent running',
   })
 
-  pi.on('session_start', () => runtime.runPromise(startSession))
-  pi.on('session_shutdown', (_event, ctx) => runtime.runPromise(stopSession(ctx)))
+  pi.on('session_start', () => runtime.runPromise(startSession.pipe(Effect.provideService(PollState, pollState))))
+  pi.on('session_shutdown', (_event, ctx) => runtime.runPromise(stopSession(ctx).pipe(Effect.provideService(PollState, pollState))))
+}
+
+export default function backgroundPoll(pi: ExtensionAPI): void {
+  register(pi, getOrCreateProcessRuntime())
 }

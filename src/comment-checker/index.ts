@@ -1,8 +1,9 @@
 import { execFile } from 'node:child_process'
 
 import { type ExtensionAPI, type ExtensionContext, type ToolResultEvent } from '@earendil-works/pi-coding-agent'
-import { Context, Effect, Layer, ManagedRuntime } from 'effect'
+import { Context, Effect } from 'effect'
 
+import { type AppRuntime, getOrCreateProcessRuntime } from '../effect/app_runtime.js'
 import { makeEventHandler } from '../effect/runtime.js'
 import { isRecord } from '../shared/records.js'
 
@@ -139,11 +140,19 @@ const checkerResult = (
     }
   })
 
-export default function commentChecker(pi: ExtensionAPI, runner?: CheckerRunner) {
-  const runnerLayer = Layer.succeed(CommandRunner)(
-    runner ? { run: (input) => Effect.tryPromise({ catch: (cause) => cause, try: () => runner(input) }) } : productionRunner
-  )
-  const runtime = ManagedRuntime.make(runnerLayer)
+export const register = (pi: ExtensionAPI, runtime: AppRuntime, runner?: CheckerRunner): void => {
+  const commandRunner: CommandRunnerShape = runner
+    ? { run: (input) => Effect.tryPromise({ catch: (cause) => cause, try: () => runner(input) }) }
+    : productionRunner
 
-  pi.on('tool_result', makeEventHandler(runtime)(checkerResult))
+  pi.on(
+    'tool_result',
+    makeEventHandler(runtime)((event: ToolResultEvent, ctx: ExtensionContext) =>
+      checkerResult(event, ctx).pipe(Effect.provideService(CommandRunner, commandRunner))
+    )
+  )
+}
+
+export default function commentChecker(pi: ExtensionAPI, runner?: CheckerRunner): void {
+  register(pi, getOrCreateProcessRuntime(), runner)
 }

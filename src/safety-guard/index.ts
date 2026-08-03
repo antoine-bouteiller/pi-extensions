@@ -5,15 +5,15 @@ import {
   type ToolCallEvent,
   type ToolCallEventResult,
 } from '@earendil-works/pi-coding-agent'
-import { NodeFileSystem } from '@effect/platform-node'
-import { Effect, Layer, ManagedRuntime, Match } from 'effect'
+import { Effect, Match } from 'effect'
 import { type FileSystem } from 'effect/FileSystem'
 import { type PlatformError } from 'effect/PlatformError'
 
+import { type AppRuntime, getOrCreateProcessRuntime } from '../effect/app_runtime.js'
 import { makeEventHandler } from '../effect/runtime.js'
 import { Pi, piLayer, Ui } from '../effect/services.js'
 import { resolveProtectedPathEffect } from '../shared/protected_paths.js'
-import { StatusBar, StatusBarLive } from '../shared/services.js'
+import { StatusBar } from '../shared/services.js'
 import { ALL_PATTERNS, COMMAND_EXCERPT_CONTEXT_LINES, COMMAND_EXCERPT_MAX_LENGTH, SAFETY_STATUS_KEY } from './constants.js'
 
 const commandExcerpt = (command: string, pattern: RegExp): string => {
@@ -153,10 +153,16 @@ const handleToolCall = (
     return yield* runDecision(decision)
   })
 
-export default function safetyGuard(pi: ExtensionAPI) {
-  const runtime = ManagedRuntime.make(Layer.mergeAll(piLayer(pi), StatusBarLive, NodeFileSystem.layer))
+export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
+  const providedPi = piLayer(pi)
+  const withPi = <Success, Failure, Requirements>(
+    effect: Effect.Effect<Success, Failure, Requirements | Pi>
+  ): Effect.Effect<Success, Failure, Exclude<Requirements, Pi>> => effect.pipe(Effect.provide(providedPi))
 
-  pi.on('tool_call', makeEventHandler(runtime)(handleToolCall))
+  pi.on(
+    'tool_call',
+    makeEventHandler(runtime)((event, ctx) => withPi(handleToolCall(event, ctx)))
+  )
 
   pi.on(
     'session_start',
@@ -167,4 +173,8 @@ export default function safetyGuard(pi: ExtensionAPI) {
       })
     )
   )
+}
+
+export default function safetyGuard(pi: ExtensionAPI): void {
+  register(pi, getOrCreateProcessRuntime())
 }

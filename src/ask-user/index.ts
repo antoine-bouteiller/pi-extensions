@@ -20,10 +20,11 @@ import {
   type EditorTheme,
   type Focusable,
 } from '@earendil-works/pi-tui'
-import { Effect, Layer, ManagedRuntime } from 'effect'
+import { Effect } from 'effect'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
+import { type AppRuntime, getOrCreateProcessRuntime } from '../effect/app_runtime.js'
 import { ToolFailure } from '../effect/errors.js'
 import { perInvocation } from '../effect/runtime.js'
 import { PiCtx } from '../effect/services.js'
@@ -364,9 +365,7 @@ const askUserEffect = (
     )
   })
 
-export default function askUser(pi: ExtensionAPI) {
-  const runtime = ManagedRuntime.make(Layer.empty)
-
+export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
   pi.registerTool({
     description: ASK_USER_TOOL_DESCRIPTION,
     /*
@@ -417,4 +416,8 @@ export default function askUser(pi: ExtensionAPI) {
       return new Text(theme.fg('success', '✓ ') + theme.fg('accent', display), 0, 0)
     },
   })
+}
+
+export default function askUser(pi: ExtensionAPI): void {
+  register(pi, getOrCreateProcessRuntime())
 }
