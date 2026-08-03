@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 
+import { Entry } from '@napi-rs/keyring'
 import { Context, Effect, Layer, Option, Schema } from 'effect'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
@@ -63,21 +64,12 @@ interface CredentialStoreEffectShape {
 /** Effect-native credential boundary; the Promise interface remains as the MCP SDK adapter. */
 export class CredentialStoreEffect extends Context.Service<CredentialStoreEffect, CredentialStoreEffectShape>()('@pi/mcp/CredentialStore') {}
 
-interface KeyringEntry {
-  getPassword: () => string | null | Promise<string | null>
-  setPassword: (password: string) => void | Promise<void>
-  deletePassword: () => void | Promise<void>
-}
-
-interface KeyringModule {
-  Entry: new (service: string, account: string) => KeyringEntry
-}
-
-type KeyringLoader = () => Promise<KeyringModule>
+type KeyringEntry = Pick<Entry, 'deletePassword' | 'getPassword' | 'setPassword'>
+type EntryFactory = (service: string, account: string) => KeyringEntry
 
 export interface KeychainCredentialStoreOptions {
   serviceName?: string
-  loadKeyring?: KeyringLoader
+  createEntry?: EntryFactory
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> => {
@@ -177,37 +169,24 @@ const operationError = (operation: string, serverName: string): Error =>
       `${JSON.stringify(serverName)}. Ensure Keychain is available and unlocked, then retry.`
   )
 
-const loadProductionKeyring = async (): Promise<KeyringModule> => {
-  // Keep this specifier indirect so merely loading the MCP extension does not initialize
-  // The native keyring package (and so the package can be installed in the dependency step).
-  const packageName = '@napi-rs/keyring'
-  const loaded: unknown = await import(packageName)
-  if (!isObject(loaded) || typeof loaded.Entry !== 'function') {
-    throw new KeychainCredentialError('The @napi-rs/keyring native module is unavailable or malformed; reinstall it and retry.')
-  }
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- a constructor signature has no schema equivalent; `Entry` is verified constructible above.
-  return { Entry: loaded.Entry as KeyringModule['Entry'] }
-}
-
 export class KeychainCredentialStore implements CredentialStore {
   readonly serviceName: string
-  private readonly loadKeyring: KeyringLoader
+  private readonly createEntry: EntryFactory
 
   constructor(options: KeychainCredentialStoreOptions = {}) {
     this.serviceName = options.serviceName ?? MCP_OAUTH_KEYCHAIN_SERVICE
-    this.loadKeyring = options.loadKeyring ?? loadProductionKeyring
+    this.createEntry = options.createEntry ?? ((service, account) => new Entry(service, account))
   }
 
-  private async entry(serverName: string): Promise<KeyringEntry> {
-    const keyring = await this.loadKeyring()
-    return new keyring.Entry(this.serviceName, keychainAccount(serverName))
+  private entry(serverName: string): KeyringEntry {
+    return this.createEntry(this.serviceName, keychainAccount(serverName))
   }
 
   async get(serverName: string, serverUrl: string): Promise<OAuthCredentialPayload | undefined> {
     let serialized: string | null
     try {
-      const entry = await this.entry(serverName)
-      serialized = await entry.getPassword()
+      const entry = this.entry(serverName)
+      serialized = entry.getPassword()
     } catch (error) {
       if (isMissingCredential(error)) {
         return undefined
@@ -234,8 +213,8 @@ export class KeychainCredentialStore implements CredentialStore {
   async set(serverName: string, credential: OAuthCredentialPayload): Promise<void> {
     const validated = validateCredentialPayload(credential, serverName)
     try {
-      const entry = await this.entry(serverName)
-      await entry.setPassword(JSON.stringify(validated))
+      const entry = this.entry(serverName)
+      entry.setPassword(JSON.stringify(validated))
     } catch {
       throw operationError('write', serverName)
     }
@@ -243,8 +222,8 @@ export class KeychainCredentialStore implements CredentialStore {
 
   async delete(serverName: string): Promise<void> {
     try {
-      const entry = await this.entry(serverName)
-      await entry.deletePassword()
+      const entry = this.entry(serverName)
+      entry.deletePassword()
     } catch (error) {
       if (isMissingCredential(error)) {
         return

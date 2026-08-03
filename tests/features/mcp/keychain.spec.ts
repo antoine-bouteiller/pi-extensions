@@ -50,7 +50,7 @@ const inMemoryKeyring = (initial: Record<string, string> = {}, failure?: Failure
       values.set(this.account, password)
     }
 
-    deletePassword(): void {
+    deletePassword(): boolean {
       calls.push({ account: this.account, operation: 'delete', service: this.service })
       if (failure === 'delete') {
         throw new Error('native delete failure containing secret-token')
@@ -58,12 +58,13 @@ const inMemoryKeyring = (initial: Record<string, string> = {}, failure?: Failure
       if (!values.delete(this.account)) {
         throw Object.assign(new Error('item not found'), { code: 'NoEntry' })
       }
+      return true
     }
   }
 
   return {
     calls,
-    loadKeyring: async () => ({ Entry }),
+    createEntry: (service: string, account: string) => new Entry(service, account),
     values,
   }
 }
@@ -91,7 +92,7 @@ const credential: OAuthCredentialPayload = {
 describe('Keychain OAuth credential store', () => {
   test('round trips one validated URL-bound credential payload', async () => {
     const keyring = inMemoryKeyring()
-    const store = new KeychainCredentialStore({ loadKeyring: keyring.loadKeyring })
+    const store = new KeychainCredentialStore({ createEntry: keyring.createEntry })
 
     await store.set('slack', credential)
     expect(await store.get('slack', credential.serverUrl)).toEqual(credential)
@@ -124,7 +125,7 @@ describe('Keychain OAuth credential store', () => {
 
   test('rejects a payload when the configured endpoint was repointed', async () => {
     const keyring = inMemoryKeyring()
-    const store = new KeychainCredentialStore({ loadKeyring: keyring.loadKeyring })
+    const store = new KeychainCredentialStore({ createEntry: keyring.createEntry })
     await store.set('slack', credential)
 
     expect(await store.get('slack', 'https://attacker.example/mcp')).toBeUndefined()
@@ -133,28 +134,13 @@ describe('Keychain OAuth credential store', () => {
 
   test('deletes credentials and treats absent entries as empty', async () => {
     const keyring = inMemoryKeyring()
-    const store = new KeychainCredentialStore({ loadKeyring: keyring.loadKeyring })
+    const store = new KeychainCredentialStore({ createEntry: keyring.createEntry })
 
     expect(await store.get('slack', credential.serverUrl)).toBeUndefined()
     await store.delete('slack')
     await store.set('slack', credential)
     await store.delete('slack')
     expect(await store.get('slack', credential.serverUrl)).toBeUndefined()
-  })
-
-  test('loads the native module lazily on credential access', async () => {
-    let loads = 0
-    const keyring = inMemoryKeyring()
-    const store = new KeychainCredentialStore({
-      loadKeyring: async () => {
-        loads += 1
-        return keyring.loadKeyring()
-      },
-    })
-
-    expect(loads).toBe(0)
-    await store.get('slack', credential.serverUrl)
-    expect(loads).toBe(1)
   })
 
   test('rejects malformed JSON and malformed credential members', async () => {
@@ -176,14 +162,14 @@ describe('Keychain OAuth credential store', () => {
       }),
     ]) {
       const keyring = inMemoryKeyring({ [keychainAccount('slack')]: serialized })
-      const store = new KeychainCredentialStore({ loadKeyring: keyring.loadKeyring })
+      const store = new KeychainCredentialStore({ createEntry: keyring.createEntry })
       expect(store.get('slack', credential.serverUrl)).rejects.toThrow('credential for MCP server "slack" is malformed')
     }
   })
 
   test('validates payloads before writing to Keychain', async () => {
     const keyring = inMemoryKeyring()
-    const store = new KeychainCredentialStore({ loadKeyring: keyring.loadKeyring })
+    const store = new KeychainCredentialStore({ createEntry: keyring.createEntry })
     const malformed = asOAuthCredentialPayload({
       serverUrl: credential.serverUrl,
       tokens: { access_token: 'secret' },
@@ -196,7 +182,7 @@ describe('Keychain OAuth credential store', () => {
   test('redacts native lookup, write, and deletion failures', async () => {
     for (const operation of ['get', 'set', 'delete'] as const) {
       const keyring = inMemoryKeyring({}, operation)
-      const store = new KeychainCredentialStore({ loadKeyring: keyring.loadKeyring })
+      const store = new KeychainCredentialStore({ createEntry: keyring.createEntry })
       let error: unknown
       try {
         if (operation === 'get') {
@@ -221,7 +207,7 @@ describe('Keychain OAuth credential store', () => {
 
   test('isolates server names that share one URL and exposes the Effect service as Option', async () => {
     const keyring = inMemoryKeyring()
-    const store = new KeychainCredentialStore({ loadKeyring: keyring.loadKeyring })
+    const store = new KeychainCredentialStore({ createEntry: keyring.createEntry })
     await store.set('alpha', credential)
     await store.set('beta', { ...credential, tokens: { access_token: 'beta-token', token_type: 'Bearer' } })
 
@@ -234,23 +220,8 @@ describe('Keychain OAuth credential store', () => {
       Effect.gen(function* () {
         const effectStore = yield* CredentialStoreEffect
         return yield* effectStore.get('alpha', credential.serverUrl)
-      }).pipe(Effect.provide(credentialStoreEffectLayer({ loadKeyring: keyring.loadKeyring })))
+      }).pipe(Effect.provide(credentialStoreEffectLayer({ createEntry: keyring.createEntry })))
     )
     expect(Option.isSome(loaded)).toBe(true)
-  })
-
-  test('redacts a native module loading failure', async () => {
-    const store = new KeychainCredentialStore({
-      loadKeyring: async () => {
-        throw new Error('dlopen failed at /private/secret/path')
-      },
-    })
-
-    expect(store.get('slack', credential.serverUrl)).rejects.toThrow('Ensure Keychain is available and unlocked')
-    try {
-      await store.get('slack', credential.serverUrl)
-    } catch (error) {
-      expect(asError(error).message).not.toContain('/private/secret/path')
-    }
   })
 })
