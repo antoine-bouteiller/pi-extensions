@@ -33,6 +33,7 @@ describe('Anthropic quota provider', () => {
         activeProfile: 'default',
         profiles: [
           {
+            extraUsage: { isEnabled: true, monthlyLimit: 20_000, usedCredits: 3162 },
             id: 'default',
             isActive: true,
             windows: [
@@ -61,11 +62,13 @@ describe('Anthropic quota provider', () => {
     expect(quota.detail).toContain('1h 30m')
     expect(quota.detail).toContain('Weekly:')
     expect(quota.detail).toContain('62.0%')
+    expect(quota.detail).toContain('31.62/200$')
     expect(windows.map((window) => window.label)).toEqual(['Session', 'Weekly'])
     expect(windows[0]?.percent).toBeCloseTo(37.5)
     expect(windows[0]?.resetsIn).toBe('1h 30m')
     expect(windows[1]?.percent).toBeCloseTo(62)
     expect(windows[1]?.resetsIn).toBe('4d 6h')
+    expect(windows[1]?.detail).toBe('31.62/200$')
   })
 
   it('reads the active profile rather than the first one', async () => {

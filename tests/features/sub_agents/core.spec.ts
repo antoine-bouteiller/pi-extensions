@@ -32,6 +32,7 @@ const {
   writeFullToolOutput,
 } = await import('@/features/sub_agents/core.js')
 const { SubagentPeekOverlay } = await import('@/features/sub_agents/peek.js')
+const { azureQuota } = await import('@/shared/state/azure_quota.js')
 
 const requireChildProcess = <ChildProcess>(childProcess: ChildProcess | undefined): ChildProcess => {
   if (!childProcess) {
@@ -409,6 +410,23 @@ describe('child process lifecycle', () => {
       expect(start.args[start.args.indexOf('--tools') + 1]).toContain('fff-multi-grep')
     } finally {
       await manager.shutdown()
+      rmSync(scope, { force: true, recursive: true })
+    }
+  })
+
+  processTest('forwards Azure quota reported by a subagent response', async () => {
+    const parentSessionId = 'subagent-azure-quota'
+    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+    rmSync(scope, { force: true, recursive: true })
+    azureQuota.set(undefined)
+    const manager = createAgentManager()
+    try {
+      await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'quota response'))
+      await waitUntil(() => azureQuota.get() === 73)
+      expect(azureQuota.get()).toBe(73)
+    } finally {
+      await manager.shutdown()
+      azureQuota.set(undefined)
       rmSync(scope, { force: true, recursive: true })
     }
   })

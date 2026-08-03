@@ -3,6 +3,7 @@ import { Effect, Ref } from 'effect'
 
 import { type AppRuntime, AgentActivity, StatusBar } from '@/shared/effect/app_services.js'
 import { makeEventHandler } from '@/shared/effect/runtime.js'
+import { azureQuota, writeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
 
 import { renderFooterLines } from './footer.js'
 import { fetchGitInfo } from './git.js'
@@ -21,6 +22,12 @@ interface StatusPanelDependencies {
 
 export const register = (pi: ExtensionAPI, runtime: AppRuntime, dependencies: StatusPanelDependencies = {}): void => {
   if (process.env.PI_SUBAGENT_OWNER_TOKEN !== undefined) {
+    pi.on('after_provider_response', (event, ctx) => {
+      const quota = quotaFromHeaders(ctx.model?.provider ?? '', event.headers)
+      if (quota) {
+        writeSubagentAzureQuota(process.env.PI_SUBAGENT_OWNER_TOKEN ?? '', quota.percent)
+      }
+    })
     return
   }
 
@@ -31,16 +38,43 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, dependencies: St
   let sidebar: SidebarController | undefined
   let footerData: ReadonlyFooterDataProvider | undefined
   let requestRender: (() => void) | undefined
+  let anthropicQuotaBaseUrl: string | undefined
+  let unsubscribeAzureQuota: (() => void) | undefined
   agentActivity.subscribe(() => requestRender?.())
   statusBar.subscribe(() => requestRender?.())
 
   const getState = (): PanelState => Effect.runSync(Ref.get(stateRef))
   const updateState = (updater: (state: PanelState) => PanelState): Effect.Effect<void> => Ref.update(stateRef, updater)
+  const syncAzureQuota = (): void => {
+    const percent = azureQuota.get()
+    Effect.runSync(
+      updateState((state) => {
+        const quotas = { ...state.quotas }
+        if (percent === undefined) {
+          delete quotas.azure
+        } else {
+          quotas.azure = { label: 'azure', percent }
+        }
+        return { ...state, quotas }
+      })
+    )
+    requestRender?.()
+  }
 
   const anthropicQuota: QuotaPoller = Effect.runSync(
     makeQuotaPoller(
       (quota) => {
-        Effect.runSync(updateState((state) => ({ ...state, quota })))
+        Effect.runSync(
+          updateState((state) => {
+            const quotas = { ...state.quotas }
+            if (quota) {
+              quotas.anthropic = quota
+            } else {
+              delete quotas.anthropic
+            }
+            return { ...state, quotas }
+          })
+        )
         requestRender?.()
       },
       {
@@ -49,6 +83,24 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, dependencies: St
       }
     )
   )
+
+  const startAnthropicQuota = (ctx: ExtensionContext): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      if (ctx.mode !== 'tui') {
+        return
+      }
+      if (anthropicQuotaBaseUrl) {
+        return
+      }
+      const baseUrl =
+        (ctx.model?.provider === 'anthropic' ? ctx.model.baseUrl : undefined) ??
+        ctx.modelRegistry?.getAvailable().find((model) => model.provider === 'anthropic')?.baseUrl
+      if (!baseUrl) {
+        return
+      }
+      anthropicQuotaBaseUrl = baseUrl
+      yield* anthropicQuota.start(baseUrl)
+    })
 
   /** Fire-and-forget by design, like the original `void refreshGit()`: forked detached so it keeps running after the triggering hook's effect completes, instead of being interrupted with it. */
   const scheduleGitRefresh = (): void => {
@@ -115,7 +167,7 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, dependencies: St
                   cwd: ctx.cwd,
                   git: state.git,
                   model: state.model,
-                  quota: state.quota,
+                  quotas: state.quotas,
                   statuses: collectStatuses(footerData),
                 },
                 theme,
@@ -135,7 +187,7 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, dependencies: St
               extensionStatuses: collectStatuses(footerData),
               git: state.git,
               model: state.model,
-              quota: state.quota,
+              quotas: state.quotas,
             }
           },
           onError: () => undefined,
@@ -153,14 +205,16 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, dependencies: St
     makeEventHandler(runtime)((_event, ctx) =>
       Effect.gen(function* () {
         yield* anthropicQuota.stop
+        anthropicQuotaBaseUrl = undefined
+        unsubscribeAzureQuota?.()
+        azureQuota.set(undefined)
         yield* Ref.set(stateRef, emptyPanelState())
+        unsubscribeAzureQuota = azureQuota.subscribe(syncAzureQuota)
         yield* install(ctx)
         if (ctx.mode !== 'tui') {
           yield* refreshModel(ctx)
         }
-        if (ctx.mode === 'tui' && ctx.model?.provider === 'anthropic') {
-          yield* anthropicQuota.start(ctx.model.baseUrl)
-        }
+        yield* startAnthropicQuota(ctx)
       })
     )
   )
@@ -177,14 +231,10 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, dependencies: St
             provider: event.model.provider,
             thinking: event.model.reasoning ? pi.getThinkingLevel() : 'off',
           },
-          quota: undefined,
         }))
-        yield* anthropicQuota.stop
         yield* refreshModel(ctx)
         scheduleGitRefresh()
-        if (ctx.mode === 'tui' && event.model.provider === 'anthropic') {
-          yield* anthropicQuota.start(event.model.baseUrl)
-        }
+        yield* startAnthropicQuota(ctx)
       })
     )
   )
@@ -226,12 +276,11 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, dependencies: St
   )
   pi.on(
     'after_provider_response',
-    makeEventHandler(runtime)((event, _ctx) =>
-      Effect.gen(function* () {
-        const quota = quotaFromHeaders(getState().model.provider, event.headers)
+    makeEventHandler(runtime)((event, ctx) =>
+      Effect.sync(() => {
+        const quota = quotaFromHeaders(ctx.model?.provider ?? '', event.headers)
         if (quota) {
-          yield* updateState((state) => ({ ...state, quota }))
-          requestRender?.()
+          azureQuota.set(quota.percent)
         }
       })
     )
@@ -241,6 +290,9 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, dependencies: St
     makeEventHandler(runtime)((_event, ctx) =>
       Effect.gen(function* () {
         yield* anthropicQuota.stop
+        anthropicQuotaBaseUrl = undefined
+        unsubscribeAzureQuota?.()
+        unsubscribeAzureQuota = undefined
         sidebar?.dispose()
         sidebar = undefined
         footerData = undefined

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir, userInfo } from 'node:os'
+import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 
 const sessionIndex = process.argv.indexOf('--session')
@@ -52,6 +54,11 @@ input.on('line', (line) => {
     }
     send({ data: {}, id: command.id, success: true, type: 'response' })
     send({ type: 'agent_start' })
+    if (String(command.message).startsWith('quota')) {
+      const directory = join(process.env.PI_SUBAGENT_TEMP_DIR || tmpdir(), 'pi-codex-subagents', userInfo().username, 'quota')
+      mkdirSync(directory, { recursive: true })
+      writeFileSync(join(directory, `${process.env.PI_SUBAGENT_OWNER_TOKEN}.json`), '73')
+    }
     if (String(command.message).startsWith('hold')) {
       return
     }

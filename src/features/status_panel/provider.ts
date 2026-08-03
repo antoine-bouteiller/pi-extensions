@@ -86,7 +86,14 @@ const GatewayQuotaWindowSchema = Type.Object({
   utilization: Type.Optional(Type.Number()),
 })
 
+const GatewayExtraUsageSchema = Type.Object({
+  isEnabled: Type.Optional(Type.Boolean()),
+  monthlyLimit: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
+  usedCredits: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
+})
+
 const GatewayQuotaProfileSchema = Type.Object({
+  extraUsage: Type.Optional(Type.Union([GatewayExtraUsageSchema, Type.Null()])),
   id: Type.Optional(Type.String()),
   isActive: Type.Optional(Type.Boolean()),
   windows: Type.Optional(Type.Array(GatewayQuotaWindowSchema)),
@@ -125,6 +132,16 @@ const quotaWindow = (label: string, percent: number, resetsAt: number | undefine
   return resetsIn ? { label, percent, resetsIn } : { label, percent }
 }
 
+const formatDollars = (cents: number): string => String(Number((cents / 100).toFixed(2)))
+
+const extraUsageDetail = (profile: GatewayQuotaProfile): string => {
+  const { extraUsage } = profile
+  if (!extraUsage?.isEnabled || typeof extraUsage.usedCredits !== 'number' || typeof extraUsage.monthlyLimit !== 'number') {
+    return ''
+  }
+  return `${formatDollars(extraUsage.usedCredits)}/${formatDollars(extraUsage.monthlyLimit)}$`
+}
+
 /**
  * Reads quota from the gateway the anthropic provider is pointed at, which owns the
  * subscription credentials. Upstream `/api/oauth/usage` is not reachable through it.
@@ -159,11 +176,16 @@ export const fetchAnthropicQuota = async (
     }
     const sessionPercent = session.utilization * 100
     const weeklyPercent = weekly.utilization * 100
+    const extraUsage = extraUsageDetail(profile)
+    const weeklyDetail = extraUsage ? ` ${extraUsage}` : ''
     return {
-      detail: `${formatReset(session.resetsAt)}  Weekly: ${progressBar(weeklyPercent, 10)} ${weeklyPercent.toFixed(1)}%`,
+      detail: `${formatReset(session.resetsAt)}  Weekly: ${progressBar(weeklyPercent, 10)} ${weeklyPercent.toFixed(1)}%${weeklyDetail}`,
       label: 'anthropic',
       percent: sessionPercent,
-      windows: [quotaWindow('Session', sessionPercent, session.resetsAt), quotaWindow('Weekly', weeklyPercent, weekly.resetsAt)],
+      windows: [
+        quotaWindow('Session', sessionPercent, session.resetsAt),
+        { ...quotaWindow('Weekly', weeklyPercent, weekly.resetsAt), ...(extraUsage ? { detail: extraUsage } : {}) },
+      ],
     }
   } catch {
     return undefined
@@ -179,5 +201,5 @@ export const quotaFromHeaders = (provider: string, headers: Record<string, strin
   if (!Number.isFinite(limit) || limit <= 0 || !Number.isFinite(remaining)) {
     return undefined
   }
-  return { label: 'azure', percent: ((limit - remaining) / limit) * 100 }
+  return { label: 'azure', percent: Math.max(0, Math.min(100, ((limit - remaining) / limit) * 100)) }
 }

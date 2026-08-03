@@ -28,13 +28,16 @@ const state: SidebarState = {
     provider: 'openai-codex',
     thinking: 'medium',
   },
-  quota: {
-    label: 'anthropic',
-    percent: 42.3,
-    windows: [
-      { label: 'Session', percent: 42.3, resetsIn: '2h 14m' },
-      { label: 'Weekly', percent: 18, resetsIn: '4d 6h' },
-    ],
+  quotas: {
+    anthropic: {
+      label: 'anthropic',
+      percent: 42.3,
+      windows: [
+        { label: 'Session', percent: 42.3, resetsIn: '2h 14m' },
+        { detail: '31.62/200$', label: 'Weekly', percent: 18, resetsIn: '4d 6h' },
+      ],
+    },
+    azure: { label: 'azure', percent: 71 },
   },
 }
 
@@ -81,19 +84,21 @@ describe('sidebar rendering', () => {
     expect(sessionMeter).toMatch(/■+·+ +2h 14m/)
     expect(weekly).toContain('Weekly')
     expect(weekly).toContain('18.0%')
+    expect(weekly).toContain('31.62/200$')
     expect(weeklyMeter).toMatch(/■+·+ +4d 6h/)
     if (!sessionMeter || !weeklyMeter) {
       throw new Error('expected quota meter rows')
     }
     expect(sessionMeter.indexOf('2h 14m') + '2h 14m'.length).toBe(weeklyMeter.indexOf('4d 6h') + '4d 6h'.length)
+    expect(lines.slice(quotaIndex).join('\n')).toContain('Azure')
   })
 
-  test('falls back to a single labelled bar when the provider reports no windows', () => {
+  test('falls back to a single labelled bar when only Azure quota is available', () => {
     const text = stripAnsi(
       renderSidebarLines({
         height: 36,
         now: 0,
-        state: { ...state, quota: { label: 'azure', percent: 71 } },
+        state: { ...state, quotas: { azure: { label: 'azure', percent: 71 } } },
         theme,
         width: 44,
       }).join('\n')

@@ -4,7 +4,7 @@ import { truncateToWidth } from '@earendil-works/pi-tui'
 import { formatStatusText, type StatusEntry } from '@/shared/state/status_bar.js'
 
 import { columns, formatDirectory, formatTokens, progressBar, progressLine } from './render.js'
-import { type GitInfoState, type ModelInfoState, type ProviderQuota } from './state.js'
+import { type GitInfoState, type ModelInfoState, type ProviderQuotas } from './state.js'
 import { STATUS_TONE_COLORS } from './statuses.js'
 
 export interface FooterTheme {
@@ -15,12 +15,12 @@ export interface FooterState {
   cwd: string
   model: ModelInfoState
   git: GitInfoState
-  quota: ProviderQuota | undefined
+  quotas: ProviderQuotas
   statuses: readonly StatusEntry[]
 }
 
 export const renderFooterLines = (state: FooterState, theme: FooterTheme, width: number): string[] => {
-  const { model, git, quota } = state
+  const { model, git, quotas } = state
   const percent = model.contextPercent ?? 0
   const tokens = formatTokens(model.contextTokens ?? 0)
   const window = model.contextWindow > 0 ? formatTokens(model.contextWindow) : '?'
@@ -35,17 +35,19 @@ export const renderFooterLines = (state: FooterState, theme: FooterTheme, width:
     lines.push(muted(`${git.branch} · ${git.changedFiles} ${fileLabel} changed`))
   }
 
-  if (quota) {
-    lines.push(
-      muted(
-        progressLine({
-          detail: quota.detail ?? '',
-          label: quota.label === 'anthropic' ? 'Session' : 'Azure',
-          percent: quota.percent,
-          width: 8,
-        })
+  for (const quota of [quotas.anthropic, quotas.azure]) {
+    if (quota) {
+      lines.push(
+        muted(
+          progressLine({
+            detail: quota.detail ?? '',
+            label: quota.label === 'anthropic' ? 'Session' : 'Azure',
+            percent: quota.percent,
+            width: 8,
+          })
+        )
       )
-    )
+    }
   }
 
   for (const status of state.statuses) {

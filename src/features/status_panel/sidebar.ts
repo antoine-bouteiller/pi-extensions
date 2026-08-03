@@ -9,7 +9,7 @@ import { formatStatusText, type StatusEntry, type StatusTone } from '@/shared/st
 
 import { formatDirectory, formatTokens } from './render.js'
 import { createSplitPaneController, type SplitPaneController } from './split_pane.js'
-import { type GitInfoState, type ModelInfoState, type ProviderQuota, type QuotaWindow } from './state.js'
+import { type GitInfoState, type ModelInfoState, type ProviderQuota, type ProviderQuotas, type QuotaWindow } from './state.js'
 
 export interface SidebarTheme {
   fg: (color: ThemeColor, text: string) => string
@@ -21,7 +21,7 @@ export interface SidebarState {
   cwd: string
   model: ModelInfoState
   git: GitInfoState
-  quota: ProviderQuota | undefined
+  quotas: ProviderQuotas
   agents: readonly RunningAgent[]
   extensionStatuses: readonly StatusEntry[]
 }
@@ -216,10 +216,11 @@ const quotaWindowRows = (window: QuotaWindow, width: number, theme: SidebarTheme
   const percent = quotaPercent(window.percent)
   const role = quotaRole(percent)
   const resetsIn = sanitize(window.resetsIn ?? '')
+  const detail = sanitize(window.detail ?? '')
   const meterWidth = Math.max(1, Math.min(12, width - (resetsIn ? visibleWidth(resetsIn) + 1 : 0)))
   const filled = Math.max(0, Math.min(meterWidth, Math.round((percent / 100) * meterWidth)))
   const meter = `${paint(theme, role, '■'.repeat(filled))}${paint(theme, 'dim', '·'.repeat(meterWidth - filled))}`
-  const header = spaced(paint(theme, role, sanitize(window.label)), paint(theme, role, `${percent.toFixed(1)}%`), width)
+  const header = spaced(paint(theme, role, sanitize(window.label)), paint(theme, role, `${percent.toFixed(1)}%${detail ? ` ${detail}` : ''}`), width)
   if (!resetsIn) {
     return [header, meter]
   }
@@ -329,15 +330,15 @@ export const renderSidebarLines = ({ state, theme, width, height, now = Date.now
         width: panelWidth,
       }),
     },
-    ...(state.quota
+    ...(Object.keys(state.quotas).length > 0
       ? [
           {
             dropRank: 20,
             name: 'quota',
             required: false,
             rows: panel({
-              role: quotaRole(quotaPercent(state.quota.percent)),
-              rows: quotaRows(state.quota, rowWidth, theme),
+              role: quotaRole(Math.max(...Object.values(state.quotas).map((quota) => quotaPercent(quota.percent)))),
+              rows: [state.quotas.anthropic, state.quotas.azure].flatMap((quota) => (quota ? quotaRows(quota, rowWidth, theme) : [])),
               theme,
               title: 'QUOTA',
               width: panelWidth,

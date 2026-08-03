@@ -7,15 +7,18 @@ import { register as statusPanel } from '@/features/status_panel/feature.js'
 import { columns, formatTokens, progressBar } from '@/features/status_panel/render.js'
 import { emptyGitInfoState, emptyModelInfoState } from '@/features/status_panel/state.js'
 import { runningAgents } from '@/shared/state/agent_activity.js'
+import { azureQuota, consumeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
 
 const originalOwnerToken = process.env.PI_SUBAGENT_OWNER_TOKEN
 
 beforeEach(() => {
   delete process.env.PI_SUBAGENT_OWNER_TOKEN
+  azureQuota.set(undefined)
 })
 
 afterEach(() => {
   runningAgents.publish([])
+  azureQuota.set(undefined)
   if (originalOwnerToken === undefined) {
     delete process.env.PI_SUBAGENT_OWNER_TOKEN
   } else {
@@ -24,9 +27,10 @@ afterEach(() => {
 })
 
 describe('status panel registration', () => {
-  test('does no work and registers no handlers in a subagent', () => {
-    process.env.PI_SUBAGENT_OWNER_TOKEN = 'owner-token'
-    const { pi, state } = createFakePi()
+  test('registers only Azure response forwarding in a subagent', async () => {
+    const ownerToken = '11111111-1111-4111-8111-111111111111'
+    process.env.PI_SUBAGENT_OWNER_TOKEN = ownerToken
+    const { pi, state, emit } = createFakePi()
     let dependencyReads = 0
     const dependencies = {
       get fetchAnthropicQuota() {
@@ -36,9 +40,15 @@ describe('status panel registration', () => {
     }
 
     statusPanel(pi, runtime, dependencies)
+    await emit(
+      'after_provider_response',
+      { headers: { 'x-ratelimit-limit-tokens': '1000', 'x-ratelimit-remaining-tokens': '250' } },
+      { model: { provider: 'azure-openai-responses' } }
+    )
 
     expect(dependencyReads).toBe(0)
-    expect(state.handlers.size).toBe(0)
+    expect([...state.handlers.keys()]).toEqual(['after_provider_response'])
+    expect(consumeSubagentAzureQuota(ownerToken)).toBe(75)
   })
 
   test('registers the normal main-session lifecycle handlers', () => {
@@ -164,6 +174,16 @@ const quotaLifecycleContext = (mode: 'tui' | 'rpc', provider = 'anthropic') => (
     id: `${provider}-model`,
     provider,
   },
+  modelRegistry: {
+    getAvailable: () => [
+      {
+        baseUrl: 'http://127.0.0.1:3456',
+        contextWindow: 100_000,
+        id: 'claude-model',
+        provider: 'anthropic',
+      },
+    ],
+  },
   ui: {
     setFooter() {
       /* Empty */
@@ -195,7 +215,7 @@ describe('status panel quota lifecycle', () => {
     await emit('session_shutdown', {}, ctx)
   })
 
-  test('aborts quota requests on model changes and shutdown', async () => {
+  test('keeps polling Claude while another provider is active and aborts on shutdown', async () => {
     const { pi, emit } = createFakePi()
     const baseUrls: string[] = []
     const signals: AbortSignal[] = []
@@ -206,28 +226,23 @@ describe('status panel quota lifecycle', () => {
         return new Promise(() => undefined)
       },
     })
-    const ctx = quotaLifecycleContext('tui')
+    const ctx = quotaLifecycleContext('tui', 'azure-openai-responses')
 
     await emit('session_start', {}, ctx)
     expect(signals).toHaveLength(1)
+    expect(baseUrls).toEqual(['http://127.0.0.1:3456'])
+
     ctx.model = { ...ctx.model, id: 'openai-model', provider: 'openai' }
     await emit('model_select', { model: ctx.model }, ctx)
-    const [firstSignal] = signals
-    if (!firstSignal) {
-      throw new Error('expected a first quota request')
+    const [signal] = signals
+    if (!signal) {
+      throw new Error('expected a quota request')
     }
-    expect(firstSignal.aborted).toBeTrue()
+    expect(signal.aborted).toBeFalse()
+    expect(signals).toHaveLength(1)
 
-    ctx.model = { ...ctx.model, id: 'another-anthropic-model', provider: 'anthropic' }
-    await emit('model_select', { model: ctx.model }, ctx)
-    expect(signals).toHaveLength(2)
-    expect(baseUrls).toEqual(['http://127.0.0.1:3456', 'http://127.0.0.1:3456'])
     await emit('session_shutdown', {}, ctx)
-    const secondSignal = signals.at(1)
-    if (!secondSignal) {
-      throw new Error('expected a second quota request')
-    }
-    expect(secondSignal.aborted).toBeTrue()
+    expect(signal.aborted).toBeTrue()
   })
 })
 

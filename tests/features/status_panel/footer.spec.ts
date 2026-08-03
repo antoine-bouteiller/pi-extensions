@@ -17,7 +17,7 @@ const state: FooterState = {
     provider: 'anthropic',
     thinking: 'medium',
   },
-  quota: undefined,
+  quotas: {},
   statuses: [],
 }
 
@@ -38,13 +38,22 @@ describe('renderFooterLines', () => {
     expect(detached.join('\n')).not.toContain('changed')
   })
 
-  test('labels quota by provider', () => {
-    const anthropic = renderFooterLines({ ...state, quota: { detail: '3h 10m', label: 'anthropic', percent: 42 } }, theme, 80)
-    const azure = renderFooterLines({ ...state, quota: { label: 'azure', percent: 7 } }, theme, 80)
+  test('renders Claude and Azure quotas together', () => {
+    const lines = renderFooterLines(
+      {
+        ...state,
+        quotas: {
+          anthropic: { detail: '3h 10m  Weekly: 18.0% 31.62/200$', label: 'anthropic', percent: 42 },
+          azure: { label: 'azure', percent: 7 },
+        },
+      },
+      theme,
+      80
+    )
 
-    expect(anthropic.at(-1)).toContain('Session:')
-    expect(anthropic.at(-1)).toContain('3h 10m')
-    expect(azure.at(-1)).toContain('Azure:')
+    expect(lines.at(-2)).toContain('Session:')
+    expect(lines.at(-2)).toContain('31.62/200$')
+    expect(lines.at(-1)).toContain('Azure:')
   })
 
   test('renders each status with its icon', () => {
@@ -69,7 +78,7 @@ describe('renderFooterLines', () => {
       {
         ...state,
         cwd: `/Users/example/${'deep-'.repeat(40)}`,
-        quota: { detail: 'x'.repeat(80), label: 'anthropic', percent: 99 },
+        quotas: { anthropic: { detail: 'x'.repeat(80), label: 'anthropic', percent: 99 } },
         statuses: [{ key: 'long', text: 'z'.repeat(200) }],
       },
       theme,

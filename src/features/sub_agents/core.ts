@@ -30,6 +30,7 @@ import { Clock, Deferred, Effect, Exit, HashMap, Option, Ref, Scope } from 'effe
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
+import { azureQuota, consumeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
 import { isRecord } from '@/shared/utils/records.js'
 
 import {
@@ -1461,11 +1462,23 @@ export class AgentManager {
     }
   }
 
+  private consumeAzureQuota(live: LiveAgent): void {
+    const token = live.info.childProcess?.token
+    if (!token) {
+      return
+    }
+    const percent = consumeSubagentAzureQuota(token)
+    if (percent !== undefined) {
+      azureQuota.set(percent)
+    }
+  }
+
   private finishProcess(live: LiveAgent, error?: Error): void {
     if (live.processFinished) {
       return
     }
     live.processFinished = true
+    this.consumeAzureQuota(live)
     const persisted = readInfoFile(live.info.infoFile)
     if (persisted && FINAL_STATUSES.has(persisted.status)) {
       live.info = persisted
@@ -1798,6 +1811,7 @@ export class AgentManager {
       live.logger.info('rpc', 'ignored invalid JSON line', { line: line.slice(0, 1000) })
       return
     }
+    this.consumeAzureQuota(live)
     const event = parsed
     live.broadcaster.broadcast(event)
     if (event.type === 'response') {

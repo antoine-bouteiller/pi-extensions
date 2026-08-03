@@ -1,15 +1,20 @@
+type ProviderQuotaLabel = 'anthropic' | 'azure'
+
 export interface QuotaWindow {
   label: string
   percent: number
+  detail?: string
   resetsIn?: string
 }
 
 export interface ProviderQuota {
-  label: string
+  label: ProviderQuotaLabel
   percent: number
   detail?: string
   windows?: readonly QuotaWindow[]
 }
+
+export type ProviderQuotas = Partial<Record<ProviderQuotaLabel, ProviderQuota>>
 
 export interface ModelInfoState {
   provider: string
@@ -50,12 +55,12 @@ export interface PanelState {
   activity: 'ready' | 'working'
   model: ModelInfoState
   git: GitInfoState
-  quota: ProviderQuota | undefined
+  quotas: ProviderQuotas
 }
 
 export const emptyPanelState = (): PanelState => ({
   activity: 'ready',
   git: emptyGitInfoState(),
   model: emptyModelInfoState(),
-  quota: undefined,
+  quotas: {},
 })
