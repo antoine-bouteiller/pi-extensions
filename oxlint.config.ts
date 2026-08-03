@@ -71,7 +71,7 @@ export default defineConfig({
   },
   overrides: [
     {
-      files: ['src/mcp/index.ts'],
+      files: ['src/features/mcp/feature.ts'],
       rules: {
         /*
          * `getArgumentCompletions` is typed by Pi as `AutocompleteItem[] | Promise<AutocompleteItem[] | null> | null`,

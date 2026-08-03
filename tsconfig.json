@@ -3,10 +3,14 @@
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "paths": {
+      "@/*": ["./src/*"],
+      "@tests/*": ["./tests/*"]
+    },
     "types": ["bun", "node"],
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["extension.ts", "src/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
 }
