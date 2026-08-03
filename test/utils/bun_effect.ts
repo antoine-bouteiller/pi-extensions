@@ -35,8 +35,8 @@ const mkLive =
     runner(name, () => Effect.runPromise(fn()), timeout ? { timeout } : undefined)
   }
 
-const mods = <Runner extends object>(make: (runner: typeof test) => Runner): Runner & { only: Runner; skip: Runner } =>
-  Object.assign(make(test), { only: make(test.only), skip: make(test.skip) })
+const mods = <Runner extends object>(make: (runner: typeof test) => Runner): Runner & { skip: Runner } =>
+  Object.assign(make(test), { skip: make(test.skip) })
 
 export const it = Object.assign(test, {
   effect: mods(mkEffect),
