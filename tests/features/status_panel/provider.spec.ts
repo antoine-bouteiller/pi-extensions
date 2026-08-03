@@ -71,6 +71,30 @@ describe('Anthropic quota provider', () => {
     expect(windows[1]?.detail).toBe('31.62/200$')
   })
 
+  it('keeps weekly quota when the current session has no reset time', async () => {
+    const fakeFetch = asFetch(() =>
+      gatewayResponse({
+        profiles: [
+          {
+            isActive: true,
+            windows: [
+              // oxlint-disable-next-line unicorn/no-null -- Meridian uses null when no session timer is active.
+              { resetsAt: null, type: 'five_hour', utilization: 0 },
+              { resetsAt: Date.now() + 24 * 60 * 60_000, type: 'seven_day', utilization: 0.45 },
+            ],
+          },
+        ],
+      })
+    )
+
+    const quota = await fetchAnthropicQuota('http://gateway', undefined, fakeFetch)
+
+    expect(quota?.percent).toBe(0)
+    expect(quota?.windows?.[0]).toEqual({ label: 'Session', percent: 0 })
+    expect(quota?.windows?.[1]?.percent).toBe(45)
+    expect(quota?.windows?.[1]?.resetsIn).toBe('1d 0h')
+  })
+
   it('reads the active profile rather than the first one', async () => {
     const fakeFetch = asFetch(() =>
       gatewayResponse({

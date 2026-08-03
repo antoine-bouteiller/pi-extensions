@@ -81,7 +81,7 @@ export const makeQuotaPoller = (onQuota: (quota: ProviderQuota | undefined) => v
 
 /** One usage window as reported by the gateway, with `utilization` as a 0..1 fraction. */
 const GatewayQuotaWindowSchema = Type.Object({
-  resetsAt: Type.Optional(Type.Number()),
+  resetsAt: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
   type: Type.Optional(Type.String()),
   utilization: Type.Optional(Type.Number()),
 })
@@ -112,7 +112,7 @@ const activeProfile = (usage: GatewayQuotaResponse): GatewayQuotaProfile | undef
   return profiles.find((profile) => profile.isActive) ?? profiles.find((profile) => profile.id === usage.activeProfile) ?? profiles[0]
 }
 
-const formatReset = (resetsAt: number | undefined): string => {
+const formatReset = (resetsAt: number | null | undefined): string => {
   if (typeof resetsAt !== 'number') {
     return ''
   }
@@ -127,7 +127,7 @@ const formatReset = (resetsAt: number | undefined): string => {
   return `${Math.floor(hours / 24)}d ${hours % 24}h`
 }
 
-const quotaWindow = (label: string, percent: number, resetsAt: number | undefined): QuotaWindow => {
+const quotaWindow = (label: string, percent: number, resetsAt: number | null | undefined): QuotaWindow => {
   const resetsIn = formatReset(resetsAt)
   return resetsIn ? { label, percent, resetsIn } : { label, percent }
 }
