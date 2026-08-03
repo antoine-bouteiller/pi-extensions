@@ -135,6 +135,31 @@ describe('sidebar rendering', () => {
     expect(text).toContain('+4 more')
   })
 
+  test('renders MCP servers in their own panel instead of STATUS', () => {
+    const lines = renderSidebarLines({
+      height: 48,
+      state: {
+        ...state,
+        extensionStatuses: [
+          { key: 'mcp', text: 'MCP linear: connected' },
+          { key: 'mcp', text: 'MCP slack: auth needed' },
+          { key: 'index', text: 'index ready' },
+        ],
+      },
+      theme,
+      width: 44,
+    }).map(stripAnsi)
+    const mcpIndex = lines.findIndex((line) => line.includes('MCP'))
+    const statusIndex = lines.findIndex((line) => line.includes('STATUS'))
+
+    expect(mcpIndex).toBeGreaterThan(-1)
+    expect(statusIndex).toBeGreaterThan(mcpIndex)
+    expect(lines.slice(mcpIndex, statusIndex).join('\n')).toContain('linear: connected')
+    expect(lines.slice(mcpIndex, statusIndex).join('\n')).toContain('slack: auth needed')
+    expect(lines.slice(statusIndex).join('\n')).toContain('index ready')
+    expect(lines.slice(statusIndex).join('\n')).not.toContain('linear: connected')
+  })
+
   test('keeps running subagents visible after other optional panels are dropped', () => {
     const text = stripAnsi(renderSidebarLines({ height: 20, now: 0, state: withAgents(2), theme, width: 44 }).join('\n'))
 

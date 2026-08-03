@@ -292,7 +292,7 @@ describe('MCP gateway registration and lifecycle', () => {
 
     expect(statuses).toEqual([
       { key: 'mcp', value: 'MCP alpha: connected\nMCP zeta: disconnected' },
-      { key: 'mcp', value: 'MCP one: connected\nMCP two: needs auth' },
+      { key: 'mcp', value: 'MCP one: connected\nMCP two: auth needed' },
       { key: 'mcp', value: undefined },
     ])
   })

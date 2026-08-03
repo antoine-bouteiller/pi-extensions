@@ -194,7 +194,9 @@ const updateUiStatus = (ctx: ExtensionContext, update: McpStatusUpdate): void =>
     return
   }
 
-  const lines = [...update].toSorted(compareNames).map((server) => `MCP ${server.name}: ${server.status.replaceAll('-', ' ')}`)
+  const lines = [...update]
+    .toSorted(compareNames)
+    .map((server) => `MCP ${server.name}: ${server.status === 'needs-auth' ? 'auth needed' : server.status.replaceAll('-', ' ')}`)
   if (lines.length > 0) {
     status.set(ctx, { text: lines.join('\n') })
   } else {

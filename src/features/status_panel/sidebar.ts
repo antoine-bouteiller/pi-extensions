@@ -349,7 +349,22 @@ export const renderSidebarLines = ({ state, theme, width, height, now = Date.now
         ]
       : []),
   ]
-  const statuses = statusRows(state.extensionStatuses, theme)
+  const mcp = statusRows(
+    state.extensionStatuses.filter((status) => status.key === 'mcp').map((status) => ({ ...status, text: status.text.replace(/^MCP\s+/, '') })),
+    theme
+  )
+  if (mcp.length > 0) {
+    groups.push({
+      dropRank: 15,
+      name: 'mcp',
+      required: false,
+      rows: panel({ role: 'context', rows: mcp, theme, title: 'MCP', width: panelWidth }),
+    })
+  }
+  const statuses = statusRows(
+    state.extensionStatuses.filter((status) => status.key !== 'mcp'),
+    theme
+  )
   if (statuses.length > 0) {
     groups.push({
       dropRank: 10,
