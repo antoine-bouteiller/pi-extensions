@@ -184,13 +184,19 @@ const formatTools = (tools: readonly McpToolSummary[], heading: string): string 
   ].join('\n')
 }
 
-const connectedCount = (update: McpStatusUpdate): number =>
-  typeof update === 'number' ? update : update.filter((server) => server.status === 'connected').length
-
 const updateUiStatus = (ctx: ExtensionContext, update: McpStatusUpdate): void => {
-  const count = connectedCount(update)
-  if (count > 0) {
-    status.set(ctx, { text: `MCP: ${count} connected` })
+  if (typeof update === 'number') {
+    if (update > 0) {
+      status.set(ctx, { text: `MCP: ${update} connected` })
+    } else {
+      status.clear(ctx)
+    }
+    return
+  }
+
+  const lines = [...update].toSorted(compareNames).map((server) => `MCP ${server.name}: ${server.status.replaceAll('-', ' ')}`)
+  if (lines.length > 0) {
+    status.set(ctx, { text: lines.join('\n') })
   } else {
     status.clear(ctx)
   }
@@ -452,6 +458,9 @@ export const createMcpExtension = <TConfig>(dependencies: McpGatewayDependencies
             return
           }
           yield* Ref.set(state.manager, Option.some(candidate))
+          const servers = yield* callManager(() => Promise.resolve(candidate.status()))
+          updateUiStatus(ctx, servers)
+          void Promise.allSettled(servers.filter((server) => server.status === 'disconnected').map((server) => candidate.connect(server.name)))
         }).pipe(Effect.onExit((exit) => Deferred.done(deferred, exit)))
       })
 
@@ -485,7 +494,7 @@ export const createMcpExtension = <TConfig>(dependencies: McpGatewayDependencies
       parameters: McpGatewayParameters,
       promptGuidelines: [
         'Use native Pi tools directly. Use mcp only for capabilities supplied by configured remote MCP servers.',
-        'Search and describe unfamiliar MCP tools before calling them; MCP servers connect lazily only when requested.',
+        'MCP servers connect at session start; remote tool schemas stay out of model context until surfaced through this gateway.',
       ],
       promptSnippet: 'Search and call configured remote MCP capabilities on demand',
     })

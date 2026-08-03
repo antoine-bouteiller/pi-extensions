@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
 
 import { type AgentToolResult } from '@earendil-works/pi-coding-agent'
 import { asCommand, asTool } from '@tests/utils/casts.js'
@@ -17,7 +17,9 @@ import {
   type McpSearchOptions,
   type McpToolDescription,
 } from '@/features/mcp/feature.js'
+import { publishStatus } from '@/shared/state/status_bar.js'
 
+afterEach(() => publishStatus('mcp', undefined))
 interface RecordedCall {
   method: string
   values: unknown[]
@@ -252,13 +254,16 @@ describe('MCP gateway registration and lifecycle', () => {
     expect(harness.calls).toEqual([])
   })
 
-  test('session_start loads and configures without touching a manager operation', async () => {
+  test('session_start publishes every server and eagerly connects disconnected ones', async () => {
+    const statuses: { key: string; value: unknown }[] = []
     const harness = createHarness()
-    await harness.start()
+    await harness.fixture.emit('session_start', {}, context(statuses))
 
     expect(harness.loadCount()).toBe(1)
     expect(harness.callbacks()).toBeDefined()
-    expect(harness.calls).toEqual([])
+    expect(callsFor(harness, 'connect').map((call) => call.values[0])).toEqual(['zeta'])
+    expect(statuses).toEqual([{ key: 'mcp', value: 'MCP alpha: connected\nMCP zeta: disconnected' }])
+    expect([...harness.fixture.state.tools.keys()]).toEqual(['mcp'])
   })
 
   test('passes its configured policy into each process-local manager', async () => {
@@ -274,19 +279,20 @@ describe('MCP gateway registration and lifecycle', () => {
     expect(receivedPolicy).toBe(readonlyMcpPolicy)
   })
 
-  test('manager status callbacks show only connected count', async () => {
+  test('manager status callbacks show every server status', async () => {
     const statuses: { key: string; value: unknown }[] = []
     const harness = createHarness()
     await harness.fixture.emit('session_start', {}, context(statuses))
 
     harness.callbacks()?.onStatusChange([
       { name: 'one', status: 'connected' },
-      { name: 'two', status: 'disconnected' },
+      { name: 'two', status: 'needs-auth' },
     ])
     harness.callbacks()?.onStatusChange(0)
 
     expect(statuses).toEqual([
-      { key: 'mcp', value: 'MCP: 1 connected' },
+      { key: 'mcp', value: 'MCP alpha: connected\nMCP zeta: disconnected' },
+      { key: 'mcp', value: 'MCP one: connected\nMCP two: needs auth' },
       { key: 'mcp', value: undefined },
     ])
   })
@@ -297,8 +303,8 @@ describe('MCP gateway registration and lifecycle', () => {
 
     const result = await harness.execute({})
 
-    expect(callsFor(harness, 'status')).toHaveLength(1)
-    expect(callsFor(harness, 'connect')).toHaveLength(0)
+    expect(callsFor(harness, 'status')).toHaveLength(2)
+    expect(callsFor(harness, 'connect')).toHaveLength(1)
     expect(result.content[0]).toEqual({
       text: expect.stringContaining('MCP config: /test-home/.config/mcp/mcp.json'),
       type: 'text',
@@ -335,7 +341,7 @@ describe('MCP gateway registration and lifecycle', () => {
 
     const result = await harness.execute({ connect: 'linear' }, controller.signal)
 
-    expect(callsFor(harness, 'connect')[0]?.values).toEqual(['linear', { signal: controller.signal }])
+    expect(callsFor(harness, 'connect').at(-1)?.values).toEqual(['linear', { signal: controller.signal }])
     expect(result.content[0]).toEqual({
       text: expect.stringContaining('mcp({ server: "linear" })'),
       type: 'text',

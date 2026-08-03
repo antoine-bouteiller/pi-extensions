@@ -16,11 +16,12 @@ export const STATUS_TONE_COLORS: Record<StatusTone, ThemeColor> = {
  * mirrors its plain text into pi's registry, which would otherwise render them twice.
  */
 export const collectStatuses = (footerData: ReadonlyFooterDataProvider | undefined): readonly StatusEntry[] => {
+  const shared = statusBar.list().flatMap((entry) => entry.text.split('\n').map((line): StatusEntry => ({ ...entry, text: line })))
   const external = [...(footerData?.getExtensionStatuses().entries() ?? [])]
     .filter(([key]) => !statusBar.has(key))
     .toSorted(([left], [right]) => left.localeCompare(right))
     .flatMap(([key, text]) => text.split('\n').map((line): StatusEntry => ({ key, text: line, tone: 'muted' })))
-  return [...statusBar.list(), ...external]
+  return [...shared, ...external]
 }
 
 export const statusLines = (entries: readonly StatusEntry[]): readonly string[] => entries.map(formatStatusText).filter(Boolean)
