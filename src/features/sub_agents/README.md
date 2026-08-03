@@ -62,18 +62,19 @@ Every child receives `PI_SUBAGENT_OWNER_TOKEN`, `PI_SUBAGENT_PROFILE`, and `PI_S
 
 ## Configuration
 
-Optional storage configuration lives at `~/.pi/agent/pi-codex-subagents/config.json`:
+Optional configuration lives at `~/.pi/agent/pi-codex-subagents/config.json`:
 
 ```json
 {
   "storageDir": "~/.local/state/pi-codex-subagents/runs",
-  "retentionDays": 7
+  "retentionDays": 7,
+  "inactivityMinutes": 5
 }
 ```
 
-`storageDir` accepts an absolute path, `~/...`, or a path relative to the package configuration directory. By default runs are stored in `~/.pi/agent/pi-codex-subagents/runs`. `retentionDays` defaults to `7`; expired runs and oversized tool outputs are removed when the extension loads. Set it to `0` to disable automatic cleanup. Runtime sockets remain in the operating system temporary directory and are removed when agents stop. Legacy `defaults` keys are ignored.
+`storageDir` accepts an absolute path, `~/...`, or a path relative to the package configuration directory. By default runs are stored in `~/.pi/agent/pi-codex-subagents/runs`. `retentionDays` defaults to `7`; expired runs and oversized tool outputs are removed when the extension loads. Set it to `0` to disable automatic cleanup. `inactivityMinutes` defaults to `5`; after that long without child RPC activity, the parent orchestrator receives one warning while the agent keeps running. Set it to `0` to disable inactivity warnings. Runtime sockets remain in the operating system temporary directory and are removed when agents stop. Legacy `defaults` keys are ignored.
 
-Configuration is read when agents spawn, while cleanup runs when the extension loads. Restart Pi after changing `storageDir` or `retentionDays` so storage lookup and cleanup use the same configuration throughout the process.
+Configuration is read when agents spawn, while cleanup runs when the extension loads. Restart Pi after changing `storageDir`, `retentionDays`, or `inactivityMinutes`.
 
 ## Completion delivery
 
@@ -85,7 +86,7 @@ The extension appends a short delegation section to the parent system prompt on 
 
 ## Commands and TUI
 
-While agents are starting or running, a compact one-line indicator appears above the editor. It shows the task name for one active agent or a count for multiple agents and points to `/subagents`. The indicator disappears when no agents are active.
+While agents are starting or running, the wide status panel shows them in its `SUBAGENTS` section. No duplicate activity widget is rendered above the editor.
 
 `/subagents` and `/agents` browse agents in the current session. Press Tab to switch to the read-only all-sessions view. `/subagent <task-name>` opens one current-session agent directly.
 

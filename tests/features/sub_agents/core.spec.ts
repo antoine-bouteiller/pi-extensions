@@ -33,6 +33,7 @@ const {
 } = await import('@/features/sub_agents/core.js')
 const { SubagentPeekOverlay } = await import('@/features/sub_agents/peek.js')
 const { azureQuota } = await import('@/shared/state/azure_quota.js')
+const { runningAgents } = await import('@/shared/state/agent_activity.js')
 
 const requireChildProcess = <ChildProcess>(childProcess: ChildProcess | undefined): ChildProcess => {
   if (!childProcess) {
@@ -51,13 +52,18 @@ interface ActivityEvent {
   parentSessionId: string
 }
 
+interface InactivityEvent {
+  agentName: string
+  inactiveForMs: number
+  parentSessionId: string
+}
+
 type FakeHandler = (event: unknown, ctx: unknown) => unknown
 interface FakeTheme {
   bold: (text: string) => string
   fg: (color: string, text: string) => string
 }
 type FakeRenderer = (message: unknown, options: unknown, theme: FakeTheme) => unknown
-type FakeWidget = (state: unknown, theme: FakeTheme) => { render: (width: number) => string[] }
 
 interface FakeToolDefinition {
   name: string
@@ -940,6 +946,32 @@ describe('completion delivery', () => {
     }
   })
 
+  processTest('reports inactivity once per idle spell without stopping the agent', async () => {
+    const parentSessionId = 'inactivity-monitor'
+    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+    rmSync(scope, { force: true, recursive: true })
+    const inactivity: InactivityEvent[] = []
+    const manager = createAgentManager({
+      inactivityTimeoutMs: 50,
+      onInactivity: (event: InactivityEvent) => inactivity.push(event),
+    })
+    try {
+      await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold inactivity'))
+      await waitUntil(() => inactivity.length === 1)
+      expect(inactivity[0]).toMatchObject({ agentName: '/worker', parentSessionId })
+      expect(inactivity[0].inactiveForMs).toBeGreaterThanOrEqual(50)
+      expect(manager.getAgentInfo('worker', parentSessionId).status).toBe('running')
+      expect(await manager.sendMessage(parentSessionId, 'worker', 'new direction')).toEqual({ delivery: 'steer' })
+      expect(manager.listAgents(undefined, parentSessionId)[0].last_task_message).toBe('new direction')
+      await waitUntil(() => inactivity.length === 2)
+      await new Promise((resolve) => setTimeout(resolve, 80))
+      expect(inactivity).toHaveLength(2)
+    } finally {
+      await manager.shutdown()
+      rmSync(scope, { force: true, recursive: true })
+    }
+  })
+
   processTest('routes one completion to only the first of two waiting callers', async () => {
     const parentSessionId = 'two-waiters'
     const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
@@ -967,14 +999,13 @@ describe('completion delivery', () => {
   })
 })
 
-describe('extension completion delivery and TUI', () => {
-  processTest('registers commands, renders one-line activity, and delivers bounded completions', async () => {
+describe('extension completion delivery and status activity', () => {
+  processTest('registers commands, publishes status activity, and delivers bounded notifications', async () => {
     const handlers = new Map<string, FakeHandler[]>()
     const tools = new Map<string, FakeToolDefinition>()
     const commands = new Map<string, unknown>()
     const renderers = new Map<string, FakeRenderer>()
     const sentMessages: { message: FakeMessage; options: unknown }[] = []
-    let widget: FakeWidget | undefined
     const requireTool = (name: string): FakeToolDefinition => {
       const tool = tools.get(name)
       if (!tool) {
@@ -988,12 +1019,6 @@ describe('extension completion delivery and TUI', () => {
         throw new Error(`renderer ${name} was not registered`)
       }
       return renderer
-    }
-    const requireWidget = (): FakeWidget => {
-      if (!widget) {
-        throw new Error('expected the sidebar widget to be registered')
-      }
-      return widget
     }
     const pi = {
       getActiveTools() {
@@ -1030,16 +1055,12 @@ describe('extension completion delivery and TUI', () => {
         getSessionFile: () => join(TEST_AGENT_DIR, 'parent.jsonl'),
         getSessionId: () => parentSessionId,
       },
-      ui: {
-        setWidget(_key: string, value: FakeWidget | undefined) {
-          widget = value
-        },
-      },
+      ui: {},
     }
     const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
     rmSync(scope, { force: true, recursive: true })
     const { register: subagentExtension } = await import('@/features/sub_agents/feature.js')
-    subagentExtension(asExtensionApi(pi), runtime, { piCommand: { command: FAKE_RPC_CHILD } })
+    subagentExtension(asExtensionApi(pi), runtime, { inactivityTimeoutMs: 300, piCommand: { command: FAKE_RPC_CHILD } })
     const emit = async (name: string, event: unknown = {}) => {
       for (const handler of handlers.get(name) ?? []) {
         await handler(event, ctx)
@@ -1068,7 +1089,6 @@ describe('extension completion delivery and TUI', () => {
         ctx
       )
 
-      expect(widget).toBeFunction()
       const colorCalls: string[] = []
       const theme = {
         bold: (text: string) => text,
@@ -1077,12 +1097,6 @@ describe('extension completion delivery and TUI', () => {
           return text
         },
       }
-      const lines = requireWidget()({}, theme).render(40)
-      expect(lines).toHaveLength(1)
-      expect(visibleWidth(lines[0])).toBeLessThanOrEqual(40)
-      expect(lines[0]).toContain('/subagents')
-      expect(colorCalls).toContain('success')
-      colorCalls.length = 0
       requireTool('spawn_agent').renderCall({ agent_type: 'librarian', task_name: 'research' }, theme)
       expect(colorCalls).toContain('mdLink')
       colorCalls.length = 0
@@ -1102,7 +1116,6 @@ describe('extension completion delivery and TUI', () => {
       expect(colorCalls).toContain('success')
 
       await waitUntil(() => sentMessages.length === 1)
-      expect(widget).toBeUndefined()
       expect(sentMessages[0].options).toEqual({ deliverAs: 'steer', triggerTurn: true })
       expect(sentMessages[0].message.content).toContain('response:slow finish')
 
@@ -1138,11 +1151,11 @@ describe('extension completion delivery and TUI', () => {
         undefined,
         ctx
       )
-      colorCalls.length = 0
-      const multiple = requireWidget()({}, theme).render(32)
-      expect(multiple.every((line: string) => visibleWidth(line) <= 32)).toBe(true)
-      expect(colorCalls).toContain('accent')
-      expect(colorCalls).toContain('mdLink')
+      expect(runningAgents.list().map((agent) => agent.name)).toEqual(['/hold-scout', '/hold-library'])
+      await waitUntil(() => sentMessages.some(({ message }) => message.content.includes('"status": "inactive"')))
+      const inactivity = sentMessages.find(({ message }) => message.content.includes('"status": "inactive"'))
+      expect(inactivity?.options).toEqual({ deliverAs: 'steer', triggerTurn: true })
+      expect(inactivity?.message.details.status).toBe('inactive')
     } finally {
       await emit('session_shutdown', { reason: 'quit' })
       rmSync(scope, { force: true, recursive: true })

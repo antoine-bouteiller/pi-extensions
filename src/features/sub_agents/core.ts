@@ -62,6 +62,7 @@ const LEGACY_RUNS_DIR = join(TEMP_ROOT, 'runs')
 const SOCKET_DIR = join(TEMP_ROOT, 'sockets')
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 15_000
+const DEFAULT_INACTIVITY_MINUTES = 5
 const DEFAULT_RETENTION_DAYS = 7
 const FINAL_STATUSES = new Set<AgentRuntimeStatus>(['completed', 'failed', 'interrupted'])
 
@@ -120,6 +121,7 @@ const StoredAgentInfoSchema = Type.Object({
 interface SubagentConfig {
   storageDir?: string
   retentionDays?: number
+  inactivityMinutes?: number
 }
 
 export interface ChildProcessOwnership {
@@ -211,6 +213,8 @@ interface LiveAgent {
   exitPromise: Promise<void>
   resolveExit: () => void
   termination?: Promise<void>
+  inactivityTimeoutMs: number
+  inactivityTimer?: NodeJS.Timeout
   candidateResponse: string
   candidateError?: string
   /** Manager-owned scope for this child's lifetime; closed explicitly in finishProcess so returning from spawnAgent never tears the child down. */
@@ -241,8 +245,19 @@ interface AgentActivityEvent {
   isReadonly?: boolean
 }
 
+export interface AgentInactivityEvent {
+  parentSessionId: string
+  agentName: string
+  inactiveForMs: number
+  lastActivity: number
+  profile?: string
+  color: ThemeColor
+  isReadonly?: boolean
+}
+
 export interface AgentManagerOptions {
   onActivityChange?: (event: AgentActivityEvent) => void
+  onInactivity?: (event: AgentInactivityEvent) => void
   onUnclaimedCompletion?: (event: AgentCompletionEvent) => void
   /** Override the child Pi executable for embedding and tests. */
   piCommand?: {
@@ -251,6 +266,8 @@ export interface AgentManagerOptions {
   }
   /** Additional environment entries passed only to child Pi processes. */
   childEnv?: NodeJS.ProcessEnv
+  /** Override the configured inactivity delay for tests. Set to 0 to disable monitoring. */
+  inactivityTimeoutMs?: number
   /** Test hook invoked after a dead lock is inspected but before its instance is revalidated. */
   beforeReclaimTaskLockRemoval?: (lockFile: string) => void
   /** Test hook invoked after a held lock is released normally but before its instance is revalidated. */
@@ -290,10 +307,15 @@ const normalizeConfig = (value: unknown): SubagentConfig => {
     return {}
   }
   const raw = value
+  const inactivityMinutes =
+    typeof raw.inactivityMinutes === 'number' && Number.isFinite(raw.inactivityMinutes) && raw.inactivityMinutes >= 0
+      ? raw.inactivityMinutes
+      : undefined
   const retentionDays =
     typeof raw.retentionDays === 'number' && Number.isFinite(raw.retentionDays) && raw.retentionDays >= 0 ? raw.retentionDays : undefined
   return {
     ...(typeof raw.storageDir === 'string' && raw.storageDir.trim() ? { storageDir: raw.storageDir.trim() } : {}),
+    ...(inactivityMinutes === undefined ? {} : { inactivityMinutes }),
     ...(retentionDays === undefined ? {} : { retentionDays }),
   }
 }
@@ -1231,6 +1253,55 @@ export class AgentManager {
     }
   }
 
+  private clearInactivityMonitor(live: LiveAgent): void {
+    clearTimeout(live.inactivityTimer)
+    live.inactivityTimer = undefined
+  }
+
+  private resetInactivityMonitor(live: LiveAgent): void {
+    this.clearInactivityMonitor(live)
+    const { inactivityTimeoutMs: timeoutMs } = live
+    if (timeoutMs <= 0 || live.processFinished || live.expectedExit || FINAL_STATUSES.has(live.info.status)) {
+      return
+    }
+    const lastActivity = live.info.lastActivity ?? Date.now()
+    live.inactivityTimer = setTimeout(
+      () => {
+        live.inactivityTimer = undefined
+        if (live.processFinished || live.expectedExit || FINAL_STATUSES.has(live.info.status)) {
+          return
+        }
+        const currentLastActivity = live.info.lastActivity ?? lastActivity
+        const inactiveForMs = Date.now() - currentLastActivity
+        if (inactiveForMs < timeoutMs) {
+          this.resetInactivityMonitor(live)
+          return
+        }
+        try {
+          this.options.onInactivity?.({
+            agentName: live.info.canonicalName,
+            inactiveForMs,
+            lastActivity: currentLastActivity,
+            parentSessionId: live.info.parentSessionId,
+            ...agentMetadata(live.info),
+          })
+        } catch {
+          // Best effort; a throwing extension callback must not break the running agent.
+        }
+      },
+      Math.max(1, timeoutMs - (Date.now() - lastActivity))
+    )
+    live.inactivityTimer.unref()
+  }
+
+  private recordActivity(live: LiveAgent, persist = true): void {
+    live.info.lastActivity = Date.now()
+    if (persist) {
+      saveInfo(live.info)
+    }
+    this.resetInactivityMonitor(live)
+  }
+
   private clearChildOwnership(info: AgentInfo, expectedToken: string): void {
     const persisted = readInfoFile(info.infoFile)
     if (persisted?.childProcess?.token === expectedToken) {
@@ -1478,6 +1549,7 @@ export class AgentManager {
       return
     }
     live.processFinished = true
+    this.clearInactivityMonitor(live)
     this.consumeAzureQuota(live)
     const persisted = readInfoFile(live.info.infoFile)
     if (persisted && FINAL_STATUSES.has(persisted.status)) {
@@ -1573,6 +1645,7 @@ export class AgentManager {
       exitPromise,
       expectedExit: false,
       finalizedRun: false,
+      inactivityTimeoutMs: this.options.inactivityTimeoutMs ?? (loadSubagentConfig().inactivityMinutes ?? DEFAULT_INACTIVITY_MINUTES) * 60_000,
       info,
       logger,
       pending: Effect.runSync(Ref.make(HashMap.empty())),
@@ -1594,6 +1667,7 @@ export class AgentManager {
       )
     )
     this.live.set(info.id, live)
+    this.resetInactivityMonitor(live)
     const decoder = new RpcJsonlDecoder()
     this.wireChildProcess(live, decoder)
 
@@ -1675,7 +1749,6 @@ export class AgentManager {
     this.defaultWaitAllTargets.set(live.info.parentSessionId, targets)
     live.info.status = 'running'
     live.info.lastTaskMessage = displayMessage ?? message
-    live.info.lastActivity = Date.now()
     live.info.messageCount += 1
     live.finalizedRun = false
     live.candidateResponse = ''
@@ -1683,7 +1756,7 @@ export class AgentManager {
     delete live.info.finalResponse
     delete live.info.error
     delete live.info.completedAt
-    saveInfo(live.info)
+    this.recordActivity(live)
     this.notifyStatusChange(live.info)
     try {
       await this.sendCommand(live, { message, type: 'prompt' })
@@ -1732,7 +1805,6 @@ export class AgentManager {
 
   private handleAgentStart(live: LiveAgent): void {
     live.info.status = 'running'
-    live.info.lastActivity = Date.now()
     live.candidateResponse = ''
     live.candidateError = undefined
     saveInfo(live.info)
@@ -1784,7 +1856,6 @@ export class AgentManager {
       this.handleAgentStart(live)
     } else if (runningStatusEvents.has(event.type)) {
       live.info.status = 'running'
-      live.info.lastActivity = Date.now()
       saveInfo(live.info)
     } else if (event.type === 'message_end') {
       this.handleMessageEnd(live, event)
@@ -1827,6 +1898,7 @@ export class AgentManager {
     if (live.finalizedRun || live.expectedExit) {
       return
     }
+    this.recordActivity(live, false)
     this.dispatchLiveEvent(live, event)
   }
 
@@ -1835,6 +1907,7 @@ export class AgentManager {
       return
     }
     live.finalizedRun = true
+    this.clearInactivityMonitor(live)
     live.info.status = 'completed'
     live.info.finalResponse = live.candidateResponse
     delete live.info.error
@@ -1858,6 +1931,7 @@ export class AgentManager {
       return
     }
     live.finalizedRun = true
+    this.clearInactivityMonitor(live)
     live.info.status = 'failed'
     live.info.error = error
     delete live.info.finalResponse
@@ -2106,9 +2180,8 @@ export class AgentManager {
     }
     if (wasLive && (info.status === 'starting' || info.status === 'running')) {
       await this.sendCommand(live, { message, type: 'steer' })
-      info.lastTaskMessage = message
-      info.lastActivity = Date.now()
-      saveInfo(info)
+      live.info.lastTaskMessage = message
+      this.recordActivity(live)
       return { delivery: 'steer' }
     }
     try {
@@ -2194,6 +2267,7 @@ export class AgentManager {
     live.termination = (async () => {
       const abortRequest = this.sendCommand(live, { type: 'abort' }, 1000)
       live.expectedExit = true
+      this.clearInactivityMonitor(live)
       try {
         await abortRequest
       } catch {

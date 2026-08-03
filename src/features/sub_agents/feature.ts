@@ -11,7 +11,7 @@ import {
   type ThemeColor,
   type ToolRenderResultOptions,
 } from '@earendil-works/pi-coding-agent'
-import { Text, matchesKey, truncateToWidth, visibleWidth, type TUI } from '@earendil-works/pi-tui'
+import { Text, matchesKey, truncateToWidth } from '@earendil-works/pi-tui'
 import { Effect } from 'effect'
 import { type Static, Type } from 'typebox'
 import { Check } from 'typebox/value'
@@ -24,6 +24,7 @@ import {
   AgentCompletionEventSchema,
   AgentManager,
   type AgentCompletionEvent,
+  type AgentInactivityEvent,
   type AgentInfo,
   type AgentListEntry,
   type AgentManagerOptions,
@@ -141,7 +142,6 @@ Keep work in your own context when it is a couple of tool calls, when it depends
 type PiExtensionContext = ExtensionContext | ExtensionCommandContext
 
 export const register = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: AgentManagerOptions = {}): void => {
-  const widgetKey = 'pi-codex-subagents'
   const completionMessageType = 'pi-codex-subagent-completion'
   let activeContext: PiExtensionContext | undefined
   const activeAgents = new Map<string, { profile?: string; color: ThemeColor }>()
@@ -154,38 +154,8 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: 
     }
   }
 
-  const refreshAgentWidget = () => {
+  const publishAgentActivity = () => {
     runningAgents.publish([...activeAgents.entries()].map(([name, metadata]) => ({ name, ...metadata })))
-    if (!activeContext || activeContext.mode !== 'tui') {
-      return
-    }
-    const running = [...activeAgents.entries()]
-    if (!running.length) {
-      activeContext.ui.setWidget(widgetKey, undefined)
-      return
-    }
-    activeContext.ui.setWidget(widgetKey, (_tui: TUI, theme: Theme) => ({
-      invalidate() {
-        /* Widget has no cached state to invalidate. */
-      },
-      render(width: number) {
-        const marker = '◌ '
-        const suffix = ' · /subagents'
-        if (width <= visibleWidth(marker) + visibleWidth(suffix)) {
-          return [truncateToWidth(theme.fg('dim', '/subagents'), width, '')]
-        }
-        const [[name, metadata]] = running
-        const label =
-          running.length === 1
-            ? theme.fg(metadata.color, `${metadata.profile ? `[${metadata.profile}] ` : ''}${name} running`)
-            : running
-                .map(([agentName, agent]) => theme.fg(agent.color, `${agent.profile ? `[${agent.profile}] ` : ''}${agentName}`))
-                .join(theme.fg('dim', ' · '))
-        const available = width - visibleWidth(marker) - visibleWidth(suffix)
-        const clippedLabel = truncateToWidth(label, available, '…')
-        return [theme.fg('accent', marker) + clippedLabel + theme.fg('dim', suffix)]
-      },
-    }))
   }
 
   const deliverCompletion = (event: AgentCompletionEvent) => {
@@ -224,6 +194,38 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: 
     )
   }
 
+  const deliverInactivity = (event: AgentInactivityEvent) => {
+    if (!isCurrentSession(event.parentSessionId)) {
+      return
+    }
+    const payload = JSON.stringify(
+      {
+        agent_name: event.agentName,
+        inactive_for_ms: event.inactiveForMs,
+        last_activity: new Date(event.lastActivity).toISOString(),
+        message: `${event.agentName} has produced no activity for ${formatDuration(event.inactiveForMs)}. Check its progress and steer or interrupt it if needed.`,
+        status: 'inactive',
+      },
+      undefined,
+      2
+    )
+    pi.sendMessage(
+      {
+        content: `<subagent_notification>\n${payload}\n</subagent_notification>`,
+        customType: completionMessageType,
+        details: {
+          agent_name: event.agentName,
+          status: 'inactive',
+          ...(event.profile ? { profile: event.profile } : {}),
+          color: event.color,
+          ...(event.isReadonly === undefined ? {} : { is_readonly: event.isReadonly }),
+        },
+        display: true,
+      },
+      { deliverAs: 'steer', triggerTurn: true }
+    )
+  }
+
   const manager = new AgentManager({
     ...managerOptions,
     onActivityChange: (event) => {
@@ -235,8 +237,9 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: 
       } else {
         activeAgents.delete(event.agentName)
       }
-      refreshAgentWidget()
+      publishAgentActivity()
     },
+    onInactivity: deliverInactivity,
     onUnclaimedCompletion: deliverCompletion,
   })
 
@@ -265,8 +268,14 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: 
       statusColor = 'warning'
     }
     const identityColor = persistedProfileColor(message.details?.profile, message.details?.color)
+    let icon = '✗'
+    if (status === 'completed') {
+      icon = '✓'
+    } else if (status === 'inactive') {
+      icon = '!'
+    }
     let text =
-      theme.fg(statusColor, `${status === 'completed' ? '✓' : '✗'} `) +
+      theme.fg(statusColor, `${icon} `) +
       theme.fg(identityColor, message.details?.agent_name || 'subagent') +
       theme.fg(statusColor, ` ${status || 'finished'}`)
     if (expanded && typeof message.content === 'string') {
@@ -375,7 +384,7 @@ ${getAgentProfilesDescription()}`
             activeAgents.set(entry.agent_name, { color: entry.color, profile: entry.profile })
           }
         }
-        refreshAgentWidget()
+        publishAgentActivity()
       })
     )
   )
@@ -387,12 +396,9 @@ ${getAgentProfilesDescription()}`
   pi.on('session_shutdown', () =>
     runtime.runPromise(
       Effect.gen(function* () {
-        if (activeContext?.mode === 'tui') {
-          activeContext.ui.setWidget(widgetKey, undefined)
-        }
         activeContext = undefined
         activeAgents.clear()
-        refreshAgentWidget()
+        publishAgentActivity()
         yield* Effect.tryPromise({ catch: (cause) => cause, try: () => manager.shutdown() })
       })
     )
