@@ -10,7 +10,9 @@
     "#test-utils/*": "./test/utils/*.ts"
   },
   "scripts": {
+    "check": "bun run fmt:check && bun run lint && bun run knip && bun run test",
     "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
     "knip": "knip",
     "lint": "oxlint --deny-warnings --report-unused-disable-directives",
     "test": "bun test",

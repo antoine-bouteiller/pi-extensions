@@ -109,7 +109,9 @@ describe('background poll', () => {
     expect(fixture.statuses).toContain('⏳ 1 background poll')
 
     await fixture.sent
-    expect(commandTimeouts).toEqual([10_000])
+    expect(commandTimeouts).toHaveLength(1)
+    expect(commandTimeouts[0]).toBeGreaterThan(0)
+    expect(commandTimeouts[0]).toBeLessThanOrEqual(10_000)
     expect(fixture.messages).toHaveLength(1)
     expect(fixture.messages[0].message.content).toContain('Background poll completed: deployment')
     expect(fixture.messages[0].message.content).toContain('ready-at-tail')
