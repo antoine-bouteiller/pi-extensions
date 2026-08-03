@@ -217,15 +217,17 @@ const quotaWindowRows = (window: QuotaWindow, width: number, theme: SidebarTheme
   const role = quotaRole(percent)
   const resetsIn = sanitize(window.resetsIn ?? '')
   const detail = sanitize(window.detail ?? '')
-  const meterWidth = Math.max(1, Math.min(12, width - (resetsIn ? visibleWidth(resetsIn) + 1 : 0)))
+  const trailingWidth = visibleWidth(resetsIn) + (detail ? visibleWidth(detail) + 1 : 0)
+  const meterWidth = Math.max(1, Math.min(12, width - (trailingWidth ? trailingWidth + 1 : 0)))
   const filled = Math.max(0, Math.min(meterWidth, Math.round((percent / 100) * meterWidth)))
   const meter = `${paint(theme, role, '■'.repeat(filled))}${paint(theme, 'dim', '·'.repeat(meterWidth - filled))}`
-  const header = spaced(paint(theme, role, sanitize(window.label)), paint(theme, role, `${percent.toFixed(1)}%${detail ? ` ${detail}` : ''}`), width)
+  const headerDetail = detail && !resetsIn ? ` ${detail}` : ''
+  const header = spaced(paint(theme, role, sanitize(window.label)), paint(theme, role, `${percent.toFixed(1)}%${headerDetail}`), width)
   if (!resetsIn) {
     return [header, meter]
   }
-  const gap = ' '.repeat(Math.max(1, width - meterWidth - visibleWidth(resetsIn)))
-  return [header, truncateToWidth(`${meter}${gap}${paint(theme, 'muted', resetsIn)}`, width, '')]
+  const gap = ' '.repeat(Math.max(1, width - meterWidth - trailingWidth))
+  return [header, truncateToWidth(`${meter}${gap}${paint(theme, 'muted', resetsIn)}${detail ? ` ${paint(theme, role, detail)}` : ''}`, width, '')]
 }
 
 const quotaRows = (quota: ProviderQuota, width: number, theme: SidebarTheme) => {

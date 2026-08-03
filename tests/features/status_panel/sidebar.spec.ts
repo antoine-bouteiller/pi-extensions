@@ -84,12 +84,12 @@ describe('sidebar rendering', () => {
     expect(sessionMeter).toMatch(/■+·+ +2h 14m/)
     expect(weekly).toContain('Weekly')
     expect(weekly).toContain('18.0%')
-    expect(weekly).toContain('31.62/200$')
-    expect(weeklyMeter).toMatch(/■+·+ +4d 6h/)
+    expect(weekly).not.toContain('31.62/200$')
+    expect(weeklyMeter).toMatch(/■+·+ +4d 6h 31\.62\/200\$/)
     if (!sessionMeter || !weeklyMeter) {
       throw new Error('expected quota meter rows')
     }
-    expect(sessionMeter.indexOf('2h 14m') + '2h 14m'.length).toBe(weeklyMeter.indexOf('4d 6h') + '4d 6h'.length)
+    expect(sessionMeter.indexOf('2h 14m') + '2h 14m'.length).toBe(weeklyMeter.indexOf('31.62/200$') + '31.62/200$'.length)
     expect(lines.slice(quotaIndex).join('\n')).toContain('Azure')
   })
 
