@@ -10,9 +10,9 @@
     "#test-utils/*": "./test/utils/*.ts"
   },
   "scripts": {
-    "check": "bun run lint && bun run typecheck && bun run knip && bun run test",
+    "fmt": "oxfmt",
     "knip": "knip",
-    "lint": "oxlint --deny-warnings --report-unused-disable-directives .",
+    "lint": "oxlint --deny-warnings --report-unused-disable-directives",
     "test": "bun test",
     "test:coverage": "bun test --coverage --reporter=junit --reporter-outfile=./junit.xml",
     "typecheck": "tsc --noEmit"
