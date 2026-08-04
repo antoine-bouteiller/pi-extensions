@@ -105,6 +105,7 @@ describe('global MCP config parsing', () => {
             oauth: {
               callback_port: 3118,
               client_id: 'client-id',
+              client_name: 'Claude Code',
               client_secret: 'client-secret',
               redirect_uri: 'http://127.0.0.1:3118/callback',
               scope: 'channels:read',
@@ -117,6 +118,7 @@ describe('global MCP config parsing', () => {
       oauth: {
         callbackPort: 3118,
         clientId: 'client-id',
+        clientName: 'Claude Code',
         clientSecret: 'client-secret',
         redirectUri: 'http://127.0.0.1:3118/callback',
         scope: 'channels:read',

@@ -132,7 +132,7 @@ describe('Keychain OAuth provider', () => {
   test('does not read credentials during construction and returns static client metadata', async () => {
     const store = new MemoryStore()
     const provider = new KeychainOAuthProvider({
-      config: { callbackPort: 3118, clientId: 'static-id', clientSecret: 'static-secret' },
+      config: { callbackPort: 3118, clientId: 'static-id', clientName: 'My Custom Client', clientSecret: 'static-secret' },
       serverName: 'slack',
       serverUrl: 'https://mcp.slack.test/mcp',
       store,
@@ -143,6 +143,7 @@ describe('Keychain OAuth provider', () => {
       client_id: 'static-id',
       client_secret: 'static-secret',
     })
+    expect(provider.clientMetadata.client_name).toBe('My Custom Client')
     expect(provider.clientMetadata.redirect_uris).toEqual(['http://localhost:3118/callback'])
   })
 

@@ -17,6 +17,8 @@ const SERVER_FIELDS = new Set(['type', 'command', 'args', 'env', 'cwd', 'url', '
 const OAUTH_FIELDS = new Set([
   'clientId',
   'client_id',
+  'clientName',
+  'client_name',
   'clientSecret',
   'client_secret',
   'scope',
@@ -39,6 +41,7 @@ const StringMapSchema = Schema.Record(Schema.String, Schema.String)
 const OAuthSchema = Schema.Struct({
   callbackPort: Schema.optional(Schema.Number),
   clientId: Schema.optional(Schema.String),
+  clientName: Schema.optional(Schema.String),
   clientSecret: Schema.optional(Schema.String),
   redirectUri: Schema.optional(Schema.String),
   scope: Schema.optional(Schema.String),
@@ -103,6 +106,16 @@ const optionalString = (value: unknown, path: string): string | undefined => {
   return requiredString(value, path)
 }
 
+const optionalPort = (value: unknown, path: string): number | undefined => {
+  if (value === undefined) {
+    return undefined
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 65_535) {
+    return fail(path, 'must be an integer between 1 and 65535')
+  }
+  return value
+}
+
 const stringArray = (value: unknown, path: string): string[] | undefined => {
   if (value === undefined) {
     return undefined
@@ -158,20 +171,15 @@ const parseOAuth = (value: unknown, path: string): OAuthConfig | undefined => {
   }
 
   const clientId = optionalString(aliasedValue(value, { camel: 'clientId', snake: 'client_id' }, path), `${path}.clientId`)
+  const clientName = optionalString(aliasedValue(value, { camel: 'clientName', snake: 'client_name' }, path), `${path}.clientName`)
   const clientSecret = optionalString(aliasedValue(value, { camel: 'clientSecret', snake: 'client_secret' }, path), `${path}.clientSecret`)
   const scope = optionalString(value.scope, `${path}.scope`)
   const redirectUri = optionalString(aliasedValue(value, { camel: 'redirectUri', snake: 'redirect_uri' }, path), `${path}.redirectUri`)
-  const rawCallbackPort = aliasedValue(value, { camel: 'callbackPort', snake: 'callback_port' }, path)
-  let callbackPort: number | undefined
-  if (rawCallbackPort !== undefined) {
-    if (typeof rawCallbackPort !== 'number' || !Number.isInteger(rawCallbackPort) || rawCallbackPort < 1 || rawCallbackPort > 65_535) {
-      return fail(`${path}.callbackPort`, 'must be an integer between 1 and 65535')
-    }
-    callbackPort = rawCallbackPort
-  }
+  const callbackPort = optionalPort(aliasedValue(value, { camel: 'callbackPort', snake: 'callback_port' }, path), `${path}.callbackPort`)
 
   return {
     ...(clientId === undefined ? {} : { clientId }),
+    ...(clientName === undefined ? {} : { clientName }),
     ...(clientSecret === undefined ? {} : { clientSecret }),
     ...(scope === undefined ? {} : { scope }),
     ...(callbackPort === undefined ? {} : { callbackPort }),

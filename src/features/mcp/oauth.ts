@@ -237,7 +237,7 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
     })
     this.redirectUrl = url.href
     this.clientMetadata = {
-      client_name: 'Pi MCP Gateway',
+      client_name: options.config.clientName ?? 'Pi MCP Gateway',
       grant_types: ['authorization_code', 'refresh_token'],
       redirect_uris: [this.redirectUrl],
       response_types: ['code'],

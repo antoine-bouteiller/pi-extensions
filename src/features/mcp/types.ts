@@ -27,6 +27,7 @@ export type McpServerStatus = 'disconnected' | 'connecting' | 'connected' | 'nee
 
 export interface OAuthConfig {
   clientId?: string
+  clientName?: string
   clientSecret?: string
   scope?: string
   callbackPort?: number
