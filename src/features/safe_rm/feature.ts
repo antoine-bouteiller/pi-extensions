@@ -2,7 +2,13 @@ import { type Dirent, type Stats } from 'node:fs'
 import { lstat, readdir, realpath, rm as remove } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
-import { withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
+import {
+  isBashToolResult,
+  isToolCallEventType,
+  withFileMutationQueue,
+  type ExtensionAPI,
+  type ExtensionContext,
+} from '@earendil-works/pi-coding-agent'
 import { Effect, Result } from 'effect'
 import { Type } from 'typebox'
 
@@ -22,6 +28,58 @@ import {
 } from './errors.js'
 
 const MAX_TARGETS = 50
+const ROUTED_RM_SENTINEL = ': # pi-safe-rm'
+const SIMPLE_RM_EXECUTABLES = new Set(['rm', '/bin/rm', '/usr/bin/rm'])
+const SIMPLE_RM_LONG_OPTIONS = new Set(['--force', '--recursive'])
+const SIMPLE_RM_LITERAL = /^[^\s;&|<>()`$*?[\]{}'"\\#!]+$/
+
+interface SimpleRmPrefix {
+  optionsEnded: boolean
+  pathsStart: number
+  recursive: boolean
+}
+
+const parseSimpleRmPrefix = (tokens: string[]): SimpleRmPrefix => {
+  let pathsStart = 1
+  let recursive = false
+  while (pathsStart < tokens.length) {
+    const token = tokens[pathsStart] ?? ''
+    if (token === '--') {
+      return { optionsEnded: true, pathsStart: pathsStart + 1, recursive }
+    }
+    if (/^-[fRr]+$/.test(token)) {
+      recursive ||= /[Rr]/.test(token)
+      pathsStart += 1
+      continue
+    }
+    if (SIMPLE_RM_LONG_OPTIONS.has(token)) {
+      recursive ||= token === '--recursive'
+      pathsStart += 1
+      continue
+    }
+    break
+  }
+  return { optionsEnded: false, pathsStart, recursive }
+}
+
+const parseSimpleRm = (command: string): SafeRmToolParams | undefined => {
+  // Ponytail: whitespace-only literal syntax; add a shell tokenizer when quoted-path routing is needed.
+  if (/[\r\n]/.test(command)) {
+    return undefined
+  }
+  const tokens = command.replaceAll(/^[ \t]+|[ \t]+$/g, '').split(/[ \t]+/)
+  if (!SIMPLE_RM_EXECUTABLES.has(tokens[0] ?? '')) {
+    return undefined
+  }
+
+  const { optionsEnded, pathsStart, recursive } = parseSimpleRmPrefix(tokens)
+  const paths = tokens.slice(pathsStart)
+  const invalidPath = paths.some((path) => (!optionsEnded && path.startsWith('-')) || !SIMPLE_RM_LITERAL.test(path))
+  if (invalidPath || paths.length === 0 || paths.length > MAX_TARGETS) {
+    return undefined
+  }
+  return recursive ? { paths, recursive: true } : { paths }
+}
 
 const SafeRmParams = Type.Object({
   paths: Type.Array(
@@ -73,11 +131,11 @@ const checkCancelled = (signal: AbortSignal | undefined): Effect.Effect<void, Ca
   signal?.aborted ? Effect.fail(new CancelledError({ message: 'Deletion was cancelled' })) : Effect.void
 
 const normalizeInput = (path: string): Effect.Effect<string, InvalidPathError> => {
-  const normalized = path.startsWith('@') ? path.slice(1) : path
-  if (!normalized || normalized.startsWith('~') || normalized.includes('\0')) {
+  // Ponytail: deletion keeps leading @ literal; implicit prefix stripping can target a different path.
+  if (!path || path.startsWith('~') || path.includes('\0')) {
     return Effect.fail(new InvalidPathError({ message: `Invalid literal deletion path: ${JSON.stringify(path)}` }))
   }
-  return Effect.succeed(normalized)
+  return Effect.succeed(path)
 }
 
 const rejectMetadataPath = (absolutePath: string): Effect.Effect<void, GitMetadataError> =>
@@ -226,13 +284,13 @@ interface ToolOutput {
   details: SafeRmDetails
 }
 
-export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
+const createSafeRmTool = (runtime: AppRuntime) => {
   const runTool =
     <Params, Result>(body: (params: Params, signal: AbortSignal | undefined, ctx: ExtensionContext) => Effect.Effect<Result, unknown>) =>
     async (_toolCallId: string, params: Params, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext): Promise<Result> =>
       runtime.runPromise(body(params, signal, ctx).pipe(Effect.catch((error: unknown) => Effect.fail(toRejection(error)))))
 
-  pi.registerTool({
+  return {
     description:
       'Safely remove literal paths without shell rm. Every target is validated before deletion: targets must be below the working directory or /tmp, parent symlinks cannot escape those roots, credentials and Git repositories are protected even inside recursive targets, and directories require recursive=true.',
     execute: runTool<SafeRmToolParams, ToolOutput>((params, signal, ctx) =>
@@ -293,9 +351,63 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
     name: 'safe_rm',
     parameters: SafeRmParams,
     promptGuidelines: [
-      'Use safe_rm for file and directory deletion. A best-effort shell scanner blocks recognized rm, rmdir, unlink, find deletion, and xargs rm commands, but safe_rm is the security-enforcing path.',
+      'Use safe_rm for file and directory deletion. The shell guard routes simple literal rm commands through the same validation and blocks complex rm, rmdir, unlink, find deletion, and xargs rm commands.',
       'Set recursive=true only when intentionally removing directories. safe_rm validates all paths before deleting any of them.',
     ],
     promptSnippet: 'Remove files or directories through validated literal paths',
+  }
+}
+
+export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
+  const safeRm = createSafeRmTool(runtime)
+  const pending = new Map<string, SafeRmToolParams>()
+  pi.registerTool(safeRm)
+
+  pi.on('tool_call', (event) => {
+    if (!isToolCallEventType('bash', event) || !pi.getActiveTools().includes('safe_rm')) {
+      return
+    }
+    const route = parseSimpleRm(event.input.command)
+    if (route === undefined) {
+      return
+    }
+
+    pending.set(event.toolCallId, route)
+    // The sentinel keeps later command guards from rejecting the no-op; the original call remains in the transcript.
+    // Ponytail: bash and safe_rm share ctx.cwd; keep rm blocked if remote filesystems become detectable.
+    event.input.command = ROUTED_RM_SENTINEL
+  })
+
+  pi.on('tool_result', async (event, ctx) => {
+    if (!isBashToolResult(event) || event.input.command !== ROUTED_RM_SENTINEL) {
+      return undefined
+    }
+    const route = pending.get(event.toolCallId)
+    pending.delete(event.toolCallId)
+    if (event.isError) {
+      return undefined
+    }
+    if (route === undefined) {
+      return {
+        content: [{ text: 'Safe removal handoff was lost; no paths were removed', type: 'text' as const }],
+        details: {},
+        isError: true,
+      }
+    }
+
+    try {
+      const result = await safeRm.execute(event.toolCallId, route, ctx.signal, undefined, ctx)
+      return { content: result.content, details: {}, isError: false }
+    } catch (error) {
+      return {
+        content: [{ text: error instanceof Error ? error.message : String(error), type: 'text' as const }],
+        details: {},
+        isError: true,
+      }
+    }
+  })
+
+  pi.on('tool_execution_end', (event) => {
+    pending.delete(event.toolCallId)
   })
 }

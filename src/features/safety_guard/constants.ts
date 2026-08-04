@@ -11,7 +11,7 @@ interface DangerousPattern {
 const CRITICAL_PATTERNS = [
   {
     category: 'filesystem',
-    label: 'Recognized shell deletion is disabled; use the self-validating safe_rm tool instead',
+    label: 'Complex shell deletion is disabled; use the self-validating safe_rm tool instead',
     pattern:
       /(?:^|[;&|(\n])\s*(?:(?:(?:\/(?:usr\/)?bin\/)?(?:busybox|command|env|exec|nice|nohup|sudo|timeout)\b[^\n;&|]*?\s+)+)?(?:\/(?:usr\/)?bin\/)?(?:rm|rmdir|unlink)\b|\b(?:bash|fish|ksh|sh|zsh)\s+-c\s+['"][^'"]*\b(?:rm|rmdir|unlink)\b|\b(?:do|then)\s+(?:\/(?:usr\/)?bin\/)?(?:rm|rmdir|unlink)\b|\bfind\b[^\n;&|]*(?:-delete\b|-exec\s+rm\b)|\bxargs\b[^\n;&|]*\brm\b/i,
     severity: 'critical',

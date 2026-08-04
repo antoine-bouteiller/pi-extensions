@@ -65,6 +65,20 @@ describe('safe rm', () => {
     expect(await Bun.file(join(cwd, 'build', 'output.txt')).exists()).toBeFalse()
   })
 
+  test('keeps a leading @ literal', async () => {
+    const { cwd } = await workspace()
+    await mkdir(join(cwd, '@types'))
+    await mkdir(join(cwd, 'types'))
+    await writeFile(join(cwd, '@types', 'marker'), 'scoped')
+    await writeFile(join(cwd, 'types', 'marker'), 'plain')
+
+    const result = await setup().execute('literal-at', { paths: ['@types'], recursive: true }, undefined, undefined, { cwd })
+
+    expect(result.details).toEqual({ missing: [], removed: ['@types'] })
+    expect(await Bun.file(join(cwd, '@types', 'marker')).exists()).toBeFalse()
+    expect(await Bun.file(join(cwd, 'types', 'marker')).exists()).toBeTrue()
+  })
+
   test('validates every target before deleting anything', async () => {
     const { cwd } = await workspace()
     await writeFile(join(cwd, 'keep.txt'), 'content')
@@ -119,7 +133,7 @@ describe('safe rm', () => {
     await writeFile(credential, 'secret')
     await symlink(credential, join(cwd, 'ordinary.txt'))
 
-    for (const params of [{ paths: ['.env'] }, { paths: ['@.env'] }, { paths: ['ordinary.txt'] }, { paths: ['output'], recursive: true }]) {
+    for (const params of [{ paths: ['.env'] }, { paths: ['ordinary.txt'] }, { paths: ['output'], recursive: true }]) {
       expect(setup().execute('credential', params, undefined, undefined, { cwd })).rejects.toThrow('protected path')
     }
 

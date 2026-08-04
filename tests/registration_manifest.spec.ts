@@ -73,9 +73,10 @@ const EXPECTED_HANDLER_COUNTS: Record<string, number> = {
   session_start: 7,
   session_tree: 1,
   thinking_level_select: 1,
-  tool_call: 1,
+  tool_call: 2,
+  tool_execution_end: 1,
   tool_execution_start: 1,
-  tool_result: 2,
+  tool_result: 3,
   turn_end: 1,
 }
 

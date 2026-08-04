@@ -54,7 +54,7 @@ Each row below is one internal capability registered by `src/config/features.ts`
 | `prompt_rewind`             | Escape before the first assistant output rewinds the cancelled prompt and restores its raw text for editing |
 | `rules`                     | Loads recursive `.md` and `.mdc` rules from `.claude/rules/` and `.agents/rules/`                           |
 | `safe_rm`                   | Validated deletion that refuses credentials, Git repositories, and paths outside the working directory      |
-| `safety_guard`              | Blocks recognized destructive shell commands and protected-path access                                      |
+| `safety_guard`              | Routes simple literal `rm` through `safe_rm`; blocks complex destructive shell commands and protected paths |
 | `status_panel`              | Renders a docked status sidebar with model, context usage, git state, provider quota, and running subagents |
 | `sub_agents`                | Session-scoped subagents in isolated child Pi processes ([details](src/features/sub_agents/README.md))      |
 | `webfetch`                  | Fetches a URL and returns markdown, plain text, or raw HTML                                                 |

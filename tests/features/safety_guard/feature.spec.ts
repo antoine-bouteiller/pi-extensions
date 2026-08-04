@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { asExtensionApi, asResult } from '@tests/utils/casts.js'
 import { runtime } from '@tests/utils/runtime.js'
 
+import { register as safeRm } from '@/features/safe_rm/feature.js'
 import { SAFETY_STATUS_KEY } from '@/features/safety_guard/constants.js'
 import { register as safetyGuard } from '@/features/safety_guard/feature.js'
 import { publishStatus, statusBar } from '@/shared/state/status_bar.js'
@@ -16,6 +17,7 @@ afterEach(async () => {
 })
 
 interface FakeToolCallEvent {
+  toolCallId?: string
   toolName: string
   input: { command?: string; path?: string }
 }
@@ -28,6 +30,7 @@ interface FakeUi {
 interface FakeContext {
   cwd: string
   hasUI: boolean
+  signal?: AbortSignal
   ui?: FakeUi
 }
 
@@ -36,45 +39,151 @@ interface GuardResult {
   reason?: string
 }
 
+interface FakeToolResultEvent {
+  toolCallId: string
+  toolName: string
+  input: { command: string }
+  content: { text: string; type: 'text' }[]
+  details: object
+  isError: boolean
+}
+
+interface RoutedResult {
+  content?: { text: string; type: 'text' }[]
+  details?: object
+  isError?: boolean
+}
+
 type Handler = (event: FakeToolCallEvent, ctx: FakeContext) => Promise<GuardResult | undefined>
+type ResultHandler = (event: FakeToolResultEvent, ctx: FakeContext) => Promise<RoutedResult | undefined>
 type SessionStartHandler = (event: Record<string, never>, ctx: FakeContext) => Promise<void>
 
-const setup = () => {
-  let handler: Handler | undefined
+const setup = (activeTools: string[] = ['safe_rm']) => {
+  const toolCallHandlers: Handler[] = []
+  const resultHandlers: ResultHandler[] = []
   let sessionStart: SessionStartHandler | undefined
   const emitted: [string, unknown][] = []
-  safetyGuard(
-    asExtensionApi({
-      events: { emit: (event: string, data: unknown) => emitted.push([event, data]) },
-      on: (event: string, callback: unknown) => {
-        if (event === 'tool_call') {
-          handler = asResult<Handler>(callback)
-        } else if (event === 'session_start') {
-          sessionStart = asResult<SessionStartHandler>(callback)
-        }
-      },
-    }),
-    runtime
-  )
-  if (!handler) {
-    throw new Error('tool_call handler was not registered')
+  const pi = asExtensionApi({
+    events: { emit: (event: string, data: unknown) => emitted.push([event, data]) },
+    getActiveTools: () => activeTools,
+    on: (event: string, callback: unknown) => {
+      if (event === 'tool_call') {
+        toolCallHandlers.push(asResult<Handler>(callback))
+      } else if (event === 'tool_result') {
+        resultHandlers.push(asResult<ResultHandler>(callback))
+      } else if (event === 'session_start') {
+        sessionStart = asResult<SessionStartHandler>(callback)
+      }
+    },
+    registerTool: () => undefined,
+  })
+  safeRm(pi, runtime)
+  safetyGuard(pi, runtime)
+
+  if (toolCallHandlers.length !== 2) {
+    throw new Error('tool_call handlers were not registered')
+  }
+  const [resultHandler] = resultHandlers
+  if (!resultHandler) {
+    throw new Error('tool_result handler was not registered')
   }
   if (!sessionStart) {
     throw new Error('session_start handler was not registered')
   }
-  return { emitted, handler, sessionStart }
+  const handler: Handler = async (event, ctx) => {
+    for (const registeredHandler of toolCallHandlers) {
+      const result = await registeredHandler(event, ctx)
+      if (result?.block) {
+        return result
+      }
+    }
+    return undefined
+  }
+  return { emitted, handler, resultHandler, sessionStart }
 }
 
-const event = (command: string) => ({ input: { command }, toolName: 'bash' })
+const event = (command: string, toolCallId = 'call') => ({ input: { command }, toolCallId, toolName: 'bash' })
+const resultEvent = (toolCallId: string): FakeToolResultEvent => ({
+  content: [{ text: '(no output)', type: 'text' }],
+  details: {},
+  input: { command: ': # pi-safe-rm' },
+  isError: false,
+  toolCallId,
+  toolName: 'bash',
+})
+
+const workspace = async () => {
+  const root = await mkdtemp(join(tmpdir(), 'safety-guard-rm-test-'))
+  temporaryDirectories.push(root)
+  const cwd = join(root, 'project')
+  await mkdir(cwd)
+  return cwd
+}
 
 describe('safety guard', () => {
-  test('blocks recognized shell deletion commands and directs the agent to safe_rm', async () => {
+  test('routes simple literal rm commands through safe_rm', async () => {
+    const cwd = await workspace()
+    await writeFile(join(cwd, 'first.log'), 'content')
+    await writeFile(join(cwd, 'second.log'), 'content')
+    await mkdir(join(cwd, 'build'))
+    await writeFile(join(cwd, 'build', 'output.txt'), 'content')
+    await mkdir(join(cwd, '@types'))
+    await mkdir(join(cwd, 'types'))
+    await writeFile(join(cwd, '@types', 'marker'), 'scoped')
+    await writeFile(join(cwd, 'types', 'marker'), 'plain')
+    const { handler, resultHandler } = setup()
+    const ctx = { cwd, hasUI: false }
+
+    const filesCall = event('rm first.log second.log', 'rm-files')
+    expect(await handler(filesCall, ctx)).toBeUndefined()
+    expect(filesCall.input.command).toBe(': # pi-safe-rm')
+    const files = await resultHandler(resultEvent('rm-files'), ctx)
+    expect(files?.content?.[0]?.text).toContain('Removed: first.log, second.log')
+
+    const directoryCall = event('/bin/rm -rf build @types', 'rm-directory')
+    expect(await handler(directoryCall, ctx)).toBeUndefined()
+    expect(directoryCall.input.command).toBe(': # pi-safe-rm')
+    const directory = await resultHandler(resultEvent('rm-directory'), ctx)
+    expect(directory?.content?.[0]?.text).toContain('Removed: build, @types')
+    expect(await Bun.file(join(cwd, 'first.log')).exists()).toBeFalse()
+    expect(await Bun.file(join(cwd, 'second.log')).exists()).toBeFalse()
+    expect(await Bun.file(join(cwd, 'build', 'output.txt')).exists()).toBeFalse()
+    expect(await Bun.file(join(cwd, '@types', 'marker')).exists()).toBeFalse()
+    expect(await Bun.file(join(cwd, 'types', 'marker')).exists()).toBeTrue()
+  })
+
+  test('does not remove a routed target when bash fails before the handoff', async () => {
+    const cwd = await workspace()
+    await writeFile(join(cwd, 'keep.log'), 'content')
+    const { handler, resultHandler } = setup()
+    const ctx = { cwd, hasUI: false }
+    const call = event('rm keep.log', 'failed-rm')
+
+    expect(await handler(call, ctx)).toBeUndefined()
+    const failed = resultEvent('failed-rm')
+    failed.isError = true
+    expect(await resultHandler(failed, ctx)).toBeUndefined()
+    expect(await Bun.file(join(cwd, 'keep.log')).exists()).toBeTrue()
+  })
+
+  test('fails closed when a routed handoff is lost', async () => {
+    const cwd = await workspace()
+    const { resultHandler } = setup()
+
+    const result = await resultHandler(resultEvent('missing-route'), { cwd, hasUI: false })
+    expect(result?.isError).toBeTrue()
+    expect(result?.content?.[0]?.text).toContain('handoff was lost')
+  })
+
+  test('blocks non-literal and compound shell deletion commands', async () => {
     const { handler } = setup()
     const ctx = { cwd: '/work/project', hasUI: false }
 
     for (const command of [
-      'rm build.log',
-      'rm -rf build',
+      'rm "build log"',
+      'rm build/*.log',
+      'rm build.log; echo done',
+      `rm foo\u00a0bar`,
       'rmdir build',
       'unlink build.log',
       'sudo -u root rm build.log',
@@ -123,7 +232,16 @@ describe('safety guard', () => {
     expect(result?.reason).toContain('safe_rm')
   })
 
-  test('does not offer a confirmation prompt for shell deletion', async () => {
+  test('blocks simple rm when safe_rm is inactive', async () => {
+    const { handler } = setup([])
+    const call = event('rm build.log')
+
+    const result = await handler(call, { cwd: '/work/project', hasUI: false })
+    expect(result?.block).toBeTrue()
+    expect(call.input.command).toBe('rm build.log')
+  })
+
+  test('does not offer a confirmation prompt for routed shell deletion', async () => {
     const { handler } = setup()
     let confirmed = false
     const result = await handler(event('rm build.log'), {
@@ -137,7 +255,7 @@ describe('safety guard', () => {
         notify: () => undefined,
       },
     })
-    expect(result?.reason).toContain('safe_rm')
+    expect(result).toBeUndefined()
     expect(confirmed).toBeFalse()
   })
 
@@ -201,11 +319,12 @@ describe('safety guard', () => {
     }
   })
 
-  test('blocks recognized root deletion even in an interactive session', async () => {
-    const { handler } = setup()
+  test('routes root deletion to safe_rm, which rejects it', async () => {
+    const cwd = await workspace()
+    const { handler, resultHandler } = setup()
     let confirmed = false
-    const result = await handler(event('rm -rf /'), {
-      cwd: '/work/project',
+    const ctx = {
+      cwd,
       hasUI: true,
       ui: {
         confirm: async () => {
@@ -214,9 +333,14 @@ describe('safety guard', () => {
         },
         notify: () => undefined,
       },
-    })
+    }
 
-    expect(result?.reason).toContain('CRITICAL')
+    const call = event('rm -rf /', 'rm-root')
+    expect(await handler(call, ctx)).toBeUndefined()
+    expect(call.input.command).toBe(': # pi-safe-rm')
+    const result = await resultHandler(resultEvent('rm-root'), ctx)
+    expect(result?.isError).toBeTrue()
+    expect(result?.content?.[0]?.text).toContain('working directory or /tmp')
     expect(confirmed).toBeFalse()
   })
 
