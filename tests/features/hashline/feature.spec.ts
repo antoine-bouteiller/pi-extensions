@@ -3,8 +3,9 @@ import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { withFileMutationQueue } from '@earendil-works/pi-coding-agent'
-import { asTool } from '@tests/utils/casts.js'
+import { type Theme, withFileMutationQueue } from '@earendil-works/pi-coding-agent'
+import { type Component } from '@earendil-works/pi-tui'
+import { asTheme, asTool } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 
@@ -25,6 +26,7 @@ interface Tool {
     onUpdate: undefined,
     ctx: { cwd: string }
   ) => Promise<ToolOutput>
+  renderResult: (result: ToolOutput & { isError?: boolean }, options: { expanded: boolean; isPartial: boolean }, theme: Theme) => Component
 }
 
 const temporaryDirectories: string[] = []
@@ -64,6 +66,12 @@ describe('hashline extension', () => {
     expect(output.content[0].text).toMatch(/^\[sample\.txt#[A-F0-9]+\]/)
     expect(output.content[0].text).toContain('1:first')
     expect(output.details.path).toBe('sample.txt')
+    const rendered = tools.read.renderResult(
+      { ...output, isError: false },
+      { expanded: false, isPartial: false },
+      asTheme({ fg: (_color: string, text: string) => text })
+    )
+    expect(rendered.render(80).join('\n').trimEnd()).toBe('sample.txt')
   })
 
   test('applies a current patch and rejects a stale patch without overwriting', async () => {

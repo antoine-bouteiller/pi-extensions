@@ -1,6 +1,7 @@
 import { relative } from 'node:path'
 
-import { withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
+import { withFileMutationQueue, type AgentToolResult, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
+import { Text } from '@earendil-works/pi-tui'
 import { formatHashlineHeader, formatNumberedLines, InMemorySnapshotStore, NodeFilesystem, normalizeToLF, Patch, Patcher } from '@oh-my-pi/hashline'
 import { Context, Effect } from 'effect'
 import { Type, type Static } from 'typebox'
@@ -25,6 +26,7 @@ interface ToolOutput {
   content: { text: string; type: 'text' }[]
   details: Record<string, unknown>
 }
+type RenderableToolOutput = AgentToolResult<Record<string, unknown>> & { isError?: boolean }
 
 const result = (text: string, details: Record<string, unknown> = {}): ToolOutput => ({
   content: [{ text, type: 'text' as const }],
@@ -218,6 +220,14 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
     label: 'Hashline Read',
     name: 'hashline_read',
     parameters: readSchema,
+    renderResult(readResult: RenderableToolOutput, _options, theme) {
+      let text = typeof readResult.details?.path === 'string' ? readResult.details.path : ''
+      if (readResult.isError) {
+        const [content] = readResult.content
+        text = content?.type === 'text' ? content.text : 'Hashline read failed'
+      }
+      return new Text(theme.fg(readResult.isError ? 'error' : 'toolOutput', text), 0, 0)
+    },
   })
 
   pi.registerTool({
