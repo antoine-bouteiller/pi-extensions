@@ -285,6 +285,7 @@ describe('MCP gateway registration and lifecycle', () => {
     await harness.fixture.emit('session_start', {}, context(statuses))
 
     harness.callbacks()?.onStatusChange([
+      { name: 'broken', status: 'invalid-config' },
       { name: 'one', status: 'connected' },
       { name: 'two', status: 'needs-auth' },
     ])
@@ -292,7 +293,7 @@ describe('MCP gateway registration and lifecycle', () => {
 
     expect(statuses).toEqual([
       { key: 'mcp', value: 'MCP alpha: connected\nMCP zeta: disconnected' },
-      { key: 'mcp', value: 'MCP one: connected\nMCP two: auth needed' },
+      { key: 'mcp', value: 'MCP broken: invalid config\nMCP one: connected\nMCP two: auth needed' },
       { key: 'mcp', value: undefined },
     ])
   })
@@ -311,6 +312,17 @@ describe('MCP gateway registration and lifecycle', () => {
     })
     const text = result.content[0]?.type === 'text' ? result.content[0].text : ''
     expect(text.indexOf('alpha: connected')).toBeLessThan(text.indexOf('zeta: disconnected'))
+  })
+
+  test('metadata status renders invalid config without an error', async () => {
+    const harness = createHarness({
+      status: () => [{ name: 'broken', status: 'invalid-config' }],
+    })
+    await harness.start()
+
+    const result = await harness.execute({})
+
+    expect(result.content[0]).toEqual({ text: expect.stringContaining('- broken: invalid config'), type: 'text' })
   })
 
   test('tool calls accept object args and preserve manager results', async () => {

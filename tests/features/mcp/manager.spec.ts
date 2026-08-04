@@ -166,6 +166,7 @@ describe('MCP manager', () => {
   test('construction and status are metadata-only', () => {
     const fixture = harness({
       config: {
+        broken: { invalid: true },
         explicit: {
           headers: { 'X-Tenant': 'one' },
           oauth: {},
@@ -183,11 +184,28 @@ describe('MCP manager', () => {
       },
     })
 
-    expect(fixture.manager.status()).toHaveLength(5)
+    expect(fixture.manager.status().find((server) => server.name === 'broken')).toEqual({ name: 'broken', status: 'invalid-config' })
     expect(fixture.manager.oauthServers()).toEqual(['explicit', 'linear'])
     expect(fixture.calls.clients).toBe(0)
     expect(fixture.calls.connects).toEqual([])
     expect(fixture.calls.keychainReads).toBe(0)
+  })
+
+  test('invalid config cannot connect and does not hide usable servers from search', async () => {
+    const fixture = harness({
+      config: {
+        broken: { invalid: true },
+        local: { command: 'fixture', type: 'stdio' },
+      },
+    })
+
+    const invalidConnection = await fixture.manager.connect('broken').catch((error: unknown) => error)
+    expect(asError(invalidConnection).message).toContain('invalid config')
+    const tools = await fixture.manager.search('echo')
+    expect(tools.map((tool) => tool.name)).toEqual(['local_echo'])
+    const description = await fixture.manager.describe('echo')
+    expect(description.name).toBe('local_echo')
+    expect(fixture.calls.clients).toBe(1)
   })
 
   test('the first concurrent list shares one lazy stdio connection', async () => {

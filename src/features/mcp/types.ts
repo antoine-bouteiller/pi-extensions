@@ -23,7 +23,7 @@ export interface McpGatewayPolicy {
   allows: (request: Readonly<McpPolicyRequest>) => boolean
 }
 
-export type McpServerStatus = 'disconnected' | 'connecting' | 'connected' | 'needs-auth' | 'failed' | 'disabled'
+export type McpServerStatus = 'disconnected' | 'connecting' | 'connected' | 'needs-auth' | 'failed' | 'disabled' | 'invalid-config'
 
 export interface OAuthConfig {
   clientId?: string
@@ -57,7 +57,13 @@ export interface DisabledServerConfig {
   disabled: true
 }
 
-export type McpServerConfig = StdioServerConfig | HttpServerConfig | DisabledServerConfig
+/** Retains a malformed server entry so valid siblings can still be used. */
+export interface InvalidServerConfig {
+  type?: undefined
+  invalid: true
+}
+
+export type McpServerConfig = StdioServerConfig | HttpServerConfig | DisabledServerConfig | InvalidServerConfig
 export type McpServerMap = Record<string, McpServerConfig>
 
 // Short alias used by the connection manager and gateway.

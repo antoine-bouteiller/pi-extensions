@@ -7,6 +7,7 @@ import { Effect, Schema } from 'effect'
 import {
   type DisabledServerConfig,
   type HttpServerConfig,
+  type InvalidServerConfig,
   type McpServerConfig,
   type McpServerMap,
   type OAuthConfig,
@@ -62,9 +63,10 @@ const HttpServerSchema = Schema.Struct({
   url: Schema.String,
 })
 const DisabledServerSchema = Schema.Struct({ disabled: Schema.Literal(true) })
+const InvalidServerSchema = Schema.Struct({ invalid: Schema.Literal(true) })
 
 /** Canonical server schema. Input aliases and validation precedence are normalized before decoding. */
-const McpServerSchema = Schema.Union([StdioServerSchema, HttpServerSchema, DisabledServerSchema])
+const McpServerSchema = Schema.Union([StdioServerSchema, HttpServerSchema, DisabledServerSchema, InvalidServerSchema])
 const McpServerMapSchema = Schema.Record(Schema.String, McpServerSchema)
 
 const isObject = (value: unknown): value is Record<string, unknown> => {
@@ -291,7 +293,7 @@ const parseServer = (name: string, value: unknown): McpServerConfig => {
   return hasCommand ? parseStdioServer(path, value, disabled) : parseHttpServer(path, value, disabled)
 }
 
-/** Validate a parsed standard MCP configuration and return its stable server map. */
+/** Validate a parsed standard MCP configuration while isolating malformed server entries. */
 export const parseMcpConfig = (value: unknown): McpServerMap => {
   if (!isObject(value)) {
     return fail('mcpServers', 'configuration root must be an object')
@@ -302,10 +304,17 @@ export const parseMcpConfig = (value: unknown): McpServerMap => {
 
   return Object.fromEntries(
     Object.entries(value.mcpServers).map(([name, server]) => {
-      if (name.length === 0) {
-        fail('mcpServers', 'server names must not be empty')
+      try {
+        if (name.length === 0) {
+          fail('mcpServers', 'server names must not be empty')
+        }
+        return [name, parseServer(name, server)]
+      } catch (error) {
+        if (error instanceof McpConfigError) {
+          return [name, { invalid: true } satisfies InvalidServerConfig]
+        }
+        throw error
       }
-      return [name, parseServer(name, server)]
     })
   )
 }

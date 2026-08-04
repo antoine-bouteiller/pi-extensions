@@ -12,7 +12,7 @@ import { isRecord } from '@/shared/utils/records.js'
 
 import { loadGlobalMcpConfig } from './config.js'
 import { boundGatewayOutput } from './output.js'
-import { type McpGatewayPolicy, type McpPolicyRequest, type McpToolAnnotations } from './types.js'
+import { type McpGatewayPolicy, type McpPolicyRequest, type McpServerStatus as McpServerStatusValue, type McpToolAnnotations } from './types.js'
 
 const SEARCH_RESULT_LIMIT = 30
 const SEARCH_FETCH_LIMIT = SEARCH_RESULT_LIMIT + 1
@@ -53,7 +53,7 @@ type McpGatewayInput = Static<typeof McpGatewayParameters>
 
 interface McpServerStatus {
   name: string
-  status: 'disconnected' | 'connecting' | 'connected' | 'needs-auth' | 'failed' | 'disabled'
+  status: McpServerStatusValue
   error?: string
 }
 
@@ -406,7 +406,10 @@ const dispatchGateway = (
             `MCP config: ${configPath}`,
             ...(sorted.length === 0
               ? ['(no configured servers)']
-              : sorted.map((server) => `- ${server.name}: ${server.status}${server.error ? ` — ${server.error}` : ''}`)),
+              : sorted.map(
+                  (server) =>
+                    `- ${server.name}: ${server.status === 'invalid-config' ? 'invalid config' : server.status}${server.error ? ` — ${server.error}` : ''}`
+                )),
             '',
             'List one server with: mcp({ server: "<server-name>" })',
           ]

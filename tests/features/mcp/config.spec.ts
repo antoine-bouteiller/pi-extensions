@@ -128,8 +128,8 @@ describe('global MCP config parsing', () => {
     })
   })
 
-  test('rejects duplicate OAuth aliases with a precise path', () => {
-    expect(() =>
+  test('marks duplicate OAuth aliases as invalid config', () => {
+    expect(
       parseMcpConfig({
         mcpServers: {
           slack: {
@@ -138,7 +138,7 @@ describe('global MCP config parsing', () => {
           },
         },
       })
-    ).toThrow('mcpServers.slack.oauth.clientId')
+    ).toEqual({ slack: { invalid: true } })
   })
 
   test('accepts disabled transports and disabled placeholders', () => {
@@ -165,37 +165,47 @@ describe('global MCP config parsing', () => {
     }
   })
 
-  test('rejects conflicting transports and discriminator mismatches', () => {
-    expect(() => parseMcpConfig({ mcpServers: { mixed: { command: 'server', url: 'https://x.test' } } })).toThrow('mcpServers.mixed')
-    expect(() => parseMcpConfig({ mcpServers: { local: { command: 'server', type: 'http' } } })).toThrow('mcpServers.local.type')
-    expect(() => parseMcpConfig({ mcpServers: { remote: { type: 'stdio', url: 'https://x.test' } } })).toThrow('mcpServers.remote.type')
-    expect(() => parseMcpConfig({ mcpServers: { active: {} } })).toThrow('mcpServers.active')
-  })
-
-  test('rejects non-string arrays and maps at the offending field', () => {
-    expect(() => parseMcpConfig({ mcpServers: { local: { args: ['ok', 1], command: 'server' } } })).toThrow('mcpServers.local.args.1')
-    expect(() => parseMcpConfig({ mcpServers: { local: { command: 'server', env: { TOKEN: 1 } } } })).toThrow('mcpServers.local.env.TOKEN')
-    expect(() =>
+  test('keeps valid siblings when transports, discriminators, arrays, or maps are invalid', () => {
+    expect(
       parseMcpConfig({
-        mcpServers: { remote: { headers: { 'X-Test': false }, url: 'https://x.test' } },
+        mcpServers: {
+          active: {},
+          local: { args: ['ok', 1], command: 'server' },
+          mixed: { command: 'server', url: 'https://x.test' },
+          remote: { headers: { 'X-Test': false }, url: 'https://x.test' },
+          valid: { command: 'server' },
+          wrongType: { type: 'stdio', url: 'https://x.test' },
+        },
       })
-    ).toThrow('mcpServers.remote.headers.X-Test')
+    ).toEqual({
+      active: { invalid: true },
+      local: { invalid: true },
+      mixed: { invalid: true },
+      remote: { invalid: true },
+      valid: { command: 'server', type: 'stdio' },
+      wrongType: { invalid: true },
+    })
   })
 
-  test('tolerates unknown root fields while keeping exact nested validation precedence', async () => {
-    expect(await Effect.runPromise(parseMcpConfigEffect({ futureRootField: true, mcpServers: { local: { command: 'server' } } }))).toEqual({
+  test('tolerates unknown root fields and marks unsupported nested fields invalid', async () => {
+    expect(
+      await Effect.runPromise(parseMcpConfigEffect({ futureRootField: true, mcpServers: { broken: { command: 42 }, local: { command: 'server' } } }))
+    ).toEqual({
+      broken: { invalid: true },
       local: { command: 'server', type: 'stdio' },
     })
-    expect(() => parseMcpConfig({ mcpServers: { local: { command: 42, resources: true } } })).toThrow('mcpServers.local.resources: is not supported')
+    expect(parseMcpConfig({ mcpServers: { local: { command: 42, resources: true } } })).toEqual({ local: { invalid: true } })
   })
 
-  test('rejects unsupported fields instead of silently widening the format', () => {
-    expect(() => parseMcpConfig({ mcpServers: { local: { command: 'server', resources: true } } })).toThrow('mcpServers.local.resources')
-    expect(() =>
+  test('does not silently widen unsupported server or OAuth fields', () => {
+    expect(
       parseMcpConfig({
-        mcpServers: { remote: { oauth: { tokenFile: '/tmp/token' }, url: 'https://x.test' } },
+        mcpServers: {
+          local: { command: 'server', resources: true },
+          remote: { oauth: { tokenFile: '/tmp/token' }, url: 'https://x.test' },
+        },
       })
-    ).toThrow('mcpServers.remote.oauth.tokenFile')
+    ).toEqual({ local: { invalid: true }, remote: { invalid: true } })
   })
 
   test('returns an empty map when a requested config file is absent', async () => {

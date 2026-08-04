@@ -183,6 +183,15 @@ const oauthConfigFor = (config: ServerConfig): OAuthConfig | undefined => {
   return {}
 }
 
+const initialStatus = (config: ServerConfig): McpServerStatus => {
+  if ('invalid' in config) {
+    return 'invalid-config'
+  }
+  return config.disabled ? 'disabled' : 'disconnected'
+}
+
+const isUsableRuntime = (runtime: ServerRuntime): boolean => runtime.status !== 'disabled' && runtime.status !== 'invalid-config'
+
 const isLegacyTransportCandidate = (error: unknown): boolean =>
   error instanceof StreamableHTTPError &&
   ((error.code !== undefined && [400, 404, 405, 406, 415].includes(error.code)) ||
@@ -334,7 +343,7 @@ export class McpManager {
         config: serverConfig,
         connectWaiters: 0,
         name,
-        status: serverConfig.disabled ? 'disabled' : 'disconnected',
+        status: initialStatus(serverConfig),
       })
     }
   }
@@ -349,7 +358,7 @@ export class McpManager {
 
   oauthServers(): readonly string[] {
     return [...this.runtimes.values()]
-      .filter((runtime) => runtime.status !== 'disabled' && oauthConfigFor(runtime.config) !== undefined)
+      .filter((runtime) => isUsableRuntime(runtime) && oauthConfigFor(runtime.config) !== undefined)
       .map((runtime) => runtime.name)
       .toSorted((left, right) => left.localeCompare(right))
   }
@@ -413,7 +422,7 @@ export class McpManager {
     query: string,
     options: { server?: string; regex?: boolean; limit?: number; signal?: AbortSignal } = {}
   ): Promise<readonly ToolMetadata[]> {
-    const runtimes = options.server ? [this.runtime(options.server)] : [...this.runtimes.values()].filter((runtime) => runtime.status !== 'disabled')
+    const runtimes = options.server ? [this.runtime(options.server)] : [...this.runtimes.values()].filter(isUsableRuntime)
     const settled = await Promise.allSettled(runtimes.map((runtime) => this.toolsForServer(runtime.name, options.signal)))
     const tools = settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : [])).filter((tool) => this.isAllowed(tool, 'search'))
     if (tools.length === 0) {
@@ -645,7 +654,7 @@ export class McpManager {
       runtime.connectingController = undefined
       runtime.connectWaiters = 0
       runtime.error = undefined
-      runtime.status = runtime.config.disabled ? 'disabled' : 'disconnected'
+      runtime.status = initialStatus(runtime.config)
     }
     this.notify()
   }
@@ -660,6 +669,9 @@ export class McpManager {
     }
     if (runtime.status === 'disabled') {
       throw new Error(`MCP server ${JSON.stringify(name)} is disabled`)
+    }
+    if (runtime.status === 'invalid-config') {
+      throw new Error(`MCP server ${JSON.stringify(name)} has invalid config`)
     }
     return runtime
   }
@@ -683,7 +695,7 @@ export class McpManager {
     }
 
     const prefixed = [...this.runtimes.values()]
-      .filter((runtime) => runtime.status !== 'disabled')
+      .filter(isUsableRuntime)
       .map((runtime) => ({ prefix: `${sanitizeToolPart(runtime.name)}_`, runtime }))
       .filter(({ prefix }) => requested.startsWith(prefix))
       .toSorted((left, right) => right.prefix.length - left.prefix.length)
@@ -706,7 +718,7 @@ export class McpManager {
       throw new Error(`Unknown MCP tool ${JSON.stringify(requested)}`)
     }
 
-    const runtimes = [...this.runtimes.values()].filter((runtime) => runtime.status !== 'disabled')
+    const runtimes = [...this.runtimes.values()].filter(isUsableRuntime)
     const settled = await Promise.allSettled(runtimes.map((runtime) => this.toolsForServer(runtime.name, options.signal)))
     const all = settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
     if (all.length === 0) {
