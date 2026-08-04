@@ -13,6 +13,7 @@ const EXPECTED_FEATURES = [
   'hashline',
   'mcp',
   'meridian_session_affinity',
+  'prompt_rewind',
   'rules',
   'safe_rm',
   'safety_guard',

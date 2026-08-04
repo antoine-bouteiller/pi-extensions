@@ -7,6 +7,7 @@ import { register as commentChecker } from '@/features/comment_checker/feature.j
 import { register as hashline } from '@/features/hashline/feature.js'
 import { register as mcp } from '@/features/mcp/feature.js'
 import { register as meridianSessionAffinity } from '@/features/meridian_session_affinity/feature.js'
+import { register as promptRewind } from '@/features/prompt_rewind/feature.js'
 import { register as rules } from '@/features/rules/feature.js'
 import { register as safeRm } from '@/features/safe_rm/feature.js'
 import { register as safetyGuard } from '@/features/safety_guard/feature.js'
@@ -28,6 +29,7 @@ export const features: readonly FeatureRegistration[] = [
   { name: 'hashline', register: hashline },
   { name: 'mcp', register: mcp },
   { name: 'meridian-session-affinity', register: meridianSessionAffinity },
+  { name: 'prompt-rewind', register: promptRewind },
   { name: 'rules', register: rules },
   { name: 'safe-rm', register: safeRm },
   { name: 'safety-guard', register: safetyGuard },

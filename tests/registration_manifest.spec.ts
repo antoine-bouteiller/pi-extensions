@@ -11,6 +11,7 @@ const FEATURE_MODULES = [
   'hashline',
   'mcp',
   'meridian_session_affinity',
+  'prompt_rewind',
   'rules',
   'safe_rm',
   'safety_guard',
@@ -27,6 +28,7 @@ const EXPECTED_FEATURE_NAMES = [
   'hashline',
   'mcp',
   'meridian-session-affinity',
+  'prompt-rewind',
   'rules',
   'safe-rm',
   'safety-guard',
@@ -52,23 +54,27 @@ const EXPECTED_TOOLS = [
   'webfetch',
 ].toSorted()
 
-const EXPECTED_COMMANDS = ['agents', 'mcp-auth', 'subagent', 'subagents'].toSorted()
+const EXPECTED_COMMANDS = ['agents', 'mcp-auth', 'prompt-rewind-cancel', 'subagent', 'subagents'].toSorted()
 const EXPECTED_MESSAGE_RENDERERS = ['pi-codex-subagent-completion'].toSorted()
 
 const EXPECTED_HANDLER_COUNTS: Record<string, number> = {
   after_provider_response: 1,
+  agent_end: 1,
   agent_settled: 1,
-  agent_start: 1,
-  before_agent_start: 2,
+  agent_start: 2,
+  before_agent_start: 3,
   before_provider_headers: 1,
+  input: 1,
+  message_update: 1,
   model_select: 1,
   resources_discover: 1,
   session_compact: 1,
-  session_shutdown: 5,
-  session_start: 6,
+  session_shutdown: 6,
+  session_start: 7,
   session_tree: 1,
   thinking_level_select: 1,
   tool_call: 1,
+  tool_execution_start: 1,
   tool_result: 2,
   turn_end: 1,
 }

@@ -51,6 +51,7 @@ Each row below is one internal capability registered by `src/config/features.ts`
 | `hashline`                  | Content-hash anchored file reads and writes that reject stale edits                                         |
 | `mcp`                       | One deliberately narrow, lazy MCP gateway (see below)                                                       |
 | `meridian_session_affinity` | Adds Pi's current session ID to Meridian requests so SDK sessions resume across client-side tool loops      |
+| `prompt_rewind`             | Escape before the first assistant output rewinds the cancelled prompt and restores its raw text for editing |
 | `rules`                     | Loads recursive `.md` and `.mdc` rules from `.claude/rules/` and `.agents/rules/`                           |
 | `safe_rm`                   | Validated deletion that refuses credentials, Git repositories, and paths outside the working directory      |
 | `safety_guard`              | Blocks recognized destructive shell commands and protected-path access                                      |

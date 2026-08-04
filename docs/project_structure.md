@@ -22,6 +22,7 @@ src/
 │   ├── hashline/feature.ts
 │   ├── mcp/{feature,config,keychain,manager,oauth,output,types}.ts
 │   ├── meridian_session_affinity/feature.ts
+│   ├── prompt_rewind/feature.ts
 │   ├── rules/feature.ts
 │   ├── safe_rm/{feature,errors}.ts
 │   ├── safety_guard/{feature,constants}.ts
