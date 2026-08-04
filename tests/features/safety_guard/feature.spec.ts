@@ -156,6 +156,15 @@ describe('safety guard', () => {
     }
   })
 
+  test('allows Git rebase commands', async () => {
+    const { handler } = setup()
+    const ctx = { cwd: '/work/project', hasUI: false }
+
+    for (const command of ['git rebase main', 'git rebase --continue', 'git rebase --onto main feature~2 feature']) {
+      expect(await handler(event(command), ctx), command).toBeUndefined()
+    }
+  })
+
   test('guards protected file reads, writes, and edits', async () => {
     const { handler } = setup()
     const ctx = { cwd: '/work/project', hasUI: false }

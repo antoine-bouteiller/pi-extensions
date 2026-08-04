@@ -82,7 +82,7 @@ const HIGH_PATTERNS = [
   {
     category: 'git',
     label: 'Git history rewrite',
-    pattern: /\bgit\s+(?:rebase\b|filter-(?:branch|repo)\b|replace\b|update-ref\b|prune\b)/i,
+    pattern: /\bgit\s+(?:filter-(?:branch|repo)\b|replace\b|update-ref\b|prune\b)/i,
     severity: 'high',
   },
   {
