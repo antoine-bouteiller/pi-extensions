@@ -48,9 +48,9 @@ const sharedActivityScript = (paths: { aggregate: string; activity: string; runt
   const aggregate = createPi();
   piExtensions(aggregate.pi);
   const aggregateStarts = aggregate.handlers.get('session_start') || [];
-  if (aggregateStarts.length !== 7 || !aggregateStarts[5]) throw new Error('aggregate status-panel handler missing');
+  if (aggregateStarts.length !== 8 || !aggregateStarts[6]) throw new Error('aggregate status-panel handler missing');
   const aggregatePanel = panelContext();
-  await aggregateStarts[5]({}, aggregatePanel.ctx);
+  await aggregateStarts[6]({}, aggregatePanel.ctx);
 
   const explicit = createPi();
   registerStatusPanel(explicit.pi, getOrCreateProcessRuntime());

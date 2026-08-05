@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { type Theme, withFileMutationQueue } from '@earendil-works/pi-coding-agent'
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type Theme, withFileMutationQueue } from '@earendil-works/pi-coding-agent'
 import { type Component } from '@earendil-works/pi-tui'
 import { asTheme, asTool } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
@@ -21,7 +21,7 @@ interface Tool {
   promptGuidelines?: string[]
   execute: (
     id: string,
-    params: Record<string, string>,
+    params: Record<string, unknown>,
     signal: AbortSignal | undefined,
     onUpdate: undefined,
     ctx: { cwd: string }
@@ -56,6 +56,25 @@ const header = async (tool: Tool, cwd: string, path: string): Promise<string> =>
 
 const put = (headerLine: string, line: number, replacement: string): string => `${headerLine}\nPUT ${line}.=${line}:\n+${replacement}`
 
+const hashlineResult = (toolCallId: string, hash: string, startLine: number, endLine: number, text: string) => ({
+  content: [{ text, type: 'text' }],
+  details: { endLine, hash, path: 'sample.txt', startLine, version: `version-${hash.toLowerCase()}` },
+  isError: false,
+  role: 'toolResult',
+  timestamp: 1,
+  toolCallId,
+  toolName: 'hashline_read',
+})
+
+const hashlineWriteResult = {
+  content: [{ text: 'update sample.txt [CCCC]', type: 'text' }],
+  details: { sections: [{ hash: 'CCCC', op: 'update', path: 'sample.txt', version: 'version-cccc' }] },
+  isError: false,
+  role: 'toolResult',
+  timestamp: 1,
+  toolCallId: 'write',
+  toolName: 'hashline_write',
+}
 describe('hashline extension', () => {
   test('registers anchored read and write tools', async () => {
     const tools = setup()
@@ -74,6 +93,134 @@ describe('hashline extension', () => {
     expect(rendered.render(80).join('\n').trimEnd()).toBe('sample.txt')
   })
 
+  test('returns requested line ranges with their original anchors', async () => {
+    const { read, write } = setup()
+    const directory = await workspace()
+    const path = join(directory, 'range.txt')
+    await writeFile(path, 'one\ntwo\nthree\nfour\nfive\n')
+
+    const output = await read.execute('range', { limit: 2, offset: 3, path: 'range.txt' }, undefined, undefined, { cwd: directory })
+    const [{ text }] = output.content
+    expect(text).toMatch(/^\[range\.txt#[A-F0-9]+\]\n3:three\n4:four$/)
+    const [currentHeader] = text.split('\n', 1)
+
+    expect(write.execute('unseen', { patch: put(currentHeader, 1, 'ONE') }, undefined, undefined, { cwd: directory })).rejects.toThrow()
+    await write.execute('visible', { patch: put(currentHeader, 4, 'FOUR') }, undefined, undefined, { cwd: directory })
+    expect(await readFile(path, 'utf8')).toBe('one\ntwo\nthree\nFOUR\nfive\n')
+  })
+
+  test('bounds large reads while retaining the full snapshot for visible edits', async () => {
+    const { read, write } = setup()
+    const directory = await workspace()
+    const path = join(directory, 'large.txt')
+    const lines = Array.from({ length: 3000 }, (_value, index) => `line-${index + 1}-${'x'.repeat(40)}`)
+    await writeFile(path, `${lines.join('\n')}\n`)
+
+    const output = await read.execute('large', { path: 'large.txt' }, undefined, undefined, { cwd: directory })
+    const [{ text }] = output.content
+    expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(DEFAULT_MAX_BYTES)
+    expect(text.split('\n').length).toBeLessThanOrEqual(DEFAULT_MAX_LINES)
+    expect(text).toContain('[Output truncated:')
+    expect(output.details.truncated).toBe(true)
+    const { endLine } = output.details
+    if (typeof endLine !== 'number') {
+      throw new Error('Expected at least one visible source line')
+    }
+
+    const [currentHeader] = text.split('\n', 1)
+    await write.execute('large-visible', { patch: put(currentHeader, endLine, 'changed') }, undefined, undefined, { cwd: directory })
+    const written = await readFile(path, 'utf8')
+    const writtenLines = written.split('\n')
+    expect(writtenLines.at(endLine - 1)).toBe('changed')
+    expect(writtenLines.at(2999)).toBe(lines.at(2999))
+  })
+
+  test('rejects a read when no complete source line fits the output limit', async () => {
+    const { read } = setup()
+    const directory = await workspace()
+    await writeFile(join(directory, 'wide.txt'), 'x'.repeat(DEFAULT_MAX_BYTES))
+
+    expect(read.execute('wide', { path: 'wide.txt' }, undefined, undefined, { cwd: directory })).rejects.toThrow('exceeds the hashline output limit')
+  })
+  test('prunes superseded and duplicate reads without removing tool results', async () => {
+    const { emit, pi } = createFakePi()
+    hashline(pi, runtime)
+    const collidingVersion = hashlineResult('old-version', 'BBBB', 1, 10, 'old colliding version')
+    const oldVersion = { ...collidingVersion, details: { ...collidingVersion.details, version: 'version-old' } }
+    const duplicate = hashlineResult('duplicate', 'BBBB', 1, 10, 'duplicate current range')
+    const distinctRange = hashlineResult('distinct-range', 'BBBB', 11, 20, 'distinct current range')
+    const latest = hashlineResult('latest', 'BBBB', 1, 10, 'latest current range')
+
+    const results = await emit('context', { messages: [oldVersion, duplicate, distinctRange, latest] })
+    const [contextResult] = results
+
+    expect(contextResult).toEqual({
+      messages: [
+        {
+          ...oldVersion,
+          content: [{ text: '[Superseded hashline_read for sample.txt; reread the file if its current contents are needed.]', type: 'text' }],
+        },
+        {
+          ...duplicate,
+          content: [{ text: '[Superseded hashline_read for sample.txt; reread the file if its current contents are needed.]', type: 'text' }],
+        },
+        distinctRange,
+        latest,
+      ],
+    })
+  })
+
+  test('prunes reads superseded by a successful write', async () => {
+    const { emit, pi } = createFakePi()
+    hashline(pi, runtime)
+    const previousRead = hashlineResult('read', 'BBBB', 1, 10, 'previous contents')
+
+    const results = await emit('context', { messages: [previousRead, hashlineWriteResult] })
+    const [contextResult] = results
+
+    expect(contextResult).toEqual({
+      messages: [
+        {
+          ...previousRead,
+          content: [{ text: '[Superseded hashline_read for sample.txt; reread the file if its current contents are needed.]', type: 'text' }],
+        },
+        hashlineWriteResult,
+      ],
+    })
+  })
+
+  test('prunes source reads after deletes and moves', async () => {
+    const { emit, pi } = createFakePi()
+    hashline(pi, runtime)
+    const previousRead = hashlineResult('read', 'BBBB', 1, 10, 'previous contents')
+    const transitions = [
+      {
+        ...hashlineWriteResult,
+        details: { sections: [{ hash: 'BBBB', op: 'delete', path: 'sample.txt', version: 'version-bbbb' }] },
+      },
+      {
+        ...hashlineWriteResult,
+        details: {
+          sections: [{ hash: 'BBBB', moveDest: 'moved.txt', op: 'update', path: 'moved.txt', sourcePath: 'sample.txt', version: 'version-bbbb' }],
+        },
+      },
+    ]
+
+    for (const transition of transitions) {
+      const results = await emit('context', { messages: [previousRead, transition] })
+      const [contextResult] = results
+      expect(contextResult).toEqual({
+        messages: [
+          {
+            ...previousRead,
+            content: [{ text: '[Superseded hashline_read for sample.txt; reread the file if its current contents are needed.]', type: 'text' }],
+          },
+          transition,
+        ],
+      })
+    }
+  })
+
   test('applies a current patch and rejects a stale patch without overwriting', async () => {
     const { read, write } = setup()
     const directory = await workspace()
@@ -83,6 +230,10 @@ describe('hashline extension', () => {
 
     const result = await write.execute('write-1', { patch: put(currentHeader, 2, 'changed') }, undefined, undefined, { cwd: directory })
     expect(result.content[0].text).toContain('update sample.txt')
+    expect(result.details.sections).toEqual([
+      { hash: expect.stringMatching(/^[A-F0-9]+$/), op: 'update', path: 'sample.txt', version: expect.stringMatching(/^[a-f0-9]{64}$/) },
+    ])
+    expect(JSON.stringify(result.details)).not.toContain('before')
     expect(await readFile(path, 'utf8')).toBe('first\nchanged\n')
 
     expect(

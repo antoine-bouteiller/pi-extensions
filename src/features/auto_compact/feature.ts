@@ -1,0 +1,62 @@
+import { type AgentSettledEvent, type ExtensionAPI, type ExtensionContext, type SessionStartEvent } from '@earendil-works/pi-coding-agent'
+
+import { type AppRuntime } from '@/shared/effect/app_services.js'
+
+const COMPACTION_THRESHOLD_TOKENS = 300_000
+
+export const register = (pi: ExtensionAPI, _runtime: AppRuntime): void => {
+  let armed = true
+  let compacting = false
+  let sessionGeneration = 0
+
+  const reset = (): void => {
+    sessionGeneration += 1
+    armed = true
+    compacting = false
+  }
+
+  const compact = (ctx: ExtensionContext): void => {
+    const generation = sessionGeneration
+    armed = false
+    compacting = true
+
+    try {
+      ctx.compact({
+        onComplete: () => {
+          if (generation === sessionGeneration) {
+            compacting = false
+          }
+        },
+        onError: () => {
+          if (generation === sessionGeneration) {
+            armed = true
+            compacting = false
+          }
+        },
+      })
+    } catch {
+      if (generation === sessionGeneration) {
+        armed = true
+        compacting = false
+      }
+    }
+  }
+
+  pi.on('session_start', (_event: SessionStartEvent) => {
+    reset()
+  })
+
+  pi.on('agent_settled', (_event: AgentSettledEvent, ctx: ExtensionContext) => {
+    const tokens = ctx.getContextUsage()?.tokens
+    if (tokens === null || tokens === undefined) {
+      return
+    }
+    if (tokens < COMPACTION_THRESHOLD_TOKENS) {
+      armed = true
+      return
+    }
+    if (armed && !compacting) {
+      compact(ctx)
+    }
+  })
+}
