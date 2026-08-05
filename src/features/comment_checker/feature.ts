@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process'
 
 import { type ExtensionAPI, type ExtensionContext, type ToolResultEvent } from '@earendil-works/pi-coding-agent'
-import { Context, Effect } from 'effect'
+import { type Cause, Context, Effect, Function } from 'effect'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { makeEventHandler } from '@/shared/effect/runtime.js'
+import { isEmptyString } from '@/shared/utils/predicates.js'
 import { isRecord } from '@/shared/utils/records.js'
 
 const MAX_OUTPUT_BYTES = 64 * 1024
@@ -37,10 +38,10 @@ interface CheckerResult {
 export type CheckerRunner = (input: HookInput) => Promise<CheckerResult>
 
 interface CommandRunnerShape {
-  readonly run: (input: HookInput) => Effect.Effect<CheckerResult, unknown>
+  readonly run: (input: HookInput) => Effect.Effect<CheckerResult, Cause.UnknownError>
 }
 
-class CommandRunner extends Context.Service<CommandRunner, CommandRunnerShape>()('@comment-checker/CommandRunner') {}
+class CommandRunner extends Context.Service<CommandRunner, CommandRunnerShape>()('pi-extensions/features/comment_checker/feature/CommandRunner') {}
 
 const record = (value: unknown): Record<string, unknown> | undefined => (isRecord(value) ? value : undefined)
 
@@ -50,7 +51,7 @@ const hookInput = (event: ToolResultEvent, ctx: ExtensionContext): HookInput | u
   }
 
   const input = record(event.input)
-  if (!input || typeof input.path !== 'string') {
+  if (input === undefined || typeof input.path !== 'string') {
     return undefined
   }
   const { path } = input
@@ -95,7 +96,7 @@ const runCommentChecker = (input: HookInput): Effect.Effect<CheckerResult> =>
       let exitCode: number | undefined = 0
       if (typeof error?.code === 'number') {
         exitCode = error.code
-      } else if (error) {
+      } else if (error !== null) {
         exitCode = undefined
       }
       resume(Effect.succeed({ exitCode, stderr, stdout }))
@@ -117,10 +118,10 @@ const productionRunner: CommandRunnerShape = { run: runCommentChecker }
 const checkerResult = (
   event: ToolResultEvent,
   ctx: ExtensionContext
-): Effect.Effect<{ content: ToolResultEvent['content'] } | undefined, unknown, CommandRunner> =>
+): Effect.Effect<{ content: ToolResultEvent['content'] } | undefined, Cause.UnknownError, CommandRunner> =>
   Effect.gen(function* () {
     const input = hookInput(event, ctx)
-    if (!input) {
+    if (input === undefined) {
       return undefined
     }
 
@@ -131,7 +132,7 @@ const checkerResult = (
     }
 
     const warning = (result.stderr || result.stdout).trim()
-    if (!warning) {
+    if (isEmptyString(warning)) {
       return undefined
     }
 
@@ -140,15 +141,19 @@ const checkerResult = (
     }
   })
 
-export const register = (pi: ExtensionAPI, runtime: AppRuntime, runner?: CheckerRunner): void => {
-  const commandRunner: CommandRunnerShape = runner
-    ? { run: (input) => Effect.tryPromise({ catch: (cause) => cause, try: () => runner(input) }) }
-    : productionRunner
+export const register: {
+  (runtime: AppRuntime, runner?: CheckerRunner): (pi: ExtensionAPI) => void
+  (pi: ExtensionAPI, runtime: AppRuntime, runner?: CheckerRunner): void
+} = Function.dual(
+  (args) => typeof args[0].on === 'function',
+  (pi: ExtensionAPI, runtime: AppRuntime, runner?: CheckerRunner): void => {
+    const commandRunner: CommandRunnerShape = runner === undefined ? productionRunner : { run: (input) => Effect.tryPromise(() => runner(input)) }
 
-  pi.on(
-    'tool_result',
-    makeEventHandler(runtime)((event: ToolResultEvent, ctx: ExtensionContext) =>
-      checkerResult(event, ctx).pipe(Effect.provideService(CommandRunner, commandRunner))
+    pi.on(
+      'tool_result',
+      makeEventHandler(runtime)((event: ToolResultEvent, ctx: ExtensionContext) =>
+        checkerResult(event, ctx).pipe(Effect.provideService(CommandRunner, commandRunner))
+      )
     )
-  )
-}
+  }
+)

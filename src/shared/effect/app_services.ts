@@ -24,7 +24,7 @@ export interface StatusBarShape {
   readonly channel: (key: string, defaults?: Partial<StatusItem>) => StatusChannel
 }
 
-export class StatusBar extends Context.Service<StatusBar, StatusBarShape>()('@pi/StatusBar') {}
+export class StatusBar extends Context.Service<StatusBar, StatusBarShape>()('pi-extensions/shared/effect/app_services/StatusBar') {}
 
 export interface AgentActivityShape {
   readonly list: () => readonly RunningAgent[]
@@ -32,7 +32,7 @@ export interface AgentActivityShape {
   readonly subscribe: (listener: () => void) => () => void
 }
 
-export class AgentActivity extends Context.Service<AgentActivity, AgentActivityShape>()('@pi/AgentActivity') {}
+export class AgentActivity extends Context.Service<AgentActivity, AgentActivityShape>()('pi-extensions/shared/effect/app_services/AgentActivity') {}
 
 const statusChannel = (key: string, defaults: Partial<StatusItem> = {}): StatusChannel => ({
   clear: Effect.gen(function* () {

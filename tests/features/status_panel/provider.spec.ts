@@ -47,11 +47,11 @@ describe('Anthropic quota provider', () => {
     })
 
     const quota = await fetchAnthropicQuota('http://127.0.0.1:3456', controller.signal, fakeFetch)
-    if (!quota) {
+    if (quota === undefined) {
       throw new Error('expected a quota')
     }
     const { windows } = quota
-    if (!windows) {
+    if (windows === undefined) {
       throw new Error('expected quota windows')
     }
 
@@ -182,10 +182,10 @@ describe('Anthropic quota polling lifecycle', () => {
       yield* TestClock.adjust('10 millis')
       expect(requests).toHaveLength(1)
 
-      const [firstRequest] = requests
-      if (!firstRequest) {
+      if (requests.length === 0) {
         throw new Error('expected a pending request')
       }
+      const [firstRequest] = requests
       firstRequest.resolve({ label: 'anthropic', percent: 10 })
       yield* Effect.promise(flushPromises)
       yield* TestClock.adjust('10 millis')
@@ -249,15 +249,15 @@ describe('Anthropic quota polling lifecycle', () => {
       )
 
       yield* poller.start('http://gateway')
-      const [first] = requests
-      if (!first) {
+      if (requests.length === 0) {
         throw new Error('expected a pending request')
       }
+      const [first] = requests
       yield* poller.start('http://gateway')
-      const [, second] = requests
-      if (!second) {
+      if (requests.length < 2) {
         throw new Error('expected a second pending request')
       }
+      const [, second] = requests
       expect(first.signal.aborted).toBeTrue()
       expect(second.signal.aborted).toBeFalse()
 
@@ -270,7 +270,7 @@ describe('Anthropic quota polling lifecycle', () => {
 
       yield* TestClock.adjust('10 millis')
       const third = requests.at(2)
-      if (!third) {
+      if (third === undefined) {
         throw new Error('expected a third pending request')
       }
       yield* poller.stop

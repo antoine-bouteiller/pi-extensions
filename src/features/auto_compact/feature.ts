@@ -1,10 +1,12 @@
 import { type AgentSettledEvent, type ExtensionAPI, type ExtensionContext, type SessionStartEvent } from '@earendil-works/pi-coding-agent'
+import { Function } from 'effect'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
+import { isNullOrUndefined } from '@/shared/utils/predicates.js'
 
 const COMPACTION_THRESHOLD_TOKENS = 300_000
 
-export const register = (pi: ExtensionAPI, _runtime: AppRuntime): void => {
+const registerImpl = (pi: ExtensionAPI, _runtime: AppRuntime): void => {
   let armed = true
   let compacting = false
   let sessionGeneration = 0
@@ -48,7 +50,7 @@ export const register = (pi: ExtensionAPI, _runtime: AppRuntime): void => {
 
   pi.on('agent_settled', (_event: AgentSettledEvent, ctx: ExtensionContext) => {
     const tokens = ctx.getContextUsage()?.tokens
-    if (tokens === null || tokens === undefined) {
+    if (isNullOrUndefined(tokens)) {
       return
     }
     if (tokens < COMPACTION_THRESHOLD_TOKENS) {
@@ -60,3 +62,8 @@ export const register = (pi: ExtensionAPI, _runtime: AppRuntime): void => {
     }
   })
 }
+
+export const register: {
+  (runtime: AppRuntime): (pi: ExtensionAPI) => void
+  (pi: ExtensionAPI, runtime: AppRuntime): void
+} = Function.dual((args) => typeof args[0].on === 'function', registerImpl)

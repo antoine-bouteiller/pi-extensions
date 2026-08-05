@@ -9,11 +9,12 @@ import { TestClock } from 'effect/testing'
 import { FetchHttpClient, type HttpClient } from 'effect/unstable/http'
 
 import { createWebfetchExtension, type WebfetchDetails, type WebfetchFetch, type WebfetchInput } from '@/features/webfetch/feature.js'
+import { isTrue } from '@/shared/utils/predicates.js'
 
 const stubHttpClient = (fetchImpl: WebfetchFetch): Layer.Layer<HttpClient.HttpClient> =>
   Layer.mergeAll(FetchHttpClient.layer, Layer.succeed(FetchHttpClient.Fetch)(asNarrowed<typeof fetch, WebfetchFetch>(fetchImpl)))
 
-const createHarness = (fetchImpl: WebfetchFetch, saveFullOutput?: (content: string) => Effect.Effect<string, unknown>, clock?: Clock.Clock) => {
+const createHarness = (fetchImpl: WebfetchFetch, saveFullOutput?: (content: string) => Effect.Effect<string>, clock?: Clock.Clock) => {
   const fixture = createFakePi()
   createWebfetchExtension({ clock, httpClient: stubHttpClient(fetchImpl), saveFullOutput }, runtime)(fixture.pi)
   const tool = fixture.state.tools.get('webfetch')
@@ -198,7 +199,7 @@ describe('webfetch', () => {
           cancelledAfterChunks = sent
         },
         pull(controller) {
-          if (sent >= total || init?.signal?.aborted) {
+          if (sent >= total || isTrue(init?.signal?.aborted)) {
             controller.close()
             return
           }

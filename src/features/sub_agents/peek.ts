@@ -14,6 +14,8 @@ import {
 import { Container, matchesKey, truncateToWidth, visibleWidth, type TUI } from '@earendil-works/pi-tui'
 import { Effect, Exit, Fiber, Schema, Scope } from 'effect'
 
+import { isEmptyString, isNotEmptyString } from '@/shared/utils/predicates.js'
+
 import { getSocketPath, isPeekActive, type AgentInfo } from './core.js'
 import { persistedProfileColor } from './profiles.js'
 
@@ -128,33 +130,33 @@ const ToolCallSchema = Schema.Struct({
 })
 
 const UsageSchema = Schema.Struct({
-  cacheRead: Schema.Number,
-  cacheWrite: Schema.Number,
-  cacheWrite1h: Schema.optional(Schema.Number),
+  cacheRead: Schema.Finite,
+  cacheWrite: Schema.Finite,
+  cacheWrite1h: Schema.optional(Schema.Finite),
   cost: Schema.Struct({
-    cacheRead: Schema.Number,
-    cacheWrite: Schema.Number,
-    input: Schema.Number,
-    output: Schema.Number,
-    total: Schema.Number,
+    cacheRead: Schema.Finite,
+    cacheWrite: Schema.Finite,
+    input: Schema.Finite,
+    output: Schema.Finite,
+    total: Schema.Finite,
   }),
-  input: Schema.Number,
-  output: Schema.Number,
-  reasoning: Schema.optional(Schema.Number),
-  totalTokens: Schema.Number,
+  input: Schema.Finite,
+  output: Schema.Finite,
+  reasoning: Schema.optional(Schema.Finite),
+  totalTokens: Schema.Finite,
 })
 
 const AssistantMessageDiagnosticSchema = Schema.Struct({
   details: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
   error: Schema.optional(
     Schema.Struct({
-      code: Schema.optional(Schema.Union([Schema.String, Schema.Number])),
+      code: Schema.optional(Schema.Union([Schema.String, Schema.Finite])),
       message: Schema.String,
       name: Schema.optional(Schema.String),
       stack: Schema.optional(Schema.String),
     })
   ),
-  timestamp: Schema.Number,
+  timestamp: Schema.Finite,
   type: Schema.String,
 })
 
@@ -163,7 +165,7 @@ const StopReasonSchema = Schema.Literals(['stop', 'length', 'toolUse', 'error', 
 const UserMessageSchema = Schema.Struct({
   content: Schema.Union([Schema.String, Schema.Array(Schema.Union([TextContentSchema, ImageContentSchema]))]),
   role: Schema.Literal('user'),
-  timestamp: Schema.Number,
+  timestamp: Schema.Finite,
 })
 
 const AssistantMessageSchema = Schema.Struct({
@@ -177,7 +179,7 @@ const AssistantMessageSchema = Schema.Struct({
   responseModel: Schema.optional(Schema.String),
   role: Schema.Literal('assistant'),
   stopReason: StopReasonSchema,
-  timestamp: Schema.Number,
+  timestamp: Schema.Finite,
   usage: UsageSchema,
 })
 
@@ -187,7 +189,7 @@ const ToolResultMessageSchema = Schema.Struct({
   details: Schema.optional(Schema.Unknown),
   isError: Schema.Boolean,
   role: Schema.Literal('toolResult'),
-  timestamp: Schema.Number,
+  timestamp: Schema.Finite,
   toolCallId: Schema.String,
   toolName: Schema.String,
   usage: Schema.optional(UsageSchema),
@@ -324,7 +326,7 @@ export class SubagentPeekOverlay {
     if (isPeekActive(options.info.id)) {
       this.connectSocket()
     }
-    this.pollFiber = Effect.runFork(Effect.forever(Effect.delay(Effect.sync(() => this.poll()).pipe(Effect.catchCause(() => Effect.void)), 200)))
+    this.pollFiber = Effect.runFork(Effect.forever(Effect.delay(Effect.sync(() => this.poll()).pipe(Effect.ignoreCause), 200)))
   }
 
   private loadSession(): void {
@@ -343,14 +345,14 @@ export class SubagentPeekOverlay {
     this.invalidateCache()
     this.chatContainer.clear()
     this.pendingTools.clear()
-    if (!this.sessionManager) {
+    if (this.sessionManager === undefined) {
       return
     }
     const context = this.sessionManager.buildSessionContext()
     for (const message of context.messages) {
       if (message.role === 'user') {
         const text = this.getUserText(message)
-        if (text) {
+        if (isNotEmptyString(text)) {
           this.chatContainer.addChild(new UserMessageComponent(text, getMarkdownTheme()))
         }
         continue
@@ -361,7 +363,7 @@ export class SubagentPeekOverlay {
       }
       if (message.role === 'toolResult') {
         const component = this.pendingTools.get(message.toolCallId)
-        if (component) {
+        if (component !== undefined) {
           component.updateResult(message)
           this.pendingTools.delete(message.toolCallId)
         }
@@ -406,7 +408,7 @@ export class SubagentPeekOverlay {
       return ''
     }
     return content
-      .filter((part): part is { type: 'text'; text: string } => part.type === 'text' && typeof part.text === 'string' && part.text.length > 0)
+      .filter((part): part is { type: 'text'; text: string } => part.type === 'text' && typeof part.text === 'string' && isNotEmptyString(part.text))
       .map((part) => part.text)
       .join('\n')
   }
@@ -423,7 +425,7 @@ export class SubagentPeekOverlay {
 
   private connectSocket(): void {
     this.lastConnectAttemptAt = Date.now()
-    const scope = Effect.runSync(Scope.make())
+    const scope = Scope.makeUnsafe()
     let socket: Socket
     try {
       socket = Effect.runSync(
@@ -456,7 +458,7 @@ export class SubagentPeekOverlay {
       const lines = this.socketBuffer.split('\n')
       this.socketBuffer = lines.pop() ?? ''
       for (const line of lines) {
-        if (!line.trim()) {
+        if (isEmptyString(line.trim())) {
           continue
         }
         let parsed: unknown
@@ -475,13 +477,13 @@ export class SubagentPeekOverlay {
 
   private handleSyncEvent(event: SyncEvent): void {
     this.status = event.status || 'done'
-    if (event.userMessage) {
+    if (event.userMessage !== undefined) {
       const text = this.getUserText(event.userMessage)
-      if (text) {
+      if (isNotEmptyString(text)) {
         this.chatContainer.addChild(new UserMessageComponent(text, getMarkdownTheme()))
       }
     }
-    if (event.partialMessage) {
+    if (event.partialMessage !== undefined) {
       this.streamingMessage = event.partialMessage
       this.streamingComponent = new AssistantMessageComponent(undefined, true, getMarkdownTheme())
       this.chatContainer.addChild(this.streamingComponent)
@@ -495,15 +497,15 @@ export class SubagentPeekOverlay {
 
   private applyActiveTool(activeTool: ActiveToolEvent): void {
     let component = this.pendingTools.get(activeTool.toolCallId)
-    if (!component) {
+    if (component === undefined) {
       component = this.createToolComponent(activeTool.toolName, activeTool.toolCallId, activeTool.args)
       this.chatContainer.addChild(component)
       this.pendingTools.set(activeTool.toolCallId, component)
     }
-    if (activeTool.result) {
+    if (activeTool.result !== undefined) {
       component.updateResult({ ...activeTool.result, isError: activeTool.isError ?? false })
       this.pendingTools.delete(activeTool.toolCallId)
-    } else if (activeTool.partialResult) {
+    } else if (activeTool.partialResult !== undefined) {
       component.updateResult({ ...activeTool.partialResult, isError: false }, true)
     }
   }
@@ -511,7 +513,7 @@ export class SubagentPeekOverlay {
   private handleMessageStart(event: MessageStartEvent): void {
     if (event.message?.role === 'user') {
       const text = this.getUserText(event.message)
-      if (text) {
+      if (isNotEmptyString(text)) {
         this.chatContainer.addChild(new UserMessageComponent(text, getMarkdownTheme()))
       }
     } else if (event.message?.role === 'assistant') {
@@ -542,7 +544,7 @@ export class SubagentPeekOverlay {
   }
 
   private handleMessageEnd(event: MessageEndEvent): void {
-    if (!this.streamingComponent || event.message?.role !== 'assistant') {
+    if (this.streamingComponent === undefined || event.message?.role !== 'assistant') {
       return
     }
     this.streamingMessage = event.message
@@ -567,7 +569,7 @@ export class SubagentPeekOverlay {
 
   private handleToolExecutionStart(event: ToolExecutionStartEvent): void {
     this.status = 'tool'
-    if (event.toolCallId && event.toolName && !this.pendingTools.has(event.toolCallId)) {
+    if (isNotEmptyString(event.toolCallId) && isNotEmptyString(event.toolName) && !this.pendingTools.has(event.toolCallId)) {
       const component = this.createToolComponent(event.toolName, event.toolCallId, event.args)
       this.chatContainer.addChild(component)
       this.pendingTools.set(event.toolCallId, component)
@@ -575,21 +577,21 @@ export class SubagentPeekOverlay {
   }
 
   private handleToolExecutionUpdate(event: ToolExecutionUpdateEvent): void {
-    if (!event.toolCallId) {
+    if (isEmptyString(event.toolCallId)) {
       return
     }
     const component = this.pendingTools.get(event.toolCallId)
-    if (component && event.partialResult) {
+    if (component !== undefined && event.partialResult !== undefined) {
       component.updateResult({ ...event.partialResult, isError: false }, true)
     }
   }
 
   private handleToolExecutionEnd(event: ToolExecutionEndEvent): void {
-    if (!event.toolCallId) {
+    if (isEmptyString(event.toolCallId)) {
       return
     }
     const component = this.pendingTools.get(event.toolCallId)
-    if (component) {
+    if (component !== undefined) {
       component.updateResult({ ...event.result, isError: event.isError ?? false })
       this.pendingTools.delete(event.toolCallId)
     }
@@ -626,7 +628,7 @@ export class SubagentPeekOverlay {
   }
 
   private syncToolComponentsFromMessage(): void {
-    if (!this.streamingMessage) {
+    if (this.streamingMessage === undefined) {
       return
     }
     for (const content of this.streamingMessage.content) {
@@ -634,18 +636,18 @@ export class SubagentPeekOverlay {
         continue
       }
       const existing = this.pendingTools.get(content.id)
-      if (existing) {
-        existing.updateArgs(content.arguments)
-      } else {
+      if (existing === undefined) {
         const component = this.createToolComponent(content.name, content.id, content.arguments)
         this.chatContainer.addChild(component)
         this.pendingTools.set(content.id, component)
+      } else {
+        existing.updateArgs(content.arguments)
       }
     }
   }
 
   private ensureStreamingComponent(): void {
-    if (this.streamingComponent) {
+    if (this.streamingComponent !== undefined) {
       return
     }
     this.streamingMessage = {
@@ -671,7 +673,7 @@ export class SubagentPeekOverlay {
   }
 
   private cleanupStreaming(): void {
-    if (this.streamingComponent) {
+    if (this.streamingComponent !== undefined) {
       this.chatContainer.removeChild(this.streamingComponent)
     }
     this.streamingComponent = undefined
@@ -683,7 +685,7 @@ export class SubagentPeekOverlay {
     if (this.disposed) {
       return
     }
-    if (!this.socket && isPeekActive(this.info.id) && Date.now() - this.lastConnectAttemptAt >= 2000) {
+    if (this.socket === undefined && isPeekActive(this.info.id) && Date.now() - this.lastConnectAttemptAt >= 2000) {
       this.connectSocket()
     }
     try {
@@ -692,7 +694,7 @@ export class SubagentPeekOverlay {
         return
       }
       this.loadSession()
-      if (!this.streamingComponent) {
+      if (this.streamingComponent === undefined) {
         this.rebuildChat()
       }
       this.invalidateCache()
@@ -773,7 +775,7 @@ export class SubagentPeekOverlay {
 
   private renderHeader(innerWidth: number): string {
     const title = ` ${this.info.taskName} `
-    const modelTag = this.modelName ? `[${truncateToWidth(this.modelName, 18)}] ` : ''
+    const modelTag = isEmptyString(this.modelName) ? '' : `[${truncateToWidth(this.modelName, 18)}] `
     const statusText = ` ${STATUS_ICONS[this.status]} ${this.status} `
     const statusColor = STATUS_COLORS[this.status]
     const statusWidth = visibleWidth(statusText)
@@ -790,7 +792,7 @@ export class SubagentPeekOverlay {
   }
 
   private getContentLines(innerWidth: number): string[] {
-    if (this.cachedLines && this.cachedWidth === innerWidth) {
+    if (this.cachedLines !== undefined && this.cachedWidth === innerWidth) {
       return this.cachedLines
     }
     const contentLines = stripPromptMarkers(this.chatContainer.render(innerWidth))
@@ -839,11 +841,11 @@ export class SubagentPeekOverlay {
 
   dispose(): void {
     this.disposed = true
-    if (this.pollFiber) {
+    if (this.pollFiber !== undefined) {
       Effect.runFork(Fiber.interrupt(this.pollFiber))
       this.pollFiber = undefined
     }
-    if (this.socketScope) {
+    if (this.socketScope !== undefined) {
       this.releaseSocketScope(this.socketScope)
     }
   }

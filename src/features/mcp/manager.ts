@@ -5,8 +5,9 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { type Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import { Context, Effect, Layer } from 'effect'
+import { Context, Effect, Function, Layer } from 'effect'
 
+import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 import { isRecord } from '@/shared/utils/records.js'
 
 import { KeychainCredentialError, createKeychainCredentialStore, type CredentialStore } from './keychain.js'
@@ -128,7 +129,7 @@ const safeOperationError = (error: unknown, operation: string, server: string): 
     return cancelled
   }
   if (error instanceof KeychainCredentialError) {
-    return new KeychainCredentialError(error.message.slice(0, 500))
+    return KeychainCredentialError.make({ message: error.message.slice(0, 500) })
   }
   if (isAuthorizationFailure(error)) {
     return new Error(`Authentication is required for MCP server ${JSON.stringify(server)}; run /mcp-auth ${server}.`)
@@ -145,7 +146,7 @@ const safeOperationError = (error: unknown, operation: string, server: string): 
 }
 
 const isSafeSearchRegex = (pattern: string): boolean => {
-  if (pattern.length === 0 || pattern.length > 128 || /\\[1-9]/.test(pattern)) {
+  if (isEmptyString(pattern) || pattern.length > 128 || /\\[1-9]/.test(pattern)) {
     return false
   }
   // Accept only a fixed-width subset plus one `.*` wildcard. Excluding groups,
@@ -177,7 +178,7 @@ const oauthConfigFor = (config: ServerConfig): OAuthConfig | undefined => {
   if (config.oauth !== undefined) {
     return config.oauth
   }
-  if (config.headers && Object.keys(config.headers).length > 0) {
+  if (config.headers !== undefined && Object.keys(config.headers).length > 0) {
     return undefined
   }
   return {}
@@ -187,7 +188,7 @@ const initialStatus = (config: ServerConfig): McpServerStatus => {
   if ('invalid' in config) {
     return 'invalid-config'
   }
-  return config.disabled ? 'disabled' : 'disconnected'
+  return isTrue(config.disabled) ? 'disabled' : 'disconnected'
 }
 
 const isUsableRuntime = (runtime: ServerRuntime): boolean => runtime.status !== 'disabled' && runtime.status !== 'invalid-config'
@@ -213,7 +214,7 @@ const normalizeAnnotations = (
       }
     | undefined
 ): McpToolAnnotations => {
-  if (!value) {
+  if (value === undefined) {
     return {}
   }
   return {
@@ -241,14 +242,14 @@ const combineSignals = (...signals: (AbortSignal | undefined)[]): AbortSignal =>
   if (present.length === 0) {
     return new AbortController().signal
   }
-  if (present.length === 1 && only) {
+  if (present.length === 1 && only !== undefined) {
     return only
   }
   return AbortSignal.any(present)
 }
 
 const waitWithSignal = <Value>(promise: Promise<Value>, signal?: AbortSignal): Promise<Value> => {
-  if (!signal) {
+  if (signal === undefined) {
     return promise
   }
   if (signal.aborted) {
@@ -313,7 +314,7 @@ const convertToolResult = (result: unknown): { content: GatewayContent[]; isErro
   }
   return {
     content: converted.length > 0 ? converted : [{ text: '(MCP tool returned no supported content)', type: 'text' }],
-    isError: value.isError === true,
+    isError: isTrue(value.isError),
   }
 }
 
@@ -352,7 +353,7 @@ export class McpManager {
     return [...this.runtimes.values()].map((runtime) => ({
       name: runtime.name,
       status: runtime.status,
-      ...(runtime.error ? { error: runtime.error } : {}),
+      ...(isNotNullOrUndefined(runtime.error) && isNotEmptyString(runtime.error) ? { error: runtime.error } : {}),
     }))
   }
 
@@ -365,10 +366,10 @@ export class McpManager {
 
   async connect(server: string, options: { signal?: AbortSignal } = {}): Promise<ConnectedServer> {
     const runtime = this.runtime(server)
-    if (runtime.connection) {
+    if (runtime.connection !== undefined) {
       return runtime.connection
     }
-    if (!runtime.connecting) {
+    if (runtime.connecting === undefined) {
       runtime.status = 'connecting'
       runtime.error = undefined
       this.notify()
@@ -407,7 +408,7 @@ export class McpManager {
       return await waitWithSignal(runtime.connecting, options.signal)
     } finally {
       runtime.connectWaiters -= 1
-      if (runtime.connectWaiters === 0 && !runtime.connection) {
+      if (runtime.connectWaiters === 0 && runtime.connection === undefined) {
         runtime.connectingController?.abort()
       }
     }
@@ -422,18 +423,21 @@ export class McpManager {
     query: string,
     options: { server?: string; regex?: boolean; limit?: number; signal?: AbortSignal } = {}
   ): Promise<readonly ToolMetadata[]> {
-    const runtimes = options.server ? [this.runtime(options.server)] : [...this.runtimes.values()].filter(isUsableRuntime)
+    const runtimes =
+      isNotNullOrUndefined(options.server) && isNotEmptyString(options.server)
+        ? [this.runtime(options.server)]
+        : [...this.runtimes.values()].filter(isUsableRuntime)
     const settled = await Promise.allSettled(runtimes.map((runtime) => this.toolsForServer(runtime.name, options.signal)))
     const tools = settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : [])).filter((tool) => this.isAllowed(tool, 'search'))
     if (tools.length === 0) {
       const firstFailure = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected')
-      if (firstFailure) {
+      if (firstFailure !== undefined) {
         throw firstFailure.reason
       }
     }
 
     let matches: ToolMetadata[]
-    if (options.regex) {
+    if (isTrue(options.regex)) {
       if (!isSafeSearchRegex(query)) {
         throw new Error('Invalid MCP search regular expression: use at most 128 characters without lookarounds, backreferences, or quantified groups')
       }
@@ -466,7 +470,7 @@ export class McpManager {
   ): Promise<AgentToolResult<unknown>> {
     const metadata = await this.resolveTool(tool, options, 'call')
     const runtime = this.runtime(metadata.server)
-    if (!runtime.connection) {
+    if (runtime.connection === undefined) {
       throw new Error(`MCP server ${JSON.stringify(metadata.server)} is not connected`)
     }
     let result: unknown
@@ -500,7 +504,7 @@ export class McpManager {
 
   authenticate(server: string, options: { signal?: AbortSignal } = {}): Promise<void> {
     let authentication = this.authenticationByServer.get(server)
-    if (!authentication) {
+    if (authentication === undefined) {
       const controller = new AbortController()
       const promise = this.authenticateServer(server, { signal: controller.signal })
       authentication = { controller, promise, waiters: 0 }
@@ -529,10 +533,10 @@ export class McpManager {
     const runtime = this.runtime(server)
     await this.awaitExistingConnectionAttempt(runtime, options.signal)
     const oauthConfig = oauthConfigFor(runtime.config)
-    if (runtime.config.type !== 'http' || !oauthConfig) {
+    if (runtime.config.type !== 'http' || oauthConfig === undefined) {
       throw new Error(`MCP server ${JSON.stringify(server)} does not support OAuth`)
     }
-    if (runtime.connection) {
+    if (runtime.connection !== undefined) {
       return
     }
 
@@ -574,7 +578,7 @@ export class McpManager {
   }
 
   private async awaitExistingConnectionAttempt(runtime: ServerRuntime, signal?: AbortSignal): Promise<void> {
-    if (!runtime.connecting) {
+    if (runtime.connecting === undefined) {
       return
     }
     try {
@@ -618,12 +622,12 @@ export class McpManager {
   ): Promise<void> {
     const { provider, signal, callback } = options
     const pending = await this.attemptOAuthConnect(runtime, provider, signal)
-    if (!pending) {
+    if (pending === undefined) {
       return
     }
     try {
       const code = await callback.waitForCode()
-      if (!pending.transport.finishAuth) {
+      if (pending.transport.finishAuth === undefined) {
         throw new Error('The MCP HTTP transport cannot complete OAuth authorization')
       }
       await pending.transport.finishAuth(code)
@@ -664,7 +668,7 @@ export class McpManager {
       throw new Error('MCP manager is closed')
     }
     const runtime = this.runtimes.get(name)
-    if (!runtime) {
+    if (runtime === undefined) {
       throw new Error(`Unknown MCP server ${JSON.stringify(name)}`)
     }
     if (runtime.status === 'disabled') {
@@ -681,11 +685,11 @@ export class McpManager {
     options: { server?: string; signal?: AbortSignal },
     operation: 'describe' | 'call'
   ): Promise<ToolMetadata> {
-    if (options.server) {
+    if (isNotNullOrUndefined(options.server) && isNotEmptyString(options.server)) {
       const tools = await this.toolsForServer(options.server, options.signal)
       const matches = tools.filter((tool) => tool.name === requested || tool.remoteName === requested)
       const [onlyMatch] = matches
-      if (matches.length === 1 && onlyMatch) {
+      if (matches.length === 1 && onlyMatch !== undefined) {
         return this.requireAllowed(onlyMatch, operation)
       }
       if (matches.length > 1) {
@@ -700,19 +704,19 @@ export class McpManager {
       .filter(({ prefix }) => requested.startsWith(prefix))
       .toSorted((left, right) => right.prefix.length - left.prefix.length)
     const [longestPrefixed] = prefixed
-    if (longestPrefixed) {
+    if (longestPrefixed !== undefined) {
       const longest = longestPrefixed.prefix.length
       const targets = prefixed.filter(({ prefix }) => prefix.length === longest)
       if (targets.length > 1) {
         throw new Error(`MCP server-name collision while resolving ${JSON.stringify(requested)}`)
       }
       const [target] = targets
-      if (!target) {
+      if (target === undefined) {
         throw new Error(`Unknown MCP tool ${JSON.stringify(requested)}`)
       }
       const tools = await this.toolsForServer(target.runtime.name, options.signal)
       const match = tools.find((tool) => tool.name === requested)
-      if (match) {
+      if (match !== undefined) {
         return this.requireAllowed(match, operation)
       }
       throw new Error(`Unknown MCP tool ${JSON.stringify(requested)}`)
@@ -723,13 +727,13 @@ export class McpManager {
     const all = settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
     if (all.length === 0) {
       const firstFailure = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected')
-      if (firstFailure) {
+      if (firstFailure !== undefined) {
         throw firstFailure.reason
       }
     }
     const matches = all.filter((tool) => tool.name === requested || tool.remoteName === requested)
     const [onlyMatch] = matches
-    if (matches.length === 1 && onlyMatch) {
+    if (matches.length === 1 && onlyMatch !== undefined) {
       return this.requireAllowed(onlyMatch, operation)
     }
     if (matches.length > 1) {
@@ -745,7 +749,7 @@ export class McpManager {
 
   private isAllowed(tool: ToolMetadata, operation: McpPolicyOperation): boolean {
     const { policy } = this.options
-    if (!policy) {
+    if (policy === undefined) {
       return true
     }
     try {
@@ -794,7 +798,7 @@ export class McpManager {
   }
 
   private defaultOAuthProvider(runtime: ServerRuntime): KeychainOAuthProvider | undefined {
-    return runtime.config.type === 'http' && runtime.config.oauth ? this.createOAuthProvider(runtime, runtime.config.oauth) : undefined
+    return runtime.config.type === 'http' && runtime.config.oauth !== undefined ? this.createOAuthProvider(runtime, runtime.config.oauth) : undefined
   }
 
   private async establishHttp(
@@ -811,7 +815,7 @@ export class McpManager {
       })
     } catch (error) {
       const retriedProvider = this.implicitOAuthProvider(runtime, provider, error)
-      if (!retriedProvider) {
+      if (retriedProvider === undefined) {
         return this.fallbackToSse(runtime, { ...attempt, provider }, error)
       }
       try {
@@ -838,7 +842,7 @@ export class McpManager {
     // Keep public/anonymous HTTP servers independent of the credential store.
     // Only attach an implicit OAuth provider after the endpoint returns 401.
     const implicitOAuth = runtime.config.oauth === undefined ? oauthConfigFor(runtime.config) : undefined
-    if (provider || !implicitOAuth || !isOAuthChallenge(failure)) {
+    if (provider !== undefined || implicitOAuth === undefined || !isOAuthChallenge(failure)) {
       return undefined
     }
     return this.createOAuthProvider(runtime, implicitOAuth)
@@ -902,13 +906,13 @@ export class McpManager {
     const cursors = new Set<string>()
     let cursor: string | undefined
     do {
-      if (cursor) {
+      if (isNotNullOrUndefined(cursor) && isNotEmptyString(cursor)) {
         if (cursors.has(cursor)) {
           throw new Error(`MCP server ${server} repeated a tools cursor`)
         }
         cursors.add(cursor)
       }
-      const page = await client.listTools(cursor ? { cursor } : undefined, {
+      const page = await client.listTools(isNotNullOrUndefined(cursor) && isNotEmptyString(cursor) ? { cursor } : undefined, {
         signal,
         timeout: this.requestTimeoutMs,
       })
@@ -937,7 +941,7 @@ export class McpManager {
     for (const runtime of this.runtimes.values()) {
       for (const tool of runtime.connection?.tools ?? []) {
         const previous = names.get(tool.name)
-        if (previous && previous !== runtime.name) {
+        if (previous !== undefined && previous !== runtime.name) {
           throw new Error(
             `MCP tool-name collision: servers ${JSON.stringify(previous)} and ${JSON.stringify(runtime.name)} both expose ${JSON.stringify(tool.name)}`
           )
@@ -984,12 +988,16 @@ export class McpManager {
 }
 
 /** Scoped Effect service for callers that own the manager through a Layer. */
-export class McpManagerService extends Context.Service<McpManagerService, McpManager>()('@pi/mcp/Manager') {}
+export class McpManagerService extends Context.Service<McpManagerService, McpManager>()('pi-extensions/features/mcp/manager/McpManagerService') {}
 
-export const mcpManagerLayer = (config: McpServerMap, options: McpManagerOptions): Layer.Layer<McpManagerService> =>
+export const mcpManagerLayer: {
+  (options: McpManagerOptions): (config: McpServerMap) => Layer.Layer<McpManagerService>
+  (config: McpServerMap, options: McpManagerOptions): Layer.Layer<McpManagerService>
+} = Function.dual(2, (config: McpServerMap, options: McpManagerOptions): Layer.Layer<McpManagerService> =>
   Layer.effect(McpManagerService)(
     Effect.acquireRelease(
       Effect.sync(() => new McpManager(config, options)),
-      (manager) => Effect.tryPromise({ catch: (cause) => cause, try: () => manager.close() }).pipe(Effect.ignore)
+      (manager) => Effect.tryPromise(() => manager.close()).pipe(Effect.ignore)
     )
   )
+)

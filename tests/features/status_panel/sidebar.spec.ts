@@ -77,7 +77,11 @@ describe('sidebar rendering', () => {
   test('renders session and weekly quota as matching bars with their time left', () => {
     const lines = renderSidebarLines({ height: 36, now: 0, state, theme, width: 44 }).map(stripAnsi)
     const quotaIndex = lines.findIndex((line) => line.includes('QUOTA'))
-    const [session, sessionMeter, weekly, weeklyMeter] = lines.slice(quotaIndex + 1, quotaIndex + 5)
+    const quotaLines = lines.slice(quotaIndex + 1, quotaIndex + 5)
+    if (quotaLines.length < 4) {
+      throw new Error('expected quota meter rows')
+    }
+    const [session, sessionMeter, weekly, weeklyMeter] = quotaLines
 
     expect(session).toContain('Session')
     expect(session).toContain('42.3%')
@@ -86,9 +90,6 @@ describe('sidebar rendering', () => {
     expect(weekly).toContain('18.0%')
     expect(weekly).not.toContain('31.62/200$')
     expect(weeklyMeter).toMatch(/■+·+ +4d 6h 31\.62\/200\$/)
-    if (!sessionMeter || !weeklyMeter) {
-      throw new Error('expected quota meter rows')
-    }
     expect(sessionMeter.indexOf('2h 14m') + '2h 14m'.length).toBe(weeklyMeter.indexOf('31.62/200$') + '31.62/200$'.length)
     expect(lines.slice(quotaIndex).join('\n')).toContain('Azure')
   })
@@ -254,18 +255,18 @@ describe('sidebar controller overlay race', () => {
 
     sidebar.show()
     expect(calls).toHaveLength(1)
-    const [first] = calls
-    if (!first) {
+    if (calls.length === 0) {
       throw new Error('expected a first overlay request')
     }
+    const [first] = calls
 
     sidebar.hide()
     sidebar.show()
     expect(calls).toHaveLength(2)
-    const [, second] = calls
-    if (!second) {
+    if (calls.length < 2) {
       throw new Error('expected a second overlay request')
     }
+    const [, second] = calls
 
     // The newer overlay attaches and is accepted first.
     second.factory(secondTui, controllerTheme, {}, second.resolve)
@@ -308,10 +309,10 @@ describe('sidebar controller overlay race', () => {
     const sidebar = createSidebarController({ ctx, getState: () => currentState, redrawMs: 10 })
 
     sidebar.show()
-    const [overlay] = calls
-    if (!overlay) {
+    if (calls.length === 0) {
       throw new Error('expected an overlay request')
     }
+    const [overlay] = calls
     overlay.factory(tui, controllerTheme, {}, overlay.resolve)
     const idleRenders = renderRequests
     await Bun.sleep(30)

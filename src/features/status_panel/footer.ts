@@ -1,5 +1,6 @@
 import { type ThemeColor } from '@earendil-works/pi-coding-agent'
 import { truncateToWidth } from '@earendil-works/pi-tui'
+import { Function } from 'effect'
 
 import { formatStatusText, type StatusEntry } from '@/shared/state/status_bar.js'
 
@@ -19,7 +20,10 @@ export interface FooterState {
   statuses: readonly StatusEntry[]
 }
 
-export const renderFooterLines = (state: FooterState, theme: FooterTheme, width: number): string[] => {
+export const renderFooterLines: {
+  (theme: FooterTheme, width: number): (state: FooterState) => string[]
+  (state: FooterState, theme: FooterTheme, width: number): string[]
+} = Function.dual(3, (state: FooterState, theme: FooterTheme, width: number): string[] => {
   const { model, git, quotas } = state
   const percent = model.contextPercent ?? 0
   const tokens = formatTokens(model.contextTokens ?? 0)
@@ -30,13 +34,13 @@ export const renderFooterLines = (state: FooterState, theme: FooterTheme, width:
     muted(`Context: ${progressBar(percent, 8)} ${tokens}/${window} (${Math.round(percent)}%)`),
   ]
 
-  if (git.branch) {
+  if (git.branch !== undefined) {
     const fileLabel = git.changedFiles === 1 ? 'file' : 'files'
     lines.push(muted(`${git.branch} · ${git.changedFiles} ${fileLabel} changed`))
   }
 
   for (const quota of [quotas.anthropic, quotas.azure]) {
-    if (quota) {
+    if (quota !== undefined) {
       lines.push(
         muted(
           progressLine({
@@ -54,4 +58,4 @@ export const renderFooterLines = (state: FooterState, theme: FooterTheme, width:
     lines.push(truncateToWidth(theme.fg(STATUS_TONE_COLORS[status.tone ?? 'muted'], formatStatusText(status)), width))
   }
   return lines
-}
+})

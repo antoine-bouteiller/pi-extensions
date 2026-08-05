@@ -26,11 +26,12 @@ import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
 import { getAgentDir, SessionManager, type ThemeColor } from '@earendil-works/pi-coding-agent'
-import { Clock, Deferred, Effect, Exit, HashMap, Option, Ref, Scope } from 'effect'
+import { Clock, Data, Deferred, Effect, Exit, Function, HashMap, Option, Ref, Scope } from 'effect'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
 import { azureQuota, consumeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
+import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 import { isRecord } from '@/shared/utils/records.js'
 
 import {
@@ -299,7 +300,7 @@ interface FollowUpClaim {
 const abortError = (signal?: AbortSignal): Error => (signal?.reason instanceof Error ? signal.reason : new Error('Wait canceled.'))
 
 const throwIfAborted = (signal?: AbortSignal): void => {
-  if (signal?.aborted) {
+  if (isTrue(signal?.aborted)) {
     throw abortError(signal)
   }
 }
@@ -326,7 +327,7 @@ const normalizeConfig = (value: unknown): SubagentConfig => {
   const retentionDays =
     typeof raw.retentionDays === 'number' && Number.isFinite(raw.retentionDays) && raw.retentionDays >= 0 ? raw.retentionDays : undefined
   return {
-    ...(typeof raw.storageDir === 'string' && raw.storageDir.trim() ? { storageDir: raw.storageDir.trim() } : {}),
+    ...(typeof raw.storageDir === 'string' && isNotEmptyString(raw.storageDir.trim()) ? { storageDir: raw.storageDir.trim() } : {}),
     ...(inactivityMinutes === undefined ? {} : { inactivityMinutes }),
     ...(retentionDays === undefined ? {} : { retentionDays }),
   }
@@ -345,7 +346,7 @@ const loadSubagentConfig = (): SubagentConfig => {
 
 export const getRunsDir = (): string => {
   const configured = loadSubagentConfig().storageDir
-  if (configured) {
+  if (isNotNullOrUndefined(configured) && isNotEmptyString(configured)) {
     const expanded = expandHome(configured)
     return isAbsolute(expanded) ? expanded : resolvePath(SUBAGENT_DIR, expanded)
   }
@@ -361,7 +362,8 @@ const ensurePrivateDir = (directory: string, enforceMode = false): void => {
 }
 
 const ensureBaseDirs = (): void => {
-  ensurePrivateDir(getRunsDir(), !loadSubagentConfig().storageDir)
+  const { storageDir } = loadSubagentConfig()
+  ensurePrivateDir(getRunsDir(), isNullOrUndefined(storageDir) || isEmptyString(storageDir))
   ensurePrivateDir(SOCKET_DIR, true)
 }
 
@@ -644,7 +646,7 @@ const saveInfo = (info: AgentInfo): void => {
 }
 
 const closedStoredStatus = (parsed: Static<typeof StoredAgentInfoSchema>): AgentRuntimeStatus => {
-  if (parsed.error) {
+  if (isNotNullOrUndefined(parsed.error) && isNotEmptyString(parsed.error)) {
     return 'failed'
   }
   return parsed.finalResponse === undefined ? 'interrupted' : 'completed'
@@ -687,7 +689,7 @@ const readInfos = (directory: string): AgentInfo[] => {
     .filter((name) => name.endsWith('.info.json'))
     .flatMap((name) => {
       const info = readInfoFile(join(directory, name))
-      return info ? [info] : []
+      return info === undefined ? [] : [info]
     })
 }
 
@@ -708,10 +710,13 @@ const readAllInfos = (): AgentInfo[] => {
   return sortInfos(directories.flatMap(readInfos))
 }
 
-export const getAgent = (name: string, parentSessionId: string): AgentInfo | undefined => {
+export const getAgent: {
+  (parentSessionId: string): (name: string) => AgentInfo | undefined
+  (name: string, parentSessionId: string): AgentInfo | undefined
+} = Function.dual(2, (name: string, parentSessionId: string): AgentInfo | undefined => {
   const taskName = normalizeTaskName(name)
   return readScopeInfos(parentSessionId).find((info) => info.taskName === taskName)
-}
+})
 
 interface PeekMarker {
   pid: number
@@ -739,7 +744,7 @@ const markActive = (agentId: string, kind: 'active' | 'peek', marker: PeekMarker
 const clearActive = (agentId: string, kind: 'active' | 'peek', owner?: Pick<PeekMarker, 'pid' | 'token'>): void => {
   const file = markerPath(agentId, kind)
   try {
-    if (owner && existsSync(file)) {
+    if (owner !== undefined && existsSync(file)) {
       const current: unknown = JSON.parse(readFileSync(file, 'utf8'))
       if (!Check(PeekMarkerPartialSchema, current) || current.pid !== owner.pid || current.token !== owner.token) {
         return
@@ -854,7 +859,7 @@ class SessionLogger {
   private write(entry: { level: string; category: string; message: string; data?: unknown }): void {
     const { level, category, message, data } = entry
     mkdirSync(dirname(this.file), { recursive: true })
-    if (!this.stream) {
+    if (this.stream === undefined) {
       this.stream = createWriteStream(this.file, { flags: 'a' })
     }
     this.stream.write(
@@ -968,7 +973,12 @@ class EventBroadcaster {
   private applyToolExecutionStart(event: SubagentRpcEvent): void {
     this.status = 'tool'
     this.toolName = event.toolName
-    if (event.toolCallId && event.toolName) {
+    if (
+      isNotNullOrUndefined(event.toolCallId) &&
+      isNotEmptyString(event.toolCallId) &&
+      isNotNullOrUndefined(event.toolName) &&
+      isNotEmptyString(event.toolName)
+    ) {
       this.activeTools.set(event.toolCallId, {
         args: event.args,
         toolCallId: event.toolCallId,
@@ -978,28 +988,28 @@ class EventBroadcaster {
   }
 
   private applyToolExecutionUpdate(event: SubagentRpcEvent): void {
-    if (!event.toolCallId) {
+    if (isNullOrUndefined(event.toolCallId) || isEmptyString(event.toolCallId)) {
       return
     }
     const active = this.activeTools.get(event.toolCallId)
-    if (active) {
+    if (active !== undefined) {
       active.partialResult = event.partialResult
     }
   }
 
   private applyToolExecutionEnd(event: SubagentRpcEvent): void {
-    if (!event.toolCallId) {
+    if (isNullOrUndefined(event.toolCallId) || isEmptyString(event.toolCallId)) {
       return
     }
     const active = this.activeTools.get(event.toolCallId)
-    if (active) {
+    if (active !== undefined) {
       active.result = event.result
       active.isError = event.isError ?? false
     }
   }
 
   private applyMessageEnd(event: SubagentRpcEvent): void {
-    if (event.message?.role === 'toolResult' && event.message.toolCallId) {
+    if (event.message?.role === 'toolResult' && isNotNullOrUndefined(event.message.toolCallId) && isNotEmptyString(event.message.toolCallId)) {
       this.activeTools.delete(event.message.toolCallId)
     }
     this.partialMessage = undefined
@@ -1091,7 +1101,7 @@ const extractTextFromMessage = (message: SubagentMessage | undefined): string =>
 }
 
 const previewText = (text: string | undefined, maxLength = 180): string | undefined => {
-  if (!text) {
+  if (isNullOrUndefined(text) || isEmptyString(text)) {
     return undefined
   }
   const normalized = text.replaceAll(/\s+/g, ' ').trim()
@@ -1105,7 +1115,7 @@ const agentMetadata = (
   color: ThemeColor
   isReadonly?: boolean
 } => ({
-  ...(info.profile ? { profile: info.profile } : {}),
+  ...(isNotNullOrUndefined(info.profile) && isNotEmptyString(info.profile) ? { profile: info.profile } : {}),
   color: persistedProfileColor(info.profile, info.color),
   ...(info.isReadonly === undefined ? {} : { isReadonly: info.isReadonly }),
 })
@@ -1116,14 +1126,14 @@ const getPiCommand = (
   command: string
   prefixArgs: string[]
 } => {
-  if (override) {
+  if (override !== undefined) {
     return { command: override.command, prefixArgs: override.prefixArgs ?? [] }
   }
-  if (process.env.PI_SUBAGENT_PI_BIN) {
+  if (isNotNullOrUndefined(process.env.PI_SUBAGENT_PI_BIN) && isNotEmptyString(process.env.PI_SUBAGENT_PI_BIN)) {
     return { command: process.env.PI_SUBAGENT_PI_BIN, prefixArgs: [] }
   }
   const [, currentEntry] = process.argv
-  if (currentEntry && existsSync(currentEntry)) {
+  if (isNotEmptyString(currentEntry) && existsSync(currentEntry)) {
     return { command: process.execPath, prefixArgs: [currentEntry] }
   }
   return { command: process.execPath, prefixArgs: [] }
@@ -1131,7 +1141,14 @@ const getPiCommand = (
 
 const canonicalAgentName = (target: string): string => (target.startsWith('/') ? target : `/${target}`)
 
-const targetMatches = (event: AgentCompletionEvent, targets?: Set<string>): boolean => !targets || targets.has(event.agentName)
+const stopReasonError = (stopReason: string | undefined, errorMessage: string | undefined): string | undefined => {
+  if (stopReason !== 'error' && stopReason !== 'aborted') {
+    return undefined
+  }
+  return isNotNullOrUndefined(errorMessage) && isNotEmptyString(errorMessage) ? errorMessage : `Agent ended with ${stopReason}.`
+}
+
+const targetMatches = (event: AgentCompletionEvent, targets?: Set<string>): boolean => targets === undefined || targets.has(event.agentName)
 
 const latestContextTokens = (sessionFile: string): number | undefined => {
   try {
@@ -1160,7 +1177,7 @@ const buildChildArgs = (launch: { command: string; prefixArgs: string[] }, info:
     '--append-system-prompt',
     [
       info.prompt,
-      info.isReadonly
+      isTrue(info.isReadonly)
         ? 'This subagent role is read-only. Do not modify local or remote state. The configured tool allowlist remains the local capability boundary.'
         : undefined,
     ]
@@ -1173,12 +1190,12 @@ const buildChildArgs = (launch: { command: string; prefixArgs: string[] }, info:
     '--session',
     info.sessionFile,
   ]
-  if (info.thinking) {
+  if (info.thinking !== undefined) {
     args.push('--thinking', info.thinking)
   }
   const tools = info.allowedTools?.join(',') ?? info.tools
   if (tools !== undefined) {
-    if (tools) {
+    if (tools.length > 0) {
       args.push('--tools', tools)
     } else {
       args.push('--no-builtin-tools')
@@ -1186,6 +1203,14 @@ const buildChildArgs = (launch: { command: string; prefixArgs: string[] }, info:
   }
   return args
 }
+
+class SubagentProcessError extends Data.TaggedError('SubagentProcessError')<{
+  readonly message: string
+  readonly cause?: unknown
+}> {}
+
+const toPlainError = (error: SubagentProcessError | Error): Error =>
+  error instanceof SubagentProcessError ? new Error(error.message, { cause: error.cause }) : error
 
 const waitForOwnedExitEffect = (inspector: ProcessInspectorShape, ownership: ChildProcessOwnership, timeoutMs: number): Effect.Effect<boolean> =>
   Effect.gen(function* () {
@@ -1204,19 +1229,30 @@ const waitForOwnedExitEffect = (inspector: ProcessInspectorShape, ownership: Chi
  * script or a bin shim replaces the command line in place while keeping the PID, so the
  * first readable identity can describe the launcher instead of the child Pi process.
  */
-const verifyChildOwnershipEffect = (inspector: ProcessInspectorShape, pid: number, token: string): Effect.Effect<ProcessSnapshot, Error> =>
+const verifyChildOwnershipEffect = (
+  inspector: ProcessInspectorShape,
+  pid: number,
+  token: string
+): Effect.Effect<ProcessSnapshot, SubagentProcessError> =>
   Effect.gen(function* () {
     let previous: ProcessSnapshot | undefined
     for (let attempt = 0; attempt < 20; attempt++) {
       const candidate = yield* inspector.inspect(pid, token)
-      if (candidate && candidate.tokenMatches !== false && candidate.identity === previous?.identity) {
+      if (isNotNullOrUndefined(candidate) && !isFalse(candidate.tokenMatches) && candidate.identity === previous?.identity) {
         return candidate
       }
       previous = candidate
       yield* Effect.sleep(10)
     }
-    return yield* Effect.fail(new Error('Unable to verify child Pi process ownership.'))
+    return yield* new SubagentProcessError({ message: 'Unable to verify child Pi process ownership.' })
   })
+
+const ownerProcessStillActive = (ownership: ChildProcessOwnership, ownerSnapshot: ProcessSnapshot | undefined): boolean =>
+  ownership.ownerPid !== process.pid &&
+  ownerSnapshot !== undefined &&
+  (isNullOrUndefined(ownership.ownerProcessIdentity) ||
+    isEmptyString(ownership.ownerProcessIdentity) ||
+    ownerSnapshot.identity === ownership.ownerProcessIdentity)
 
 const buildChildEnv = (info: AgentInfo, childToken: string, extraChildEnv: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv => {
   const childEnv = { ...process.env, ...extraChildEnv }
@@ -1227,7 +1263,7 @@ const buildChildEnv = (info: AgentInfo, childToken: string, extraChildEnv: NodeJ
   delete childEnv.PI_REASONING_LEVEL
   childEnv.PI_SUBAGENT_OWNER_TOKEN = childToken
   childEnv.PI_SUBAGENT_PROFILE = info.profile ?? ''
-  childEnv.PI_SUBAGENT_READONLY = info.isReadonly ? '1' : '0'
+  childEnv.PI_SUBAGENT_READONLY = isTrue(info.isReadonly) ? '1' : '0'
   return childEnv
 }
 
@@ -1357,7 +1393,7 @@ export class AgentManager {
     }
     const contextTokens = latestContextTokens(info.sessionFile)
     if (contextTokens === undefined) {
-      if (!live) {
+      if (live === undefined) {
         throw new Error(`Claude context usage is unavailable for ${info.canonicalName}. Spawn a fresh agent instead of continuing it.`)
       }
       return
@@ -1371,11 +1407,11 @@ export class AgentManager {
 
   private setFollowUpUsed(info: AgentInfo, live: LiveAgent | undefined, used: boolean): void {
     info.followUpUsed = used
-    if (live) {
+    if (live === undefined) {
+      saveInfo(info)
+    } else {
       live.info.followUpUsed = used
       saveInfo(live.info)
-    } else {
-      saveInfo(info)
     }
   }
 
@@ -1415,7 +1451,7 @@ export class AgentManager {
 
   private async restartForFollowUp(info: AgentInfo, claim: FollowUpClaim): Promise<LiveAgent> {
     try {
-      if (info.childProcess) {
+      if (info.childProcess !== undefined) {
         await this.terminateOwnedChild(info)
       }
       if (info.status === 'starting' || info.status === 'running') {
@@ -1491,7 +1527,7 @@ export class AgentManager {
 
   private async terminateOwnedChild(info: AgentInfo): Promise<void> {
     const ownership = info.childProcess
-    if (!ownership) {
+    if (ownership === undefined) {
       return
     }
     if (!Effect.runSync(this.inspector.ownershipMatches(ownership))) {
@@ -1523,7 +1559,7 @@ export class AgentManager {
   private async reconcilePersistedChildren(): Promise<void> {
     for (const info of readAllInfos()) {
       const ownership = info.childProcess
-      if (!ownership) {
+      if (ownership === undefined) {
         if (info.status === 'starting' && !taskLockIsActive(info.parentSessionId, info.taskName)) {
           reclaimDeadTaskLock(taskLockFile(info.parentSessionId, info.taskName), this.options.beforeReclaimTaskLockRemoval)
           info.status = 'interrupted'
@@ -1545,11 +1581,7 @@ export class AgentManager {
           continue
         }
         const ownerSnapshot = Effect.runSync(this.inspector.inspect(ownership.ownerPid))
-        const ownerStillActive =
-          ownership.ownerPid !== process.pid &&
-          ownerSnapshot &&
-          (!ownership.ownerProcessIdentity || ownerSnapshot.identity === ownership.ownerProcessIdentity)
-        if (ownerStillActive) {
+        if (ownerProcessStillActive(ownership, ownerSnapshot)) {
           continue
         }
         if (info.status === 'starting' || info.status === 'running') {
@@ -1694,7 +1726,7 @@ export class AgentManager {
 
   private consumeAzureQuota(live: LiveAgent): void {
     const token = live.info.childProcess?.token
-    if (!token) {
+    if (isNullOrUndefined(token) || isEmptyString(token)) {
       return
     }
     const percent = consumeSubagentAzureQuota(token)
@@ -1711,7 +1743,7 @@ export class AgentManager {
     this.clearInactivityMonitor(live)
     this.consumeAzureQuota(live)
     const persisted = readInfoFile(live.info.infoFile)
-    if (persisted && FINAL_STATUSES.has(persisted.status)) {
+    if (persisted !== undefined && FINAL_STATUSES.has(persisted.status)) {
       live.info = persisted
       live.finalizedRun = true
     }
@@ -1727,7 +1759,7 @@ export class AgentManager {
       this.markFailed(live, error?.message ?? 'Child Pi process exited unexpectedly.')
     }
     const ownership = live.info.childProcess
-    if (ownership) {
+    if (ownership !== undefined) {
       this.clearChildOwnership(live.info, ownership.token)
     }
     if (this.live.get(live.info.id) === live) {
@@ -1758,7 +1790,7 @@ export class AgentManager {
       logger.info('stdin', 'child stdin error', { error: error.message })
       if (!live.expectedExit) {
         const persisted = readInfoFile(live.info.infoFile)
-        if (persisted && FINAL_STATUSES.has(persisted.status)) {
+        if (persisted !== undefined && FINAL_STATUSES.has(persisted.status)) {
           live.info = persisted
           live.finalizedRun = true
         } else if (!live.finalizedRun) {
@@ -1770,7 +1802,7 @@ export class AgentManager {
     proc.on('error', (error) => this.finishProcess(live, error))
     proc.on('exit', (code, signal) => {
       logger.info('exit', 'child exited', { code, signal })
-      const suffix = live.stderr.trim() ? `: ${live.stderr.trim().slice(-1000)}` : ''
+      const suffix = isNotEmptyString(live.stderr.trim()) ? `: ${live.stderr.trim().slice(-1000)}` : ''
       this.finishProcess(live, live.expectedExit ? undefined : new Error(`Child Pi exited (code=${code}, signal=${signal})${suffix}`))
     })
   }
@@ -1798,7 +1830,7 @@ export class AgentManager {
     const exitPromise = new Promise<void>((markExited) => {
       resolveExit = markExited
     })
-    const scope = Effect.runSync(Scope.make())
+    const scope = Scope.makeUnsafe()
     const live: LiveAgent = {
       broadcaster,
       candidateResponse: '',
@@ -1808,7 +1840,7 @@ export class AgentManager {
       inactivityTimeoutMs: this.options.inactivityTimeoutMs ?? (loadSubagentConfig().inactivityMinutes ?? DEFAULT_INACTIVITY_MINUTES) * 60_000,
       info,
       logger,
-      pending: Effect.runSync(Ref.make(HashMap.empty())),
+      pending: Ref.makeUnsafe(HashMap.empty()),
       proc,
       processFinished: false,
       reqId: 0,
@@ -1832,10 +1864,10 @@ export class AgentManager {
     this.wireChildProcess(live, decoder)
 
     try {
-      if (!proc.pid) {
+      if (proc.pid === undefined) {
         throw new Error('Child Pi process did not provide a PID.')
       }
-      const snapshot = await Effect.runPromise(verifyChildOwnershipEffect(this.inspector, proc.pid, childToken))
+      const snapshot = await Effect.runPromise(verifyChildOwnershipEffect(this.inspector, proc.pid, childToken).pipe(Effect.mapError(toPlainError)))
       // Persist ownership before the first RPC round trip. If this process crashes while
       // The child is starting, the next manager can identify and terminate the orphan.
       info.childProcess = {
@@ -1852,11 +1884,11 @@ export class AgentManager {
       // The answered round trip proves the child reached its final program.
       // Its identity can no longer change underneath a later reconciliation.
       const settled = await Effect.runPromise(this.inspector.inspect(proc.pid, childToken))
-      if (settled && settled.tokenMatches !== false && settled.identity !== provisionalOwnership.processIdentity) {
+      if (isNotNullOrUndefined(settled) && !isFalse(settled.tokenMatches) && settled.identity !== provisionalOwnership.processIdentity) {
         info.childProcess = { ...provisionalOwnership, processIdentity: settled.identity }
         saveInfo(info)
       }
-      if (initialMessage) {
+      if (isNotNullOrUndefined(initialMessage) && isNotEmptyString(initialMessage)) {
         await this.prompt(live, initialMessage, displayMessage)
       }
       return live
@@ -1877,12 +1909,13 @@ export class AgentManager {
     const commandType = typeof command.type === 'string' ? command.type : 'unknown'
     const payload = `${JSON.stringify({ id, ...command })}\n`
     const wait = Effect.gen(function* () {
+      const context = yield* Effect.context()
       const deferred = yield* Deferred.make<unknown, Error>()
       yield* Ref.update(live.pending, HashMap.set(id, deferred))
       yield* Effect.sync(() => {
         live.proc.stdin.write(payload, (error) => {
-          if (error) {
-            Effect.runSync(Deferred.fail(deferred, error))
+          if (isNotNullOrUndefined(error)) {
+            Effect.runSyncWith(context)(Deferred.fail(deferred, error))
           }
         })
       })
@@ -1891,8 +1924,8 @@ export class AgentManager {
     return Effect.runPromise(
       Effect.timeoutOrElse(wait, {
         duration: timeoutMs,
-        orElse: () => Effect.fail(new Error(`Timed out waiting for child Pi RPC command: ${commandType}`)),
-      }).pipe(Effect.ensuring(Ref.update(live.pending, HashMap.remove(id))))
+        orElse: () => new SubagentProcessError({ message: `Timed out waiting for child Pi RPC command: ${commandType}` }),
+      }).pipe(Effect.ensuring(Ref.update(live.pending, HashMap.remove(id))), Effect.mapError(toPlainError))
     )
   }
 
@@ -1945,7 +1978,7 @@ export class AgentManager {
 
   private handleResponseEvent(live: LiveAgent, event: SubagentRpcEvent): void {
     const { id } = event
-    if (!id) {
+    if (isNullOrUndefined(id) || isEmptyString(id)) {
       return
     }
     Effect.runSync(
@@ -1956,7 +1989,7 @@ export class AgentManager {
           return
         }
         yield* Ref.update(live.pending, HashMap.remove(id))
-        yield* event.success
+        yield* isTrue(event.success)
           ? Deferred.succeed(deferred.value, event.data)
           : Deferred.fail(deferred.value, new Error(event.error || 'RPC command failed'))
       })
@@ -1976,29 +2009,23 @@ export class AgentManager {
       return
     }
     live.candidateResponse = extractTextFromMessage(event.message).trim()
-    live.candidateError =
-      event.message.stopReason === 'error' || event.message.stopReason === 'aborted'
-        ? event.message.errorMessage || `Agent ended with ${event.message.stopReason}.`
-        : undefined
+    live.candidateError = stopReasonError(event.message.stopReason, event.message.errorMessage)
   }
 
   private handleAgentEnd(live: LiveAgent, event: SubagentRpcEvent): void {
     const lastAssistant = [...(event.messages ?? [])].toReversed().find((message) => message?.role === 'assistant')
-    if (!lastAssistant) {
+    if (lastAssistant === undefined) {
       return
     }
     live.candidateResponse = extractTextFromMessage(lastAssistant).trim()
-    live.candidateError =
-      lastAssistant.stopReason === 'error' || lastAssistant.stopReason === 'aborted'
-        ? lastAssistant.errorMessage || `Agent ended with ${lastAssistant.stopReason}.`
-        : undefined
+    live.candidateError = stopReasonError(lastAssistant.stopReason, lastAssistant.errorMessage)
   }
 
   private handleAgentSettled(live: LiveAgent): void {
     if (live.info.status === 'interrupted' || live.finalizedRun) {
       return
     }
-    if (live.candidateError) {
+    if (isNotNullOrUndefined(live.candidateError) && isNotEmptyString(live.candidateError)) {
       this.markFailed(live, live.candidateError)
     } else {
       this.markCompleted(live)
@@ -2021,7 +2048,12 @@ export class AgentManager {
       this.handleMessageEnd(live, event)
     } else if (event.type === 'agent_end') {
       this.handleAgentEnd(live, event)
-    } else if (event.type === 'auto_retry_end' && event.success === false && event.finalError) {
+    } else if (
+      event.type === 'auto_retry_end' &&
+      isFalse(event.success) &&
+      isNotNullOrUndefined(event.finalError) &&
+      isNotEmptyString(event.finalError)
+    ) {
       live.candidateError = event.finalError
     } else if (event.type === 'agent_settled') {
       this.handleAgentSettled(live)
@@ -2029,7 +2061,7 @@ export class AgentManager {
   }
 
   private handleLine(live: LiveAgent, line: string): void {
-    if (!line.trim()) {
+    if (isEmptyString(line.trim())) {
       return
     }
     let parsed: unknown
@@ -2050,7 +2082,7 @@ export class AgentManager {
       return
     }
     const persisted = readInfoFile(live.info.infoFile)
-    if (persisted && FINAL_STATUSES.has(persisted.status) && persisted.status !== live.info.status) {
+    if (persisted !== undefined && FINAL_STATUSES.has(persisted.status) && persisted.status !== live.info.status) {
       live.info = persisted
       live.finalizedRun = true
       return
@@ -2135,7 +2167,7 @@ export class AgentManager {
       for (const claim of matchingClaims) {
         claim.suppressedEventIds.add(event.id)
       }
-      if (!matchingClaims.length) {
+      if (matchingClaims.length === 0) {
         this.notifyUnclaimedCompletion(event)
       }
     }
@@ -2145,13 +2177,13 @@ export class AgentManager {
     const prefix = pathPrefix?.trim().replace(/^\/+/, '')
     const infos = includeAll ? readAllInfos() : readScopeInfos(parentSessionId)
     return infos
-      .filter((info) => !prefix || info.taskName.startsWith(prefix))
+      .filter((info) => isNullOrUndefined(prefix) || isEmptyString(prefix) || info.taskName.startsWith(prefix))
       .map((info) => ({
         agent_name: info.canonicalName,
         agent_status: info.status,
         last_task_message: previewText(info.lastTaskMessage),
         ...(includeAll ? { parent_session_id: info.parentSessionId } : {}),
-        ...(info.profile ? { profile: info.profile } : {}),
+        ...(isNotNullOrUndefined(info.profile) && isNotEmptyString(info.profile) ? { profile: info.profile } : {}),
         color: persistedProfileColor(info.profile, info.color),
         ...(info.isReadonly === undefined ? {} : { is_readonly: info.isReadonly }),
       }))
@@ -2159,7 +2191,7 @@ export class AgentManager {
 
   getAgentInfo(target: string, parentSessionId: string): AgentInfo {
     const info = getAgent(target, parentSessionId)
-    if (!info) {
+    if (info === undefined) {
       throw new Error(`Agent not found in this parent session: ${target}`)
     }
     return info
@@ -2174,9 +2206,9 @@ export class AgentManager {
       agent_name: info.canonicalName,
       status: info.status,
       ...(info.finalResponse === undefined ? {} : { finalResponse: info.finalResponse }),
-      ...(info.error ? { error: info.error } : {}),
+      ...(isNotNullOrUndefined(info.error) && isNotEmptyString(info.error) ? { error: info.error } : {}),
       last_task_message: previewText(info.lastTaskMessage),
-      ...(info.profile ? { profile: info.profile } : {}),
+      ...(isNotNullOrUndefined(info.profile) && isNotEmptyString(info.profile) ? { profile: info.profile } : {}),
       color: persistedProfileColor(info.profile, info.color),
       ...(info.isReadonly === undefined ? {} : { is_readonly: info.isReadonly }),
     }
@@ -2187,24 +2219,24 @@ export class AgentManager {
   }
 
   async waitAgent(parentSessionId: string, targets?: string[], signal?: AbortSignal): Promise<{ message: string; event?: AgentCompletionEvent }> {
-    const waitSignal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
+    const waitSignal = signal === undefined ? this.shutdownController.signal : AbortSignal.any([signal, this.shutdownController.signal])
     throwIfAborted(waitSignal)
-    const normalizedTargets = targets?.length ? new Set(targets.map(canonicalAgentName)) : undefined
+    const normalizedTargets = targets !== undefined && targets.length > 0 ? new Set(targets.map(canonicalAgentName)) : undefined
     const existing = consumeFirstMatchingMailboxEvent(this.mailbox, parentSessionId, normalizedTargets)
-    if (existing) {
+    if (existing !== undefined) {
       this.finishWaitTarget(parentSessionId, existing.agentName)
       return {
         event: existing,
         message: `Wait completed: ${existing.agentName} ${existing.status}.`,
       }
     }
-    if (normalizedTargets) {
+    if (normalizedTargets !== undefined) {
       const targetInfos = readScopeInfos(parentSessionId).filter((info) => normalizedTargets.has(info.canonicalName))
-      if (!targetInfos.length) {
+      if (targetInfos.length === 0) {
         throw new Error(`Agent not found in this parent session: ${[...normalizedTargets].join(', ')}`)
       }
       const finalInfo = targetInfos.find((info) => FINAL_STATUSES.has(info.status))
-      if (finalInfo) {
+      if (finalInfo !== undefined) {
         this.finishWaitTarget(parentSessionId, finalInfo.canonicalName)
         return {
           event: {
@@ -2255,15 +2287,15 @@ export class AgentManager {
     targets?: string[],
     signal?: AbortSignal
   ): Promise<{ message: string; responses: AgentResponseEntry[] }> {
-    const waitSignal = signal ? AbortSignal.any([signal, this.shutdownController.signal]) : this.shutdownController.signal
+    const waitSignal = signal === undefined ? this.shutdownController.signal : AbortSignal.any([signal, this.shutdownController.signal])
     throwIfAborted(waitSignal)
-    const explicitTargets = targets?.length ? new Set(targets.map(canonicalAgentName)) : undefined
+    const explicitTargets = targets !== undefined && targets.length > 0 ? new Set(targets.map(canonicalAgentName)) : undefined
     const defaultTargets = this.defaultWaitAllTargets.get(parentSessionId) ?? new Set<string>()
     const targetSet = explicitTargets ?? new Set(defaultTargets)
-    if (explicitTargets) {
+    if (explicitTargets !== undefined) {
       const infos = readScopeInfos(parentSessionId)
       const missing = [...explicitTargets].filter((target) => !infos.some((info) => target === info.canonicalName))
-      if (missing.length) {
+      if (missing.length > 0) {
         throw new Error(`Agent not found in this parent session: ${missing.join(', ')}`)
       }
     }
@@ -2295,7 +2327,7 @@ export class AgentManager {
     try {
       while (true) {
         throwIfAborted(waitSignal)
-        if (!pendingNames().length) {
+        if (pendingNames().length === 0) {
           return finalize()
         }
         await delay(250, undefined, { signal: waitSignal })
@@ -2304,7 +2336,7 @@ export class AgentManager {
       this.waitAllClaims.delete(claim)
       for (const eventId of claim.suppressedEventIds) {
         const event = this.mailbox.find((candidate) => candidate.id === eventId)
-        if (!event) {
+        if (event === undefined) {
           continue
         }
         const claimedElsewhere = [...this.waitAllClaims].some(
@@ -2322,13 +2354,13 @@ export class AgentManager {
     let info = this.getAgentInfo(target, parentSessionId)
     const assertProfileAvailable = (): void => {
       const profile = info.profile ?? info.agentType
-      if (profile && !Object.hasOwn(AGENT_CONFIGS, profile)) {
+      if (isNotNullOrUndefined(profile) && isNotEmptyString(profile) && !Object.hasOwn(AGENT_CONFIGS, profile)) {
         throw new Error(`Agent ${info.canonicalName} uses an unavailable profile: ${profile}`)
       }
     }
     assertProfileAvailable()
     let live = this.live.get(info.id)
-    if (live?.expectedExit) {
+    if (isTrue(live?.expectedExit)) {
       await live.termination
       live = undefined
       info = this.getAgentInfo(target, parentSessionId)
@@ -2356,13 +2388,13 @@ export class AgentManager {
     info.lastActivity = Date.now()
     saveInfo(info)
     this.notifyStatusChange(info)
-    if (live) {
+    if (live === undefined) {
+      await this.terminateOwnedChild(info)
+    } else {
       live.info.status = 'interrupted'
       live.info.lastActivity = info.lastActivity
       live.finalizedRun = true
       await this.terminateProcess(live)
-    } else {
-      await this.terminateOwnedChild(info)
     }
     this.finishWaitTarget(parentSessionId, info.canonicalName)
     this.pushMailbox(
@@ -2381,7 +2413,7 @@ export class AgentManager {
 
   private signalProcessTree(live: LiveAgent, signal: NodeJS.Signals): void {
     try {
-      if (this.platform !== 'win32' && live.proc.pid) {
+      if (this.platform !== 'win32' && live.proc.pid !== undefined) {
         process.kill(-live.proc.pid, signal)
       } else {
         live.proc.kill(signal)
@@ -2396,7 +2428,7 @@ export class AgentManager {
   }
 
   private async forceKillWindowsTree(live: LiveAgent): Promise<void> {
-    if (this.platform !== 'win32' || !live.proc.pid) {
+    if (this.platform !== 'win32' || live.proc.pid === undefined) {
       return
     }
     await new Promise<void>((resolve) => {
@@ -2412,7 +2444,7 @@ export class AgentManager {
     if (live.processFinished) {
       return Promise.resolve()
     }
-    if (live.termination) {
+    if (live.termination !== undefined) {
       return live.termination
     }
     live.termination = (async () => {

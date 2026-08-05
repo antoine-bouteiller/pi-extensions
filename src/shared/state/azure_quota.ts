@@ -2,6 +2,8 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSy
 import { tmpdir, userInfo } from 'node:os'
 import { join } from 'node:path'
 
+import { Function } from 'effect'
+
 import { createObservableStore } from './store.js'
 
 const TOKEN_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -10,7 +12,10 @@ const quotaPath = (token: string) => join(quotaDir(), `${token}.json`)
 
 export const azureQuota = createObservableStore<number | undefined>(undefined)
 
-export const writeSubagentAzureQuota = (token: string, percent: number): void => {
+export const writeSubagentAzureQuota: {
+  (percent: number): (token: string) => void
+  (token: string, percent: number): void
+} = Function.dual(2, (token: string, percent: number): void => {
   if (!TOKEN_PATTERN.test(token) || !Number.isFinite(percent)) {
     return
   }
@@ -31,7 +36,7 @@ export const writeSubagentAzureQuota = (token: string, percent: number): void =>
       // Best effort; quota telemetry must not break a provider response.
     }
   }
-}
+})
 
 export const consumeSubagentAzureQuota = (token: string): number | undefined => {
   if (!TOKEN_PATTERN.test(token)) {

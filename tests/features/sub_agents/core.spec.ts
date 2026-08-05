@@ -37,7 +37,7 @@ const { azureQuota } = await import('@/shared/state/azure_quota.js')
 const { runningAgents } = await import('@/shared/state/agent_activity.js')
 
 const requireChildProcess = <ChildProcess>(childProcess: ChildProcess | undefined): ChildProcess => {
-  if (!childProcess) {
+  if (childProcess === undefined) {
     throw new Error('expected the agent to own a child process')
   }
   return childProcess
@@ -494,7 +494,7 @@ describe('child process lifecycle', () => {
       await firstManager.spawnAgent(spawnParams(parentSessionId, 'worker', 'first'))
       await waitUntil(() => {
         const info = firstManager.getAgentInfo('worker', parentSessionId)
-        return info.status === 'completed' && !info.childProcess
+        return info.status === 'completed' && info.childProcess === undefined
       })
       await secondManager.ready()
 
@@ -521,7 +521,7 @@ describe('child process lifecycle', () => {
         await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'first'))
         await waitUntil(() => {
           const info = manager.getAgentInfo('worker', parentSessionId)
-          return info.status === 'completed' && !info.childProcess
+          return info.status === 'completed' && info.childProcess === undefined
         })
         const info = manager.getAgentInfo('worker', parentSessionId)
         writeSessionWithContextUsage(info.sessionFile, 112_000)
@@ -794,7 +794,7 @@ describe('child process lifecycle', () => {
       const firstPid = requireChildProcess(first.childProcess).pid
       await waitUntil(() => {
         const info = manager.getAgentInfo('worker', parentSessionId)
-        return info.status === 'completed' && !info.childProcess
+        return info.status === 'completed' && info.childProcess === undefined
       })
       expect(pidAlive(firstPid)).toBe(false)
       expect(manager.readAgentResponse('worker', parentSessionId).finalResponse).toBe('response:first')
@@ -806,7 +806,7 @@ describe('child process lifecycle', () => {
       expect(secondPid).not.toBe(firstPid)
       await waitUntil(() => {
         const info = manager.getAgentInfo('worker', parentSessionId)
-        return info.status === 'completed' && !info.childProcess
+        return info.status === 'completed' && info.childProcess === undefined
       })
       expect(pidAlive(secondPid)).toBe(false)
       expect(manager.readAgentResponse('worker', parentSessionId).finalResponse).toBe('response:second')
@@ -863,7 +863,7 @@ describe('child process lifecycle', () => {
       await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'first'))
       await waitUntil(() => {
         const info = manager.getAgentInfo('worker', parentSessionId)
-        return info.status === 'completed' && !info.childProcess
+        return info.status === 'completed' && info.childProcess === undefined
       })
       const info = manager.getAgentInfo('worker', parentSessionId)
       writeFileSync(
@@ -892,7 +892,7 @@ describe('child process lifecycle', () => {
       const { pid } = requireChildProcess(started.childProcess)
       await waitUntil(() => {
         const info = manager.getAgentInfo('worker', parentSessionId)
-        return info.status === 'failed' && !info.childProcess
+        return info.status === 'failed' && info.childProcess === undefined
       })
       const failed = manager.readAgentResponse('worker', parentSessionId)
       expect(failed.error).toBe('fake failure')
@@ -977,7 +977,7 @@ describe('child process lifecycle', () => {
       reconcilers.push(reconciler)
       await waitUntil(() => {
         const info = reconciler.getAgentInfo('orphan', parentSessionId)
-        return info.status === 'interrupted' && !info.childProcess
+        return info.status === 'interrupted' && info.childProcess === undefined
       })
       await waitUntil(() => !pidAlive(orphanPid))
       expect(pidAlive(orphanPid)).toBe(false)
@@ -991,7 +991,7 @@ describe('child process lifecycle', () => {
       reconcilers.push(mismatchReconciler)
       await waitUntil(() => {
         const info = mismatchReconciler.getAgentInfo('pid-reuse', parentSessionId)
-        return info.status === 'interrupted' && !info.childProcess
+        return info.status === 'interrupted' && info.childProcess === undefined
       })
       expect(pidAlive(mismatchedPid)).toBe(true)
       await owner.shutdown()
@@ -1201,14 +1201,14 @@ describe('extension completion delivery and status activity', () => {
     let viewerOptions: { overlay?: boolean; overlayOptions?: unknown } | undefined
     const requireTool = (name: string): FakeToolDefinition => {
       const tool = tools.get(name)
-      if (!tool) {
+      if (tool === undefined) {
         throw new Error(`tool ${name} was not registered`)
       }
       return tool
     }
     const requireRenderer = (name: string): FakeRenderer => {
       const renderer = renderers.get(name)
-      if (!renderer) {
+      if (renderer === undefined) {
         throw new Error(`renderer ${name} was not registered`)
       }
       return renderer
@@ -1373,7 +1373,7 @@ describe('extension completion delivery and status activity', () => {
       expect(runningAgents.list().map((agent) => agent.name)).toEqual(['/hold-scout', '/hold-library'])
 
       const subagentCommand = commands.get('subagent')
-      if (!subagentCommand) {
+      if (subagentCommand === undefined) {
         throw new Error('subagent command was not registered')
       }
       const viewing = subagentCommand.handler('hold-scout', ctx)

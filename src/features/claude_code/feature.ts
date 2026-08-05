@@ -2,7 +2,7 @@ import { homedir, tmpdir } from 'node:os'
 import { extname, join, relative, sep } from 'node:path'
 
 import { type ExtensionAPI, type ExtensionContext, type SessionShutdownEvent } from '@earendil-works/pi-coding-agent'
-import { Context, Effect, Exit, Option, Ref, Scope, Semaphore } from 'effect'
+import { Context, Effect, Exit, Function, Option, Ref, Scope, Semaphore } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
 import { type PlatformError } from 'effect/PlatformError'
 
@@ -92,7 +92,7 @@ const unquote = (value: string): string => value.replaceAll(/^["']|["']$/g, '')
 /** Convert a Claude command into Agent Skills-compatible metadata and content. */
 export const parseCommandFrontmatter = (content: string): CommandFrontmatter => {
   const match = /^---\r?\n(?<frontmatter>[\s\S]*?)\r?\n---\r?\n?/.exec(content)
-  const body = match ? content.slice(match[0].length) : content
+  const body = match === null ? content : content.slice(match[0].length)
   const descriptionMatch = match?.groups?.frontmatter.match(/^\s*description\s*:\s*(?<description>.*?)\s*$/m)
   const firstContentLine = body
     .split(/\r?\n/)
@@ -153,9 +153,10 @@ const resolveCommandNames = (commandsByLogicalName: Map<string, MarkdownFile>): 
 }
 
 const formatCommandSkill = (name: string, command: CommandFrontmatter): string => {
-  const argumentCompatibility = /\$(?:ARGUMENTS|[1-9]\d*)\b/.exec(command.body)
-    ? 'Pi appends invocation arguments as a final `User: <arguments>` line. Treat those arguments as `$ARGUMENTS`, and their shell-style positional words as `$1`, `$2`, and so on. If no `User:` line is present, the arguments are empty.\n\n'
-    : ''
+  const argumentCompatibility =
+    /\$(?:ARGUMENTS|[1-9]\d*)\b/.exec(command.body) === null
+      ? ''
+      : 'Pi appends invocation arguments as a final `User: <arguments>` line. Treat those arguments as `$ARGUMENTS`, and their shell-style positional words as `$1`, `$2`, and so on. If no `User:` line is present, the arguments are empty.\n\n'
   return `---\nname: ${name}\ndescription: ${JSON.stringify(command.description)}\n---\n\n${argumentCompatibility}${command.body}`
 }
 
@@ -206,7 +207,7 @@ interface DiscoveryStateShape {
   readonly activeSkillScope: Ref.Ref<Option.Option<Scope.Closeable>>
 }
 
-class DiscoveryState extends Context.Service<DiscoveryState, DiscoveryStateShape>()('@claude-code/DiscoveryState') {}
+class DiscoveryState extends Context.Service<DiscoveryState, DiscoveryStateShape>()('pi-extensions/features/claude_code/feature/DiscoveryState') {}
 
 const releaseActiveSkillDirectory = (state: DiscoveryStateShape): Effect.Effect<void> =>
   Effect.gen(function* () {
@@ -266,7 +267,7 @@ const shutdownDiscoveryResources = (_event: SessionShutdownEvent, _ctx: Extensio
     yield* state.mutex.withPermits(1)(releaseActiveSkillDirectory(state))
   })
 
-export const register = (
+const registerImpl = (
   pi: ExtensionAPI,
   runtime: AppRuntime,
   environment: ClaudeCodeEnvironment = { homeDirectory: homedir(), temporaryDirectory: tmpdir() }
@@ -289,3 +290,8 @@ export const register = (
     makeEventHandler(runtime)((event, ctx) => shutdownDiscoveryResources(event, ctx).pipe(Effect.provideService(DiscoveryState, discoveryState)))
   )
 }
+
+export const register: {
+  (runtime: AppRuntime, environment?: ClaudeCodeEnvironment): (pi: ExtensionAPI) => void
+  (pi: ExtensionAPI, runtime: AppRuntime, environment?: ClaudeCodeEnvironment): void
+} = Function.dual((args) => typeof args[0].on === 'function', registerImpl)

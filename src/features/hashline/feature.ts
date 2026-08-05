@@ -21,12 +21,13 @@ import {
   Patch,
   Patcher,
 } from '@oh-my-pi/hashline'
-import { Context, Effect } from 'effect'
+import { Context, Data, Effect, Function } from 'effect'
 import { Type, type Static } from 'typebox'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { PiCtx } from '@/shared/effect/pi_services.js'
 import { perInvocation, type HandlerServices } from '@/shared/effect/runtime.js'
+import { isTrue } from '@/shared/utils/predicates.js'
 import { assertUnprotectedPath, resolveToolPath, stripToolPathPrefix } from '@/shared/utils/protected_paths.js'
 import { isRecord } from '@/shared/utils/records.js'
 import { truncateOutput } from '@/shared/utils/tool_output.js'
@@ -56,7 +57,7 @@ const result = (text: string, details: Record<string, unknown> = {}): ToolOutput
 })
 
 const throwIfAborted = (signal: AbortSignal | undefined): void => {
-  if (signal?.aborted) {
+  if (isTrue(signal?.aborted)) {
     throw new Error('Hashline operation aborted')
   }
 }
@@ -216,7 +217,7 @@ const pruneRead = (message: ContextToolResult, latestVersionByPath: Map<string, 
     return message
   }
   const details = readDetails(message.details)
-  if (!details) {
+  if (details === undefined) {
     return message
   }
 
@@ -376,9 +377,13 @@ const writeHashlinePatch = async (
   })
 }
 
-class Snapshots extends Context.Service<Snapshots, InMemorySnapshotStore>()('@hashline/Snapshots') {}
+class Snapshots extends Context.Service<Snapshots, InMemorySnapshotStore>()('pi-extensions/features/hashline/feature/Snapshots') {}
 
-export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
+class HashlineToolError extends Data.TaggedError('HashlineToolError')<{ readonly cause: unknown }> {}
+
+const toRejection = (failure: HashlineToolError): Error => (failure.cause instanceof Error ? failure.cause : new Error(String(failure.cause)))
+
+const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime): void => {
   const snapshotsStore = new InMemorySnapshotStore()
 
   /*
@@ -391,9 +396,13 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
    * Cancellation stays cooperative, as it was before this port.
    */
   const runTool =
-    <Params, Result>(body: (params: Params, signal: AbortSignal | undefined) => Effect.Effect<Result, unknown, HandlerServices | Snapshots>) =>
+    <Params, Result>(
+      body: (params: Params, signal: AbortSignal | undefined) => Effect.Effect<Result, HashlineToolError, HandlerServices | Snapshots>
+    ) =>
     async (_toolCallId: string, params: Params, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext): Promise<Result> =>
-      runtime.runPromise(body(params, signal).pipe(Effect.provideService(Snapshots, snapshotsStore), Effect.provide(perInvocation(ctx))))
+      runtime.runPromise(
+        body(params, signal).pipe(Effect.mapError(toRejection), Effect.provideService(Snapshots, snapshotsStore), Effect.provide(perInvocation(ctx)))
+      )
 
   pi.registerTool({
     description:
@@ -403,7 +412,7 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
         const ctx = yield* PiCtx
         const snapshots = yield* Snapshots
         return yield* Effect.tryPromise({
-          catch: (cause) => cause,
+          catch: (cause) => new HashlineToolError({ cause }),
           try: () => readHashlineFile({ cwd: ctx.cwd, limit, offset, path, signal, snapshots }),
         })
       })
@@ -413,11 +422,11 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
     parameters: readSchema,
     renderResult(readResult: RenderableToolOutput, _options, theme) {
       let text = typeof readResult.details?.path === 'string' ? readResult.details.path : ''
-      if (readResult.isError) {
+      if (isTrue(readResult.isError)) {
         const [content] = readResult.content
         text = content?.type === 'text' ? content.text : 'Hashline read failed'
       }
-      return new Text(theme.fg(readResult.isError ? 'error' : 'toolOutput', text), 0, 0)
+      return new Text(theme.fg(isTrue(readResult.isError) ? 'error' : 'toolOutput', text), 0, 0)
     },
   })
 
@@ -429,7 +438,7 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
         const ctx = yield* PiCtx
         const snapshots = yield* Snapshots
         return yield* Effect.tryPromise({
-          catch: (cause) => cause,
+          catch: (cause) => new HashlineToolError({ cause }),
           try: () => writeHashlinePatch(patch, ctx.cwd, signal, snapshots),
         })
       })
@@ -446,3 +455,8 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
 
   pi.on('context', (event) => ({ messages: pruneSupersededReads(event.messages) }))
 }
+
+export const register: {
+  (runtime: AppRuntime): (pi: ExtensionAPI) => void
+  (pi: ExtensionAPI, runtime: AppRuntime): void
+} = Function.dual((args) => typeof args[0].on === 'function', registerImpl)

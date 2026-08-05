@@ -3,6 +3,7 @@ import { basename, dirname, resolve } from 'node:path'
 
 import { Effect, Schema } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
+import { dual } from 'effect/Function'
 import { type PlatformError } from 'effect/PlatformError'
 
 /** Filenames that look like dotenv files but are intended to be public examples. */
@@ -35,7 +36,10 @@ const isMissingPathError = (error: unknown): boolean =>
 /** Strip the leading `@` accepted by pi's path-oriented tools. */
 export const stripToolPathPrefix = (path: string): string => (path.startsWith('@') ? path.slice(1) : path)
 
-export const resolveToolPath = (path: string, cwd: string): string => resolve(cwd, stripToolPathPrefix(path))
+export const resolveToolPath: {
+  (cwd: string): (path: string) => string
+  (path: string, cwd: string): string
+} = dual(2, (path: string, cwd: string): string => resolve(cwd, stripToolPathPrefix(path)))
 
 /**
  * Canonicalize an existing path, or (for a path that does not exist yet)
@@ -87,18 +91,24 @@ const resolveProtectedPath = async (path: string, cwd: string): Promise<Protecte
   }
 }
 
-export const isProtectedPath = async (path: string, cwd: string): Promise<boolean> => {
+export const isProtectedPath: {
+  (cwd: string): (path: string) => Promise<boolean>
+  (path: string, cwd: string): Promise<boolean>
+} = dual(2, async (path: string, cwd: string): Promise<boolean> => {
   const resolution = await resolveProtectedPath(path, cwd)
   return resolution.protected
-}
+})
 
-export const assertUnprotectedPath = async (path: string, cwd: string, operation: string): Promise<ProtectedPathResolution> => {
+export const assertUnprotectedPath: {
+  (cwd: string, operation: string): (path: string) => Promise<ProtectedPathResolution>
+  (path: string, cwd: string, operation: string): Promise<ProtectedPathResolution>
+} = dual(3, async (path: string, cwd: string, operation: string): Promise<ProtectedPathResolution> => {
   const resolution = await resolveProtectedPath(path, cwd)
   if (resolution.protected) {
     throw new Error(protectedPathMessage(path, operation))
   }
   return resolution
-}
+})
 
 const protectedPathMessage = (path: string, operation: string): string => `Refusing to ${operation} protected path: ${path}`
 
@@ -115,6 +125,8 @@ export class ProtectedPathError extends Schema.TaggedErrorClass<ProtectedPathErr
  */
 const isMissingPlatformError = (error: PlatformError): boolean => isMissingPathError(error.cause)
 
+const noExistingAncestor = undefined
+
 const canonicalizeNearestExistingEffect = (path: string): Effect.Effect<string, PlatformError, FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem
@@ -124,7 +136,7 @@ const canonicalizeNearestExistingEffect = (path: string): Effect.Effect<string, 
     while (true) {
       const existing = yield* fs.realPath(candidate).pipe(
         Effect.map((resolved): string | undefined => resolved),
-        Effect.catchIf(isMissingPlatformError, () => Effect.succeed(undefined))
+        Effect.catchIf(isMissingPlatformError, () => Effect.succeed(noExistingAncestor))
       )
       if (existing !== undefined) {
         return resolve(existing, ...missingComponents)
@@ -138,7 +150,10 @@ const canonicalizeNearestExistingEffect = (path: string): Effect.Effect<string, 
     }
   })
 
-export const resolveProtectedPathEffect = (path: string, cwd: string): Effect.Effect<ProtectedPathResolution, PlatformError, FileSystem> =>
+export const resolveProtectedPathEffect: {
+  (cwd: string): (path: string) => Effect.Effect<ProtectedPathResolution, PlatformError, FileSystem>
+  (path: string, cwd: string): Effect.Effect<ProtectedPathResolution, PlatformError, FileSystem>
+} = dual(2, (path: string, cwd: string): Effect.Effect<ProtectedPathResolution, PlatformError, FileSystem> =>
   Effect.gen(function* () {
     const absolutePath = resolveToolPath(path, cwd)
     const canonicalPath = yield* canonicalizeNearestExistingEffect(absolutePath)
@@ -148,16 +163,17 @@ export const resolveProtectedPathEffect = (path: string, cwd: string): Effect.Ef
       protected: matchesProtectedPolicy(absolutePath) || matchesProtectedPolicy(canonicalPath),
     }
   })
+)
 
-export const assertUnprotectedPathEffect = (
-  path: string,
-  cwd: string,
-  operation: string
-): Effect.Effect<ProtectedPathResolution, PlatformError | ProtectedPathError, FileSystem> =>
+export const assertUnprotectedPathEffect: {
+  (cwd: string, operation: string): (path: string) => Effect.Effect<ProtectedPathResolution, PlatformError | ProtectedPathError, FileSystem>
+  (path: string, cwd: string, operation: string): Effect.Effect<ProtectedPathResolution, PlatformError | ProtectedPathError, FileSystem>
+} = dual(3, (path: string, cwd: string, operation: string): Effect.Effect<ProtectedPathResolution, PlatformError | ProtectedPathError, FileSystem> =>
   Effect.gen(function* () {
     const resolution = yield* resolveProtectedPathEffect(path, cwd)
     if (resolution.protected) {
-      return yield* Effect.fail(new ProtectedPathError({ message: protectedPathMessage(path, operation), path }))
+      return yield* ProtectedPathError.make({ message: protectedPathMessage(path, operation), path })
     }
     return resolution
   })
+)

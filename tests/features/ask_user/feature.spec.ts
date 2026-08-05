@@ -64,7 +64,7 @@ const setup = () => {
 
   return {
     get component() {
-      if (!component) {
+      if (component === undefined) {
         throw new Error('component not initialized')
       }
       return component

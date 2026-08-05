@@ -9,7 +9,7 @@ const sessionIndex = process.argv.indexOf('--session')
 const sessionFile = sessionIndex === -1 ? undefined : process.argv[sessionIndex + 1]
 
 const record = (value) => {
-  if (sessionFile) {
+  if (sessionFile !== undefined) {
     appendFileSync(sessionFile, `${JSON.stringify({ pid: process.pid, ...value })}\n`)
   }
 }

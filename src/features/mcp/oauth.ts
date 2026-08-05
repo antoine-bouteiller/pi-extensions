@@ -3,7 +3,9 @@ import { createServer } from 'node:http'
 
 import { UnauthorizedError, type OAuthClientProvider, type OAuthDiscoveryState } from '@modelcontextprotocol/sdk/client/auth.js'
 import { type OAuthClientInformationMixed, type OAuthClientMetadata, type OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js'
-import { Effect, Semaphore, type Scope } from 'effect'
+import { type Cause, Effect, Semaphore, type Scope } from 'effect'
+
+import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 
 import { type CredentialStore, type OAuthCredentialPayload } from './keychain.js'
 import { type OAuthConfig } from './types.js'
@@ -53,10 +55,10 @@ const callbackUrl = (options: OAuthCallbackOptions): { url: URL; bindHost: strin
   if (!['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname)) {
     throw new Error('OAuth redirectUri must use a loopback host')
   }
-  if (url.username || url.password || url.search || url.hash) {
+  if (isNotEmptyString(url.username) || isNotEmptyString(url.password) || isNotEmptyString(url.search) || isNotEmptyString(url.hash)) {
     throw new Error('OAuth redirectUri must not contain credentials, a query, or a fragment')
   }
-  const configuredPort = url.port ? Number(url.port) : 80
+  const configuredPort = isEmptyString(url.port) ? 80 : Number(url.port)
   if (configuredPort !== options.port) {
     throw new Error('OAuth redirectUri port must match callbackPort')
   }
@@ -68,7 +70,7 @@ const callbackUrl = (options: OAuthCallbackOptions): { url: URL; bindHost: strin
 
 /** Start a one-shot, loopback-only OAuth callback listener. */
 export const startOAuthCallback = async (options: OAuthCallbackOptions): Promise<OAuthCallback> => {
-  if (options.signal?.aborted) {
+  if (isTrue(options.signal?.aborted)) {
     throw abortError('OAuth authentication was cancelled')
   }
   const { url, bindHost } = callbackUrl(options)
@@ -89,17 +91,21 @@ export const startOAuthCallback = async (options: OAuthCallbackOptions): Promise
       return
     }
     settled = true
-    if (timer) {
+    if (timer !== undefined) {
       clearTimeout(timer)
     }
     options.signal?.removeEventListener('abort', onAbort)
-    if (error) {
+    if (error !== undefined) {
       rejectCode(error)
-    } else if (code) {
-      resolveCode(code)
-    } else {
-      rejectCode(new Error('OAuth callback finished without a code or an error'))
+      void close()
+      return
     }
+    if (code !== undefined) {
+      resolveCode(code)
+      void close()
+      return
+    }
+    rejectCode(new Error('OAuth callback finished without a code or an error'))
     void close()
   }
 
@@ -126,9 +132,11 @@ export const startOAuthCallback = async (options: OAuthCallbackOptions): Promise
     }
 
     const oauthError = requested.searchParams.get('error')
-    if (oauthError) {
+    if (isNotNullOrUndefined(oauthError) && isNotEmptyString(oauthError)) {
       const description = requested.searchParams.get('error_description')
-      const message = `OAuth authorization failed: ${oauthError}${description ? ` (${description})` : ''}`
+      const message = `OAuth authorization failed: ${oauthError}${
+        isNotNullOrUndefined(description) && isNotEmptyString(description) ? ` (${description})` : ''
+      }`
       response.writeHead(400, { 'content-type': 'text/html; charset=utf-8' })
       response.end(`<!doctype html><title>OAuth error</title><p>${escaped(message)}</p>`)
       finish(new Error(message))
@@ -136,7 +144,7 @@ export const startOAuthCallback = async (options: OAuthCallbackOptions): Promise
     }
 
     const code = requested.searchParams.get('code')
-    if (!code) {
+    if (isNullOrUndefined(code) || isEmptyString(code)) {
       response.writeHead(400, { 'content-type': 'text/html; charset=utf-8' })
       response.end('<!doctype html><title>OAuth error</title><p>Missing authorization code.</p>')
       finish(new Error('OAuth callback did not include an authorization code'))
@@ -149,10 +157,10 @@ export const startOAuthCallback = async (options: OAuthCallbackOptions): Promise
   })
 
   const close = (): Promise<void> => {
-    if (closePromise) {
+    if (closePromise !== undefined) {
       return closePromise
     }
-    if (timer) {
+    if (timer !== undefined) {
       clearTimeout(timer)
     }
     options.signal?.removeEventListener('abort', onAbort)
@@ -180,7 +188,7 @@ export const startOAuthCallback = async (options: OAuthCallbackOptions): Promise
       server.listen(options.port, bindHost)
     })
   } catch (error) {
-    if (timer) {
+    if (timer !== undefined) {
       clearTimeout(timer)
     }
     options.signal?.removeEventListener('abort', onAbort)
@@ -193,7 +201,7 @@ export const startOAuthCallback = async (options: OAuthCallbackOptions): Promise
   }
 
   const address = server.address()
-  if (!address || typeof address === 'string') {
+  if (address === null || typeof address === 'string') {
     await close()
     throw new Error('Could not determine the OAuth callback listener address')
   }
@@ -202,9 +210,10 @@ export const startOAuthCallback = async (options: OAuthCallbackOptions): Promise
 }
 
 /** Scoped callback resource used by Effect-native authentication flows. */
-export const startOAuthCallbackScoped = (options: OAuthCallbackOptions): Effect.Effect<OAuthCallback, unknown, Scope.Scope> =>
-  Effect.acquireRelease(Effect.tryPromise({ catch: (cause) => cause, try: () => startOAuthCallback(options) }), (callback) =>
-    Effect.tryPromise({ catch: (cause) => cause, try: () => callback.close() }).pipe(Effect.ignore)
+export const startOAuthCallbackScoped = (options: OAuthCallbackOptions): Effect.Effect<OAuthCallback, Cause.UnknownError, Scope.Scope> =>
+  Effect.acquireRelease(
+    Effect.tryPromise(() => startOAuthCallback(options)),
+    (callback) => Effect.tryPromise(() => callback.close()).pipe(Effect.ignore)
   )
 
 export interface KeychainOAuthProviderOptions {
@@ -224,7 +233,7 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
   readonly clientMetadata: OAuthClientMetadata
   private verifier?: string
   private discovery?: OAuthDiscoveryState
-  private readonly mutation = Effect.runSync(Semaphore.make(1))
+  private readonly mutation = Semaphore.makeUnsafe(1)
   private readonly options: KeychainOAuthProviderOptions
 
   constructor(options: KeychainOAuthProviderOptions) {
@@ -241,23 +250,26 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
       grant_types: ['authorization_code', 'refresh_token'],
       redirect_uris: [this.redirectUrl],
       response_types: ['code'],
-      token_endpoint_auth_method: options.config.clientSecret ? 'client_secret_post' : 'none',
-      ...(options.config.scope ? { scope: options.config.scope } : {}),
+      token_endpoint_auth_method:
+        isNotNullOrUndefined(options.config.clientSecret) && isNotEmptyString(options.config.clientSecret) ? 'client_secret_post' : 'none',
+      ...(isNotNullOrUndefined(options.config.scope) && isNotEmptyString(options.config.scope) ? { scope: options.config.scope } : {}),
     }
   }
 
   state(): string {
-    if (!this.options.interactive || !this.options.state) {
+    if (!isTrue(this.options.interactive) || isNullOrUndefined(this.options.state) || isEmptyString(this.options.state)) {
       throw new UnauthorizedError('OAuth authorization requires /mcp-auth <server>')
     }
     return this.options.state
   }
 
   async clientInformation(): Promise<OAuthClientInformationMixed | undefined> {
-    if (this.options.config.clientId) {
+    if (isNotNullOrUndefined(this.options.config.clientId) && isNotEmptyString(this.options.config.clientId)) {
       return {
         client_id: this.options.config.clientId,
-        ...(this.options.config.clientSecret ? { client_secret: this.options.config.clientSecret } : {}),
+        ...(isNotNullOrUndefined(this.options.config.clientSecret) && isNotEmptyString(this.options.config.clientSecret)
+          ? { client_secret: this.options.config.clientSecret }
+          : {}),
       }
     }
     const credential = await this.load()
@@ -286,7 +298,7 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
   }
 
   async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
-    if (!this.options.interactive || !this.options.openUrl) {
+    if (!isTrue(this.options.interactive) || isNullOrUndefined(this.options.openUrl)) {
       throw new UnauthorizedError('OAuth authorization is required; use /mcp-auth <server>')
     }
     await this.options.openUrl(authorizationUrl.href, this.options.signal)
@@ -297,7 +309,7 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
   }
 
   codeVerifier(): string {
-    if (!this.verifier) {
+    if (isNullOrUndefined(this.verifier) || isEmptyString(this.verifier)) {
       throw new Error('OAuth PKCE verifier is unavailable; restart authentication')
     }
     return this.verifier
@@ -334,7 +346,7 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
       if (scope === 'tokens') {
         delete next.tokens
       }
-      return next.tokens || next.clientInformation ? next : undefined
+      return next.tokens !== undefined || next.clientInformation !== undefined ? next : undefined
     })
   }
 
@@ -345,12 +357,9 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
   private update(updater: (current: OAuthCredentialPayload | undefined) => OAuthCredentialPayload | undefined): Promise<void> {
     return Effect.runPromise(
       this.mutation.withPermits(1)(
-        Effect.tryPromise({
-          catch: (cause) => cause,
-          try: async () => {
-            const next = updater(await this.load())
-            await (next ? this.options.store.set(this.options.serverName, next) : this.options.store.delete(this.options.serverName))
-          },
+        Effect.tryPromise(async () => {
+          const next = updater(await this.load())
+          await (next === undefined ? this.options.store.delete(this.options.serverName) : this.options.store.set(this.options.serverName, next))
         })
       )
     )

@@ -37,7 +37,7 @@ describe('MCP gateway output', () => {
     expect(JSON.stringify(result.details)).not.toContain(marker)
 
     const path = result.details.fullOutputPath
-    if (!path) {
+    if (path === undefined) {
       throw new Error('Expected a full output path')
     }
     expect(await Bun.file(path).text()).toBe(text)

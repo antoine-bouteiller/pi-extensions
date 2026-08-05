@@ -1,12 +1,13 @@
 import { StringEnum } from '@earendil-works/pi-ai'
 import { type AgentToolResult, type ExtensionAPI, formatSize } from '@earendil-works/pi-coding-agent'
-import { Clock, Duration, Effect, Layer, ManagedRuntime, Schema, Stream } from 'effect'
+import { Clock, Duration, Effect, Function, Layer, ManagedRuntime, Schema, Stream } from 'effect'
 import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest, type HttpClientResponse } from 'effect/unstable/http'
 import TurndownService from 'turndown'
 import { Type, type Static } from 'typebox'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { ToolFailure } from '@/shared/effect/errors.js'
+import { isEmptyString, isNotEmptyString, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 import { boundToolTextEffect, writePrivateTempFileEffect } from '@/shared/utils/tool_output.js'
 
 const DEFAULT_TIMEOUT_SECONDS = 30
@@ -59,7 +60,7 @@ export type WebfetchFetch = (input: string | URL | Request, init?: RequestInit) 
 interface WebfetchDependencies {
   clock?: Clock.Clock
   httpClient: Layer.Layer<HttpClient.HttpClient>
-  saveFullOutput: (content: string) => Effect.Effect<string, unknown>
+  saveFullOutput: (content: string) => Effect.Effect<string, ToolFailure>
 }
 
 const normalizeTimeout = (value: number | undefined): number => {
@@ -84,7 +85,7 @@ const parseUrl = (value: string): URL => {
 
 const parseUrlEffect = (value: string): Effect.Effect<URL, ToolFailure> =>
   Effect.try({
-    catch: (cause) => new ToolFailure({ message: cause instanceof Error ? cause.message : String(cause) }),
+    catch: (cause) => ToolFailure.make({ message: cause instanceof Error ? cause.message : String(cause) }),
     try: () => parseUrl(value),
   })
 
@@ -106,7 +107,7 @@ const turndown = (): TurndownService => {
 const articleHtml = (html: string): string => {
   for (const tag of ['article', 'main', 'body'] as const) {
     const match = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`, 'i').exec(html)
-    if (match?.[1]) {
+    if (!isNullOrUndefined(match?.[1]) && isNotEmptyString(match[1])) {
       return match[1]
     }
   }
@@ -116,11 +117,11 @@ const articleHtml = (html: string): string => {
 const pageTitle = (html: string): string | undefined => {
   const match = /<title\b[^>]*>(?<title>[\s\S]*?)<\/title>/i.exec(html)
   const captured = match?.groups?.title
-  if (!captured) {
+  if (isNullOrUndefined(captured) || isEmptyString(captured)) {
     return undefined
   }
   const title = turndown().turndown(captured).replaceAll(/\s+/g, ' ').trim()
-  return title || undefined
+  return isEmptyString(title) ? undefined : title
 }
 
 const htmlToMarkdown = (html: string): string => {
@@ -131,7 +132,7 @@ const htmlToMarkdown = (html: string): string => {
     .replaceAll(/\n{3,}/g, '\n\n')
     .trim()
 
-  if (!title) {
+  if (isNullOrUndefined(title) || isEmptyString(title)) {
     return content
   }
   const titleHeading = `# ${title}`
@@ -183,8 +184,7 @@ const capturingFetch = (raw: typeof fetch, box: { current?: RawResponseMeta }): 
     box.current = { statusText: response.statusText, url: response.url }
     return response
   }
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- a plain wrapper function has no `.preconnect`; only ever invoked as a callable, never as `fetch.preconnect`.
-  return wrapped as typeof fetch
+  return Object.assign(wrapped, { preconnect: raw.preconnect })
 }
 
 const executeRequest = (
@@ -209,11 +209,9 @@ const readCappedBody = (response: HttpClientResponse.HttpClientResponse): Effect
   Effect.gen(function* () {
     const declaredLength = Number(response.headers['content-length'])
     if (Number.isFinite(declaredLength) && declaredLength > MAX_DOWNLOAD_BYTES) {
-      return yield* Effect.fail(
-        new ToolFailure({
-          message: `Response is too large: ${formatSize(declaredLength)} exceeds the ${formatSize(MAX_DOWNLOAD_BYTES)} download limit`,
-        })
-      )
+      return yield* ToolFailure.make({
+        message: `Response is too large: ${formatSize(declaredLength)} exceeds the ${formatSize(MAX_DOWNLOAD_BYTES)} download limit`,
+      })
     }
 
     const chunks: Uint8Array[] = []
@@ -222,7 +220,7 @@ const readCappedBody = (response: HttpClientResponse.HttpClientResponse): Effect
       Stream.runForEach((chunk) => {
         size += chunk.byteLength
         if (size > MAX_DOWNLOAD_BYTES) {
-          return Effect.fail(new ToolFailure({ message: `Response is too large: it exceeds the ${formatSize(MAX_DOWNLOAD_BYTES)} download limit` }))
+          return Effect.fail(ToolFailure.make({ message: `Response is too large: it exceeds the ${formatSize(MAX_DOWNLOAD_BYTES)} download limit` }))
         }
         chunks.push(chunk)
         return Effect.void
@@ -259,7 +257,7 @@ const buildFetchResult = ({
   statusText,
   timeoutSeconds,
   url,
-}: BuildFetchResultOptions): Effect.Effect<AgentToolResult<WebfetchDetails>, unknown> =>
+}: BuildFetchResultOptions): Effect.Effect<AgentToolResult<WebfetchDetails>, ToolFailure> =>
   Effect.gen(function* () {
     const decoded = new TextDecoder().decode(body)
     const contentType = response.headers['content-type'] ?? ''
@@ -284,17 +282,14 @@ const buildFetchResult = ({
       statusText,
       timeoutSeconds,
       url: url.href,
-      ...(fullOutputPath ? { fullOutputPath } : {}),
+      ...(isNullOrUndefined(fullOutputPath) || isEmptyString(fullOutputPath) ? {} : { fullOutputPath }),
     }
     return { content: [{ text: bounded.text, type: 'text' }], details }
   })
 
-const isTimeoutError = (error: unknown): error is { readonly _tag: 'TimeoutError' } =>
-  typeof error === 'object' && error !== null && '_tag' in error && error._tag === 'TimeoutError'
-
 const cancellationEffect = (signal: AbortSignal): Effect.Effect<never, ToolFailure> =>
   Effect.callback<never, ToolFailure>((resume) => {
-    const cancel = () => resume(Effect.fail(new ToolFailure({ message: 'webfetch was cancelled' })))
+    const cancel = () => resume(Effect.fail(ToolFailure.make({ message: 'webfetch was cancelled' })))
     if (signal.aborted) {
       cancel()
       return undefined
@@ -315,7 +310,7 @@ const fetchResult = ({
   onUpdate,
   params,
   signal,
-}: FetchResultOptions): Effect.Effect<AgentToolResult<WebfetchDetails>, unknown, HttpClient.HttpClient> =>
+}: FetchResultOptions): Effect.Effect<AgentToolResult<WebfetchDetails>, ToolFailure | HttpClientError.HttpClientError, HttpClient.HttpClient> =>
   Effect.gen(function* () {
     const url = yield* parseUrlEffect(params.url)
     const format = resolveFormat(params.format)
@@ -345,12 +340,10 @@ const fetchResult = ({
 
     const withTimeout = main.pipe(
       Effect.timeout(Duration.seconds(timeoutSeconds)),
-      Effect.catch((error) =>
-        isTimeoutError(error) ? Effect.fail(new ToolFailure({ message: `webfetch timed out after ${timeoutSeconds}s` })) : Effect.fail(error)
-      )
+      Effect.catchTag('TimeoutError', () => ToolFailure.make({ message: `webfetch timed out after ${timeoutSeconds}s` }))
     )
 
-    return yield* signal ? Effect.raceFirst(withTimeout, cancellationEffect(signal)) : withTimeout
+    return yield* signal === undefined ? withTimeout : Effect.raceFirst(withTimeout, cancellationEffect(signal))
   })
 
 const toRejection = (failure: unknown): Error => {
@@ -375,41 +368,56 @@ const toRejection = (failure: unknown): Error => {
  * instead of the shared `AppRuntime`, since the whole point of the override is isolation from the
  * real `FetchHttpClient.layer` the shared runtime carries.
  */
-export const createWebfetchExtension = (overrides: Partial<WebfetchDependencies>, runtime: AppRuntime): ((pi: ExtensionAPI) => void) => {
-  const dependencies: WebfetchDependencies = {
-    ...(overrides.clock ? { clock: overrides.clock } : {}),
-    httpClient: overrides.httpClient ?? FetchHttpClient.layer,
-    saveFullOutput: overrides.saveFullOutput ?? ((content) => writePrivateTempFileEffect(content, { prefix: 'pi-webfetch-' })),
-  }
-  const hasOverride = overrides.clock !== undefined || overrides.httpClient !== undefined
+// oxlint-disable-next-line effecttsgo/missing-pipeable-signature -- Function.dual provides the data-last overload declared below.
+export const createWebfetchExtension: {
+  (runtime: AppRuntime): (overrides: Partial<WebfetchDependencies>) => (pi: ExtensionAPI) => void
+  (overrides: Partial<WebfetchDependencies>, runtime: AppRuntime): (pi: ExtensionAPI) => void
+} = Function.dual(
+  2,
+  (overrides: Partial<WebfetchDependencies>, runtime: AppRuntime) =>
+    function webfetchExtension(pi: ExtensionAPI): void {
+      const dependencies: WebfetchDependencies = {
+        ...(overrides.clock === undefined ? {} : { clock: overrides.clock }),
+        httpClient: overrides.httpClient ?? FetchHttpClient.layer,
+        saveFullOutput:
+          overrides.saveFullOutput ??
+          ((content) =>
+            writePrivateTempFileEffect(content, { prefix: 'pi-webfetch-' }).pipe(
+              Effect.mapError((cause) => ToolFailure.make({ message: cause.message }))
+            )),
+      }
+      const hasOverride = overrides.clock !== undefined || overrides.httpClient !== undefined
+      const executor = hasOverride
+        ? ManagedRuntime.make(
+            dependencies.clock === undefined
+              ? dependencies.httpClient
+              : Layer.mergeAll(dependencies.httpClient, Layer.succeed(Clock.Clock)(dependencies.clock))
+          )
+        : runtime
 
-  return function webfetchExtension(pi: ExtensionAPI): void {
-    const executor = hasOverride
-      ? ManagedRuntime.make(
-          dependencies.clock ? Layer.mergeAll(dependencies.httpClient, Layer.succeed(Clock.Clock)(dependencies.clock)) : dependencies.httpClient
-        )
-      : runtime
+      pi.registerTool({
+        description: `Fetch an HTTP(S) URL and return its content as markdown, plain text, or raw HTML. HTML defaults to markdown. Downloads are limited to ${formatSize(MAX_DOWNLOAD_BYTES)}; output is truncated to ${MAX_OUTPUT_LINES} lines or ${formatSize(MAX_OUTPUT_BYTES)} and saved to a temporary file when larger.`,
+        async execute(_toolCallId, params, signal, onUpdate) {
+          return await executor.runPromise(
+            Effect.suspend(() =>
+              isTrue(signal?.aborted)
+                ? Effect.fail(ToolFailure.make({ message: 'webfetch was cancelled' }))
+                : fetchResult({ dependencies, onUpdate, params, signal })
+            ).pipe(Effect.mapError(toRejection))
+          )
+        },
+        label: 'Web Fetch',
+        name: 'webfetch',
+        parameters: WebfetchParams,
+        promptGuidelines: [
+          'Use webfetch to read a known static web page or HTTP endpoint. Use agent-browser instead when the task requires interaction, authentication, screenshots, or JavaScript-rendered content.',
+        ],
+        promptSnippet: 'Fetch and read static web pages or HTTP endpoints',
+      })
+    }
+)
 
-    pi.registerTool({
-      description: `Fetch an HTTP(S) URL and return its content as markdown, plain text, or raw HTML. HTML defaults to markdown. Downloads are limited to ${formatSize(MAX_DOWNLOAD_BYTES)}; output is truncated to ${MAX_OUTPUT_LINES} lines or ${formatSize(MAX_OUTPUT_BYTES)} and saved to a temporary file when larger.`,
-      async execute(_toolCallId, params, signal, onUpdate) {
-        return await executor.runPromise(
-          Effect.suspend(() =>
-            signal?.aborted
-              ? Effect.fail(new ToolFailure({ message: 'webfetch was cancelled' }))
-              : fetchResult({ dependencies, onUpdate, params, signal })
-          ).pipe(Effect.catch((error) => Effect.fail(toRejection(error))))
-        )
-      },
-      label: 'Web Fetch',
-      name: 'webfetch',
-      parameters: WebfetchParams,
-      promptGuidelines: [
-        'Use webfetch to read a known static web page or HTTP endpoint. Use agent-browser instead when the task requires interaction, authentication, screenshots, or JavaScript-rendered content.',
-      ],
-      promptSnippet: 'Fetch and read static web pages or HTTP endpoints',
-    })
-  }
-}
-
-export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => createWebfetchExtension({}, runtime)(pi)
+export const register: {
+  (runtime: AppRuntime): (pi: ExtensionAPI) => void
+  (pi: ExtensionAPI, runtime: AppRuntime): void
+} = Function.dual(2, (pi: ExtensionAPI, runtime: AppRuntime): void => createWebfetchExtension({}, runtime)(pi))

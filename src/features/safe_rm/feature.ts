@@ -9,10 +9,11 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
 } from '@earendil-works/pi-coding-agent'
-import { Effect, Result } from 'effect'
+import { Cause, Effect, Function, Result } from 'effect'
 import { Type } from 'typebox'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
+import { isEmptyString, isNotEmptyString } from '@/shared/utils/predicates.js'
 import { assertUnprotectedPath } from '@/shared/utils/protected_paths.js'
 
 import {
@@ -119,49 +120,54 @@ interface SafeRmDetails {
 
 const isDescendant = (root: string, candidate: string): boolean => {
   const pathFromRoot = relative(root, candidate)
-  return pathFromRoot !== '' && pathFromRoot !== '..' && !pathFromRoot.startsWith(`..${sep}`) && !isAbsolute(pathFromRoot)
+  return isNotEmptyString(pathFromRoot) && pathFromRoot !== '..' && !pathFromRoot.startsWith(`..${sep}`) && !isAbsolute(pathFromRoot)
 }
 
 const isWithinOrEqual = (root: string, candidate: string): boolean => root === candidate || isDescendant(root, candidate)
 
-const isMissing = (error: unknown): boolean =>
-  typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === 'ENOENT'
+const isMissing = (error: unknown): boolean => {
+  const candidate = Cause.isUnknownError(error) ? error.cause : error
+  return typeof candidate === 'object' && candidate !== null && 'code' in candidate && (candidate as { code?: unknown }).code === 'ENOENT'
+}
 
 const checkCancelled = (signal: AbortSignal | undefined): Effect.Effect<void, CancelledError> =>
-  signal?.aborted ? Effect.fail(new CancelledError({ message: 'Deletion was cancelled' })) : Effect.void
+  signal !== undefined && signal.aborted ? Effect.fail(CancelledError.make({ message: 'Deletion was cancelled' })) : Effect.void
 
 const normalizeInput = (path: string): Effect.Effect<string, InvalidPathError> => {
   // Ponytail: deletion keeps leading @ literal; implicit prefix stripping can target a different path.
-  if (!path || path.startsWith('~') || path.includes('\0')) {
-    return Effect.fail(new InvalidPathError({ message: `Invalid literal deletion path: ${JSON.stringify(path)}` }))
+  if (isEmptyString(path) || path.startsWith('~') || path.includes('\0')) {
+    return Effect.fail(InvalidPathError.make({ message: `Invalid literal deletion path: ${JSON.stringify(path)}` }))
   }
   return Effect.succeed(path)
 }
 
 const rejectMetadataPath = (absolutePath: string): Effect.Effect<void, GitMetadataError> =>
   absolutePath.split(sep).some((component) => component.toLowerCase() === '.git')
-    ? Effect.fail(new GitMetadataError({ message: `Refusing to remove Git metadata: ${absolutePath}` }))
+    ? Effect.fail(GitMetadataError.make({ message: `Refusing to remove Git metadata: ${absolutePath}` }))
     : Effect.void
 
-const lstatEffect = (path: string): Effect.Effect<Stats, unknown> => Effect.tryPromise({ catch: (cause) => cause, try: () => lstat(path) })
+const lstatEffect = (path: string): Effect.Effect<Stats, Cause.UnknownError> => Effect.tryPromise(() => lstat(path))
 
-const realpathEffect = (path: string): Effect.Effect<string, unknown> => Effect.tryPromise({ catch: (cause) => cause, try: () => realpath(path) })
+const realpathEffect = (path: string): Effect.Effect<string, Cause.UnknownError> => Effect.tryPromise(() => realpath(path))
 
-const readdirEffect = (path: string): Effect.Effect<Dirent[], unknown> =>
-  Effect.tryPromise({ catch: (cause) => cause, try: () => readdir(path, { withFileTypes: true }) })
+const readdirEffect = (path: string): Effect.Effect<Dirent[], Cause.UnknownError> => Effect.tryPromise(() => readdir(path, { withFileTypes: true }))
 
-const removeEffect = (path: string, options: { force: boolean; recursive: boolean }): Effect.Effect<void, unknown> =>
-  Effect.tryPromise({ catch: (cause) => cause, try: () => remove(path, options) })
+const removeEffect = (path: string, options: { force: boolean; recursive: boolean }): Effect.Effect<void, Cause.UnknownError> =>
+  Effect.tryPromise(() => remove(path, options))
 
-const assertUnprotectedEffect = (path: string, cwd: string, operation: string): Effect.Effect<void, unknown> =>
-  Effect.tryPromise({ catch: (cause) => cause, try: () => assertUnprotectedPath(path, cwd, operation) })
+const assertUnprotectedEffect = (path: string, cwd: string, operation: string): Effect.Effect<void, Cause.UnknownError> =>
+  Effect.tryPromise(() => assertUnprotectedPath(path, cwd, operation))
 
 /**
  * Recursive removal must not turn a harmless-looking parent directory into
  * a way to erase credentials or a nested Git repository. Symlink entries are
  * checked by canonical policy but never traversed.
  */
-const inspectDirectoryTree = (directory: string, cwd: string, signal: AbortSignal | undefined): Effect.Effect<void, unknown> =>
+const inspectDirectoryTree = (
+  directory: string,
+  cwd: string,
+  signal: AbortSignal | undefined
+): Effect.Effect<void, CancelledError | Cause.UnknownError | GitRepositoryError | GitMetadataError> =>
   Effect.gen(function* () {
     yield* checkCancelled(signal)
     const entries = yield* readdirEffect(directory)
@@ -169,7 +175,7 @@ const inspectDirectoryTree = (directory: string, cwd: string, signal: AbortSigna
       yield* checkCancelled(signal)
       const child = join(directory, entry.name)
       if (entry.name.toLowerCase() === '.git') {
-        yield* Effect.fail(new GitRepositoryError({ message: `Refusing to remove a Git repository: ${directory}` }))
+        return yield* GitRepositoryError.make({ message: `Refusing to remove a Git repository: ${directory}` })
       }
       yield* rejectMetadataPath(child)
       yield* assertUnprotectedEffect(child, cwd, 'remove')
@@ -177,6 +183,7 @@ const inspectDirectoryTree = (directory: string, cwd: string, signal: AbortSigna
         yield* inspectDirectoryTree(child, cwd, signal)
       }
     }
+    return undefined
   })
 
 interface ValidateTargetOptions {
@@ -187,15 +194,25 @@ interface ValidateTargetOptions {
   signal: AbortSignal | undefined
 }
 
-const validateTargetEffect = ({ input, cwd, roots, recursive, signal }: ValidateTargetOptions): Effect.Effect<ValidatedTarget, unknown> =>
+type ValidateTargetError =
+  | CancelledError
+  | InvalidPathError
+  | Cause.UnknownError
+  | OutsideAllowedRootError
+  | GitMetadataError
+  | SymlinkEscapeError
+  | RecursiveRequiredError
+  | GitRepositoryError
+
+const validateTargetEffect = ({ input, cwd, roots, recursive, signal }: ValidateTargetOptions): Effect.Effect<ValidatedTarget, ValidateTargetError> =>
   Effect.gen(function* () {
     yield* checkCancelled(signal)
     const normalizedInput = yield* normalizeInput(input)
     const absolute = resolve(cwd, normalizedInput)
     yield* assertUnprotectedEffect(input, cwd, 'remove')
     const lexicalRoot = roots.find((root) => isDescendant(root.lexical, absolute))
-    if (!lexicalRoot) {
-      return yield* Effect.fail(new OutsideAllowedRootError({ message: `Deletion target must be below the working directory or /tmp: ${input}` }))
+    if (lexicalRoot === undefined) {
+      return yield* OutsideAllowedRootError.make({ message: `Deletion target must be below the working directory or /tmp: ${input}` })
     }
 
     yield* rejectMetadataPath(absolute)
@@ -205,18 +222,18 @@ const validateTargetEffect = ({ input, cwd, roots, recursive, signal }: Validate
       if (isMissing(statsOutcome.failure)) {
         return { absolute, directory: false, input, missing: true }
       }
-      return yield* Effect.fail(statsOutcome.failure)
+      return yield* statsOutcome.failure
     }
     const stats = statsOutcome.success
 
     const canonicalParent = yield* realpathEffect(dirname(absolute))
     if (!roots.some((root) => isWithinOrEqual(root.canonical, canonicalParent))) {
-      return yield* Effect.fail(new SymlinkEscapeError({ message: `Deletion target escapes an allowed root through a symlink: ${input}` }))
+      return yield* SymlinkEscapeError.make({ message: `Deletion target escapes an allowed root through a symlink: ${input}` })
     }
 
     const directory = stats.isDirectory() && !stats.isSymbolicLink()
     if (directory && !recursive) {
-      return yield* Effect.fail(new RecursiveRequiredError({ message: `Directory deletion requires recursive: true: ${input}` }))
+      return yield* RecursiveRequiredError.make({ message: `Directory deletion requires recursive: true: ${input}` })
     }
     if (directory) {
       yield* inspectDirectoryTree(absolute, cwd, signal)
@@ -232,23 +249,26 @@ interface RevalidateTargetOptions {
   signal: AbortSignal | undefined
 }
 
-const revalidateTargetEffect = ({ target, roots, cwd, signal }: RevalidateTargetOptions): Effect.Effect<void, unknown> =>
+type RevalidateTargetError = CancelledError | Cause.UnknownError | SymlinkEscapeError | TargetChangedError | GitRepositoryError | GitMetadataError
+
+const revalidateTargetEffect = ({ target, roots, cwd, signal }: RevalidateTargetOptions): Effect.Effect<void, RevalidateTargetError> =>
   Effect.gen(function* () {
     yield* checkCancelled(signal)
     yield* assertUnprotectedEffect(target.absolute, cwd, 'remove')
     const canonicalParent = yield* realpathEffect(dirname(target.absolute))
     if (!roots.some((root) => isWithinOrEqual(root.canonical, canonicalParent))) {
-      yield* Effect.fail(new SymlinkEscapeError({ message: `Deletion target escapes an allowed root through a symlink: ${target.input}` }))
+      return yield* SymlinkEscapeError.make({ message: `Deletion target escapes an allowed root through a symlink: ${target.input}` })
     }
 
     const stats = yield* lstatEffect(target.absolute)
     const directory = stats.isDirectory() && !stats.isSymbolicLink()
     if (directory !== target.directory) {
-      yield* Effect.fail(new TargetChangedError({ message: `Deletion target changed after validation: ${target.input}` }))
+      return yield* TargetChangedError.make({ message: `Deletion target changed after validation: ${target.input}` })
     }
     if (directory) {
       yield* inspectDirectoryTree(target.absolute, cwd, signal)
     }
+    return undefined
   })
 
 const rejectOverlappingTargets = (targets: ValidatedTarget[]): Effect.Effect<void, OverlappingTargetsError> =>
@@ -256,14 +276,13 @@ const rejectOverlappingTargets = (targets: ValidatedTarget[]): Effect.Effect<voi
     for (const [index, first] of targets.entries()) {
       for (const second of targets.slice(index + 1)) {
         if (first.absolute === second.absolute || isDescendant(first.absolute, second.absolute) || isDescendant(second.absolute, first.absolute)) {
-          yield* Effect.fail(
-            new OverlappingTargetsError({
-              message: `Deletion targets must be distinct and non-overlapping: ${first.input}, ${second.input}`,
-            })
-          )
+          return yield* OverlappingTargetsError.make({
+            message: `Deletion targets must be distinct and non-overlapping: ${first.input}, ${second.input}`,
+          })
         }
       }
     }
+    return undefined
   })
 
 /*
@@ -272,7 +291,12 @@ const rejectOverlappingTargets = (targets: ValidatedTarget[]): Effect.Effect<voi
  * replace the exact rejection message tests and Pi both depend on with a generic interrupted-fiber
  * one.
  */
-const toRejection = (error: unknown): Error => (error instanceof Error ? error : new Error(String(error)))
+const toRejection = (error: unknown): Error => {
+  if (Cause.isUnknownError(error) && error.cause instanceof Error) {
+    return error.cause
+  }
+  return error instanceof Error ? error : new Error(String(error))
+}
 
 interface SafeRmToolParams {
   paths: string[]
@@ -284,16 +308,18 @@ interface ToolOutput {
   details: SafeRmDetails
 }
 
+type SafeRmToolError = ValidateTargetError | OverlappingTargetsError | Cause.UnknownError
+
 const createSafeRmTool = (runtime: AppRuntime) => {
   const runTool =
-    <Params, Result>(body: (params: Params, signal: AbortSignal | undefined, ctx: ExtensionContext) => Effect.Effect<Result, unknown>) =>
+    <Params, Result, Failure>(body: (params: Params, signal: AbortSignal | undefined, ctx: ExtensionContext) => Effect.Effect<Result, Failure>) =>
     async (_toolCallId: string, params: Params, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext): Promise<Result> =>
-      runtime.runPromise(body(params, signal, ctx).pipe(Effect.catch((error: unknown) => Effect.fail(toRejection(error)))))
+      runtime.runPromise(body(params, signal, ctx).pipe(Effect.mapError(toRejection)))
 
   return {
     description:
       'Safely remove literal paths without shell rm. Every target is validated before deletion: targets must be below the working directory or /tmp, parent symlinks cannot escape those roots, credentials and Git repositories are protected even inside recursive targets, and directories require recursive=true.',
-    execute: runTool<SafeRmToolParams, ToolOutput>((params, signal, ctx) =>
+    execute: runTool((params: SafeRmToolParams, signal: AbortSignal | undefined, ctx: ExtensionContext): Effect.Effect<ToolOutput, SafeRmToolError> =>
       Effect.gen(function* () {
         yield* checkCancelled(signal)
 
@@ -318,22 +344,20 @@ const createSafeRmTool = (runtime: AppRuntime) => {
           }
           yield* checkCancelled(signal)
 
-          yield* Effect.tryPromise({
-            catch: (cause) => cause,
-            try: () =>
-              withFileMutationQueue(target.absolute, () =>
-                runtime.runPromise(
-                  Effect.gen(function* () {
-                    /*
-                     * Deliberately a genuine second pass, not a reuse of validateTargetEffect: a parent may
-                     * have been replaced by a symlink while this target waited in queue.
-                     */
-                    yield* revalidateTargetEffect({ cwd, roots, signal, target })
-                    yield* removeEffect(target.absolute, { force: false, recursive: target.directory })
-                  })
-                )
-              ),
-          })
+          yield* Effect.tryPromise(() =>
+            withFileMutationQueue(target.absolute, () =>
+              runtime.runPromise(
+                Effect.gen(function* () {
+                  /*
+                   * Deliberately a genuine second pass, not a reuse of validateTargetEffect: a parent may
+                   * have been replaced by a symlink while this target waited in queue.
+                   */
+                  yield* revalidateTargetEffect({ cwd, roots, signal, target })
+                  yield* removeEffect(target.absolute, { force: false, recursive: target.directory })
+                })
+              )
+            )
+          )
           details.removed.push(target.input)
         }
 
@@ -358,56 +382,62 @@ const createSafeRmTool = (runtime: AppRuntime) => {
   }
 }
 
-export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
-  const safeRm = createSafeRmTool(runtime)
-  const pending = new Map<string, SafeRmToolParams>()
-  pi.registerTool(safeRm)
+export const register: {
+  (runtime: AppRuntime): (pi: ExtensionAPI) => void
+  (pi: ExtensionAPI, runtime: AppRuntime): void
+} = Function.dual(
+  (args) => typeof args[0].on === 'function',
+  (pi: ExtensionAPI, runtime: AppRuntime): void => {
+    const safeRm = createSafeRmTool(runtime)
+    const pending = new Map<string, SafeRmToolParams>()
+    pi.registerTool(safeRm)
 
-  pi.on('tool_call', (event) => {
-    if (!isToolCallEventType('bash', event) || !pi.getActiveTools().includes('safe_rm')) {
-      return
-    }
-    const route = parseSimpleRm(event.input.command)
-    if (route === undefined) {
-      return
-    }
-
-    pending.set(event.toolCallId, route)
-    // The sentinel keeps later command guards from rejecting the no-op; the original call remains in the transcript.
-    // Ponytail: bash and safe_rm share ctx.cwd; keep rm blocked if remote filesystems become detectable.
-    event.input.command = ROUTED_RM_SENTINEL
-  })
-
-  pi.on('tool_result', async (event, ctx) => {
-    if (!isBashToolResult(event) || event.input.command !== ROUTED_RM_SENTINEL) {
-      return undefined
-    }
-    const route = pending.get(event.toolCallId)
-    pending.delete(event.toolCallId)
-    if (event.isError) {
-      return undefined
-    }
-    if (route === undefined) {
-      return {
-        content: [{ text: 'Safe removal handoff was lost; no paths were removed', type: 'text' as const }],
-        details: {},
-        isError: true,
+    pi.on('tool_call', (event) => {
+      if (!isToolCallEventType('bash', event) || !pi.getActiveTools().includes('safe_rm')) {
+        return
       }
-    }
-
-    try {
-      const result = await safeRm.execute(event.toolCallId, route, ctx.signal, undefined, ctx)
-      return { content: result.content, details: {}, isError: false }
-    } catch (error) {
-      return {
-        content: [{ text: error instanceof Error ? error.message : String(error), type: 'text' as const }],
-        details: {},
-        isError: true,
+      const route = parseSimpleRm(event.input.command)
+      if (route === undefined) {
+        return
       }
-    }
-  })
 
-  pi.on('tool_execution_end', (event) => {
-    pending.delete(event.toolCallId)
-  })
-}
+      pending.set(event.toolCallId, route)
+      // The sentinel keeps later command guards from rejecting the no-op; the original call remains in the transcript.
+      // Ponytail: bash and safe_rm share ctx.cwd; keep rm blocked if remote filesystems become detectable.
+      event.input.command = ROUTED_RM_SENTINEL
+    })
+
+    pi.on('tool_result', async (event, ctx) => {
+      if (!isBashToolResult(event) || event.input.command !== ROUTED_RM_SENTINEL) {
+        return undefined
+      }
+      const route = pending.get(event.toolCallId)
+      pending.delete(event.toolCallId)
+      if (event.isError) {
+        return undefined
+      }
+      if (route === undefined) {
+        return {
+          content: [{ text: 'Safe removal handoff was lost; no paths were removed', type: 'text' as const }],
+          details: {},
+          isError: true,
+        }
+      }
+
+      try {
+        const result = await safeRm.execute(event.toolCallId, route, ctx.signal, undefined, ctx)
+        return { content: result.content, details: {}, isError: false }
+      } catch (error) {
+        return {
+          content: [{ text: error instanceof Error ? error.message : String(error), type: 'text' as const }],
+          details: {},
+          isError: true,
+        }
+      }
+    })
+
+    pi.on('tool_execution_end', (event) => {
+      pending.delete(event.toolCallId)
+    })
+  }
+)
