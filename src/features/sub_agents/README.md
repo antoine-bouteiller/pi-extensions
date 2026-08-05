@@ -10,15 +10,15 @@ This capability is maintained in the [`pi-extensions`](../../..) repository as o
 
 ## Tools
 
-| Tool                  | Purpose                                                                        |
-| --------------------- | ------------------------------------------------------------------------------ |
-| `spawn_agent`         | Spawn a fresh-context child Pi process                                         |
-| `wait_agent`          | Block for one completion and return its final text                             |
-| `wait_all_agents`     | Block until every selected agent finishes                                      |
-| `list_agents`         | List current-session agents, or explicitly include historical sessions         |
-| `read_agent_response` | Read an agent's latest final raw text response                                 |
-| `send_message`        | Send the one allowed steering or continuation message to a logical agent       |
-| `interrupt_agent`     | Abort the current turn while preserving its unused follow-up, when one remains |
+| Tool                  | Purpose                                                                           |
+| --------------------- | --------------------------------------------------------------------------------- |
+| `spawn_agent`         | Spawn foreground by default, or accept immediately with `run_in_background: true` |
+| `wait_agent`          | Synchronize one intentionally background agent and return its final text          |
+| `wait_all_agents`     | Synchronize every selected background agent                                       |
+| `list_agents`         | List current-session agents, or explicitly include historical sessions            |
+| `read_agent_response` | Read an agent's latest final raw text response                                    |
+| `send_message`        | Send the one allowed steering or continuation message to a logical agent          |
+| `interrupt_agent`     | Abort the current turn while preserving its unused follow-up, when one remains    |
 
 Agent names are unique within their parent session. The same task name can exist safely in different Pi sessions. Read and control tools are always scoped to the current parent session; only `list_agents(include_all: true)` crosses session boundaries, and that view is read-only.
 
@@ -84,11 +84,19 @@ Configuration is read when agents spawn, while cleanup runs when the extension l
 
 ## Completion delivery
 
-A child completion or failure is delivered automatically to its parent session after the child reaches final status. If the parent is active, the result joins the current run; if the parent is idle, it starts a continuation turn. Continue independent work instead of waiting. Use `wait_agent` or `wait_all_agents` only when the next action depends on those responses and no useful work remains meanwhile; an active wait receives the result directly without a duplicate automatic message.
+`spawn_agent` runs in the foreground when `run_in_background` is omitted or `false`: the tool waits for final status and returns the completion, failure, or interruption directly. That event is claimed before launch and is not also injected as an automatic completion notification.
+
+With `run_in_background: true`, the tool returns after startup acceptance. The final event is later injected into the parent session exactly once; if the parent is active it joins the current run, and if the parent is idle it starts a continuation turn. `wait_agent` and `wait_all_agents` remain available to synchronize work that was intentionally started in the background, and an active wait receives the result without a duplicate automatic message.
+
+Aborting a foreground tool wait releases its completion claim but does not interrupt the child. If a child was created, it continues and its final event returns to automatic background delivery. Use `interrupt_agent` when the child itself must stop.
+
+Execution mode is an invocation-time delivery policy and is not persisted. It does not change profile restrictions, process ownership, the one-follow-up limit, or Claude concurrency and continuation limits.
 
 ## Delegation guidance
 
-The extension appends a short delegation section to the parent system prompt on every `before_agent_start`. It asks for narrow, self-contained tasks, caps parallel Claude work at three children, prefers fresh agents to repeated steering, and recommends Claude primarily for short research and review. The block is skipped when `PI_SUBAGENT_OWNER_TOKEN` is set, so children never receive it; no profile grants `spawn_agent`, so subagents cannot spawn further agents.
+The extension appends a short delegation section to the parent system prompt on every `before_agent_start`. Foreground is recommended whenever the answer is needed for the next decision or the parent would otherwise inspect the same scope. Background execution is reserved for clearly non-overlapping work; the parent must not repeat a pending child's files, symbols, or question and should wait if its next action would overlap. The guidance also asks for narrow self-contained tasks, caps parallel Claude work at three children, prefers fresh agents to repeated steering, and recommends Claude primarily for short research and review.
+
+The block is skipped when `PI_SUBAGENT_OWNER_TOKEN` is set, so children never receive it; no profile grants `spawn_agent`, so subagents cannot spawn further agents.
 
 ## Commands and TUI
 
@@ -102,7 +110,7 @@ Child RPC processes are terminated after completion, failure, or interruption so
 
 ## Output limits
 
-Automatic completions, wait tools, and response tools follow Pi's standard 50 KB / 2,000-line output limit. Oversized output is truncated and the complete text is written beside the runtime data; the returned notice includes a path that can be read with Pi's `read` tool.
+Foreground spawn results, automatic background completions, wait tools, and response tools follow Pi's standard 50 KB / 2,000-line output limit. Oversized output is truncated and the complete text is written beside the runtime data; the returned notice includes a path that can be read with Pi's `read` tool.
 
 ## Environment
 

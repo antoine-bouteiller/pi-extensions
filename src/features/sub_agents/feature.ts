@@ -72,11 +72,15 @@ const preserveWaitCancellation = <Result>(promise: Promise<Result>): Promise<Res
   promise.catch((error: unknown) => Promise.reject(error instanceof SubagentWaitError && error.aborted ? error.cause : error))
 
 const boundedText = (text: string, maxBytes = DEFAULT_MAX_BYTES, maxLines = DEFAULT_MAX_LINES): BoundedText => {
-  const truncation = truncateOutput(text, { maxBytes, maxLines })
-  if (!truncation.truncated) {
+  const initial = truncateOutput(text, { maxBytes, maxLines })
+  if (!initial.truncated) {
     return { text }
   }
   const fullOutputPath = writeFullToolOutput(text)
+  const truncation = truncateOutput(text, {
+    maxBytes: maxBytes - 2048,
+    maxLines: maxLines - 4,
+  })
   return {
     fullOutputPath,
     text: truncation.content + truncationNotice(truncation, { fullOutputPath }),
@@ -161,9 +165,10 @@ const DELEGATION_GUIDANCE = `
 Subagents are available through \`spawn_agent\`. Prefer delegation over pulling context-heavy work into the parent:
 
 - Delegate read-heavy exploration, research, log triage, and review. Give each child one narrow, self-contained task with the relevant paths and expected answer shape.
+- Foreground is the default: use it when the delegated result is needed before your next step or when you would otherwise inspect the same files or question. Set \`run_in_background: true\` only for clearly independent work.
+- Never repeat a pending child's files, symbols, or question in the parent. After a background spawn, continue only with clearly non-overlapping work; call \`wait_agent\`/\`wait_all_agents\` if the next action would overlap.
 - Parallelize independent questions, but keep Claude-backed children to at most three live agents. Prefer Claude for short research and review tasks.
 - Prefer spawning a fresh child over repeatedly steering an existing one. Each logical agent accepts at most one \`send_message\` follow-up; Claude continuations are refused at 112k context input tokens.
-- Do not block. \`spawn_agent\` returns as soon as the child accepts its task and completions arrive on their own, so keep working; reach for \`wait_agent\`/\`wait_all_agents\` only when your next step depends on a result and no useful work remains.
 - Use \`reviewer\` for a fresh-context check of a plan or finished change.
 
 Keep work in your own context when it depends on conversation history that is expensive to restate or when the user is waiting on one quick answer. Available profiles: ${AGENT_PROFILE_NAMES.join(', ')}.`
@@ -324,6 +329,12 @@ const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: Age
       description: 'Required source-defined agent profile.',
     }),
     message: Type.String({ description: 'Initial task for the new agent.' }),
+    run_in_background: Type.Optional(
+      Type.Boolean({
+        description:
+          'Run concurrently only when the parent has clearly independent work. Defaults to false, which waits and returns the final response.',
+      })
+    ),
     task_name: Type.String({
       description: 'Task name for the new agent. Use letters, digits, underscores, dashes, and optional slash path separators.',
     }),
@@ -335,7 +346,7 @@ const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: Age
     get description() {
       return `Spawn a fresh-context Pi subagent using a required source-defined profile. Give it one narrow, self-contained task. Children rediscover configured global and project extensions normally while skills, prompt templates, and context files remain isolated. Each profile fixes its model, thinking level, prompt, read-only metadata, and model-callable tool boundary.
 
-Returns after the child accepts its initial task. Continue with independent work instead of waiting; the child's final response will be delivered automatically when ready. Use \`wait_agent\` or \`wait_all_agents\` only when your next action depends on the subagent response and you have no useful work to do meanwhile. Claude-backed children are limited to three live agents and cannot be continued at 112k context input tokens. Prefer a fresh child to steering; each logical agent accepts one \`send_message\` follow-up.
+Foreground is the default: use it when the delegated result is needed before your next step. Set \`run_in_background\` only for clearly independent work. Never repeat a pending child's files, symbols, or question in the parent; wait if work would overlap. Claude-backed children are limited to three live agents and cannot be continued at 112k context input tokens. Prefer a fresh child to steering; each logical agent accepts one \`send_message\` follow-up.
 
 Available agent profiles:
 ${getAgentProfilesDescription()}`
@@ -343,11 +354,11 @@ ${getAgentProfilesDescription()}`
     execute(
       _toolCallId: string,
       params: SpawnAgentParams,
-      _signal: AbortSignal | undefined,
+      signal: AbortSignal | undefined,
       _onUpdate: AgentToolUpdateCallback<SpawnAgentResultDetails> | undefined,
       ctx: ExtensionContext
     ) {
-      return runtime.runPromise(
+      const operation = runtime.runPromise(
         Effect.gen(function* () {
           const currentModel = ctx.model
           if (
@@ -362,35 +373,56 @@ ${getAgentProfilesDescription()}`
           if (!Array.isArray(availableModels)) {
             return yield* featureError('spawn_agent failed: authenticated model availability is unavailable.', undefined)
           }
+          const runInBackground = params.run_in_background === true
           const result = yield* Effect.tryPromise({
             catch: (cause) => featureError(`spawn_agent failed: ${cause instanceof Error ? cause.message : String(cause)}`, cause),
             try: () =>
-              manager.spawnAgent({
-                agent_type: params.agent_type,
-                availableModels: availableModels.map((model) => ({
-                  id: model.id,
-                  provider: model.provider,
-                })),
-                cwd: ctx.cwd,
-                message: params.message,
-                parentModel: { id: currentModel.id, provider: currentModel.provider },
-                parentSessionFile: ctx.sessionManager.getSessionFile(),
-                parentSessionId: parentSessionId(ctx),
-                task_name: params.task_name,
-              }),
+              manager.spawnAgent(
+                {
+                  agent_type: params.agent_type,
+                  availableModels: availableModels.map((model) => ({
+                    id: model.id,
+                    provider: model.provider,
+                  })),
+                  cwd: ctx.cwd,
+                  message: params.message,
+                  parentModel: { id: currentModel.id, provider: currentModel.provider },
+                  parentSessionFile: ctx.sessionManager.getSessionFile(),
+                  parentSessionId: parentSessionId(ctx),
+                  task_name: params.task_name,
+                },
+                { signal, waitForCompletion: !runInBackground }
+              ),
           })
-          return textResult(`Spawned ${result.task_name}.`, result)
+          if (runInBackground) {
+            return textResult(
+              `Spawned ${result.task_name} in background. Do not duplicate its task; continue only with clearly independent work.`,
+              result
+            )
+          }
+          if (result.completion === undefined) {
+            return yield* featureError('spawn_agent failed: foreground completion was not returned.', undefined)
+          }
+          return boundedTextResult(JSON.stringify(result.completion, undefined, 2), { ...result })
         })
       )
+      return operation.catch((error: unknown) => {
+        if (isTrue(signal?.aborted) && error instanceof SubagentFeatureError && error.cause === signal.reason) {
+          return Promise.reject(error.cause)
+        }
+        return Promise.reject(error)
+      })
     },
     label: 'Spawn Agent',
     name: 'spawn_agent',
     parameters: spawnAgentParameters,
     renderCall(args: SpawnAgentParams, theme: Theme) {
+      const execution = args.run_in_background === true ? 'background' : 'foreground'
       return new Text(
         theme.fg('toolTitle', theme.bold('spawn_agent ')) +
           theme.fg('text', isEmptyString(args.task_name) ? '?' : args.task_name) +
-          theme.fg(configuredProfileColor(args.agent_type), ` [${args.agent_type}]`),
+          theme.fg(configuredProfileColor(args.agent_type), ` [${args.agent_type}]`) +
+          theme.fg('muted', ` [${execution}]`),
         0,
         0
       )
@@ -401,9 +433,26 @@ ${getAgentProfilesDescription()}`
         const failureText = firstContent?.type === 'text' ? firstContent.text : 'failed'
         return new Text(theme.fg('error', `✗ ${failureText}`), 0, 0)
       }
+      const completion = result.details?.completion
+      if (result.details?.execution === 'foreground' && completion !== undefined) {
+        let statusColor: ThemeColor = 'warning'
+        if (completion.status === 'completed') {
+          statusColor = 'success'
+        } else if (completion.status === 'failed') {
+          statusColor = 'error'
+        }
+        return new Text(
+          theme.fg(statusColor, completion.status === 'completed' ? '✓ ' : '✗ ') +
+            theme.fg(persistedProfileColor(completion.profile, completion.color), completion.agentName) +
+            theme.fg(statusColor, ` ${completion.status}`),
+          0,
+          0
+        )
+      }
       return new Text(
         theme.fg('success', '✓ ') +
-          theme.fg(persistedProfileColor(result.details?.profile, result.details?.color), result.details?.task_name || 'spawned'),
+          theme.fg(persistedProfileColor(result.details?.profile, result.details?.color), result.details?.task_name || 'spawned') +
+          theme.fg('muted', ' background'),
         0,
         0
       )
@@ -456,7 +505,7 @@ ${getAgentProfilesDescription()}`
 
   pi.registerTool({
     description:
-      'Wait for one session-owned agent completion, or for the next completion if targets is omitted. Use only when your next action depends on that response; otherwise continue working and let completion arrive automatically. Returns one final response. Use wait_all_agents when every target must finish.',
+      'Wait for one explicitly background agent completion, or for the next background completion if targets is omitted. Use when pending work is needed before the next step or would otherwise overlap. Returns one final response. Use wait_all_agents when every target must finish.',
     execute(_id: string, params, signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
       return preserveWaitCancellation(
         runtime.runPromise(
@@ -519,7 +568,7 @@ ${getAgentProfilesDescription()}`
 
   pi.registerTool({
     description:
-      'Wait until all targeted session-owned agents reach a final status. Use only when your next action depends on every response; otherwise continue working and let completions arrive automatically. Returns their final text responses.',
+      'Wait until all targeted explicitly background agents reach a final status. Use to synchronize background work before a dependent or overlapping next step. Returns their final text responses.',
     execute(_id: string, params, signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
       return preserveWaitCancellation(
         runtime.runPromise(

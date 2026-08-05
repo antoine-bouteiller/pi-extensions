@@ -67,23 +67,25 @@ input.on('line', (line) => {
       return
     }
     const message = String(command.message)
-    setTimeout(
-      () => {
-        const failing = message.startsWith('fail')
-        const response = message.startsWith('large') ? 'x'.repeat(60 * 1024) : `response:${message}`
-        send({
-          message: {
-            content: [{ text: response, type: 'text' }],
-            role: 'assistant',
-            stopReason: failing ? 'error' : 'stop',
-            ...(failing ? { errorMessage: 'fake failure' } : {}),
-          },
-          type: 'message_end',
-        })
-        send({ type: 'agent_settled' })
-      },
-      message.startsWith('slow') ? 200 : 50
-    )
+    const settle = () => {
+      const failing = message.startsWith('fail')
+      const response = message.startsWith('large') ? 'x'.repeat(60 * 1024) : `response:${message}`
+      send({
+        message: {
+          content: [{ text: response, type: 'text' }],
+          role: 'assistant',
+          stopReason: failing ? 'error' : 'stop',
+          ...(failing ? { errorMessage: 'fake failure' } : {}),
+        },
+        type: 'message_end',
+      })
+      send({ type: 'agent_settled' })
+    }
+    if (message.startsWith('immediate')) {
+      settle()
+    } else {
+      setTimeout(settle, message.startsWith('slow') ? 200 : 50)
+    }
     return
   }
   if (command.type === 'steer' || command.type === 'abort') {

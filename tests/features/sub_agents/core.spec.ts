@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 
 import { type Theme } from '@earendil-works/pi-coding-agent'
 import { visibleWidth } from '@earendil-works/pi-tui'
-import { asExtensionApi, asNarrowed, asTheme, asTui } from '@tests/utils/casts.js'
+import { asError, asExtensionApi, asNarrowed, asResult, asTheme, asTui } from '@tests/utils/casts.js'
 
 const TEST_AGENT_DIR = '/tmp/pi-codex-subagents-tests'
 const FAKE_RPC_CHILD = join(import.meta.dir, 'fixtures', 'fake_rpc_child.js')
@@ -43,6 +43,15 @@ const requireChildProcess = <ChildProcess>(childProcess: ChildProcess | undefine
   return childProcess
 }
 
+const rejectionOf = async (promise: Promise<unknown>): Promise<Error> => {
+  try {
+    await promise
+  } catch (error) {
+    return asError(error)
+  }
+  throw new Error('expected promise to reject')
+}
+
 interface CompletionEvent {
   agentName: string
   [field: string]: unknown
@@ -66,14 +75,25 @@ interface FakeTheme {
 }
 type FakeRenderer = (message: unknown, options: unknown, theme: FakeTheme) => unknown
 
+interface FakeRenderable {
+  render: (width: number) => string[]
+}
+
 interface FakeToolDefinition {
+  description: string
   name: string
   parameters: {
     required: string[]
-    properties: Record<string, { enum?: string[] }>
+    properties: Record<string, { description?: string; enum?: string[]; type?: string }>
   }
   execute: (...args: unknown[]) => Promise<unknown>
-  renderCall: (...args: unknown[]) => unknown
+  renderCall: (...args: unknown[]) => FakeRenderable
+  renderResult: (...args: unknown[]) => FakeRenderable
+}
+
+interface FakeToolResult {
+  content: { text: string; type: string }[]
+  details: Record<string, unknown>
 }
 
 interface FakeMessage {
@@ -1016,7 +1036,8 @@ describe('completion delivery', () => {
       onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
     })
     try {
-      await manager.spawnAgent(spawnParams(parentSessionId, 'settled', 'first'))
+      const background = await manager.spawnAgent(spawnParams(parentSessionId, 'settled', 'first'))
+      expect(background.execution).toBe('background')
       await waitUntil(() => completions.some((event) => event.agentName === '/settled'))
       expect(completions.filter((event) => event.agentName === '/settled')).toHaveLength(1)
       expect(completions.find((event) => event.agentName === '/settled')).toMatchObject({
@@ -1032,6 +1053,225 @@ describe('completion delivery', () => {
         status: 'failed',
       })
       expect(crashed?.error).toContain('code=23')
+    } finally {
+      await manager.shutdown()
+      rmSync(scope, { force: true, recursive: true })
+    }
+  })
+
+  processTest('claims immediate foreground completion before automatic delivery', async () => {
+    const parentSessionId = 'foreground-immediate'
+    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+    rmSync(scope, { force: true, recursive: true })
+    const completions: CompletionEvent[] = []
+    const manager = createAgentManager({
+      onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
+    })
+    try {
+      const result = await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'immediate finish'), {
+        waitForCompletion: true,
+      })
+      expect(result).toMatchObject({
+        completion: { agentName: '/worker', finalResponse: 'response:immediate finish', status: 'completed' },
+        execution: 'foreground',
+      })
+      expect(completions).toEqual([])
+    } finally {
+      await manager.shutdown()
+      rmSync(scope, { force: true, recursive: true })
+    }
+  })
+
+  processTest('prioritizes a foreground claim over an older wait for any agent', async () => {
+    const parentSessionId = 'foreground-priority'
+    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+    rmSync(scope, { force: true, recursive: true })
+    const manager = createAgentManager()
+    const waitController = new AbortController()
+    let olderWaitSettled = false
+    try {
+      const olderWait = manager.waitAgent(parentSessionId, undefined, waitController.signal).finally(() => {
+        olderWaitSettled = true
+      })
+      const foreground = await manager.spawnAgent(spawnParams(parentSessionId, 'foreground', 'immediate foreground'), {
+        waitForCompletion: true,
+      })
+      expect(foreground.completion).toMatchObject({ agentName: '/foreground', status: 'completed' })
+      expect(olderWaitSettled).toBe(false)
+
+      await manager.spawnAgent(spawnParams(parentSessionId, 'background', 'immediate background'))
+      const olderWaitResult = await olderWait
+      expect(olderWaitResult.event).toMatchObject({ agentName: '/background', status: 'completed' })
+    } finally {
+      waitController.abort(new Error('test cleanup'))
+      await manager.shutdown()
+      rmSync(scope, { force: true, recursive: true })
+    }
+  })
+
+  processTest('returns foreground runtime failures without automatic delivery', async () => {
+    const parentSessionId = 'foreground-failure'
+    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+    rmSync(scope, { force: true, recursive: true })
+    const completions: CompletionEvent[] = []
+    const manager = createAgentManager({
+      onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
+    })
+    try {
+      const result = await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'fail foreground'), {
+        waitForCompletion: true,
+      })
+      expect(result.completion).toMatchObject({ agentName: '/worker', error: 'fake failure', status: 'failed' })
+      expect(completions).toEqual([])
+    } finally {
+      await manager.shutdown()
+      rmSync(scope, { force: true, recursive: true })
+    }
+  })
+
+  processTest('releases a running foreground claim on abort without interrupting the child', async () => {
+    const parentSessionId = 'foreground-abort-running'
+    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+    rmSync(scope, { force: true, recursive: true })
+    const completions: CompletionEvent[] = []
+    const controller = new AbortController()
+    const manager = createAgentManager({
+      onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
+    })
+    try {
+      const spawn = manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'slow foreground'), {
+        signal: controller.signal,
+        waitForCompletion: true,
+      })
+      await waitUntil(() => manager.listAgents(undefined, parentSessionId).some((agent) => agent.agent_status === 'running'))
+      controller.abort(new Error('stop waiting'))
+      expect(await rejectionOf(spawn)).toHaveProperty('message', 'stop waiting')
+      await waitUntil(() => completions.some((event) => event.agentName === '/worker'))
+      expect(completions.filter((event) => event.agentName === '/worker')).toHaveLength(1)
+      expect(manager.getAgentInfo('worker', parentSessionId).status).toBe('completed')
+    } finally {
+      await manager.shutdown()
+      rmSync(scope, { force: true, recursive: true })
+    }
+  })
+
+  processTest('rejects an already-aborted foreground spawn before creating artifacts', async () => {
+    const parentSessionId = 'foreground-pre-abort'
+    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+    rmSync(scope, { force: true, recursive: true })
+    const controller = new AbortController()
+    controller.abort(new Error('already stopped'))
+    const manager = createAgentManager()
+    try {
+      const spawn = manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'immediate ignored'), {
+        signal: controller.signal,
+        waitForCompletion: true,
+      })
+      expect(await rejectionOf(spawn)).toHaveProperty('message', 'already stopped')
+      expect(() => manager.getAgentInfo('worker', parentSessionId)).toThrow('Agent not found')
+      expect(existsSync(scope)).toBe(false)
+    } finally {
+      await manager.shutdown()
+      rmSync(scope, { force: true, recursive: true })
+    }
+  })
+
+  processTest('releases a foreground claim when aborted during startup', async () => {
+    const parentSessionId = 'foreground-abort-startup'
+    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+    rmSync(scope, { force: true, recursive: true })
+    const completions: CompletionEvent[] = []
+    const controller = new AbortController()
+    const manager = createAgentManager({
+      childEnv: { PI_SUBAGENT_TEST_GET_STATE_DELAY_MS: '200' },
+      onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
+    })
+    try {
+      const spawn = manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'immediate after startup'), {
+        signal: controller.signal,
+        waitForCompletion: true,
+      })
+      await waitUntil(() => manager.listAgents(undefined, parentSessionId).some((agent) => agent.agent_status === 'starting'))
+      await waitUntil(() => manager.getAgentInfo('worker', parentSessionId).childProcess !== undefined)
+      controller.abort(new Error('startup wait stopped'))
+      expect(await rejectionOf(spawn)).toHaveProperty('message', 'startup wait stopped')
+      await waitUntil(() => completions.some((event) => event.agentName === '/worker'))
+      expect(completions.filter((event) => event.agentName === '/worker')).toHaveLength(1)
+    } finally {
+      await manager.shutdown()
+      rmSync(scope, { force: true, recursive: true })
+    }
+  })
+
+  processTest('keeps the task lock until an aborted foreground launch settles', async () => {
+    const parentSessionId = 'foreground-abort-before-ownership'
+    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+    rmSync(scope, { force: true, recursive: true })
+    const controller = new AbortController()
+    const manager = createAgentManager()
+    let reconciler: ReturnType<typeof createAgentManager> | undefined
+    let rejectLaunch: ((reason?: unknown) => void) | undefined
+    const internals = asNarrowed<{ startLiveAgent: () => Promise<never> }, typeof manager>(manager)
+    internals.startLiveAgent = () =>
+      new Promise<never>((_resolve, reject) => {
+        rejectLaunch = reject
+      })
+    try {
+      const spawn = manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'unused'), {
+        signal: controller.signal,
+        waitForCompletion: true,
+      })
+      await waitUntil(() => manager.listAgents(undefined, parentSessionId).some((agent) => agent.agent_status === 'starting'))
+      controller.abort(new Error('stop before ownership'))
+      expect(await rejectionOf(spawn)).toHaveProperty('message', 'stop before ownership')
+
+      reconciler = createAgentManager()
+      await reconciler.ready()
+      expect(reconciler.getAgentInfo('worker', parentSessionId).status).toBe('starting')
+    } finally {
+      rejectLaunch?.(new Error('test launch cleanup'))
+      await Promise.resolve()
+      await Promise.all([manager.shutdown(), ...(reconciler === undefined ? [] : [reconciler.shutdown()])])
+      rmSync(scope, { force: true, recursive: true })
+    }
+  })
+
+  processTest('removes the foreground claim when launch rejects before an event', async () => {
+    const parentSessionId = 'foreground-launch-rejection'
+    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+    rmSync(scope, { force: true, recursive: true })
+    const completions: CompletionEvent[] = []
+    const manager = createAgentManager({
+      onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
+    })
+    const internals = asNarrowed<
+      {
+        pushMailbox: (event: Record<string, unknown>) => void
+        startLiveAgent: () => Promise<never>
+        waiters: unknown[]
+      },
+      typeof manager
+    >(manager)
+    internals.startLiveAgent = () => Promise.reject(new Error('launch rejected'))
+    try {
+      const spawn = manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'unused'), {
+        waitForCompletion: true,
+      })
+      expect(await rejectionOf(spawn)).toHaveProperty('message', 'launch rejected')
+      expect(internals.waiters).toEqual([])
+
+      internals.pushMailbox({
+        agentName: '/worker',
+        color: 'accent',
+        createdAt: Date.now(),
+        finalResponse: 'later result',
+        id: 'later-event',
+        isReadonly: true,
+        parentSessionId,
+        profile: 'scout',
+        status: 'completed',
+      })
+      expect(completions).toEqual([expect.objectContaining({ agentName: '/worker', finalResponse: 'later result' })])
     } finally {
       await manager.shutdown()
       rmSync(scope, { force: true, recursive: true })
@@ -1292,21 +1532,52 @@ describe('extension completion delivery and status activity', () => {
       expect(commands.has('subagent')).toBe(true)
       expect(commands.has('subagents')).toBe(true)
       expect(renderers.has('pi-codex-subagent-completion')).toBe(true)
-      expect(requireTool('spawn_agent').parameters.required).toContain('agent_type')
-      expect(requireTool('spawn_agent').parameters.properties.skills).toBeUndefined()
-      expect(requireTool('spawn_agent').parameters.properties.agent_type.enum).toEqual(['scout', 'librarian', 'reviewer'])
+      const spawnTool = requireTool('spawn_agent')
+      expect(spawnTool.parameters.required).toContain('agent_type')
+      expect(spawnTool.parameters.required).not.toContain('run_in_background')
+      expect(spawnTool.parameters.properties.skills).toBeUndefined()
+      expect(spawnTool.parameters.properties.agent_type.enum).toEqual(['scout', 'librarian', 'reviewer'])
+      expect(spawnTool.parameters.properties.run_in_background.type).toBe('boolean')
+      expect(spawnTool.description).toContain('Foreground is the default')
+      expect(requireTool('wait_agent').description).toContain('background')
+      expect(requireTool('wait_all_agents').description).toContain('background')
 
-      await requireTool('spawn_agent').execute(
-        'spawn-1',
-        {
-          agent_type: 'scout',
-          message: 'slow finish',
-          task_name: 'x'.repeat(200),
-        },
-        undefined,
-        undefined,
-        ctx
+      const beforeAgentStart = handlers.get('before_agent_start')?.[0]
+      if (beforeAgentStart === undefined) {
+        throw new Error('before_agent_start was not registered')
+      }
+      const previousOwnerToken = process.env.PI_SUBAGENT_OWNER_TOKEN
+      try {
+        delete process.env.PI_SUBAGENT_OWNER_TOKEN
+        const parentPrompt = asResult<{ systemPrompt: string }>(beforeAgentStart({ systemPrompt: 'base' }, ctx))
+        expect(parentPrompt.systemPrompt).toContain('Foreground is the default')
+        expect(parentPrompt.systemPrompt).toContain('Never repeat a pending child')
+        process.env.PI_SUBAGENT_OWNER_TOKEN = 'child'
+        expect(beforeAgentStart({ systemPrompt: 'base' }, ctx)).toBeUndefined()
+      } finally {
+        if (previousOwnerToken === undefined) {
+          delete process.env.PI_SUBAGENT_OWNER_TOKEN
+        } else {
+          process.env.PI_SUBAGENT_OWNER_TOKEN = previousOwnerToken
+        }
+      }
+
+      const backgroundResult = asResult<FakeToolResult>(
+        await spawnTool.execute(
+          'spawn-1',
+          {
+            agent_type: 'scout',
+            message: 'slow finish',
+            run_in_background: true,
+            task_name: 'x'.repeat(200),
+          },
+          undefined,
+          undefined,
+          ctx
+        )
       )
+      expect(backgroundResult.content[0].text).toContain('in background')
+      expect(backgroundResult.details.execution).toBe('background')
 
       const colorCalls: string[] = []
       const theme = {
@@ -1316,8 +1587,45 @@ describe('extension completion delivery and status activity', () => {
           return text
         },
       }
-      requireTool('spawn_agent').renderCall({ agent_type: 'librarian', task_name: 'research' }, theme)
+      const foregroundCall = spawnTool.renderCall({ agent_type: 'librarian', task_name: 'research' }, theme)
+      expect(foregroundCall.render(100).join('\n')).toContain('[foreground]')
+      const backgroundCall = spawnTool.renderCall({ agent_type: 'librarian', run_in_background: true, task_name: 'research' }, theme)
+      expect(backgroundCall.render(100).join('\n')).toContain('[background]')
       expect(colorCalls).toContain('mdLink')
+      colorCalls.length = 0
+      spawnTool.renderResult(
+        {
+          content: [{ text: 'done', type: 'text' }],
+          details: {
+            color: 'mdLink',
+            completion: { agentName: '/research', color: 'mdLink', profile: 'librarian', status: 'completed' },
+            execution: 'foreground',
+            profile: 'librarian',
+            task_name: '/research',
+          },
+        },
+        {},
+        theme
+      )
+      expect(colorCalls).toContain('mdLink')
+      expect(colorCalls).toContain('success')
+      colorCalls.length = 0
+      spawnTool.renderResult(
+        {
+          content: [{ text: 'failed', type: 'text' }],
+          details: {
+            color: 'mdLink',
+            completion: { agentName: '/research', color: 'mdLink', error: 'failure', profile: 'librarian', status: 'failed' },
+            execution: 'foreground',
+            profile: 'librarian',
+            task_name: '/research',
+          },
+        },
+        {},
+        theme
+      )
+      expect(colorCalls).toContain('mdLink')
+      expect(colorCalls).toContain('error')
       colorCalls.length = 0
       requireRenderer('pi-codex-subagent-completion')(
         {
@@ -1338,19 +1646,73 @@ describe('extension completion delivery and status activity', () => {
       expect(sentMessages[0].options).toEqual({ deliverAs: 'steer', triggerTurn: true })
       expect(sentMessages[0].message.content).toContain('response:slow finish')
 
+      const foregroundNotifications = sentMessages.length
+      let foregroundSettled = false
+      const foregroundPromise = spawnTool
+        .execute('spawn-foreground', { agent_type: 'scout', message: 'slow foreground', task_name: 'foreground' }, undefined, undefined, ctx)
+        .finally(() => {
+          foregroundSettled = true
+        })
+      await waitUntil(() => runningAgents.list().some((agent) => agent.name === '/foreground'))
+      expect(foregroundSettled).toBe(false)
+      const foregroundResult = asResult<FakeToolResult>(await foregroundPromise)
+      expect(foregroundResult.content[0].text).toContain('response:slow foreground')
+      expect(foregroundResult.details.execution).toBe('foreground')
+      expect(sentMessages).toHaveLength(foregroundNotifications)
+
+      const largeForeground = asResult<FakeToolResult>(
+        await spawnTool.execute(
+          'spawn-large-foreground',
+          { agent_type: 'scout', message: 'large foreground', task_name: 'large-foreground' },
+          undefined,
+          undefined,
+          ctx
+        )
+      )
+      expect(Buffer.byteLength(largeForeground.content[0].text, 'utf8')).toBeLessThanOrEqual(50 * 1024)
+      expect(largeForeground.content[0].text.split('\n').length).toBeLessThanOrEqual(2000)
+      expect(largeForeground.content[0].text).toContain('Output truncated')
+      expect(largeForeground.details.fullOutputPath).toBeString()
+      expect(existsSync(String(largeForeground.details.fullOutputPath))).toBe(true)
+
+      const abortController = new AbortController()
+      const abortNotifications = sentMessages.length
+      const abortedForeground = spawnTool.execute(
+        'spawn-aborted-foreground',
+        { agent_type: 'scout', message: 'slow aborted foreground', task_name: 'aborted-foreground' },
+        abortController.signal,
+        undefined,
+        ctx
+      )
+      await waitUntil(() => runningAgents.list().some((agent) => agent.name === '/aborted-foreground'))
+      abortController.abort('tool wait stopped')
+      const toolAbortReason = await abortedForeground.then(
+        () => 'unexpected success',
+        (error: unknown) => error
+      )
+      expect(toolAbortReason).toBe('tool wait stopped')
+      await waitUntil(() => sentMessages.some(({ message }) => message.content.includes('/aborted-foreground')))
+      expect(sentMessages.filter(({ message }) => message.content.includes('/aborted-foreground'))).toHaveLength(1)
+      expect(sentMessages.length).toBe(abortNotifications + 1)
+
+      const largeBackgroundNotifications = sentMessages.length
       await requireTool('spawn_agent').execute(
         'spawn-2',
         {
           agent_type: 'scout',
           message: 'large response',
+          run_in_background: true,
           task_name: 'large-output',
         },
         undefined,
         undefined,
         ctx
       )
-      await waitUntil(() => sentMessages.length === 2)
-      const large = sentMessages[1].message
+      await waitUntil(() => sentMessages.length === largeBackgroundNotifications + 1)
+      const large = sentMessages.at(-1)?.message
+      if (large === undefined) {
+        throw new Error('large background completion was not delivered')
+      }
       expect(Buffer.byteLength(large.content, 'utf8')).toBeLessThanOrEqual(50 * 1024)
       expect(large.content).toContain('Output truncated')
       expect(large.details.fullOutputPath).toBeString()
@@ -1358,14 +1720,14 @@ describe('extension completion delivery and status activity', () => {
 
       await requireTool('spawn_agent').execute(
         'spawn-3',
-        { agent_type: 'scout', message: 'hold scout', task_name: 'hold-scout' },
+        { agent_type: 'scout', message: 'hold scout', run_in_background: true, task_name: 'hold-scout' },
         undefined,
         undefined,
         ctx
       )
       await requireTool('spawn_agent').execute(
         'spawn-4',
-        { agent_type: 'librarian', message: 'hold library', task_name: 'hold-library' },
+        { agent_type: 'librarian', message: 'hold library', run_in_background: true, task_name: 'hold-library' },
         undefined,
         undefined,
         ctx

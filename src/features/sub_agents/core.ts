@@ -206,6 +206,21 @@ export interface SpawnAgentParams {
   parentModel: AvailableModel
 }
 
+export interface SpawnAgentOptions {
+  signal?: AbortSignal
+  waitForCompletion?: boolean
+}
+
+export interface SpawnAgentResult {
+  task_name: string
+  nickname: undefined
+  profile: string
+  color: ThemeColor
+  is_readonly: boolean
+  execution: 'foreground' | 'background'
+  completion?: AgentCompletionEvent
+}
+
 interface LiveAgent {
   info: AgentInfo
   proc: ChildProcessWithoutNullStreams
@@ -286,9 +301,24 @@ export interface AgentManagerOptions {
 }
 
 interface Waiter {
+  foreground: boolean
   parentSessionId: string
   targets?: Set<string>
   resolve: (event: AgentCompletionEvent) => void
+}
+
+interface WaiterClaim {
+  promise: Promise<AgentCompletionEvent>
+  cancel: (reason?: unknown) => void
+}
+
+interface SpawnExecution {
+  foreground: boolean
+  signal: AbortSignal
+}
+
+interface LaunchSpawnOptions extends SpawnExecution {
+  releaseLock: () => void
 }
 
 interface FollowUpClaim {
@@ -297,11 +327,26 @@ interface FollowUpClaim {
   token: string
 }
 
-const abortError = (signal?: AbortSignal): Error => (signal?.reason instanceof Error ? signal.reason : new Error('Wait canceled.'))
+const abortError = (signal?: AbortSignal): unknown => signal?.reason ?? new Error('Wait canceled.')
 
 const throwIfAborted = (signal?: AbortSignal): void => {
   if (isTrue(signal?.aborted)) {
     throw abortError(signal)
+  }
+}
+
+const spawnExecution = (options: SpawnAgentOptions, shutdownSignal: AbortSignal): SpawnExecution => {
+  const foreground = isTrue(options.waitForCompletion)
+  const signal = options.signal === undefined ? shutdownSignal : AbortSignal.any([options.signal, shutdownSignal])
+  if (foreground) {
+    throwIfAborted(signal)
+  }
+  return { foreground, signal }
+}
+
+const throwIfForegroundAborted = (execution: SpawnExecution): void => {
+  if (execution.foreground) {
+    throwIfAborted(execution.signal)
   }
 }
 
@@ -1597,14 +1642,34 @@ export class AgentManager {
     }
   }
 
-  async spawnAgent(params: SpawnAgentParams): Promise<{
-    task_name: string
-    nickname: undefined
-    profile: string
-    color: ThemeColor
-    is_readonly: boolean
-  }> {
+  private async launchSpawn(
+    info: AgentInfo,
+    message: string,
+    metadata: Omit<SpawnAgentResult, 'completion' | 'execution'>,
+    options: LaunchSpawnOptions
+  ): Promise<SpawnAgentResult> {
+    if (!options.foreground) {
+      await this.startLiveAgent(info, message, message)
+      return { ...metadata, execution: 'background' }
+    }
+
+    const claim = this.registerWaiter(info.parentSessionId, new Set([info.canonicalName]), options.signal, true)
+    const launch = this.startLiveAgent(info, message, message).finally(options.releaseLock)
+    try {
+      const [, completion] = await Promise.all([launch, claim.promise])
+      return { ...metadata, completion, execution: 'foreground' }
+    } catch (error) {
+      claim.cancel(error)
+      throw error
+    } finally {
+      claim.cancel()
+    }
+  }
+
+  async spawnAgent(params: SpawnAgentParams, options: SpawnAgentOptions = {}): Promise<SpawnAgentResult> {
+    const execution = spawnExecution(options, this.shutdownController.signal)
     await this.reconciliation
+    throwIfForegroundAborted(execution)
     const taskName = normalizeTaskName(params.task_name)
     const resolved = resolveAgentConfig(params.agent_type, {
       availableModels: params.availableModels,
@@ -1622,6 +1687,20 @@ export class AgentManager {
     const lockFile = taskLockFile(params.parentSessionId, taskName)
     const lockToken = randomUUID()
     let lock: number | undefined
+    let launchOwnsLock = false
+    const releaseLock = (): void => {
+      if (lock === undefined) {
+        return
+      }
+      const descriptor = lock
+      lock = undefined
+      releaseTaskLock(lockFile, descriptor, lockToken, this.options.beforeReleaseTaskLockRemoval)
+    }
+    const releaseUnownedLock = (): void => {
+      if (!launchOwnsLock) {
+        releaseLock()
+      }
+    }
     try {
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
@@ -1687,18 +1766,17 @@ export class AgentManager {
       const targets = this.defaultWaitAllTargets.get(params.parentSessionId) ?? new Set<string>()
       targets.add(info.canonicalName)
       this.defaultWaitAllTargets.set(params.parentSessionId, targets)
-      await this.startLiveAgent(info, params.message, params.message)
-      return {
+      const metadata = {
         color: resolved.color,
         is_readonly: resolved.isReadonly,
         nickname: undefined,
         profile: resolved.key,
         task_name: info.canonicalName,
       }
+      launchOwnsLock = execution.foreground
+      return await this.launchSpawn(info, params.message, metadata, { ...execution, releaseLock })
     } finally {
-      if (lock !== undefined) {
-        releaseTaskLock(lockFile, lock, lockToken, this.options.beforeReleaseTaskLockRemoval)
-      }
+      releaseUnownedLock()
     }
   }
 
@@ -2153,7 +2231,9 @@ export class AgentManager {
 
   private pushMailbox(event: AgentCompletionEvent, notify = true): void {
     this.removeMailboxEvents(event.parentSessionId, event.agentName)
-    const waiterIndex = this.waiters.findIndex((waiter) => waiter.parentSessionId === event.parentSessionId && targetMatches(event, waiter.targets))
+    const matches = (waiter: Waiter): boolean => waiter.parentSessionId === event.parentSessionId && targetMatches(event, waiter.targets)
+    const foregroundIndex = this.waiters.findIndex((waiter) => waiter.foreground && matches(waiter))
+    const waiterIndex = foregroundIndex === -1 ? this.waiters.findIndex(matches) : foregroundIndex
     if (waiterIndex !== -1) {
       const [waiter] = this.waiters.splice(waiterIndex, 1)
       waiter.resolve(event)
@@ -2218,6 +2298,36 @@ export class AgentManager {
     this.defaultWaitAllTargets.get(parentSessionId)?.delete(canonicalAgentName(agentName))
   }
 
+  private registerWaiter(parentSessionId: string, targets: Set<string> | undefined, signal: AbortSignal, foreground = false): WaiterClaim {
+    let cancel!: (reason?: unknown) => void
+    const promise = new Promise<AgentCompletionEvent>((resolve, reject) => {
+      let settled = false
+      const settle = (callback: () => void): void => {
+        if (settled) {
+          return
+        }
+        settled = true
+        signal.removeEventListener('abort', onAbort)
+        this.waiters = this.waiters.filter((candidate) => candidate !== waiter)
+        callback()
+      }
+      const onAbort = (): void => settle(() => reject(abortError(signal)))
+      const waiter: Waiter = {
+        foreground,
+        parentSessionId,
+        resolve: (event) => settle(() => resolve(event)),
+        targets,
+      }
+      cancel = (reason = new Error('Wait canceled.')) => settle(() => reject(reason))
+      this.waiters.push(waiter)
+      signal.addEventListener('abort', onAbort, { once: true })
+      if (signal.aborted) {
+        onAbort()
+      }
+    })
+    return { cancel, promise }
+  }
+
   async waitAgent(parentSessionId: string, targets?: string[], signal?: AbortSignal): Promise<{ message: string; event?: AgentCompletionEvent }> {
     const waitSignal = signal === undefined ? this.shutdownController.signal : AbortSignal.any([signal, this.shutdownController.signal])
     throwIfAborted(waitSignal)
@@ -2253,33 +2363,10 @@ export class AgentManager {
         }
       }
     }
-    return await new Promise((resolve, reject) => {
-      let settled = false
-      const settle = (callback: () => void) => {
-        if (settled) {
-          return
-        }
-        settled = true
-        waitSignal.removeEventListener('abort', onAbort)
-        this.waiters = this.waiters.filter((candidate) => candidate !== waiter)
-        callback()
-      }
-      const onAbort = () => settle(() => reject(abortError(waitSignal)))
-      const waiter: Waiter = {
-        parentSessionId,
-        resolve: (event) =>
-          settle(() => {
-            this.finishWaitTarget(parentSessionId, event.agentName)
-            resolve({ event, message: `Wait completed: ${event.agentName} ${event.status}.` })
-          }),
-        targets: normalizedTargets,
-      }
-      this.waiters.push(waiter)
-      waitSignal.addEventListener('abort', onAbort, { once: true })
-      if (waitSignal.aborted) {
-        onAbort()
-      }
-    })
+    const claim = this.registerWaiter(parentSessionId, normalizedTargets, waitSignal)
+    const event = await claim.promise
+    this.finishWaitTarget(parentSessionId, event.agentName)
+    return { event, message: `Wait completed: ${event.agentName} ${event.status}.` }
   }
 
   async waitAllAgents(
