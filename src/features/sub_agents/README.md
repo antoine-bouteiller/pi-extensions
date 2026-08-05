@@ -82,7 +82,7 @@ A child completion or failure is delivered automatically to its parent session a
 
 ## Delegation guidance
 
-The extension appends a short delegation section to the parent system prompt on every `before_agent_start`. It encourages spawning subagents generously for read-heavy exploration and research, parallelizing independent questions, not blocking on waits, and writing self-contained tasks, while noting the cases that belong in the parent's own context. The block is skipped when `PI_SUBAGENT_OWNER_TOKEN` is set, so children never receive it; no profile grants `spawn_agent`, so subagents cannot spawn further agents.
+The extension appends a short delegation section to the parent system prompt on every `before_agent_start`. It encourages spawning subagents generously for read-heavy exploration and research, using small specialized implementers with narrow non-overlapping ownership and focused verification, parallelizing independent questions, not blocking on waits, and writing self-contained tasks. The block is skipped when `PI_SUBAGENT_OWNER_TOKEN` is set, so children never receive it; no profile grants `spawn_agent`, so subagents cannot spawn further agents.
 
 ## Commands and TUI
 

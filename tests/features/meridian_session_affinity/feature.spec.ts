@@ -75,7 +75,7 @@ describe('meridian session affinity', () => {
     expect(event.headers['x-session-affinity']).toBeUndefined()
   })
 
-  test('replaces stale or differently-cased affinity headers with each current session id', async () => {
+  test('uses stable, distinct affinity ids for subagent sessions', async () => {
     const fixture = createHarness()
     const firstEvent: { headers: Record<string, string> } = {
       headers: {
@@ -83,15 +83,21 @@ describe('meridian session affinity', () => {
         'X-Session-Affinity': 'stale',
       },
     }
+    const firstFollowup: { headers: Record<string, string> } = {
+      headers: { 'x-meridian-agent': 'pi' },
+    }
     const secondEvent: { headers: Record<string, string> } = {
       headers: { 'x-meridian-agent': 'pi' },
     }
 
-    await fixture.emit('before_provider_headers', firstEvent, context('session-one'))
-    await fixture.emit('before_provider_headers', secondEvent, context('session-two'))
+    await fixture.emit('before_provider_headers', firstEvent, context('subagent-one'))
+    await fixture.emit('before_provider_headers', firstFollowup, context('subagent-one'))
+    await fixture.emit('before_provider_headers', secondEvent, context('subagent-two'))
 
     expect(firstEvent.headers['X-Session-Affinity']).toBeUndefined()
-    expect(firstEvent.headers['x-session-affinity']).toBe('session-one')
-    expect(secondEvent.headers['x-session-affinity']).toBe('session-two')
+    expect(firstEvent.headers['x-session-affinity']).toBe('subagent-one')
+    expect(firstFollowup.headers['x-session-affinity']).toBe(firstEvent.headers['x-session-affinity'])
+    expect(secondEvent.headers['x-session-affinity']).toBe('subagent-two')
+    expect(secondEvent.headers['x-session-affinity']).not.toBe(firstEvent.headers['x-session-affinity'])
   })
 })

@@ -134,10 +134,10 @@ Subagents are available through \`spawn_agent\`. Prefer delegating over doing co
 - Delegate by default for read-heavy work: codebase exploration, "where is X handled", library and API research, log or test-output triage, and pre-implementation reconnaissance. A \`scout\` or \`librarian\` run costs one short report instead of dozens of tool results in your own context.
 - Parallelize. Independent questions should become several agents spawned in the same response, not a sequence of your own searches.
 - Do not block. \`spawn_agent\` returns as soon as the child accepts its task and completions arrive on their own, so keep working; reach for \`wait_agent\`/\`wait_all_agents\` only when your next step depends on a result and no useful work remains.
-- Hand scoped implementation work to \`implementer\`, and use \`reviewer\` for a fresh-context check of a plan or a finished change.
+- Prefer small, specialized implementation agents. Give each \`implementer\` a narrow goal, explicit non-overlapping file ownership, and focused verification; split broad work into independent slices instead of handing one agent the whole change. Use \`reviewer\` for a fresh-context check of a plan or finished change.
 - Write self-contained tasks. Children share none of your conversation, so state the goal, the relevant paths, and the shape of the answer you want back.
 
-Keep work in your own context when it is a couple of tool calls, when it depends on conversation history that is expensive to restate, or when the user is waiting on one quick answer. Available profiles: ${AGENT_PROFILE_NAMES.join(', ')}.`
+Keep work in your own context when it depends on conversation history that is expensive to restate or when the user is waiting on one quick answer. Available profiles: ${AGENT_PROFILE_NAMES.join(', ')}.`
 
 type PiExtensionContext = ExtensionContext | ExtensionCommandContext
 
