@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs'
 
 import { Context, Effect, Function, Layer } from 'effect'
 
+import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined } from '@/shared/utils/predicates.js'
+
 export interface ProcessSnapshot {
   identity: string
   tokenMatches?: boolean
@@ -47,13 +49,13 @@ const inspectLinuxProcess = (probe: ProcessProbeShape, pid: number, token?: stri
   const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
   const startTicks = fields.at(19)
   const commandLine = probe.readFileBuffer(`/proc/${pid}/cmdline`)
-  if (startTicks === undefined || startTicks === '' || commandLine.length === 0) {
+  if (isNullOrUndefined(startTicks) || isEmptyString(startTicks) || commandLine.length === 0) {
     return undefined
   }
-  const environment = token !== undefined && token !== '' ? probe.readFileBuffer(`/proc/${pid}/environ`) : undefined
+  const environment = isNotNullOrUndefined(token) && isNotEmptyString(token) ? probe.readFileBuffer(`/proc/${pid}/environ`) : undefined
   return {
     identity: `linux:${startTicks}:${hashIdentity(commandLine)}`,
-    ...(token !== undefined && token !== ''
+    ...(isNotNullOrUndefined(token) && isNotEmptyString(token)
       ? {
           tokenMatches: environment?.includes(Buffer.from(`PI_SUBAGENT_OWNER_TOKEN=${token}\0`)) ?? false,
         }
@@ -65,7 +67,7 @@ const inspectWindowsProcess = (probe: ProcessProbeShape, pid: number): ProcessSn
   const script = `$p=Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}"; if ($null -ne $p) { [Console]::Out.Write($p.CreationDate.ToUniversalTime().Ticks.ToString() + [char]0 + $p.CommandLine) }`
   const result = probe.runPowerShell(script)
   const output = result.status === 0 ? result.stdout : ''
-  return output.length > 0 ? { identity: `windows:${hashIdentity(output)}` } : undefined
+  return isNotEmptyString(output) ? { identity: `windows:${hashIdentity(output)}` } : undefined
 }
 
 const inspectUnixProcess = (probe: ProcessProbeShape, pid: number, token?: string): ProcessSnapshot | undefined => {
@@ -73,12 +75,14 @@ const inspectUnixProcess = (probe: ProcessProbeShape, pid: number, token?: strin
   const canVerifyToken = probe.platform !== 'darwin'
   const result = probe.runPs([canVerifyToken ? 'eww' : 'ww', '-p', String(pid), '-o', 'lstart=', '-o', 'command='])
   const output = result.status === 0 ? result.stdout.trim() : ''
-  if (output.length === 0) {
+  if (isEmptyString(output)) {
     return undefined
   }
   return {
     identity: `unix:${hashIdentity(output)}`,
-    ...(token !== undefined && token !== '' && canVerifyToken ? { tokenMatches: output.includes(`PI_SUBAGENT_OWNER_TOKEN=${token}`) } : {}),
+    ...(isNotNullOrUndefined(token) && isNotEmptyString(token) && canVerifyToken
+      ? { tokenMatches: output.includes(`PI_SUBAGENT_OWNER_TOKEN=${token}`) }
+      : {}),
   }
 }
 
@@ -108,7 +112,7 @@ const inspectProcessWith =
 
 const ownershipMatchesWith = (inspect: (pid: number, token?: string) => ProcessSnapshot | undefined, ownership: ProcessOwnership): boolean => {
   const snapshot = inspect(ownership.pid, ownership.token)
-  return snapshot?.identity === ownership.processIdentity && snapshot.tokenMatches !== false
+  return snapshot?.identity === ownership.processIdentity && !isFalse(snapshot.tokenMatches)
 }
 
 const processOwnerIsActiveWith = (
@@ -120,7 +124,8 @@ const processOwnerIsActiveWith = (
   }
   const snapshot = inspect(owner.pid)
   return (
-    snapshot !== undefined && (owner.processIdentity === undefined || owner.processIdentity === '' || snapshot.identity === owner.processIdentity)
+    isNotNullOrUndefined(snapshot) &&
+    (isNullOrUndefined(owner.processIdentity) || isEmptyString(owner.processIdentity) || snapshot.identity === owner.processIdentity)
   )
 }
 

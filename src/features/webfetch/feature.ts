@@ -7,6 +7,7 @@ import { Type, type Static } from 'typebox'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { ToolFailure } from '@/shared/effect/errors.js'
+import { isEmptyString, isNotEmptyString, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 import { boundToolTextEffect, writePrivateTempFileEffect } from '@/shared/utils/tool_output.js'
 
 const DEFAULT_TIMEOUT_SECONDS = 30
@@ -106,7 +107,7 @@ const turndown = (): TurndownService => {
 const articleHtml = (html: string): string => {
   for (const tag of ['article', 'main', 'body'] as const) {
     const match = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`, 'i').exec(html)
-    if (match?.[1] !== undefined && match[1] !== '') {
+    if (!isNullOrUndefined(match?.[1]) && isNotEmptyString(match[1])) {
       return match[1]
     }
   }
@@ -116,11 +117,11 @@ const articleHtml = (html: string): string => {
 const pageTitle = (html: string): string | undefined => {
   const match = /<title\b[^>]*>(?<title>[\s\S]*?)<\/title>/i.exec(html)
   const captured = match?.groups?.title
-  if (captured === undefined || captured === '') {
+  if (isNullOrUndefined(captured) || isEmptyString(captured)) {
     return undefined
   }
   const title = turndown().turndown(captured).replaceAll(/\s+/g, ' ').trim()
-  return title === '' ? undefined : title
+  return isEmptyString(title) ? undefined : title
 }
 
 const htmlToMarkdown = (html: string): string => {
@@ -131,7 +132,7 @@ const htmlToMarkdown = (html: string): string => {
     .replaceAll(/\n{3,}/g, '\n\n')
     .trim()
 
-  if (title === undefined || title === '') {
+  if (isNullOrUndefined(title) || isEmptyString(title)) {
     return content
   }
   const titleHeading = `# ${title}`
@@ -281,7 +282,7 @@ const buildFetchResult = ({
       statusText,
       timeoutSeconds,
       url: url.href,
-      ...(fullOutputPath === undefined || fullOutputPath === '' ? {} : { fullOutputPath }),
+      ...(isNullOrUndefined(fullOutputPath) || isEmptyString(fullOutputPath) ? {} : { fullOutputPath }),
     }
     return { content: [{ text: bounded.text, type: 'text' }], details }
   })
@@ -399,7 +400,7 @@ export const createWebfetchExtension: {
         async execute(_toolCallId, params, signal, onUpdate) {
           return await executor.runPromise(
             Effect.suspend(() =>
-              signal?.aborted === true
+              isTrue(signal?.aborted)
                 ? Effect.fail(ToolFailure.make({ message: 'webfetch was cancelled' }))
                 : fetchResult({ dependencies, onUpdate, params, signal })
             ).pipe(Effect.mapError(toRejection))

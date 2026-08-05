@@ -8,6 +8,7 @@ import { Type, type Static } from 'typebox'
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { ToolFailure } from '@/shared/effect/errors.js'
 import { createStatusChannel } from '@/shared/state/status_bar.js'
+import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 import { isRecord } from '@/shared/utils/records.js'
 
 import { loadGlobalMcpConfig } from './config.js'
@@ -28,7 +29,7 @@ export const unrestrictedMcpPolicy: McpGatewayPolicy = {
 
 export const readonlyMcpPolicy: McpGatewayPolicy = {
   allows(request: Readonly<McpPolicyRequest>): boolean {
-    if (request.annotations.readOnlyHint === true && request.annotations.destructiveHint !== true) {
+    if (isTrue(request.annotations.readOnlyHint) && !isTrue(request.annotations.destructiveHint)) {
       return true
     }
     return request.server === 'dbx' && Object.keys(request.annotations).length === 0 && READONLY_DBX_TOOLS.has(request.remoteName)
@@ -118,7 +119,7 @@ const textResult = async (text: string, details?: unknown): Promise<AgentToolRes
     details: {
       ...(details !== undefined && typeof details === 'object' ? details : {}),
       outputTruncated: bounded.details.truncated,
-      ...(bounded.details.fullOutputPath !== undefined && bounded.details.fullOutputPath !== ''
+      ...(isNotNullOrUndefined(bounded.details.fullOutputPath) && isNotEmptyString(bounded.details.fullOutputPath)
         ? { fullOutputPath: bounded.details.fullOutputPath }
         : {}),
     },
@@ -148,7 +149,7 @@ const parseArgs = (args: unknown): Record<string, unknown> => {
 const compareNames = (left: { name: string }, right: { name: string }): number => left.name.localeCompare(right.name)
 
 const compactDescription = (description: string | undefined): string => {
-  if (description === undefined || description === '') {
+  if (isNullOrUndefined(description) || isEmptyString(description)) {
     return ''
   }
   const singleLine = description.replaceAll(/\s+/g, ' ').trim()
@@ -160,12 +161,12 @@ const formatAnnotations = (annotations: McpToolAnnotations | undefined): string 
     return ''
   }
   const hints = [
-    annotations.readOnlyHint === true ? 'read-only' : undefined,
-    annotations.readOnlyHint === false ? 'not read-only' : undefined,
-    annotations.destructiveHint === true ? 'destructive' : undefined,
-    annotations.destructiveHint === false ? 'non-destructive' : undefined,
-    annotations.idempotentHint === true ? 'idempotent' : undefined,
-    annotations.openWorldHint === true ? 'open-world' : undefined,
+    isTrue(annotations.readOnlyHint) ? 'read-only' : undefined,
+    isFalse(annotations.readOnlyHint) ? 'not read-only' : undefined,
+    isTrue(annotations.destructiveHint) ? 'destructive' : undefined,
+    isFalse(annotations.destructiveHint) ? 'non-destructive' : undefined,
+    isTrue(annotations.idempotentHint) ? 'idempotent' : undefined,
+    isTrue(annotations.openWorldHint) ? 'open-world' : undefined,
   ].filter((hint): hint is string => hint !== undefined)
   return hints.length > 0 ? ` [${hints.join(', ')}]` : ''
 }
@@ -179,7 +180,7 @@ const formatTools = (tools: readonly McpToolSummary[], heading: string): string 
     heading,
     ...sorted.map((tool) => {
       const description = compactDescription(tool.description)
-      return `- ${tool.name}${formatAnnotations(tool.annotations)}${description === '' ? '' : ` — ${description}`}`
+      return `- ${tool.name}${formatAnnotations(tool.annotations)}${isEmptyString(description) ? '' : ` — ${description}`}`
     }),
     '',
     'Call with: mcp({ tool: "<tool-name>", args: { ... } })',
@@ -355,8 +356,8 @@ const dispatchGateway = (
           const summary = compactDescription(description.description)
           const lines = [
             `${description.name}${formatAnnotations(description.annotations)}`,
-            ...(description.server !== undefined && description.server !== '' ? [`Server: ${description.server}`] : []),
-            ...(summary === '' ? [] : [summary]),
+            ...(isNotNullOrUndefined(description.server) && isNotEmptyString(description.server) ? [`Server: ${description.server}`] : []),
+            ...(isEmptyString(summary) ? [] : [summary]),
             `Input schema: ${JSON.stringify(description.inputSchema ?? {})}`,
             `Call with: mcp({ tool: ${JSON.stringify(description.name)}, args: { ... } })`,
           ]
@@ -410,7 +411,7 @@ const dispatchGateway = (
               ? ['(no configured servers)']
               : sorted.map(
                   (server) =>
-                    `- ${server.name}: ${server.status === 'invalid-config' ? 'invalid config' : server.status}${server.error !== undefined && server.error !== '' ? ` — ${server.error}` : ''}`
+                    `- ${server.name}: ${server.status === 'invalid-config' ? 'invalid config' : server.status}${isNotNullOrUndefined(server.error) && isNotEmptyString(server.error) ? ` — ${server.error}` : ''}`
                 )),
             '',
             'List one server with: mcp({ server: "<server-name>" })',
@@ -533,7 +534,7 @@ export const createMcpExtension: {
             Effect.gen(function* () {
               const manager = yield* requireManager(state)
               let server = args.trim()
-              if (server === '') {
+              if (isEmptyString(server)) {
                 const servers = [...manager.oauthServers()].toSorted((left, right) => left.localeCompare(right))
                 if (servers.length === 0) {
                   ctx.ui.notify('No OAuth-enabled MCP servers are configured.', 'error')
@@ -544,7 +545,7 @@ export const createMcpExtension: {
                   server = onlyServer
                 } else {
                   const selected = yield* callManager(() => ctx.ui.select('Authenticate MCP server', servers))
-                  if (selected === undefined || selected === '') {
+                  if (isNullOrUndefined(selected) || isEmptyString(selected)) {
                     return
                   }
                   server = selected

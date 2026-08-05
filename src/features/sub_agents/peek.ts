@@ -14,6 +14,8 @@ import {
 import { Container, matchesKey, truncateToWidth, visibleWidth, type TUI } from '@earendil-works/pi-tui'
 import { Effect, Exit, Fiber, Schema, Scope } from 'effect'
 
+import { isEmptyString, isNotEmptyString } from '@/shared/utils/predicates.js'
+
 import { getSocketPath, isPeekActive, type AgentInfo } from './core.js'
 import { persistedProfileColor } from './profiles.js'
 
@@ -350,7 +352,7 @@ export class SubagentPeekOverlay {
     for (const message of context.messages) {
       if (message.role === 'user') {
         const text = this.getUserText(message)
-        if (text !== '') {
+        if (isNotEmptyString(text)) {
           this.chatContainer.addChild(new UserMessageComponent(text, getMarkdownTheme()))
         }
         continue
@@ -406,7 +408,7 @@ export class SubagentPeekOverlay {
       return ''
     }
     return content
-      .filter((part): part is { type: 'text'; text: string } => part.type === 'text' && typeof part.text === 'string' && part.text.length > 0)
+      .filter((part): part is { type: 'text'; text: string } => part.type === 'text' && typeof part.text === 'string' && isNotEmptyString(part.text))
       .map((part) => part.text)
       .join('\n')
   }
@@ -456,7 +458,7 @@ export class SubagentPeekOverlay {
       const lines = this.socketBuffer.split('\n')
       this.socketBuffer = lines.pop() ?? ''
       for (const line of lines) {
-        if (line.trim() === '') {
+        if (isEmptyString(line.trim())) {
           continue
         }
         let parsed: unknown
@@ -477,7 +479,7 @@ export class SubagentPeekOverlay {
     this.status = event.status || 'done'
     if (event.userMessage !== undefined) {
       const text = this.getUserText(event.userMessage)
-      if (text !== '') {
+      if (isNotEmptyString(text)) {
         this.chatContainer.addChild(new UserMessageComponent(text, getMarkdownTheme()))
       }
     }
@@ -511,7 +513,7 @@ export class SubagentPeekOverlay {
   private handleMessageStart(event: MessageStartEvent): void {
     if (event.message?.role === 'user') {
       const text = this.getUserText(event.message)
-      if (text !== '') {
+      if (isNotEmptyString(text)) {
         this.chatContainer.addChild(new UserMessageComponent(text, getMarkdownTheme()))
       }
     } else if (event.message?.role === 'assistant') {
@@ -567,7 +569,7 @@ export class SubagentPeekOverlay {
 
   private handleToolExecutionStart(event: ToolExecutionStartEvent): void {
     this.status = 'tool'
-    if (event.toolCallId !== '' && event.toolName !== '' && !this.pendingTools.has(event.toolCallId)) {
+    if (isNotEmptyString(event.toolCallId) && isNotEmptyString(event.toolName) && !this.pendingTools.has(event.toolCallId)) {
       const component = this.createToolComponent(event.toolName, event.toolCallId, event.args)
       this.chatContainer.addChild(component)
       this.pendingTools.set(event.toolCallId, component)
@@ -575,7 +577,7 @@ export class SubagentPeekOverlay {
   }
 
   private handleToolExecutionUpdate(event: ToolExecutionUpdateEvent): void {
-    if (event.toolCallId === '') {
+    if (isEmptyString(event.toolCallId)) {
       return
     }
     const component = this.pendingTools.get(event.toolCallId)
@@ -585,7 +587,7 @@ export class SubagentPeekOverlay {
   }
 
   private handleToolExecutionEnd(event: ToolExecutionEndEvent): void {
-    if (event.toolCallId === '') {
+    if (isEmptyString(event.toolCallId)) {
       return
     }
     const component = this.pendingTools.get(event.toolCallId)
@@ -773,7 +775,7 @@ export class SubagentPeekOverlay {
 
   private renderHeader(innerWidth: number): string {
     const title = ` ${this.info.taskName} `
-    const modelTag = this.modelName === '' ? '' : `[${truncateToWidth(this.modelName, 18)}] `
+    const modelTag = isEmptyString(this.modelName) ? '' : `[${truncateToWidth(this.modelName, 18)}] `
     const statusText = ` ${STATUS_ICONS[this.status]} ${this.status} `
     const statusColor = STATUS_COLORS[this.status]
     const statusWidth = visibleWidth(statusText)

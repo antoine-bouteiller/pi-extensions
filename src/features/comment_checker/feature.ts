@@ -5,6 +5,7 @@ import { type Cause, Context, Effect, Function } from 'effect'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { makeEventHandler } from '@/shared/effect/runtime.js'
+import { isEmptyString } from '@/shared/utils/predicates.js'
 import { isRecord } from '@/shared/utils/records.js'
 
 const MAX_OUTPUT_BYTES = 64 * 1024
@@ -131,7 +132,7 @@ const checkerResult = (
     }
 
     const warning = (result.stderr || result.stdout).trim()
-    if (warning === '') {
+    if (isEmptyString(warning)) {
       return undefined
     }
 

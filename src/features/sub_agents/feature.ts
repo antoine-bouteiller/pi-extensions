@@ -18,6 +18,7 @@ import { Check } from 'typebox/value'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { runningAgents } from '@/shared/state/agent_activity.js'
+import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 import { truncateOutput, truncationNotice } from '@/shared/utils/tool_output.js'
 
 import {
@@ -88,7 +89,7 @@ const boundedTextResult = <TDetails extends Record<string, unknown>>(
   details: TDetails
 ): AgentToolResult<TDetails & { fullOutputPath?: string; truncated?: true }> => {
   const bounded = boundedText(text)
-  if (bounded.truncated !== true) {
+  if (!isTrue(bounded.truncated)) {
     return textResult(bounded.text, details)
   }
   return textResult(bounded.text, {
@@ -105,7 +106,7 @@ const parseTargets = (value: unknown): string[] | undefined =>
 
 const parentSessionId = (ctx: ExtensionContext): string => {
   const id = ctx.sessionManager.getSessionId()
-  if (id === undefined || id === '') {
+  if (isNullOrUndefined(id) || isEmptyString(id)) {
     throw new Error('The parent Pi session has no session id.')
   }
   return id
@@ -201,8 +202,8 @@ const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: Age
         agent_name: event.agentName,
         status: event.status,
         ...(event.finalResponse === undefined ? {} : { final_response: event.finalResponse }),
-        ...(event.error === undefined || event.error === '' ? {} : { error: event.error }),
-        ...(event.profile === undefined || event.profile === '' ? {} : { profile: event.profile }),
+        ...(isNullOrUndefined(event.error) || isEmptyString(event.error) ? {} : { error: event.error }),
+        ...(isNullOrUndefined(event.profile) || isEmptyString(event.profile) ? {} : { profile: event.profile }),
         color: event.color,
         ...(event.isReadonly === undefined ? {} : { is_readonly: event.isReadonly }),
       },
@@ -217,10 +218,10 @@ const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: Age
         details: {
           agent_name: event.agentName,
           status: event.status,
-          ...(event.profile === undefined || event.profile === '' ? {} : { profile: event.profile }),
+          ...(isNullOrUndefined(event.profile) || isEmptyString(event.profile) ? {} : { profile: event.profile }),
           color: event.color,
           ...(event.isReadonly === undefined ? {} : { is_readonly: event.isReadonly }),
-          ...(bounded.fullOutputPath === undefined || bounded.fullOutputPath === '' ? {} : { fullOutputPath: bounded.fullOutputPath }),
+          ...(isNullOrUndefined(bounded.fullOutputPath) || isEmptyString(bounded.fullOutputPath) ? {} : { fullOutputPath: bounded.fullOutputPath }),
         },
         display: true,
       },
@@ -250,7 +251,7 @@ const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: Age
         details: {
           agent_name: event.agentName,
           status: 'inactive',
-          ...(event.profile === undefined || event.profile === '' ? {} : { profile: event.profile }),
+          ...(isNullOrUndefined(event.profile) || isEmptyString(event.profile) ? {} : { profile: event.profile }),
           color: event.color,
           ...(event.isReadonly === undefined ? {} : { is_readonly: event.isReadonly }),
         },
@@ -349,7 +350,12 @@ ${getAgentProfilesDescription()}`
       return runtime.runPromise(
         Effect.gen(function* () {
           const currentModel = ctx.model
-          if (currentModel?.provider === undefined || currentModel.provider === '' || currentModel.id === undefined || currentModel.id === '') {
+          if (
+            isNullOrUndefined(currentModel?.provider) ||
+            isEmptyString(currentModel.provider) ||
+            isNullOrUndefined(currentModel.id) ||
+            isEmptyString(currentModel.id)
+          ) {
             return yield* featureError('spawn_agent failed: the parent has no active provider/model pair.', undefined)
           }
           const availableModels = ctx.modelRegistry.getAvailable()
@@ -383,14 +389,14 @@ ${getAgentProfilesDescription()}`
     renderCall(args: SpawnAgentParams, theme: Theme) {
       return new Text(
         theme.fg('toolTitle', theme.bold('spawn_agent ')) +
-          theme.fg('text', args.task_name === '' ? '?' : args.task_name) +
+          theme.fg('text', isEmptyString(args.task_name) ? '?' : args.task_name) +
           theme.fg(configuredProfileColor(args.agent_type), ` [${args.agent_type}]`),
         0,
         0
       )
     },
     renderResult(result: RenderableToolResult<SpawnAgentResultDetails>, _options: ToolRenderResultOptions, theme: Theme) {
-      if (result.isError === true) {
+      if (isTrue(result.isError)) {
         const [firstContent] = result.content
         const failureText = firstContent?.type === 'text' ? firstContent.text : 'failed'
         return new Text(theme.fg('error', `✗ ${failureText}`), 0, 0)
@@ -455,7 +461,7 @@ ${getAgentProfilesDescription()}`
       return preserveWaitCancellation(
         runtime.runPromise(
           Effect.tryPromise({
-            catch: (cause) => waitError('wait_agent', signal?.aborted === true, cause),
+            catch: (cause) => waitError('wait_agent', isTrue(signal?.aborted), cause),
             try: async () => {
               const result = await manager.waitAgent(parentSessionId(ctx), parseTargets(params.targets), signal)
               return boundedTextResult(JSON.stringify(result, undefined, 2), {
@@ -485,7 +491,7 @@ ${getAgentProfilesDescription()}`
       )
     },
     renderResult(result: RenderableToolResult<unknown>, _options: ToolRenderResultOptions, theme: Theme) {
-      if (result.isError === true) {
+      if (isTrue(result.isError)) {
         return new Text(theme.fg('error', '✗ wait failed'), 0, 0)
       }
       const details = Check(WaitAgentDetailsSchema, result.details) ? result.details : undefined
@@ -518,7 +524,7 @@ ${getAgentProfilesDescription()}`
       return preserveWaitCancellation(
         runtime.runPromise(
           Effect.tryPromise({
-            catch: (cause) => waitError('wait_all_agents', signal?.aborted === true, cause),
+            catch: (cause) => waitError('wait_all_agents', isTrue(signal?.aborted), cause),
             try: async () => {
               const result = await manager.waitAllAgents(parentSessionId(ctx), parseTargets(params.targets), signal)
               return boundedTextResult(JSON.stringify(result, undefined, 2), {
@@ -548,7 +554,7 @@ ${getAgentProfilesDescription()}`
       )
     },
     renderResult(result: RenderableToolResult<{ message?: string }>, _options: ToolRenderResultOptions, theme: Theme) {
-      if (result.isError === true) {
+      if (isTrue(result.isError)) {
         return new Text(theme.fg('error', '✗ wait failed'), 0, 0)
       }
       return new Text(theme.fg('success', result.details?.message || 'done'), 0, 0)
@@ -561,7 +567,7 @@ ${getAgentProfilesDescription()}`
     execute(_id: string, params, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
       return runtime.runPromise(
         Effect.sync(() => {
-          const agents = manager.listAgents(params.path_prefix, parentSessionId(ctx), params.include_all === true)
+          const agents = manager.listAgents(params.path_prefix, parentSessionId(ctx), isTrue(params.include_all))
           return boundedTextResult(JSON.stringify({ agents }, undefined, 2), { agents })
         })
       )
@@ -626,7 +632,7 @@ ${getAgentProfilesDescription()}`
       _options: ToolRenderResultOptions,
       theme: Theme
     ) {
-      if (result.isError === true) {
+      if (isTrue(result.isError)) {
         return new Text(theme.fg('error', '✗ read failed'), 0, 0)
       }
       return new Text(
@@ -678,7 +684,7 @@ ${getAgentProfilesDescription()}`
       _options: ToolRenderResultOptions,
       theme: Theme
     ) {
-      if (result.isError === true) {
+      if (isTrue(result.isError)) {
         return new Text(theme.fg('error', '✗ send failed'), 0, 0)
       }
       return new Text(
@@ -730,7 +736,7 @@ ${getAgentProfilesDescription()}`
       _options: ToolRenderResultOptions,
       theme: Theme
     ) {
-      if (result.isError === true) {
+      if (isTrue(result.isError)) {
         return new Text(theme.fg('error', '✗ interrupt failed'), 0, 0)
       }
       return new Text(
@@ -889,7 +895,7 @@ ${getAgentProfilesDescription()}`
             entry.agent_status.padEnd(11)
           )} ${fg('dim', `${runtimeLabel(info)}${parent}`)}`,
         ]
-        if (entry.last_task_message !== undefined && entry.last_task_message !== '') {
+        if (isNotNullOrUndefined(entry.last_task_message) && isNotEmptyString(entry.last_task_message)) {
           rowLines.push(`  ${fg('dim', truncateToWidth(entry.last_task_message.replaceAll(/\s+/g, ' '), Math.max(20, width - 4)))}`)
         }
         return rowLines
@@ -972,7 +978,7 @@ ${getAgentProfilesDescription()}`
     description: 'Browse subagents, or open one directly. Usage: /subagent [task-name]',
     handler: async (args, ctx) => {
       const task = args?.trim().replace(/^\//, '')
-      if (task !== undefined && task !== '') {
+      if (isNotNullOrUndefined(task) && isNotEmptyString(task)) {
         await openAgentOverlay({ ctx, task })
         return
       }

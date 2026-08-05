@@ -5,6 +5,7 @@ import { Type, type Static } from 'typebox'
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { ToolFailure } from '@/shared/effect/errors.js'
 import { createStatusChannel } from '@/shared/state/status_bar.js'
+import { isEmptyString, isTrue } from '@/shared/utils/predicates.js'
 import { truncateOutput, truncationNotice } from '@/shared/utils/tool_output.js'
 
 const status = createStatusChannel('background-poll', { icon: '⏳', priority: 20, tone: 'muted' })
@@ -71,7 +72,7 @@ export const formatPollOutput: {
   (stdout: string, stderr: string): string
 } = Function.dual(2, (stdout: string, stderr: string): string => {
   const output = [stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join('\n')
-  if (output === '') {
+  if (isEmptyString(output)) {
     return '(command produced no output)'
   }
 
@@ -306,7 +307,7 @@ const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime): void => {
     description:
       'Register a shell command that is polled in the background until it exits successfully. The current agent run can end completely; completion, timeout, or failure automatically wakes the agent with the final output. Output is truncated to 50KB or 2000 lines.',
     async execute(toolCallId, params, signal, _onUpdate, ctx) {
-      if (signal?.aborted === true) {
+      if (isTrue(signal?.aborted)) {
         throw new Error('Background poll registration was cancelled')
       }
 

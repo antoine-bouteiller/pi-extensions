@@ -1,6 +1,8 @@
 import { type ThemeColor } from '@earendil-works/pi-coding-agent'
 import { Function } from 'effect'
 
+import { isEmptyString } from '@/shared/utils/predicates.js'
+
 export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number]
 
@@ -112,7 +114,7 @@ export const hasModelId: {
 
 export const parseModelSelector = (selector: string): { provider?: string; id: string } => {
   const normalized = selector.trim()
-  if (normalized === '') {
+  if (isEmptyString(normalized)) {
     throw new Error('Model selector must not be empty.')
   }
   const slash = normalized.indexOf('/')
@@ -121,7 +123,7 @@ export const parseModelSelector = (selector: string): { provider?: string; id: s
   }
   const provider = normalized.slice(0, slash).trim()
   const id = normalized.slice(slash + 1).trim()
-  if (provider === '' || id === '') {
+  if (isEmptyString(provider) || isEmptyString(id)) {
     throw new Error(`Invalid provider-qualified model selector: ${selector}`)
   }
   return { id, provider }
@@ -196,7 +198,7 @@ export const resolveAgentConfig: {
     if (allowedTools.length === 0) {
       throw new Error(`Agent profile ${key} must allow at least one tool.`)
     }
-    if (config.prompt.trim() === '') {
+    if (isEmptyString(config.prompt.trim())) {
       throw new Error(`Agent profile ${key} must define a prompt.`)
     }
     return Object.freeze({

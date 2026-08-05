@@ -13,6 +13,7 @@ import { Cause, Effect, Function, Result } from 'effect'
 import { Type } from 'typebox'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
+import { isEmptyString, isNotEmptyString } from '@/shared/utils/predicates.js'
 import { assertUnprotectedPath } from '@/shared/utils/protected_paths.js'
 
 import {
@@ -119,7 +120,7 @@ interface SafeRmDetails {
 
 const isDescendant = (root: string, candidate: string): boolean => {
   const pathFromRoot = relative(root, candidate)
-  return pathFromRoot !== '' && pathFromRoot !== '..' && !pathFromRoot.startsWith(`..${sep}`) && !isAbsolute(pathFromRoot)
+  return isNotEmptyString(pathFromRoot) && pathFromRoot !== '..' && !pathFromRoot.startsWith(`..${sep}`) && !isAbsolute(pathFromRoot)
 }
 
 const isWithinOrEqual = (root: string, candidate: string): boolean => root === candidate || isDescendant(root, candidate)
@@ -134,7 +135,7 @@ const checkCancelled = (signal: AbortSignal | undefined): Effect.Effect<void, Ca
 
 const normalizeInput = (path: string): Effect.Effect<string, InvalidPathError> => {
   // Ponytail: deletion keeps leading @ literal; implicit prefix stripping can target a different path.
-  if (path === '' || path.startsWith('~') || path.includes('\0')) {
+  if (isEmptyString(path) || path.startsWith('~') || path.includes('\0')) {
     return Effect.fail(InvalidPathError.make({ message: `Invalid literal deletion path: ${JSON.stringify(path)}` }))
   }
   return Effect.succeed(path)

@@ -25,6 +25,7 @@ import { type EditorComponent, isKeyRelease, isKeyRepeat, matchesKey, type TUI }
 import { Function } from 'effect'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
+import { isNotEmptyString, isTrue } from '@/shared/utils/predicates.js'
 
 const REWIND_COMMAND = 'prompt-rewind-cancel'
 
@@ -68,7 +69,7 @@ const registerImpl = (pi: ExtensionAPI, _runtime: AppRuntime): void => {
       if (isKeyRelease(data) || isKeyRepeat(data)) {
         return undefined
       }
-      if (tui?.hasOverlay() === true) {
+      if (isTrue(tui?.hasOverlay())) {
         disarm()
         return undefined
       }
@@ -86,7 +87,7 @@ const registerImpl = (pi: ExtensionAPI, _runtime: AppRuntime): void => {
         return undefined
       }
       // A fresh draft in the editor must not be clobbered by the rewound raw text.
-      if (ctx.ui.getEditorText().trim().length > 0) {
+      if (isNotEmptyString(ctx.ui.getEditorText().trim())) {
         return undefined
       }
 

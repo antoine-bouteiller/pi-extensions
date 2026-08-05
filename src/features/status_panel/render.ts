@@ -4,6 +4,8 @@ import { relative } from 'node:path'
 import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui'
 import { Function } from 'effect'
 
+import { isEmptyString } from '@/shared/utils/predicates.js'
+
 export const formatTokens = (tokens: number) => {
   if (tokens < 1000) {
     return `${tokens}`
@@ -30,7 +32,7 @@ export interface ProgressLineOptions {
 }
 
 export const progressLine = ({ label, percent, detail, width = 10 }: ProgressLineOptions) =>
-  `${label}: ${progressBar(percent, width)} ${percent.toFixed(1)}%${detail === '' ? '' : `  ${detail}`}`
+  `${label}: ${progressBar(percent, width)} ${percent.toFixed(1)}%${isEmptyString(detail) ? '' : `  ${detail}`}`
 
 export const formatDirectory = (cwd: string) => {
   const home = homedir()
@@ -47,7 +49,7 @@ export const columns: {
   (right: string, width: number): (left: string) => string
   (left: string, right: string, width: number): string
 } = Function.dual(3, (left: string, right: string, width: number): string => {
-  if (right === '') {
+  if (isEmptyString(right)) {
     return truncateToWidth(left, width)
   }
   const naturalGap = width - visibleWidth(left) - visibleWidth(right)

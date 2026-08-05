@@ -4,6 +4,7 @@ import { Effect, Function, Ref } from 'effect'
 import { type AppRuntime, AgentActivity, StatusBar } from '@/shared/effect/app_services.js'
 import { makeEventHandler } from '@/shared/effect/runtime.js'
 import { azureQuota, writeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
+import { isEmptyString, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 
 import { renderFooterLines } from './footer.js'
 import { fetchGitInfo } from './git.js'
@@ -100,7 +101,7 @@ export const register: {
         const baseUrl =
           (ctx.model?.provider === 'anthropic' ? ctx.model.baseUrl : undefined) ??
           ctx.modelRegistry?.getAvailable().find((model) => model.provider === 'anthropic')?.baseUrl
-        if (baseUrl === undefined || baseUrl === '') {
+        if (isNullOrUndefined(baseUrl) || isEmptyString(baseUrl)) {
           return
         }
         anthropicQuotaBaseUrl = baseUrl
@@ -128,7 +129,7 @@ export const register: {
         contextWindow: usage?.contextWindow ?? ctx.model?.contextWindow ?? 0,
         modelId: ctx.model?.id ?? 'no-model',
         provider: ctx.model?.provider ?? '',
-        thinking: ctx.model?.reasoning === true ? pi.getThinkingLevel() : 'off',
+        thinking: isTrue(ctx.model?.reasoning) ? pi.getThinkingLevel() : 'off',
       }
     }
 

@@ -5,6 +5,8 @@ import { Context, Effect, Layer, Option, Schema } from 'effect'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
+import { isEmptyString } from '@/shared/utils/predicates.js'
+
 export const MCP_OAUTH_KEYCHAIN_SERVICE = 'pi-mcp.oauth'
 
 /** A bounded, redacted message that is safe to surface to the user/model. */
@@ -101,7 +103,7 @@ const malformed = (serverName: string): Error =>
 
 const requireString = (value: Record<string, unknown>, field: string, serverName: string): string => {
   const result = value[field]
-  if (typeof result !== 'string' || result.length === 0) {
+  if (typeof result !== 'string' || isEmptyString(result)) {
     throw malformed(serverName)
   }
   return result

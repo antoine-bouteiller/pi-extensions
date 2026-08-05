@@ -2,6 +2,8 @@ import { Data, Duration, Effect, Fiber, Function, Ref } from 'effect'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
+import { isEmptyString, isTrue } from '@/shared/utils/predicates.js'
+
 import { progressBar } from './render.js'
 import { type ProviderQuota, type QuotaWindow } from './state.js'
 
@@ -137,14 +139,14 @@ const formatReset = (resetsAt: number | null | undefined): string => {
 
 const quotaWindow = (label: string, percent: number, resetsAt: number | null | undefined): QuotaWindow => {
   const resetsIn = formatReset(resetsAt)
-  return resetsIn === '' ? { label, percent } : { label, percent, resetsIn }
+  return isEmptyString(resetsIn) ? { label, percent } : { label, percent, resetsIn }
 }
 
 const formatDollars = (cents: number): string => String(Number((cents / 100).toFixed(2)))
 
 const extraUsageDetail = (profile: GatewayQuotaProfile): string => {
   const { extraUsage } = profile
-  if (extraUsage?.isEnabled !== true || typeof extraUsage.usedCredits !== 'number' || typeof extraUsage.monthlyLimit !== 'number') {
+  if (!isTrue(extraUsage?.isEnabled) || typeof extraUsage.usedCredits !== 'number' || typeof extraUsage.monthlyLimit !== 'number') {
     return ''
   }
   return `${formatDollars(extraUsage.usedCredits)}/${formatDollars(extraUsage.monthlyLimit)}$`
@@ -160,7 +162,7 @@ export const fetchAnthropicQuota: {
 } = Function.dual(
   (args) => typeof args[0] === 'string',
   async (baseUrl: string, signal?: AbortSignal, fetchImpl: typeof fetch = globalThis.fetch): Promise<ProviderQuota | undefined> => {
-    if (baseUrl === '') {
+    if (isEmptyString(baseUrl)) {
       return undefined
     }
     try {
@@ -186,14 +188,14 @@ export const fetchAnthropicQuota: {
       const sessionPercent = session.utilization * 100
       const weeklyPercent = weekly.utilization * 100
       const extraUsage = extraUsageDetail(profile)
-      const weeklyDetail = extraUsage === '' ? '' : ` ${extraUsage}`
+      const weeklyDetail = isEmptyString(extraUsage) ? '' : ` ${extraUsage}`
       return {
         detail: `${formatReset(session.resetsAt)}  Weekly: ${progressBar(weeklyPercent, 10)} ${weeklyPercent.toFixed(1)}%${weeklyDetail}`,
         label: 'anthropic',
         percent: sessionPercent,
         windows: [
           quotaWindow('Session', sessionPercent, session.resetsAt),
-          { ...quotaWindow('Weekly', weeklyPercent, weekly.resetsAt), ...(extraUsage === '' ? {} : { detail: extraUsage }) },
+          { ...quotaWindow('Weekly', weeklyPercent, weekly.resetsAt), ...(isEmptyString(extraUsage) ? {} : { detail: extraUsage }) },
         ],
       }
     } catch {

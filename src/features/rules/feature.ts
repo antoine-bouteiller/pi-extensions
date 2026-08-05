@@ -18,6 +18,7 @@ import { type PlatformError } from 'effect/PlatformError'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { makeEventHandler } from '@/shared/effect/runtime.js'
+import { isEmptyString, isNotEmptyString, isNullOrUndefined } from '@/shared/utils/predicates.js'
 import { isRecord } from '@/shared/utils/records.js'
 
 const RULE_DIRECTORIES = ['.claude/rules', '.agents/rules'] as const
@@ -62,7 +63,7 @@ const normalizePath = (path: string): string => path.replaceAll('\\', '/').repla
 
 const isWithin = (child: string, parent: string): boolean => {
   const pathFromParent = relative(parent, child)
-  return pathFromParent === '' || (!pathFromParent.startsWith(`..${sep}`) && pathFromParent !== '..' && !isAbsolute(pathFromParent))
+  return isEmptyString(pathFromParent) || (!pathFromParent.startsWith(`..${sep}`) && pathFromParent !== '..' && !isAbsolute(pathFromParent))
 }
 
 /**
@@ -85,7 +86,7 @@ const discoverRuleFilesEffect = (root: string, containmentRoot?: string): Effect
         const canonicalPath = yield* orSkip(fs.realPath(path))
         if (
           canonicalPath === undefined ||
-          (containmentBoundary !== undefined && containmentBoundary !== '' && !isWithin(canonicalPath, containmentBoundary))
+          (!isNullOrUndefined(containmentBoundary) && isNotEmptyString(containmentBoundary) && !isWithin(canonicalPath, containmentBoundary))
         ) {
           return
         }
@@ -97,7 +98,7 @@ const discoverRuleFilesEffect = (root: string, containmentRoot?: string): Effect
         const canonicalDirectory = yield* orSkip(fs.realPath(directory))
         if (
           canonicalDirectory === undefined ||
-          (containmentBoundary !== undefined && containmentBoundary !== '' && !isWithin(canonicalDirectory, containmentBoundary)) ||
+          (!isNullOrUndefined(containmentBoundary) && isNotEmptyString(containmentBoundary) && !isWithin(canonicalDirectory, containmentBoundary)) ||
           visitedDirectories.has(canonicalDirectory)
         ) {
           return
@@ -129,11 +130,12 @@ const discoverRuleFilesEffect = (root: string, containmentRoot?: string): Effect
     const rootResolution = yield* orSkip(
       Effect.gen(function* () {
         const canonicalRoot = yield* fs.realPath(root)
-        const canonicalBoundary = containmentRoot !== undefined && containmentRoot !== '' ? yield* fs.realPath(containmentRoot) : undefined
+        const canonicalBoundary =
+          !isNullOrUndefined(containmentRoot) && isNotEmptyString(containmentRoot) ? yield* fs.realPath(containmentRoot) : undefined
         const rootInfo = yield* fs.stat(canonicalRoot)
         if (
           rootInfo.type !== 'Directory' ||
-          (canonicalBoundary !== undefined && canonicalBoundary !== '' && !isWithin(canonicalRoot, canonicalBoundary))
+          (!isNullOrUndefined(canonicalBoundary) && isNotEmptyString(canonicalBoundary) && !isWithin(canonicalRoot, canonicalBoundary))
         ) {
           return undefined
         }
@@ -180,7 +182,7 @@ const stripComment = (value: string): string => {
 
 const parseString = (value: string): string => {
   const trimmed = value.trim()
-  if (trimmed.length === 0) {
+  if (isEmptyString(trimmed)) {
     return ''
   }
   if (trimmed.startsWith('"')) {
@@ -248,7 +250,7 @@ const parsePathValue = (rawValue: string, lines: string[], lineIndex: number): {
   if (rawValue.startsWith('[')) {
     return { consumed: 1, paths: splitInlineList(rawValue) }
   }
-  if (rawValue.length > 0) {
+  if (isNotEmptyString(rawValue)) {
     const value = parseString(rawValue)
     return {
       consumed: 1,
@@ -263,7 +265,7 @@ const parsePathValue = (rawValue: string, lines: string[], lineIndex: number): {
   let consumed = 1
   for (let index = lineIndex + 1; index < lines.length; index++) {
     const line = stripComment(lines[index] ?? '')
-    if (line.trim().length === 0) {
+    if (isEmptyString(line.trim())) {
       consumed++
       continue
     }
@@ -285,7 +287,7 @@ interface FrontmatterLineResult {
 
 const parseFrontmatterLine = (lines: string[], index: number): FrontmatterLineResult => {
   const line = stripComment(lines[index] ?? '').trim()
-  if (line.length === 0) {
+  if (isEmptyString(line)) {
     return { consumed: 1 }
   }
 
@@ -376,7 +378,7 @@ const readRulesEffect = (root: string, displayRoot: string, containmentRoot?: st
         continue
       }
       const parsed = parseRuleFrontmatter(content)
-      if ((parsed.diagnostic !== undefined && parsed.diagnostic !== '') || parsed.body.trim().length === 0) {
+      if ((!isNullOrUndefined(parsed.diagnostic) && isNotEmptyString(parsed.diagnostic)) || isEmptyString(parsed.body.trim())) {
         continue
       }
       rules.push({
@@ -515,7 +517,7 @@ const record = (value: unknown): Record<string, unknown> | undefined => (isRecor
 
 const stringProperty = (value: unknown, property: string): string | undefined => {
   const candidate = record(value)?.[property]
-  return typeof candidate === 'string' && candidate.length > 0 ? candidate : undefined
+  return typeof candidate === 'string' && isNotEmptyString(candidate) ? candidate : undefined
 }
 
 /** Extract paths from Pi's file tools, including the local hashline compatibility tools. */
@@ -529,7 +531,7 @@ export const extractToolPaths: {
 
   const paths = new Set<string>()
   const add = (path: string | undefined) => {
-    if (path !== undefined && path !== '') {
+    if (!isNullOrUndefined(path) && isNotEmptyString(path)) {
       paths.add(isAbsolute(path) ? path : resolve(cwd, path))
     }
   }
@@ -539,7 +541,7 @@ export const extractToolPaths: {
 
   if (event.toolName === 'hashline_write') {
     const patch = stringProperty(event.input, 'patch')
-    if (patch !== undefined && patch !== '') {
+    if (!isNullOrUndefined(patch) && isNotEmptyString(patch)) {
       for (const match of patch.matchAll(/^\[(?<path>[^\]#]+)#[^\]]+\]/gm)) {
         add(match.groups?.path)
       }
@@ -641,7 +643,7 @@ const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime, environment: RulesE
       let addition = formatted.block
       const scopedRules = rules.filter((rule) => !rule.alwaysApply && rule.paths.length > 0)
       addition += formatRulePointers(scopedRules, MAX_BLOCK_CHARS - addition.length)
-      return addition.length > 0 ? { systemPrompt: event.systemPrompt + addition } : undefined
+      return isNotEmptyString(addition) ? { systemPrompt: event.systemPrompt + addition } : undefined
     })
 
   const toolResult = (
@@ -680,7 +682,7 @@ const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime, environment: RulesE
         }
         return [nextFormatted, next]
       })
-      return formatted.block.length > 0 ? { content: [...event.content, { text: formatted.block, type: 'text' as const }] } : undefined
+      return isNotEmptyString(formatted.block) ? { content: [...event.content, { text: formatted.block, type: 'text' as const }] } : undefined
     })
 
   pi.on(

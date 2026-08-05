@@ -28,6 +28,7 @@ import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { ToolFailure } from '@/shared/effect/errors.js'
 import { PiCtx } from '@/shared/effect/pi_services.js'
 import { perInvocation } from '@/shared/effect/runtime.js'
+import { isEmptyString, isTrue } from '@/shared/utils/predicates.js'
 
 import {
   ASK_USER_PARAMETER_DESCRIPTIONS,
@@ -142,7 +143,7 @@ const showQuestion = (
 
         editor.onSubmit = (value) => {
           const trimmed = value.trim()
-          if (trimmed === '') {
+          if (isEmptyString(trimmed)) {
             editMode = false
             editor.setText('')
             refresh()
@@ -159,7 +160,7 @@ const showQuestion = (
 
         const selectOption = (index: number) => {
           const selected = allOptions[index]
-          if (selected.isOther === true) {
+          if (isTrue(selected.isOther)) {
             optionIndex = index
             editMode = true
             refresh()
@@ -238,12 +239,12 @@ const showQuestion = (
             const opt = allOptions[index]
             const selected = index === optionIndex
             const prefix = selected ? theme.fg('accent', ' ❯ ') : '   '
-            const marker = opt.isOther === true ? '✎' : `${index + 1}.`
+            const marker = isTrue(opt.isOther) ? '✎' : `${index + 1}.`
             const label = `${marker} ${opt.label}`
             let color: 'accent' | 'muted' | 'text'
-            if (selected || (opt.isOther === true && editMode)) {
+            if (selected || (isTrue(opt.isOther) && editMode)) {
               color = 'accent'
-            } else if (opt.isOther === true) {
+            } else if (isTrue(opt.isOther)) {
               color = 'muted'
             } else {
               color = 'text'

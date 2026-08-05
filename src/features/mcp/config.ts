@@ -4,6 +4,8 @@ import { join } from 'node:path'
 
 import { type Cause, Effect, Function, Schema } from 'effect'
 
+import { isEmptyString, isTrue } from '@/shared/utils/predicates.js'
+
 import {
   type DisabledServerConfig,
   type HttpServerConfig,
@@ -95,7 +97,7 @@ const requiredString = (value: unknown, path: string): string => {
   if (typeof value !== 'string') {
     return fail(path, 'must be a string')
   }
-  if (value.length === 0) {
+  if (isEmptyString(value)) {
     return fail(path, 'must not be empty')
   }
   return value
@@ -280,7 +282,7 @@ const parseServer = (name: string, value: unknown): McpServerConfig => {
     fail(path, 'must specify exactly one of command or url')
   }
   if (!hasCommand && !hasUrl) {
-    if (disabled !== true) {
+    if (!isTrue(disabled)) {
       fail(path, 'must specify exactly one of command or url')
     }
     return parseDisabledOnlyServer(path, value)
@@ -305,7 +307,7 @@ export const parseMcpConfig = (value: unknown): McpServerMap => {
   return Object.fromEntries(
     Object.entries(value.mcpServers).map(([name, server]) => {
       try {
-        if (name.length === 0) {
+        if (isEmptyString(name)) {
           fail('mcpServers', 'server names must not be empty')
         }
         return [name, parseServer(name, server)]

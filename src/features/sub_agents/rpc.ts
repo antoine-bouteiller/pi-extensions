@@ -2,6 +2,8 @@ import { StringDecoder } from 'node:string_decoder'
 
 import { Function } from 'effect'
 
+import { isEmptyString } from '@/shared/utils/predicates.js'
+
 export class RpcJsonlDecoder {
   private readonly decoder = new StringDecoder('utf8')
   private buffer = ''
@@ -26,7 +28,7 @@ export class RpcJsonlDecoder {
 
   end(): string[] {
     this.buffer += this.decoder.end()
-    if (this.buffer === '') {
+    if (isEmptyString(this.buffer)) {
       return []
     }
     const line = this.buffer.endsWith('\r') ? this.buffer.slice(0, -1) : this.buffer

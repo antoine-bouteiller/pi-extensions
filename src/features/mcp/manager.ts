@@ -7,6 +7,7 @@ import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontex
 import { type Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { Context, Effect, Function, Layer } from 'effect'
 
+import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 import { isRecord } from '@/shared/utils/records.js'
 
 import { KeychainCredentialError, createKeychainCredentialStore, type CredentialStore } from './keychain.js'
@@ -145,7 +146,7 @@ const safeOperationError = (error: unknown, operation: string, server: string): 
 }
 
 const isSafeSearchRegex = (pattern: string): boolean => {
-  if (pattern.length === 0 || pattern.length > 128 || /\\[1-9]/.test(pattern)) {
+  if (isEmptyString(pattern) || pattern.length > 128 || /\\[1-9]/.test(pattern)) {
     return false
   }
   // Accept only a fixed-width subset plus one `.*` wildcard. Excluding groups,
@@ -187,7 +188,7 @@ const initialStatus = (config: ServerConfig): McpServerStatus => {
   if ('invalid' in config) {
     return 'invalid-config'
   }
-  return config.disabled === true ? 'disabled' : 'disconnected'
+  return isTrue(config.disabled) ? 'disabled' : 'disconnected'
 }
 
 const isUsableRuntime = (runtime: ServerRuntime): boolean => runtime.status !== 'disabled' && runtime.status !== 'invalid-config'
@@ -313,7 +314,7 @@ const convertToolResult = (result: unknown): { content: GatewayContent[]; isErro
   }
   return {
     content: converted.length > 0 ? converted : [{ text: '(MCP tool returned no supported content)', type: 'text' }],
-    isError: value.isError === true,
+    isError: isTrue(value.isError),
   }
 }
 
@@ -352,7 +353,7 @@ export class McpManager {
     return [...this.runtimes.values()].map((runtime) => ({
       name: runtime.name,
       status: runtime.status,
-      ...(runtime.error !== undefined && runtime.error !== '' ? { error: runtime.error } : {}),
+      ...(isNotNullOrUndefined(runtime.error) && isNotEmptyString(runtime.error) ? { error: runtime.error } : {}),
     }))
   }
 
@@ -423,7 +424,9 @@ export class McpManager {
     options: { server?: string; regex?: boolean; limit?: number; signal?: AbortSignal } = {}
   ): Promise<readonly ToolMetadata[]> {
     const runtimes =
-      options.server !== undefined && options.server !== '' ? [this.runtime(options.server)] : [...this.runtimes.values()].filter(isUsableRuntime)
+      isNotNullOrUndefined(options.server) && isNotEmptyString(options.server)
+        ? [this.runtime(options.server)]
+        : [...this.runtimes.values()].filter(isUsableRuntime)
     const settled = await Promise.allSettled(runtimes.map((runtime) => this.toolsForServer(runtime.name, options.signal)))
     const tools = settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : [])).filter((tool) => this.isAllowed(tool, 'search'))
     if (tools.length === 0) {
@@ -434,7 +437,7 @@ export class McpManager {
     }
 
     let matches: ToolMetadata[]
-    if (options.regex === true) {
+    if (isTrue(options.regex)) {
       if (!isSafeSearchRegex(query)) {
         throw new Error('Invalid MCP search regular expression: use at most 128 characters without lookarounds, backreferences, or quantified groups')
       }
@@ -682,7 +685,7 @@ export class McpManager {
     options: { server?: string; signal?: AbortSignal },
     operation: 'describe' | 'call'
   ): Promise<ToolMetadata> {
-    if (options.server !== undefined && options.server !== '') {
+    if (isNotNullOrUndefined(options.server) && isNotEmptyString(options.server)) {
       const tools = await this.toolsForServer(options.server, options.signal)
       const matches = tools.filter((tool) => tool.name === requested || tool.remoteName === requested)
       const [onlyMatch] = matches
@@ -903,13 +906,13 @@ export class McpManager {
     const cursors = new Set<string>()
     let cursor: string | undefined
     do {
-      if (cursor !== undefined && cursor !== '') {
+      if (isNotNullOrUndefined(cursor) && isNotEmptyString(cursor)) {
         if (cursors.has(cursor)) {
           throw new Error(`MCP server ${server} repeated a tools cursor`)
         }
         cursors.add(cursor)
       }
-      const page = await client.listTools(cursor !== undefined && cursor !== '' ? { cursor } : undefined, {
+      const page = await client.listTools(isNotNullOrUndefined(cursor) && isNotEmptyString(cursor) ? { cursor } : undefined, {
         signal,
         timeout: this.requestTimeoutMs,
       })

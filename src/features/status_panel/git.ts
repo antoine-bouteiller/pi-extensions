@@ -1,6 +1,8 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Data, Effect } from 'effect'
 
+import { isNotEmptyString } from '@/shared/utils/predicates.js'
+
 import { emptyGitInfoState, type GitInfoState } from './state.js'
 
 class ExecGitError extends Data.TaggedError('ExecGitError')<{ readonly cause: unknown }> {}
@@ -20,7 +22,7 @@ export const fetchGitInfo = (pi: ExtensionAPI): Effect.Effect<GitInfoState> =>
     }
     return {
       ...emptyGitInfoState(),
-      branch: branch.code === 0 && branch.stdout.trim() !== '' ? branch.stdout.trim() : undefined,
-      changedFiles: status.code === 0 && status.stdout.trim() !== '' ? status.stdout.trim().split('\n').length : 0,
+      branch: branch.code === 0 && isNotEmptyString(branch.stdout.trim()) ? branch.stdout.trim() : undefined,
+      changedFiles: status.code === 0 && isNotEmptyString(status.stdout.trim()) ? status.stdout.trim().split('\n').length : 0,
     }
   }).pipe(Effect.catchCause(() => Effect.succeed(emptyGitInfoState())))

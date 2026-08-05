@@ -3,13 +3,14 @@ import { Effect, Function } from 'effect'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { makeEventHandler } from '@/shared/effect/runtime.js'
+import { isEmptyString, isNullOrUndefined } from '@/shared/utils/predicates.js'
 
 const DEFAULT_MERIDIAN_BASE_URL = 'http://127.0.0.1:3456'
 const MERIDIAN_AGENT_HEADER = 'x-meridian-agent'
 const SESSION_AFFINITY_HEADER = 'x-session-affinity'
 
 const normalizedUrl = (value: string | undefined): string | undefined => {
-  if (value === undefined || value === '') {
+  if (isNullOrUndefined(value) || isEmptyString(value)) {
     return undefined
   }
 
@@ -50,7 +51,7 @@ const applySessionAffinity = (event: BeforeProviderHeadersEvent, ctx: ExtensionC
     }
 
     const sessionId = ctx.sessionManager.getSessionId()
-    if (sessionId === undefined || sessionId === '') {
+    if (isNullOrUndefined(sessionId) || isEmptyString(sessionId)) {
       return
     }
 

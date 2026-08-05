@@ -2,6 +2,7 @@ import { type AgentSettledEvent, type ExtensionAPI, type ExtensionContext, type 
 import { Function } from 'effect'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
+import { isNullOrUndefined } from '@/shared/utils/predicates.js'
 
 const COMPACTION_THRESHOLD_TOKENS = 300_000
 
@@ -49,7 +50,7 @@ const registerImpl = (pi: ExtensionAPI, _runtime: AppRuntime): void => {
 
   pi.on('agent_settled', (_event: AgentSettledEvent, ctx: ExtensionContext) => {
     const tokens = ctx.getContextUsage()?.tokens
-    if (tokens === null || tokens === undefined) {
+    if (isNullOrUndefined(tokens)) {
       return
     }
     if (tokens < COMPACTION_THRESHOLD_TOKENS) {

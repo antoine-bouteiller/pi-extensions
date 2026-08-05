@@ -10,6 +10,7 @@ import { register as safeRm } from '@/features/safe_rm/feature.js'
 import { SAFETY_STATUS_KEY } from '@/features/safety_guard/constants.js'
 import { register as safetyGuard } from '@/features/safety_guard/feature.js'
 import { publishStatus, statusBar } from '@/shared/state/status_bar.js'
+import { isTrue } from '@/shared/utils/predicates.js'
 
 const temporaryDirectories: string[] = []
 afterEach(async () => {
@@ -93,7 +94,7 @@ const setup = (activeTools: string[] = ['safe_rm']) => {
   const handler: Handler = async (event, ctx) => {
     for (const registeredHandler of toolCallHandlers) {
       const result = await registeredHandler(event, ctx)
-      if (result?.block === true) {
+      if (isTrue(result?.block)) {
         return result
       }
     }

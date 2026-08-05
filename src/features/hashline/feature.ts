@@ -27,6 +27,7 @@ import { Type, type Static } from 'typebox'
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { PiCtx } from '@/shared/effect/pi_services.js'
 import { perInvocation, type HandlerServices } from '@/shared/effect/runtime.js'
+import { isTrue } from '@/shared/utils/predicates.js'
 import { assertUnprotectedPath, resolveToolPath, stripToolPathPrefix } from '@/shared/utils/protected_paths.js'
 import { isRecord } from '@/shared/utils/records.js'
 import { truncateOutput } from '@/shared/utils/tool_output.js'
@@ -56,7 +57,7 @@ const result = (text: string, details: Record<string, unknown> = {}): ToolOutput
 })
 
 const throwIfAborted = (signal: AbortSignal | undefined): void => {
-  if (signal?.aborted === true) {
+  if (isTrue(signal?.aborted)) {
     throw new Error('Hashline operation aborted')
   }
 }
@@ -421,11 +422,11 @@ const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime): void => {
     parameters: readSchema,
     renderResult(readResult: RenderableToolOutput, _options, theme) {
       let text = typeof readResult.details?.path === 'string' ? readResult.details.path : ''
-      if (readResult.isError === true) {
+      if (isTrue(readResult.isError)) {
         const [content] = readResult.content
         text = content?.type === 'text' ? content.text : 'Hashline read failed'
       }
-      return new Text(theme.fg(readResult.isError === true ? 'error' : 'toolOutput', text), 0, 0)
+      return new Text(theme.fg(isTrue(readResult.isError) ? 'error' : 'toolOutput', text), 0, 0)
     },
   })
 

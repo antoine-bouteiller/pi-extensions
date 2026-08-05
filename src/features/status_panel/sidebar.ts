@@ -6,6 +6,7 @@ import { Effect, Exit, Ref, Scope } from 'effect'
 
 import { type RunningAgent } from '@/shared/state/agent_activity.js'
 import { formatStatusText, type StatusEntry, type StatusTone } from '@/shared/state/status_bar.js'
+import { isEmptyString, isNotEmptyString } from '@/shared/utils/predicates.js'
 
 import { formatDirectory, formatTokens } from './render.js'
 import { createSplitPaneController, type SplitPaneController } from './split_pane.js'
@@ -81,7 +82,7 @@ const pad = (text: string, width: number) => {
 }
 
 const spaced = (left: string, right: string, width: number) => {
-  if (right === '') {
+  if (isEmptyString(right)) {
     return truncateToWidth(left, width, '')
   }
   const leftWidth = Math.min(visibleWidth(left), Math.max(0, Math.floor(width * 0.55)))
@@ -139,7 +140,7 @@ const agentRows = (state: SidebarState, width: number, theme: SidebarTheme) => {
     .map((value) => sanitize(value).toUpperCase())
     .filter(Boolean)
     .join(` ${paint(theme, 'dim', '·')} `)
-  return [spaced(status, model, width), metadata === '' ? paint(theme, 'dim', '—') : paint(theme, 'muted', metadata)]
+  return [spaced(status, model, width), isEmptyString(metadata) ? paint(theme, 'dim', '—') : paint(theme, 'muted', metadata)]
 }
 
 const contextRows = (state: SidebarState, width: number, theme: SidebarTheme) => {
@@ -163,9 +164,9 @@ const contextRows = (state: SidebarState, width: number, theme: SidebarTheme) =>
 const subagentRow = (agent: RunningAgent, width: number, theme: SidebarTheme) => {
   const marker = '▸ '
   const profile = truncateToWidth(sanitize(agent.profile ?? ''), Math.floor(width * 0.4), '…')
-  const nameWidth = width - visibleWidth(marker) - (profile === '' ? 0 : visibleWidth(profile) + 1)
+  const nameWidth = width - visibleWidth(marker) - (isEmptyString(profile) ? 0 : visibleWidth(profile) + 1)
   const name = truncateToWidth(sanitize(agent.name), Math.max(0, nameWidth), '…')
-  const gap = ' '.repeat(Math.max(profile === '' ? 0 : 1, width - visibleWidth(marker) - visibleWidth(name) - visibleWidth(profile)))
+  const gap = ' '.repeat(Math.max(isEmptyString(profile) ? 0 : 1, width - visibleWidth(marker) - visibleWidth(name) - visibleWidth(profile)))
   return truncateToWidth(`${paint(theme, 'dim', marker)}${theme.fg(agent.color, name)}${gap}${paint(theme, 'muted', profile)}`, width, '')
 }
 
@@ -217,19 +218,19 @@ const quotaWindowRows = (window: QuotaWindow, width: number, theme: SidebarTheme
   const role = quotaRole(percent)
   const resetsIn = sanitize(window.resetsIn ?? '')
   const detail = sanitize(window.detail ?? '')
-  const trailingWidth = visibleWidth(resetsIn) + (detail === '' ? 0 : visibleWidth(detail) + 1)
+  const trailingWidth = visibleWidth(resetsIn) + (isEmptyString(detail) ? 0 : visibleWidth(detail) + 1)
   const meterWidth = Math.max(1, Math.min(12, width - (trailingWidth === 0 ? 0 : trailingWidth + 1)))
   const filled = Math.max(0, Math.min(meterWidth, Math.round((percent / 100) * meterWidth)))
   const meter = `${paint(theme, role, '■'.repeat(filled))}${paint(theme, 'dim', '·'.repeat(meterWidth - filled))}`
-  const headerDetail = detail !== '' && resetsIn === '' ? ` ${detail}` : ''
+  const headerDetail = isNotEmptyString(detail) && isEmptyString(resetsIn) ? ` ${detail}` : ''
   const header = spaced(paint(theme, role, sanitize(window.label)), paint(theme, role, `${percent.toFixed(1)}%${headerDetail}`), width)
-  if (resetsIn === '') {
+  if (isEmptyString(resetsIn)) {
     return [header, meter]
   }
   const gap = ' '.repeat(Math.max(1, width - meterWidth - trailingWidth))
   return [
     header,
-    truncateToWidth(`${meter}${gap}${paint(theme, 'muted', resetsIn)}${detail === '' ? '' : ` ${paint(theme, role, detail)}`}`, width, ''),
+    truncateToWidth(`${meter}${gap}${paint(theme, 'muted', resetsIn)}${isEmptyString(detail) ? '' : ` ${paint(theme, role, detail)}`}`, width, ''),
   ]
 }
 
@@ -239,7 +240,7 @@ const quotaRows = (quota: ProviderQuota, width: number, theme: SidebarTheme) => 
       ? [{ label: quota.label === 'anthropic' ? 'Session' : 'Azure', percent: quota.percent }]
       : quota.windows
   const rows = windows.flatMap((window) => quotaWindowRows(window, width, theme))
-  if ((quota.windows?.length ?? 0) === 0 && quota.detail !== undefined && quota.detail !== '') {
+  if ((quota.windows?.length ?? 0) === 0 && quota.detail !== undefined && isNotEmptyString(quota.detail)) {
     rows.push(paint(theme, 'muted', sanitize(quota.detail)))
   }
   return rows
