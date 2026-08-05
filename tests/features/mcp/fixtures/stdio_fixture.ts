@@ -18,7 +18,7 @@ server.registerTool(
 )
 
 const marker = process.env.PI_MCP_FIXTURE_PID
-if (marker) {
+if (marker !== undefined) {
   await writeFile(marker, String(process.pid), { mode: 0o600 })
 }
 await server.connect(new StdioServerTransport())

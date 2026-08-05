@@ -22,7 +22,7 @@ const fakeContext = (overrides: { cwd?: string; hasUI?: boolean; confirm?: boole
       confirm: async (title: string, message: string, opts?: { signal?: AbortSignal }) => {
         const entry = { aborted: false, message, title }
         calls.confirms.push(entry)
-        if (opts?.signal) {
+        if (opts?.signal !== undefined) {
           await new Promise<void>((resolve) => {
             opts.signal?.addEventListener('abort', () => {
               entry.aborted = true
@@ -48,10 +48,13 @@ const fakeContext = (overrides: { cwd?: string; hasUI?: boolean; confirm?: boole
 
 const emptyRuntime = () => ManagedRuntime.make(Layer.empty)
 
+// Isolated so `Effect.fail` never wraps a literal `new Error(...)` inline.
+const discoveryError = (message: string): Error => new Error(message)
+
 describe('tool executor boundary', () => {
   it('rejects with the exact Error message a ToolFailure carries', async () => {
     const runtime = emptyRuntime()
-    const execute = makeToolExecutor(runtime)(() => Effect.fail(new ToolFailure({ message: 'path is outside the workspace' })))
+    const execute = makeToolExecutor(runtime)(() => Effect.fail(ToolFailure.make({ message: 'path is outside the workspace' })))
 
     const rejection = await execute('call-1', {}, undefined, undefined, fakeContext().ctx).then(
       () => undefined,
@@ -67,7 +70,7 @@ describe('tool executor boundary', () => {
     const recovered = await Effect.runPromise(
       withAbortSignal(async () => {
         throw new Error('network exploded')
-      }).pipe(Effect.catch((error) => Effect.succeed(asError(error).message)))
+      }).pipe(Effect.catch((error) => Effect.succeed(asError(error.cause).message)))
     )
 
     expect(recovered).toBe('network exploded')
@@ -80,7 +83,7 @@ describe('tool executor boundary', () => {
         throw new Error('network exploded')
       }).pipe(
         Effect.map(() => 'unreachable'),
-        Effect.catch((error) => Effect.fail(new ToolFailure({ message: `fetch failed: ${asError(error).message}` })))
+        Effect.mapError((error) => ToolFailure.make({ message: `fetch failed: ${asError(error.cause).message}` }))
       )
     )
 
@@ -151,7 +154,7 @@ describe('tool executor boundary', () => {
 describe('event handler boundary', () => {
   it('keeps the error channel intact so a failing handler rejects', async () => {
     const runtime = emptyRuntime()
-    const handler = makeEventHandler(runtime)(() => Effect.fail(new Error('discovery failed')))
+    const handler = makeEventHandler(runtime)(() => Effect.fail(discoveryError('discovery failed')))
 
     const rejection = await handler({}, fakeContext().ctx).then(
       () => undefined,
@@ -216,7 +219,7 @@ describe('ui service', () => {
 
 describe('runtime disposal', () => {
   it('runs layer finalizers exactly once', async () => {
-    class Tracked extends Context.Service<Tracked, { readonly id: string }>()('@test/Tracked') {}
+    class Tracked extends Context.Service<Tracked, { readonly id: string }>()('pi-extensions/tests/shared/effect/runtime.spec/Tracked') {}
     let acquired = 0
     let released = 0
 
@@ -244,7 +247,7 @@ describe('runtime disposal', () => {
   })
 
   it('interrupts an in-flight fiber on disposal, and a replacement runtime still works', async () => {
-    class Counter extends Context.Service<Counter, { readonly id: string }>()('@test/Counter') {}
+    class Counter extends Context.Service<Counter, { readonly id: string }>()('pi-extensions/tests/shared/effect/runtime.spec/Counter') {}
     let released = 0
     const layer = Layer.effect(Counter)(
       Effect.acquireRelease(Effect.succeed({ id: 'counter' }), () =>

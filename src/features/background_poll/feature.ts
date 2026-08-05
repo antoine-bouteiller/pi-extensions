@@ -1,8 +1,9 @@
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
-import { Clock, Context, Deferred, Effect, Exit, type Fiber, HashMap, Option, Ref, Scope, Semaphore } from 'effect'
+import { Clock, Context, Deferred, Effect, Exit, type Fiber, Function, HashMap, Option, Ref, Scope, Semaphore } from 'effect'
 import { Type, type Static } from 'typebox'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
+import { ToolFailure } from '@/shared/effect/errors.js'
 import { createStatusChannel } from '@/shared/state/status_bar.js'
 import { truncateOutput, truncationNotice } from '@/shared/utils/tool_output.js'
 
@@ -53,7 +54,7 @@ interface PollCommandResult {
 
 export interface PollLoopOptions {
   readonly command: string
-  readonly exec: (timeoutMs: number) => Effect.Effect<PollCommandResult, unknown>
+  readonly exec: (timeoutMs: number) => Effect.Effect<PollCommandResult, ToolFailure>
   readonly intervalMs: number
   readonly label: string
   readonly taskId: string
@@ -65,9 +66,12 @@ export interface PollLoopResult {
   readonly output: string
 }
 
-export const formatPollOutput = (stdout: string, stderr: string): string => {
+export const formatPollOutput: {
+  (stderr: string): (stdout: string) => string
+  (stdout: string, stderr: string): string
+} = Function.dual(2, (stdout: string, stderr: string): string => {
   const output = [stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join('\n')
-  if (!output) {
+  if (output === '') {
     return '(command produced no output)'
   }
 
@@ -77,7 +81,7 @@ export const formatPollOutput = (stdout: string, stderr: string): string => {
     maxLines: DEFAULT_MAX_LINES,
   })
   return truncated.truncated ? truncated.content + truncationNotice(truncated, { from: 'tail' }) : truncated.content
-}
+})
 
 export const runPollLoop = (options: PollLoopOptions): Effect.Effect<PollLoopResult> =>
   Effect.gen(function* () {
@@ -115,7 +119,7 @@ export const runPollLoop = (options: PollLoopOptions): Effect.Effect<PollLoopRes
             outcome: 'error' as const,
             taskId: options.taskId,
           },
-          output: commandResult.failure instanceof Error ? commandResult.failure.message : String(commandResult.failure),
+          output: commandResult.failure.message,
         }
       }
 
@@ -151,7 +155,7 @@ interface PollStateShape {
   readonly tasks: Ref.Ref<HashMap.HashMap<string, Fiber.Fiber<void>>>
 }
 
-class PollState extends Context.Service<PollState, PollStateShape>()('@background-poll/State') {}
+class PollState extends Context.Service<PollState, PollStateShape>()('pi-extensions/features/background_poll/feature/PollState') {}
 
 const updateStatus = (state: PollStateShape, ctx: ExtensionContext): Effect.Effect<void> =>
   Effect.gen(function* () {
@@ -237,7 +241,7 @@ const registerPoll = (
   toolCallId: string,
   params: BackgroundPollInput,
   ctx: ExtensionContext
-): Effect.Effect<void, Error, PollState> =>
+): Effect.Effect<void, ToolFailure, PollState> =>
   Effect.gen(function* () {
     const state = yield* PollState
     yield* state.mutex.withPermits(1)(
@@ -247,7 +251,7 @@ const registerPoll = (
           const message = (yield* Ref.get(state.shuttingDown))
             ? 'Cannot register a background poll during shutdown'
             : 'Cannot register a background poll without an active session'
-          return yield* Effect.fail(new Error(message))
+          return yield* ToolFailure.make({ message })
         }
 
         const sessionScope = current.value
@@ -260,7 +264,7 @@ const registerPoll = (
               command: params.command,
               exec: (timeoutMs) =>
                 Effect.tryPromise({
-                  catch: (cause) => cause,
+                  catch: (cause) => ToolFailure.make({ message: cause instanceof Error ? cause.message : String(cause) }),
                   try: (signal) => pi.exec('sh', ['-lc', params.command], { signal, timeout: timeoutMs }),
                 }),
               intervalMs: (params.interval_seconds ?? DEFAULT_INTERVAL_SECONDS) * 1000,
@@ -286,7 +290,7 @@ const registerPoll = (
     )
   })
 
-export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
+const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime): void => {
   const pollState: PollStateShape = Effect.runSync(
     Effect.gen(function* () {
       return {
@@ -302,11 +306,15 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
     description:
       'Register a shell command that is polled in the background until it exits successfully. The current agent run can end completely; completion, timeout, or failure automatically wakes the agent with the final output. Output is truncated to 50KB or 2000 lines.',
     async execute(toolCallId, params, signal, _onUpdate, ctx) {
-      if (signal?.aborted) {
+      if (signal?.aborted === true) {
         throw new Error('Background poll registration was cancelled')
       }
 
-      await runtime.runPromise(registerPoll(pi, toolCallId, params, ctx).pipe(Effect.provideService(PollState, pollState)))
+      await runtime
+        .runPromise(registerPoll(pi, toolCallId, params, ctx).pipe(Effect.provideService(PollState, pollState)))
+        .catch((error: unknown) => {
+          throw new Error(error instanceof ToolFailure ? error.message : String(error))
+        })
       const taskId = `poll-${toolCallId}`
       const label = params.label?.trim() || params.command
       return {
@@ -339,3 +347,8 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
   pi.on('session_start', () => runtime.runPromise(startSession.pipe(Effect.provideService(PollState, pollState))))
   pi.on('session_shutdown', (_event, ctx) => runtime.runPromise(stopSession(ctx).pipe(Effect.provideService(PollState, pollState))))
 }
+
+export const register: {
+  (runtime: AppRuntime): (pi: ExtensionAPI) => void
+  (pi: ExtensionAPI, runtime: AppRuntime): void
+} = Function.dual((args) => typeof args[0].on === 'function', registerImpl)

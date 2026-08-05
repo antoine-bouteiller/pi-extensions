@@ -100,7 +100,7 @@ describe('protected path resolution over FileSystem', () => {
 
     const failure = await Effect.runPromise(resolveProtectedPathEffect('loop-a', root).pipe(Effect.flip, Effect.provide(NodeFileSystem.layer)))
 
-    expect(errnoCode(failure)).toBe('ELOOP')
+    expect(failure.pipe(errnoCode)).toBe('ELOOP')
   })
 
   it.skipIf(process.getuid?.() === 0)('propagates a permission error (EACCES) instead of treating it as missing', async () => {
@@ -113,7 +113,7 @@ describe('protected path resolution over FileSystem', () => {
     const failure = await Effect.runPromise(resolveProtectedPathEffect('locked/.env', root).pipe(Effect.flip, Effect.provide(NodeFileSystem.layer)))
 
     await chmod(locked, 0o700)
-    expect(errnoCode(failure)).toBe('EACCES')
+    expect(failure.pipe(errnoCode)).toBe('EACCES')
   })
 
   /*

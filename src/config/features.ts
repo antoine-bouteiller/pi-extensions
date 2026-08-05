@@ -1,4 +1,5 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { Function } from 'effect'
 
 import { register as askUser } from '@/features/ask_user/feature.js'
 import { register as autoCompact } from '@/features/auto_compact/feature.js'
@@ -40,8 +41,11 @@ export const features: readonly FeatureRegistration[] = [
   { name: 'webfetch', register: webfetch },
 ]
 
-export const registerFeatures = (pi: ExtensionAPI, runtime: AppRuntime): void => {
+export const registerFeatures: {
+  (runtime: AppRuntime): (pi: ExtensionAPI) => void
+  (pi: ExtensionAPI, runtime: AppRuntime): void
+} = Function.dual(2, (pi: ExtensionAPI, runtime: AppRuntime): void => {
   for (const feature of features) {
     feature.register(pi, runtime)
   }
-}
+})

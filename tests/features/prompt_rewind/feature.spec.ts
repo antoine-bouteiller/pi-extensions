@@ -73,10 +73,10 @@ const createHarness = () => {
     sessionManager: {
       getBranch: () => {
         const path: FakeEntry[] = []
-        let current = leafId ? entries.get(leafId) : undefined
-        while (current) {
+        let current = leafId === null ? undefined : entries.get(leafId)
+        while (current !== undefined) {
           path.push(current)
-          current = current.parentId ? entries.get(current.parentId) : undefined
+          current = current.parentId === null ? undefined : entries.get(current.parentId)
         }
         return path.toReversed()
       },

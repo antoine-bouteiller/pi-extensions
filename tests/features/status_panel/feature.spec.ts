@@ -124,7 +124,7 @@ describe('status panel formatting', () => {
         })
       },
       setFooter(factory?: (...args: unknown[]) => { render: (width: number) => string[] }) {
-        if (!factory) {
+        if (factory === undefined) {
           renderFooter = undefined
           return
         }
@@ -149,7 +149,7 @@ describe('status panel formatting', () => {
     tui.terminal.columns = 80
     expect(renderFooter?.(80).join('\n')).toContain('Context:')
     tui.terminal.columns = 120
-    if (!renderSidebar) {
+    if (renderSidebar === undefined) {
       throw new Error('expected a sidebar renderer')
     }
     for (const width of [28, 36, 44]) {
@@ -234,10 +234,10 @@ describe('status panel quota lifecycle', () => {
 
     ctx.model = { ...ctx.model, id: 'openai-model', provider: 'openai' }
     await emit('model_select', { model: ctx.model }, ctx)
-    const [signal] = signals
-    if (!signal) {
+    if (signals.length === 0) {
       throw new Error('expected a quota request')
     }
+    const [signal] = signals
     expect(signal.aborted).toBeFalse()
     expect(signals).toHaveLength(1)
 
@@ -296,7 +296,7 @@ describe('status panel cross-feature sharing', () => {
     statusPanel(pi, runtime)
     await emit('session_start', {}, ctx)
 
-    if (!renderSidebar) {
+    if (renderSidebar === undefined) {
       throw new Error('expected a sidebar renderer')
     }
     expect(renderSidebar(44).join('\n')).toContain('/scout-shared')

@@ -67,7 +67,7 @@ const setup = (exec: Exec) => {
     },
   }
 
-  if (!tool) {
+  if (tool === undefined) {
     throw new Error('background-poll did not register a tool')
   }
 

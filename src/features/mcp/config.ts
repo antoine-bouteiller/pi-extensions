@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-import { Effect, Schema } from 'effect'
+import { type Cause, Effect, Function, Schema } from 'effect'
 
 import {
   type DisabledServerConfig,
@@ -33,14 +33,14 @@ class McpConfigError extends Schema.TaggedErrorClass<McpConfigError>()('McpConfi
   message: Schema.String,
   path: Schema.String,
 }) {
-  constructor(path: string, reason: string) {
-    super({ message: `${path}: ${reason}`, path })
+  static from(path: string, reason: string): McpConfigError {
+    return McpConfigError.make({ message: `${path}: ${reason}`, path })
   }
 }
 
 const StringMapSchema = Schema.Record(Schema.String, Schema.String)
 const OAuthSchema = Schema.Struct({
-  callbackPort: Schema.optional(Schema.Number),
+  callbackPort: Schema.optional(Schema.Finite),
   clientId: Schema.optional(Schema.String),
   clientName: Schema.optional(Schema.String),
   clientSecret: Schema.optional(Schema.String),
@@ -78,7 +78,7 @@ const isObject = (value: unknown): value is Record<string, unknown> => {
 }
 
 const fail = (path: string, message: string): never => {
-  throw new McpConfigError(path, message)
+  throw McpConfigError.from(path, message)
 }
 
 const optionalBoolean = (value: unknown, path: string): boolean | undefined => {
@@ -321,26 +321,31 @@ export const parseMcpConfig = (value: unknown): McpServerMap => {
 
 /** Effect boundary for callers that want typed configuration failures without changing legacy error text. */
 export const parseMcpConfigEffect = (value: unknown): Effect.Effect<McpServerMap, McpConfigError> =>
-  Effect.try({
-    catch: (cause) =>
-      cause instanceof McpConfigError ? cause : new McpConfigError('mcpServers', cause instanceof Error ? cause.message : String(cause)),
-    try: () => {
-      const parsed = parseMcpConfig(value)
-      Schema.decodeUnknownSync(McpServerMapSchema, { onExcessProperty: 'error' })(parsed)
-      return parsed
-    },
+  Effect.gen(function* () {
+    const parsed = yield* Effect.try({
+      catch: (cause) =>
+        cause instanceof McpConfigError ? cause : McpConfigError.from('mcpServers', cause instanceof Error ? cause.message : String(cause)),
+      try: () => parseMcpConfig(value),
+    })
+    yield* Schema.decodeUnknownEffect(McpServerMapSchema, { onExcessProperty: 'error' })(parsed).pipe(
+      Effect.mapError((cause) => McpConfigError.from('mcpServers', String(cause)))
+    )
+    return parsed
   })
 
 /** Parse JSON text without adding JSONC or interpolation semantics. */
-export const parseMcpConfigText = (text: string, source = 'MCP config'): McpServerMap => {
+export const parseMcpConfigText: {
+  (source: string): (text: string) => McpServerMap
+  (text: string, source: string): McpServerMap
+} = Function.dual(2, (text: string, source = 'MCP config'): McpServerMap => {
   let value: unknown
   try {
     value = JSON.parse(text) as unknown
   } catch {
-    throw new McpConfigError(source, 'contains malformed JSON')
+    throw McpConfigError.from(source, 'contains malformed JSON')
   }
   return parseMcpConfig(value)
-}
+})
 
 /** Load an MCP file. This helper exists so tests never need to access the real home directory. */
 export const loadMcpConfigFile = async (path: string): Promise<McpServerMap> => {
@@ -354,8 +359,8 @@ export const loadMcpConfigFile = async (path: string): Promise<McpServerMap> => 
   }
 }
 
-export const loadMcpConfigFileEffect = (path: string): Effect.Effect<McpServerMap, unknown> =>
-  Effect.tryPromise({ catch: (cause) => cause, try: () => loadMcpConfigFile(path) })
+export const loadMcpConfigFileEffect = (path: string): Effect.Effect<McpServerMap, Cause.UnknownError> =>
+  Effect.tryPromise(() => loadMcpConfigFile(path))
 
 const globalMcpConfigPath = (): string => join(homedir(), '.config', 'mcp', 'mcp.json')
 

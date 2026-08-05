@@ -10,11 +10,7 @@ export const MCP_OAUTH_KEYCHAIN_SERVICE = 'pi-mcp.oauth'
 /** A bounded, redacted message that is safe to surface to the user/model. */
 export class KeychainCredentialError extends Schema.TaggedErrorClass<KeychainCredentialError>()('KeychainCredentialError', {
   message: Schema.String,
-}) {
-  constructor(message: string) {
-    super({ message })
-  }
-}
+}) {}
 
 type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject
 interface JsonObject {
@@ -62,7 +58,9 @@ interface CredentialStoreEffectShape {
 }
 
 /** Effect-native credential boundary; the Promise interface remains as the MCP SDK adapter. */
-export class CredentialStoreEffect extends Context.Service<CredentialStoreEffect, CredentialStoreEffectShape>()('@pi/mcp/CredentialStore') {}
+export class CredentialStoreEffect extends Context.Service<CredentialStoreEffect, CredentialStoreEffectShape>()(
+  'pi-extensions/features/mcp/keychain/CredentialStoreEffect'
+) {}
 
 type KeyringEntry = Pick<Entry, 'deletePassword' | 'getPassword' | 'setPassword'>
 type EntryFactory = (service: string, account: string) => KeyringEntry
@@ -97,7 +95,9 @@ const isJsonValue = (value: unknown): value is JsonValue => {
 }
 
 const malformed = (serverName: string): Error =>
-  new KeychainCredentialError(`Stored OAuth credential for MCP server ${JSON.stringify(serverName)} is malformed; delete it and authenticate again.`)
+  KeychainCredentialError.make({
+    message: `Stored OAuth credential for MCP server ${JSON.stringify(serverName)} is malformed; delete it and authenticate again.`,
+  })
 
 const requireString = (value: Record<string, unknown>, field: string, serverName: string): string => {
   const result = value[field]
@@ -164,10 +164,11 @@ const isMissingCredential = (error: unknown): boolean => {
 }
 
 const operationError = (operation: string, serverName: string): Error =>
-  new KeychainCredentialError(
-    `macOS Keychain OAuth credential ${operation} failed for MCP server ` +
-      `${JSON.stringify(serverName)}. Ensure Keychain is available and unlocked, then retry.`
-  )
+  KeychainCredentialError.make({
+    message:
+      `macOS Keychain OAuth credential ${operation} failed for MCP server ` +
+      `${JSON.stringify(serverName)}. Ensure Keychain is available and unlocked, then retry.`,
+  })
 
 export class KeychainCredentialStore implements CredentialStore {
   readonly serviceName: string
@@ -236,7 +237,7 @@ export class KeychainCredentialStore implements CredentialStore {
 export const createKeychainCredentialStore = (options: KeychainCredentialStoreOptions = {}): CredentialStore => new KeychainCredentialStore(options)
 
 const asKeychainError = (cause: unknown): KeychainCredentialError =>
-  cause instanceof KeychainCredentialError ? cause : new KeychainCredentialError('macOS Keychain OAuth credential operation failed.')
+  cause instanceof KeychainCredentialError ? cause : KeychainCredentialError.make({ message: 'macOS Keychain OAuth credential operation failed.' })
 
 export const credentialStoreEffectLayer = (options: KeychainCredentialStoreOptions = {}): Layer.Layer<CredentialStoreEffect> => {
   const store = createKeychainCredentialStore(options)

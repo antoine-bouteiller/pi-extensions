@@ -37,7 +37,7 @@ describe('ProcessInspector: linux', () => {
         if (path === '/proc/123/cmdline') {
           return Buffer.from('node\0script.js\0')
         }
-        if (path === '/proc/123/environ' && token) {
+        if (path === '/proc/123/environ' && token !== undefined) {
           return Buffer.from(token.environ)
         }
         throw new Error(`unexpected read: ${path}`)

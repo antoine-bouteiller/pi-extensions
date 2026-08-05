@@ -1,5 +1,5 @@
 import { type BeforeProviderHeadersEvent, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
-import { Effect } from 'effect'
+import { Effect, Function } from 'effect'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { makeEventHandler } from '@/shared/effect/runtime.js'
@@ -9,7 +9,7 @@ const MERIDIAN_AGENT_HEADER = 'x-meridian-agent'
 const SESSION_AFFINITY_HEADER = 'x-session-affinity'
 
 const normalizedUrl = (value: string | undefined): string | undefined => {
-  if (!value) {
+  if (value === undefined || value === '') {
     return undefined
   }
 
@@ -50,13 +50,19 @@ const applySessionAffinity = (event: BeforeProviderHeadersEvent, ctx: ExtensionC
     }
 
     const sessionId = ctx.sessionManager.getSessionId()
-    if (!sessionId) {
+    if (sessionId === undefined || sessionId === '') {
       return
     }
 
     setCanonicalHeader(event.headers, SESSION_AFFINITY_HEADER, sessionId)
   })
 
-export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
-  pi.on('before_provider_headers', makeEventHandler(runtime)(applySessionAffinity))
-}
+export const register: {
+  (runtime: AppRuntime): (pi: ExtensionAPI) => void
+  (pi: ExtensionAPI, runtime: AppRuntime): void
+} = Function.dual(
+  (args) => typeof args[0].on === 'function',
+  (pi: ExtensionAPI, runtime: AppRuntime): void => {
+    pi.on('before_provider_headers', makeEventHandler(runtime)(applySessionAffinity))
+  }
+)

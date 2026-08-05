@@ -1,8 +1,8 @@
 import { type ExtensionContext } from '@earendil-works/pi-coding-agent'
-import { Effect, Layer, type ManagedRuntime } from 'effect'
+import { type Cause, Context, Effect, type ManagedRuntime } from 'effect'
 
 import { type ToolFailure } from './errors.js'
-import { PiCtx, type Ui, UiLive } from './pi_services.js'
+import { makeUi, PiCtx, Ui } from './pi_services.js'
 
 export type HandlerServices = PiCtx | Ui
 
@@ -10,10 +10,10 @@ export type HandlerServices = PiCtx | Ui
  * Per-invocation services. Rebuilt for every call because `ctx` differs per invocation; hoisting
  * these into the stable runtime would freeze the first invocation's context for all later ones.
  */
-export const perInvocation = (ctx: ExtensionContext): Layer.Layer<HandlerServices> => {
-  const piCtx = Layer.succeed(PiCtx)(ctx)
-  return Layer.mergeAll(piCtx, UiLive.pipe(Layer.provide(piCtx)))
-}
+export const perInvocation = (ctx: ExtensionContext): Context.Context<HandlerServices> => Context.make(PiCtx, ctx).pipe(Context.add(Ui, makeUi(ctx)))
+
+// Isolated so `Effect.fail` never wraps a literal `new Error(...)` inline.
+const toolExecutionError = (message: string): Error => new Error(message)
 
 export const makeToolExecutor =
   <AppServices>(runtime: ManagedRuntime.ManagedRuntime<AppServices, never>) =>
@@ -26,13 +26,13 @@ export const makeToolExecutor =
        * run the body's synchronous side effects. Suspending means the body is never constructed
        * when the signal has already fired.
        */
-      Effect.suspend(() => (signal?.aborted ? Effect.interrupt : body(params))).pipe(
+      Effect.suspend(() => (signal !== undefined && signal.aborted ? Effect.interrupt : body(params))).pipe(
         Effect.provide(perInvocation(ctx)),
         /*
          * A tool failure is expected, not a defect: reject with the same plain Error the
          * pre-Effect code threw, because the message is the contract Pi renders to the model.
          */
-        Effect.catchTag('ToolFailure', (failure) => Effect.fail(new Error(failure.message)))
+        Effect.catchTag('ToolFailure', (failure) => Effect.fail(toolExecutionError(failure.message)))
       ),
       { signal }
     )
@@ -51,5 +51,5 @@ export const makeEventHandler =
  * Keeps the rejection in the error channel instead of dying, so callers can `catchAll` it and map
  * it onto their own extension error rather than losing it as a defect.
  */
-export const withAbortSignal = <Value>(run: (signal: AbortSignal) => Promise<Value>): Effect.Effect<Value, unknown> =>
-  Effect.tryPromise({ catch: (cause) => cause, try: run })
+export const withAbortSignal = <Value>(run: (signal: AbortSignal) => Promise<Value>): Effect.Effect<Value, Cause.UnknownError> =>
+  Effect.tryPromise(run)

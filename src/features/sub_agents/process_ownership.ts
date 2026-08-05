@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 
-import { Context, Effect, Layer } from 'effect'
+import { Context, Effect, Function, Layer } from 'effect'
 
 export interface ProcessSnapshot {
   identity: string
@@ -47,13 +47,13 @@ const inspectLinuxProcess = (probe: ProcessProbeShape, pid: number, token?: stri
   const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
   const startTicks = fields.at(19)
   const commandLine = probe.readFileBuffer(`/proc/${pid}/cmdline`)
-  if (!startTicks || !commandLine.length) {
+  if (startTicks === undefined || startTicks === '' || commandLine.length === 0) {
     return undefined
   }
-  const environment = token ? probe.readFileBuffer(`/proc/${pid}/environ`) : undefined
+  const environment = token !== undefined && token !== '' ? probe.readFileBuffer(`/proc/${pid}/environ`) : undefined
   return {
     identity: `linux:${startTicks}:${hashIdentity(commandLine)}`,
-    ...(token
+    ...(token !== undefined && token !== ''
       ? {
           tokenMatches: environment?.includes(Buffer.from(`PI_SUBAGENT_OWNER_TOKEN=${token}\0`)) ?? false,
         }
@@ -65,7 +65,7 @@ const inspectWindowsProcess = (probe: ProcessProbeShape, pid: number): ProcessSn
   const script = `$p=Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}"; if ($null -ne $p) { [Console]::Out.Write($p.CreationDate.ToUniversalTime().Ticks.ToString() + [char]0 + $p.CommandLine) }`
   const result = probe.runPowerShell(script)
   const output = result.status === 0 ? result.stdout : ''
-  return output ? { identity: `windows:${hashIdentity(output)}` } : undefined
+  return output.length > 0 ? { identity: `windows:${hashIdentity(output)}` } : undefined
 }
 
 const inspectUnixProcess = (probe: ProcessProbeShape, pid: number, token?: string): ProcessSnapshot | undefined => {
@@ -73,12 +73,12 @@ const inspectUnixProcess = (probe: ProcessProbeShape, pid: number, token?: strin
   const canVerifyToken = probe.platform !== 'darwin'
   const result = probe.runPs([canVerifyToken ? 'eww' : 'ww', '-p', String(pid), '-o', 'lstart=', '-o', 'command='])
   const output = result.status === 0 ? result.stdout.trim() : ''
-  if (!output) {
+  if (output.length === 0) {
     return undefined
   }
   return {
     identity: `unix:${hashIdentity(output)}`,
-    ...(token && canVerifyToken ? { tokenMatches: output.includes(`PI_SUBAGENT_OWNER_TOKEN=${token}`) } : {}),
+    ...(token !== undefined && token !== '' && canVerifyToken ? { tokenMatches: output.includes(`PI_SUBAGENT_OWNER_TOKEN=${token}`) } : {}),
   }
 }
 
@@ -119,7 +119,9 @@ const processOwnerIsActiveWith = (
     return false
   }
   const snapshot = inspect(owner.pid)
-  return Boolean(snapshot && (!owner.processIdentity || snapshot.identity === owner.processIdentity))
+  return (
+    snapshot !== undefined && (owner.processIdentity === undefined || owner.processIdentity === '' || snapshot.identity === owner.processIdentity)
+  )
 }
 
 const runPowerShellScript = (script: string): { status: number | null; stdout: string } => {
@@ -141,7 +143,13 @@ export const nodeProcessProbe: ProcessProbeShape = {
   runPs: runPsCommand,
 }
 
-export const inspectProcess = (pid: number, token?: string): ProcessSnapshot | undefined => inspectProcessWith(nodeProcessProbe)(pid, token)
+export const inspectProcess: {
+  (token: string | undefined): (pid: number) => ProcessSnapshot | undefined
+  (pid: number, token?: string): ProcessSnapshot | undefined
+} = Function.dual(
+  (args) => typeof args[0] === 'number',
+  (pid: number, token?: string): ProcessSnapshot | undefined => inspectProcessWith(nodeProcessProbe)(pid, token)
+)
 
 export const ownershipMatches = (ownership: ProcessOwnership): boolean => ownershipMatchesWith(inspectProcess, ownership)
 
@@ -155,7 +163,9 @@ export interface ProcessInspectorShape {
   readonly ownerIsActive: (owner: { pid?: number; processIdentity?: string }) => Effect.Effect<boolean>
 }
 
-export class ProcessInspector extends Context.Service<ProcessInspector, ProcessInspectorShape>()('@pi/ProcessInspector') {}
+export class ProcessInspector extends Context.Service<ProcessInspector, ProcessInspectorShape>()(
+  'pi-extensions/features/sub_agents/process_ownership/ProcessInspector'
+) {}
 
 export const processInspectorFromProbe = (probe: ProcessProbeShape): ProcessInspectorShape => {
   const inspect = inspectProcessWith(probe)

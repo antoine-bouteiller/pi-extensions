@@ -12,7 +12,7 @@ import {
   type ToolRenderResultOptions,
 } from '@earendil-works/pi-coding-agent'
 import { Text, isKeyRelease, isKeyRepeat, matchesKey, truncateToWidth } from '@earendil-works/pi-tui'
-import { Effect } from 'effect'
+import { Data, Effect, Function } from 'effect'
 import { type Static, Type } from 'typebox'
 import { Check } from 'typebox/value'
 
@@ -49,6 +49,27 @@ interface BoundedText {
   truncated?: true
 }
 
+class SubagentFeatureError extends Data.TaggedError('SubagentFeatureError')<{
+  readonly cause: unknown
+  readonly message: string
+}> {}
+
+const featureError = (message: string, cause: unknown): SubagentFeatureError => new SubagentFeatureError({ cause, message })
+
+const causeMessage = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause))
+
+class SubagentWaitError extends Data.TaggedError('SubagentWaitError')<{
+  readonly aborted: boolean
+  readonly cause: unknown
+  readonly message: string
+}> {}
+
+const waitError = (operation: string, aborted: boolean, cause: unknown): SubagentWaitError =>
+  new SubagentWaitError({ aborted, cause, message: aborted ? causeMessage(cause) : `${operation} failed: ${causeMessage(cause)}` })
+
+const preserveWaitCancellation = <Result>(promise: Promise<Result>): Promise<Result> =>
+  promise.catch((error: unknown) => Promise.reject(error instanceof SubagentWaitError && error.aborted ? error.cause : error))
+
 const boundedText = (text: string, maxBytes = DEFAULT_MAX_BYTES, maxLines = DEFAULT_MAX_LINES): BoundedText => {
   const truncation = truncateOutput(text, { maxBytes, maxLines })
   if (!truncation.truncated) {
@@ -67,7 +88,7 @@ const boundedTextResult = <TDetails extends Record<string, unknown>>(
   details: TDetails
 ): AgentToolResult<TDetails & { fullOutputPath?: string; truncated?: true }> => {
   const bounded = boundedText(text)
-  if (!bounded.truncated) {
+  if (bounded.truncated !== true) {
     return textResult(bounded.text, details)
   }
   return textResult(bounded.text, {
@@ -84,7 +105,7 @@ const parseTargets = (value: unknown): string[] | undefined =>
 
 const parentSessionId = (ctx: ExtensionContext): string => {
   const id = ctx.sessionManager.getSessionId()
-  if (!id) {
+  if (id === undefined || id === '') {
     throw new Error('The parent Pi session has no session id.')
   }
   return id
@@ -107,9 +128,16 @@ const formatDuration = (ms: number): string => {
 }
 
 const runtimeLabel = (info: AgentInfo): string => {
-  const start = info.startedAt || info.createdAt
+  const start = info.startedAt === undefined || info.startedAt === 0 ? info.createdAt : info.startedAt
   const final = ['completed', 'failed', 'interrupted'].includes(info.status)
-  const end = final ? info.completedAt || info.updatedAt || Date.now() : Date.now()
+  let end = Date.now()
+  if (final) {
+    if (info.completedAt !== undefined && info.completedAt !== 0) {
+      end = info.completedAt
+    } else if (info.updatedAt !== undefined && info.updatedAt !== 0) {
+      end = info.updatedAt
+    }
+  }
   return formatDuration(end - start)
 }
 
@@ -141,7 +169,7 @@ Keep work in your own context when it depends on conversation history that is ex
 
 type PiExtensionContext = ExtensionContext | ExtensionCommandContext
 
-export const register = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: AgentManagerOptions = {}): void => {
+const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: AgentManagerOptions = {}): void => {
   const completionMessageType = 'pi-codex-subagent-completion'
   let activeContext: PiExtensionContext | undefined
   const activeAgents = new Map<string, { profile?: string; color: ThemeColor }>()
@@ -154,7 +182,7 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: 
   }
   const isCurrentSession = (parentId: string) => {
     try {
-      return activeContext && parentSessionId(activeContext) === parentId
+      return activeContext !== undefined && parentSessionId(activeContext) === parentId
     } catch {
       return false
     }
@@ -173,8 +201,8 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: 
         agent_name: event.agentName,
         status: event.status,
         ...(event.finalResponse === undefined ? {} : { final_response: event.finalResponse }),
-        ...(event.error ? { error: event.error } : {}),
-        ...(event.profile ? { profile: event.profile } : {}),
+        ...(event.error === undefined || event.error === '' ? {} : { error: event.error }),
+        ...(event.profile === undefined || event.profile === '' ? {} : { profile: event.profile }),
         color: event.color,
         ...(event.isReadonly === undefined ? {} : { is_readonly: event.isReadonly }),
       },
@@ -189,10 +217,10 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: 
         details: {
           agent_name: event.agentName,
           status: event.status,
-          ...(event.profile ? { profile: event.profile } : {}),
+          ...(event.profile === undefined || event.profile === '' ? {} : { profile: event.profile }),
           color: event.color,
           ...(event.isReadonly === undefined ? {} : { is_readonly: event.isReadonly }),
-          ...(bounded.fullOutputPath ? { fullOutputPath: bounded.fullOutputPath } : {}),
+          ...(bounded.fullOutputPath === undefined || bounded.fullOutputPath === '' ? {} : { fullOutputPath: bounded.fullOutputPath }),
         },
         display: true,
       },
@@ -222,7 +250,7 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: 
         details: {
           agent_name: event.agentName,
           status: 'inactive',
-          ...(event.profile ? { profile: event.profile } : {}),
+          ...(event.profile === undefined || event.profile === '' ? {} : { profile: event.profile }),
           color: event.color,
           ...(event.isReadonly === undefined ? {} : { is_readonly: event.isReadonly }),
         },
@@ -250,7 +278,7 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: 
   })
 
   const colorForTarget = (target: string): ThemeColor => {
-    if (!activeContext) {
+    if (activeContext === undefined) {
       return 'muted'
     }
     try {
@@ -321,15 +349,15 @@ ${getAgentProfilesDescription()}`
       return runtime.runPromise(
         Effect.gen(function* () {
           const currentModel = ctx.model
-          if (!currentModel?.provider || !currentModel?.id) {
-            return yield* Effect.fail(new Error('spawn_agent failed: the parent has no active provider/model pair.'))
+          if (currentModel?.provider === undefined || currentModel.provider === '' || currentModel.id === undefined || currentModel.id === '') {
+            return yield* featureError('spawn_agent failed: the parent has no active provider/model pair.', undefined)
           }
           const availableModels = ctx.modelRegistry.getAvailable()
           if (!Array.isArray(availableModels)) {
-            return yield* Effect.fail(new Error('spawn_agent failed: authenticated model availability is unavailable.'))
+            return yield* featureError('spawn_agent failed: authenticated model availability is unavailable.', undefined)
           }
           const result = yield* Effect.tryPromise({
-            catch: (cause) => new Error(`spawn_agent failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause }),
+            catch: (cause) => featureError(`spawn_agent failed: ${cause instanceof Error ? cause.message : String(cause)}`, cause),
             try: () =>
               manager.spawnAgent({
                 agent_type: params.agent_type,
@@ -355,14 +383,14 @@ ${getAgentProfilesDescription()}`
     renderCall(args: SpawnAgentParams, theme: Theme) {
       return new Text(
         theme.fg('toolTitle', theme.bold('spawn_agent ')) +
-          theme.fg('text', args.task_name || '?') +
-          theme.fg(configuredProfileColor(args.agent_type), args.agent_type ? ` [${args.agent_type}]` : ''),
+          theme.fg('text', args.task_name === '' ? '?' : args.task_name) +
+          theme.fg(configuredProfileColor(args.agent_type), ` [${args.agent_type}]`),
         0,
         0
       )
     },
     renderResult(result: RenderableToolResult<SpawnAgentResultDetails>, _options: ToolRenderResultOptions, theme: Theme) {
-      if (result.isError) {
+      if (result.isError === true) {
         const [firstContent] = result.content
         const failureText = firstContent?.type === 'text' ? firstContent.text : 'failed'
         return new Text(theme.fg('error', `✗ ${failureText}`), 0, 0)
@@ -382,7 +410,10 @@ ${getAgentProfilesDescription()}`
         clearEscapeArm()
         activeContext = ctx
         activeAgents.clear()
-        yield* Effect.tryPromise({ catch: (cause) => cause, try: () => manager.ready() })
+        yield* Effect.tryPromise({
+          catch: (cause) => featureError(cause instanceof Error ? cause.message : String(cause), cause),
+          try: () => manager.ready(),
+        })
         if (activeContext !== ctx) {
           return
         }
@@ -407,7 +438,10 @@ ${getAgentProfilesDescription()}`
         activeAgents.clear()
         publishAgentActivity()
         clearEscapeArm()
-        yield* Effect.tryPromise({ catch: (cause) => cause, try: () => manager.shutdown() })
+        yield* Effect.tryPromise({
+          catch: (cause) => featureError(cause instanceof Error ? cause.message : String(cause), cause),
+          try: () => manager.shutdown(),
+        })
       })
     )
   )
@@ -418,18 +452,19 @@ ${getAgentProfilesDescription()}`
     description:
       'Wait for one session-owned agent completion, or for the next completion if targets is omitted. Use only when your next action depends on that response; otherwise continue working and let completion arrive automatically. Returns one final response. Use wait_all_agents when every target must finish.',
     execute(_id: string, params, signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
-      return runtime.runPromise(
-        Effect.tryPromise({
-          catch: (cause): unknown =>
-            signal?.aborted ? cause : new Error(`wait_agent failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause }),
-          try: async () => {
-            const result = await manager.waitAgent(parentSessionId(ctx), parseTargets(params.targets), signal)
-            return boundedTextResult(JSON.stringify(result, undefined, 2), {
-              event: result.event,
-              message: result.message,
-            })
-          },
-        })
+      return preserveWaitCancellation(
+        runtime.runPromise(
+          Effect.tryPromise({
+            catch: (cause) => waitError('wait_agent', signal?.aborted === true, cause),
+            try: async () => {
+              const result = await manager.waitAgent(parentSessionId(ctx), parseTargets(params.targets), signal)
+              return boundedTextResult(JSON.stringify(result, undefined, 2), {
+                event: result.event,
+                message: result.message,
+              })
+            },
+          })
+        )
       )
     },
     label: 'Wait Agent',
@@ -442,20 +477,20 @@ ${getAgentProfilesDescription()}`
       ),
     }),
     renderCall(args, theme: Theme) {
-      const targets = Array.isArray(args.targets) && args.targets.length ? args.targets : []
+      const targets = Array.isArray(args.targets) && args.targets.length > 0 ? args.targets : []
       return new Text(
-        theme.fg('toolTitle', theme.bold('wait_agent ')) + (targets.length ? coloredTargets(targets, theme) : theme.fg('muted', 'any')),
+        theme.fg('toolTitle', theme.bold('wait_agent ')) + (targets.length > 0 ? coloredTargets(targets, theme) : theme.fg('muted', 'any')),
         0,
         0
       )
     },
     renderResult(result: RenderableToolResult<unknown>, _options: ToolRenderResultOptions, theme: Theme) {
-      if (result.isError) {
+      if (result.isError === true) {
         return new Text(theme.fg('error', '✗ wait failed'), 0, 0)
       }
       const details = Check(WaitAgentDetailsSchema, result.details) ? result.details : undefined
       const event = details?.event
-      if (!event) {
+      if (event === undefined) {
         return new Text(theme.fg('success', details?.message || 'done'), 0, 0)
       }
       let statusColor: ThemeColor
@@ -480,18 +515,19 @@ ${getAgentProfilesDescription()}`
     description:
       'Wait until all targeted session-owned agents reach a final status. Use only when your next action depends on every response; otherwise continue working and let completions arrive automatically. Returns their final text responses.',
     execute(_id: string, params, signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
-      return runtime.runPromise(
-        Effect.tryPromise({
-          catch: (cause): unknown =>
-            signal?.aborted ? cause : new Error(`wait_all_agents failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause }),
-          try: async () => {
-            const result = await manager.waitAllAgents(parentSessionId(ctx), parseTargets(params.targets), signal)
-            return boundedTextResult(JSON.stringify(result, undefined, 2), {
-              message: result.message,
-              responses: result.responses,
-            })
-          },
-        })
+      return preserveWaitCancellation(
+        runtime.runPromise(
+          Effect.tryPromise({
+            catch: (cause) => waitError('wait_all_agents', signal?.aborted === true, cause),
+            try: async () => {
+              const result = await manager.waitAllAgents(parentSessionId(ctx), parseTargets(params.targets), signal)
+              return boundedTextResult(JSON.stringify(result, undefined, 2), {
+                message: result.message,
+                responses: result.responses,
+              })
+            },
+          })
+        )
       )
     },
     label: 'Wait All Agents',
@@ -504,15 +540,15 @@ ${getAgentProfilesDescription()}`
       ),
     }),
     renderCall(args, theme: Theme) {
-      const targets = Array.isArray(args.targets) && args.targets.length ? args.targets : []
+      const targets = Array.isArray(args.targets) && args.targets.length > 0 ? args.targets : []
       return new Text(
-        theme.fg('toolTitle', theme.bold('wait_all_agents ')) + (targets.length ? coloredTargets(targets, theme) : theme.fg('muted', 'all')),
+        theme.fg('toolTitle', theme.bold('wait_all_agents ')) + (targets.length > 0 ? coloredTargets(targets, theme) : theme.fg('muted', 'all')),
         0,
         0
       )
     },
     renderResult(result: RenderableToolResult<{ message?: string }>, _options: ToolRenderResultOptions, theme: Theme) {
-      if (result.isError) {
+      if (result.isError === true) {
         return new Text(theme.fg('error', '✗ wait failed'), 0, 0)
       }
       return new Text(theme.fg('success', result.details?.message || 'done'), 0, 0)
@@ -559,7 +595,7 @@ ${getAgentProfilesDescription()}`
     execute(_id: string, params, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
       return runtime.runPromise(
         Effect.try({
-          catch: (cause) => new Error(`read_agent_response failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause }),
+          catch: (cause) => featureError(`read_agent_response failed: ${cause instanceof Error ? cause.message : String(cause)}`, cause),
           try: () => {
             const result = manager.readAgentResponse(cleanTarget(params.target), parentSessionId(ctx))
             return boundedTextResult(JSON.stringify(result, undefined, 2), {
@@ -590,7 +626,7 @@ ${getAgentProfilesDescription()}`
       _options: ToolRenderResultOptions,
       theme: Theme
     ) {
-      if (result.isError) {
+      if (result.isError === true) {
         return new Text(theme.fg('error', '✗ read failed'), 0, 0)
       }
       return new Text(
@@ -608,7 +644,7 @@ ${getAgentProfilesDescription()}`
     execute(_id: string, params, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
       return runtime.runPromise(
         Effect.tryPromise({
-          catch: (cause) => new Error(`send_message failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause }),
+          catch: (cause) => featureError(`send_message failed: ${cause instanceof Error ? cause.message : String(cause)}`, cause),
           try: async () => {
             const result = await manager.sendMessage(parentSessionId(ctx), cleanTarget(params.target), params.message)
             const info = manager.getAgentInfo(cleanTarget(params.target), parentSessionId(ctx))
@@ -642,7 +678,7 @@ ${getAgentProfilesDescription()}`
       _options: ToolRenderResultOptions,
       theme: Theme
     ) {
-      if (result.isError) {
+      if (result.isError === true) {
         return new Text(theme.fg('error', '✗ send failed'), 0, 0)
       }
       return new Text(
@@ -659,7 +695,7 @@ ${getAgentProfilesDescription()}`
     execute(_id: string, params, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
       return runtime.runPromise(
         Effect.tryPromise({
-          catch: (cause) => new Error(`interrupt_agent failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause }),
+          catch: (cause) => featureError(`interrupt_agent failed: ${cause instanceof Error ? cause.message : String(cause)}`, cause),
           try: async () => {
             const sessionId = parentSessionId(ctx)
             const target = cleanTarget(params.target)
@@ -694,7 +730,7 @@ ${getAgentProfilesDescription()}`
       _options: ToolRenderResultOptions,
       theme: Theme
     ) {
-      if (result.isError) {
+      if (result.isError === true) {
         return new Text(theme.fg('error', '✗ interrupt failed'), 0, 0)
       }
       return new Text(
@@ -853,7 +889,7 @@ ${getAgentProfilesDescription()}`
             entry.agent_status.padEnd(11)
           )} ${fg('dim', `${runtimeLabel(info)}${parent}`)}`,
         ]
-        if (entry.last_task_message) {
+        if (entry.last_task_message !== undefined && entry.last_task_message !== '') {
           rowLines.push(`  ${fg('dim', truncateToWidth(entry.last_task_message.replaceAll(/\s+/g, ' '), Math.max(20, width - 4)))}`)
         }
         return rowLines
@@ -885,7 +921,7 @@ ${getAgentProfilesDescription()}`
             refresh()
             return
           }
-          if (matchesKey(data, 'return') && entries[selected]) {
+          if (matchesKey(data, 'return') && entries[selected] !== undefined) {
             done({
               includeAll: showAll,
               parentSessionId: entries[selected].parent_session_id || currentSessionId,
@@ -897,7 +933,7 @@ ${getAgentProfilesDescription()}`
           cached = undefined
         },
         render(width: number): string[] {
-          if (cached) {
+          if (cached !== undefined) {
             return cached
           }
           const entries = agents()
@@ -910,7 +946,7 @@ ${getAgentProfilesDescription()}`
             fg('accent', theme.bold(' Subagents')) + fg('dim', ` (${entries.length}, ${scopeLabel})`),
             '',
           ]
-          if (!entries.length) {
+          if (entries.length === 0) {
             lines.push(fg('dim', showAll ? 'No subagents found.' : 'No subagents for this session. Press tab to show all.'))
           }
           const viewStart = entries.length > pageSize ? Math.max(0, Math.min(selected - Math.floor(pageSize / 2), entries.length - pageSize)) : 0
@@ -936,12 +972,12 @@ ${getAgentProfilesDescription()}`
     description: 'Browse subagents, or open one directly. Usage: /subagent [task-name]',
     handler: async (args, ctx) => {
       const task = args?.trim().replace(/^\//, '')
-      if (task) {
+      if (task !== undefined && task !== '') {
         await openAgentOverlay({ ctx, task })
         return
       }
       const selected = await pickAgent(ctx)
-      if (selected) {
+      if (selected !== undefined) {
         await openAgentOverlay({
           ctx,
           includeAll: selected.includeAll,
@@ -954,7 +990,7 @@ ${getAgentProfilesDescription()}`
 
   const browseAgents = async (ctx: PiExtensionContext): Promise<void> => {
     const selected = await pickAgent(ctx)
-    if (selected) {
+    if (selected !== undefined) {
       await openAgentOverlay({
         ctx,
         includeAll: selected.includeAll,
@@ -974,3 +1010,8 @@ ${getAgentProfilesDescription()}`
     handler: async (_args, ctx) => browseAgents(ctx),
   })
 }
+
+export const register: {
+  (runtime: AppRuntime, managerOptions?: AgentManagerOptions): (pi: ExtensionAPI) => void
+  (pi: ExtensionAPI, runtime: AppRuntime, managerOptions?: AgentManagerOptions): void
+} = Function.dual((args) => typeof args[0].on === 'function', registerImpl)

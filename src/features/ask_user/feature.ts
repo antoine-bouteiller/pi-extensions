@@ -20,7 +20,7 @@ import {
   type EditorTheme,
   type Focusable,
 } from '@earendil-works/pi-tui'
-import { Effect } from 'effect'
+import { Data, Effect, Function } from 'effect'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
@@ -91,14 +91,16 @@ interface AskUserResult {
   details: AskUserDetails
 }
 
+class AskUserUiError extends Data.TaggedError('AskUserUiError')<{ readonly cause: unknown }> {}
+
 const showQuestion = (
   ctx: ExtensionContext,
   question: string,
   allOptions: DisplayOption[],
   uiSignal: AbortSignal | undefined
-): Effect.Effect<SelectionResult, Error> =>
+): Effect.Effect<SelectionResult, AskUserUiError> =>
   Effect.tryPromise({
-    catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
+    catch: (cause) => new AskUserUiError({ cause }),
     try: () =>
       ctx.ui.custom<SelectionResult>((tui, theme, _kb, done) => {
         let optionIndex = 0
@@ -122,7 +124,7 @@ const showQuestion = (
         }
 
         uiSignal?.addEventListener('abort', cancel, { once: true })
-        if (uiSignal?.aborted) {
+        if (uiSignal !== undefined && uiSignal.aborted) {
           queueMicrotask(cancel)
         }
 
@@ -140,12 +142,12 @@ const showQuestion = (
 
         editor.onSubmit = (value) => {
           const trimmed = value.trim()
-          if (trimmed) {
-            finish({ answer: trimmed, wasCustom: true })
-          } else {
+          if (trimmed === '') {
             editMode = false
             editor.setText('')
             refresh()
+          } else {
+            finish({ answer: trimmed, wasCustom: true })
           }
         }
 
@@ -157,7 +159,7 @@ const showQuestion = (
 
         const selectOption = (index: number) => {
           const selected = allOptions[index]
-          if (selected.isOther) {
+          if (selected.isOther === true) {
             optionIndex = index
             editMode = true
             refresh()
@@ -212,7 +214,7 @@ const showQuestion = (
 
         const render = (width: number): string[] => {
           const renderWidth = Math.max(1, Math.floor(width))
-          if (cachedLines && cachedWidth === renderWidth) {
+          if (cachedLines !== undefined && cachedWidth === renderWidth) {
             return cachedLines
           }
 
@@ -236,12 +238,12 @@ const showQuestion = (
             const opt = allOptions[index]
             const selected = index === optionIndex
             const prefix = selected ? theme.fg('accent', ' ❯ ') : '   '
-            const marker = opt.isOther ? '✎' : `${index + 1}.`
+            const marker = opt.isOther === true ? '✎' : `${index + 1}.`
             const label = `${marker} ${opt.label}`
             let color: 'accent' | 'muted' | 'text'
-            if (selected || (opt.isOther && editMode)) {
+            if (selected || (opt.isOther === true && editMode)) {
               color = 'accent'
-            } else if (opt.isOther) {
+            } else if (opt.isOther === true) {
               color = 'muted'
             } else {
               color = 'text'
@@ -249,7 +251,7 @@ const showQuestion = (
 
             addWrapped(label, prefix, (line) => theme.fg(color, line))
 
-            if (opt.description) {
+            if (opt.description !== undefined) {
               addWrapped(opt.description, '      ', (line) => theme.fg('muted', line))
             }
           }
@@ -304,15 +306,13 @@ const showQuestion = (
 const askUserEffect = (
   params: Static<typeof AskUserParams>,
   signal: AbortSignal | undefined
-): Effect.Effect<AskUserResult, ToolFailure | Error, PiCtx> =>
+): Effect.Effect<AskUserResult, ToolFailure | AskUserUiError, PiCtx> =>
   Effect.gen(function* () {
     const optionCount = params.options.length
     if (optionCount < MIN_OPTIONS || optionCount > MAX_OPTIONS) {
-      return yield* Effect.fail(
-        new ToolFailure({
-          message: `ask_user requires between ${MIN_OPTIONS} and ${MAX_OPTIONS} options (got ${optionCount}). Retry with a valid number of options.`,
-        })
-      )
+      return yield* ToolFailure.make({
+        message: `ask_user requires between ${MIN_OPTIONS} and ${MAX_OPTIONS} options (got ${optionCount}). Retry with a valid number of options.`,
+      })
     }
 
     const reply = (text: string, answer?: string, wasCustom = false): AskUserResult => ({
@@ -332,7 +332,7 @@ const askUserEffect = (
       return reply(buildAskUserResultMessage({ kind: 'no-ui' }))
     }
 
-    if (signal?.aborted) {
+    if (signal !== undefined && signal.aborted) {
       return reply(buildAskUserResultMessage({ kind: 'cancelled' }))
     }
 
@@ -340,8 +340,8 @@ const askUserEffect = (
 
     const result = yield* showQuestion(ctx, params.question, allOptions, signal)
 
-    if (!result) {
-      const kind = signal?.aborted ? 'cancelled' : 'dismissed'
+    if (result === undefined) {
+      const kind = signal !== undefined && signal.aborted ? 'cancelled' : 'dismissed'
       return reply(buildAskUserResultMessage({ kind }))
     }
 
@@ -366,55 +366,63 @@ const askUserEffect = (
     )
   })
 
-export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
-  pi.registerTool({
-    description: ASK_USER_TOOL_DESCRIPTION,
-    /*
-     * `signal` is threaded into the Effect body instead of being handed to `runPromise`. The
-     * component below already resolves `done(undefined)` cooperatively on abort so it can report
-     * "Cancelled" as a normal result; letting `runPromise` interrupt the fiber on the same signal
-     * would instead reject the tool call, which is exactly what "neither path may fail" rules out.
-     */
-    execute: async (_toolCallId, params, signal, _onUpdate, ctx) =>
-      runtime.runPromise(
-        askUserEffect(params, signal ?? undefined).pipe(
-          Effect.provide(perInvocation(ctx)),
-          Effect.catch((error) => Effect.fail(error instanceof ToolFailure ? new Error(error.message) : error))
-        )
-      ),
-    label: 'Ask User',
-    name: 'ask_user',
-    parameters: AskUserParams,
-    promptGuidelines: ASK_USER_PROMPT_GUIDELINES,
-    promptSnippet: ASK_USER_PROMPT_SNIPPET,
-    renderCall(args, theme, _context) {
-      let text = theme.fg('toolTitle', theme.bold('ask_user '))
-      text += theme.fg('muted', typeof args.question === 'string' ? args.question : '')
-      const opts = Array.isArray(args.options) ? (args.options as DisplayOption[]) : []
-      if (opts.length > 0) {
-        const numbered = opts.map((option, index) => `${index + 1}. ${option.label}`)
-        text += `\n${theme.fg('dim', `  ${numbered.join('  ')}`)}`
-      }
-      return new Text(text, 0, 0)
-    },
-    renderResult(result, _options, theme, _context) {
-      const details = Check(AskUserDetailsSchema, result.details) ? result.details : undefined
-      if (!details) {
-        const [first] = result.content
-        return new Text(first?.type === 'text' ? first.text : '', 0, 0)
-      }
-
-      if (details.cancelled || details.answer === undefined) {
-        return new Text(theme.fg('warning', '✗ dismissed'), 0, 0)
-      }
-
-      if (details.wasCustom) {
-        return new Text(theme.fg('success', '✓ ') + theme.fg('muted', '(wrote) ') + theme.fg('accent', details.answer), 0, 0)
-      }
-
-      const idx = details.options.indexOf(details.answer) + 1
-      const display = idx > 0 ? `${idx}. ${details.answer}` : details.answer
-      return new Text(theme.fg('success', '✓ ') + theme.fg('accent', display), 0, 0)
-    },
-  })
+const toRejection = (error: ToolFailure | AskUserUiError): Error => {
+  if (error instanceof ToolFailure) {
+    return new Error(error.message)
+  }
+  return error.cause instanceof Error ? error.cause : new Error(String(error.cause))
 }
+
+export const register: {
+  (runtime: AppRuntime): (pi: ExtensionAPI) => void
+  (pi: ExtensionAPI, runtime: AppRuntime): void
+} = Function.dual(
+  (args) => typeof args[0].on === 'function',
+  (pi: ExtensionAPI, runtime: AppRuntime): void => {
+    pi.registerTool({
+      description: ASK_USER_TOOL_DESCRIPTION,
+      /*
+       * `signal` is threaded into the Effect body instead of being handed to `runPromise`. The
+       * component below already resolves `done(undefined)` cooperatively on abort so it can report
+       * "Cancelled" as a normal result; letting `runPromise` interrupt the fiber on the same signal
+       * would instead reject the tool call, which is exactly what "neither path may fail" rules out.
+       */
+      execute: async (_toolCallId, params, signal, _onUpdate, ctx) =>
+        runtime.runPromise(askUserEffect(params, signal ?? undefined).pipe(Effect.provide(perInvocation(ctx)), Effect.mapError(toRejection))),
+      label: 'Ask User',
+      name: 'ask_user',
+      parameters: AskUserParams,
+      promptGuidelines: ASK_USER_PROMPT_GUIDELINES,
+      promptSnippet: ASK_USER_PROMPT_SNIPPET,
+      renderCall(args, theme, _context) {
+        let text = theme.fg('toolTitle', theme.bold('ask_user '))
+        text += theme.fg('muted', typeof args.question === 'string' ? args.question : '')
+        const opts = Array.isArray(args.options) ? (args.options as DisplayOption[]) : []
+        if (opts.length > 0) {
+          const numbered = opts.map((option, index) => `${index + 1}. ${option.label}`)
+          text += `\n${theme.fg('dim', `  ${numbered.join('  ')}`)}`
+        }
+        return new Text(text, 0, 0)
+      },
+      renderResult(result, _options, theme, _context) {
+        const details = Check(AskUserDetailsSchema, result.details) ? result.details : undefined
+        if (details === undefined) {
+          const [first] = result.content
+          return new Text(first?.type === 'text' ? first.text : '', 0, 0)
+        }
+
+        if (details.cancelled || details.answer === undefined) {
+          return new Text(theme.fg('warning', '✗ dismissed'), 0, 0)
+        }
+
+        if (details.wasCustom) {
+          return new Text(theme.fg('success', '✓ ') + theme.fg('muted', '(wrote) ') + theme.fg('accent', details.answer), 0, 0)
+        }
+
+        const idx = details.options.indexOf(details.answer) + 1
+        const display = idx > 0 ? `${idx}. ${details.answer}` : details.answer
+        return new Text(theme.fg('success', '✓ ') + theme.fg('accent', display), 0, 0)
+      },
+    })
+  }
+)

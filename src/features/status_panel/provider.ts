@@ -1,9 +1,11 @@
-import { Duration, Effect, Fiber, Ref } from 'effect'
+import { Data, Duration, Effect, Fiber, Function, Ref } from 'effect'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
 import { progressBar } from './render.js'
 import { type ProviderQuota, type QuotaWindow } from './state.js'
+
+class FetchQuotaError extends Data.TaggedError('FetchQuotaError')<{ readonly cause: unknown }> {}
 
 export type QuotaFetcher = (baseUrl: string, signal: AbortSignal) => Promise<ProviderQuota | undefined>
 
@@ -23,7 +25,10 @@ export interface QuotaPollerOptions {
  * its own `refresh` attempt rather than awaiting the previous one -- so the in-flight guard below
  * is load-bearing, not redundant: without it, a slow gateway would let requests overlap.
  */
-export const makeQuotaPoller = (onQuota: (quota: ProviderQuota | undefined) => void, options: QuotaPollerOptions): Effect.Effect<QuotaPoller> =>
+export const makeQuotaPoller: {
+  (options: QuotaPollerOptions): (onQuota: (quota: ProviderQuota | undefined) => void) => Effect.Effect<QuotaPoller>
+  (onQuota: (quota: ProviderQuota | undefined) => void, options: QuotaPollerOptions): Effect.Effect<QuotaPoller>
+} = Function.dual(2, (onQuota: (quota: ProviderQuota | undefined) => void, options: QuotaPollerOptions): Effect.Effect<QuotaPoller> =>
   Effect.gen(function* () {
     const fetchQuota = options.fetchQuota ?? ((baseUrl, signal) => fetchAnthropicQuota(baseUrl, signal))
     const generationRef = yield* Ref.make(0)
@@ -34,17 +39,19 @@ export const makeQuotaPoller = (onQuota: (quota: ProviderQuota | undefined) => v
       Effect.gen(function* () {
         const currentGeneration = yield* Ref.get(generationRef)
         const inFlight = yield* Ref.get(requestRef)
-        if (generation !== currentGeneration || inFlight) {
+        if (generation !== currentGeneration || inFlight !== undefined) {
           return
         }
         const request = new AbortController()
         yield* Ref.set(requestRef, request)
         yield* Effect.gen(function* () {
-          const outcome = yield* Effect.result(Effect.tryPromise({ catch: (cause) => cause, try: () => fetchQuota(baseUrl, request.signal) }))
+          const outcome = yield* Effect.result(
+            Effect.tryPromise({ catch: (cause) => new FetchQuotaError({ cause }), try: () => fetchQuota(baseUrl, request.signal) })
+          )
           if (outcome._tag === 'Success') {
             const stillCurrent = (yield* Ref.get(generationRef)) === generation && !request.signal.aborted
             if (stillCurrent) {
-              yield* Effect.sync(() => onQuota(outcome.success)).pipe(Effect.catchCause(() => Effect.void))
+              yield* Effect.sync(() => onQuota(outcome.success)).pipe(Effect.ignoreCause)
             }
           }
         }).pipe(Effect.ensuring(Ref.update(requestRef, (current) => (current === request ? undefined : current))))
@@ -63,7 +70,7 @@ export const makeQuotaPoller = (onQuota: (quota: ProviderQuota | undefined) => v
       const request = yield* Ref.getAndSet(requestRef, undefined)
       request?.abort()
       const fiber = yield* Ref.getAndSet(fiberRef, undefined)
-      if (fiber) {
+      if (fiber !== undefined) {
         yield* Fiber.interrupt(fiber)
       }
     })
@@ -78,6 +85,7 @@ export const makeQuotaPoller = (onQuota: (quota: ProviderQuota | undefined) => v
 
     return { start, stop }
   })
+)
 
 /** One usage window as reported by the gateway, with `utilization` as a 0..1 fraction. */
 const GatewayQuotaWindowSchema = Type.Object({
@@ -129,14 +137,14 @@ const formatReset = (resetsAt: number | null | undefined): string => {
 
 const quotaWindow = (label: string, percent: number, resetsAt: number | null | undefined): QuotaWindow => {
   const resetsIn = formatReset(resetsAt)
-  return resetsIn ? { label, percent, resetsIn } : { label, percent }
+  return resetsIn === '' ? { label, percent } : { label, percent, resetsIn }
 }
 
 const formatDollars = (cents: number): string => String(Number((cents / 100).toFixed(2)))
 
 const extraUsageDetail = (profile: GatewayQuotaProfile): string => {
   const { extraUsage } = profile
-  if (!extraUsage?.isEnabled || typeof extraUsage.usedCredits !== 'number' || typeof extraUsage.monthlyLimit !== 'number') {
+  if (extraUsage?.isEnabled !== true || typeof extraUsage.usedCredits !== 'number' || typeof extraUsage.monthlyLimit !== 'number') {
     return ''
   }
   return `${formatDollars(extraUsage.usedCredits)}/${formatDollars(extraUsage.monthlyLimit)}$`
@@ -146,53 +154,58 @@ const extraUsageDetail = (profile: GatewayQuotaProfile): string => {
  * Reads quota from the gateway the anthropic provider is pointed at, which owns the
  * subscription credentials. Upstream `/api/oauth/usage` is not reachable through it.
  */
-export const fetchAnthropicQuota = async (
-  baseUrl: string,
-  signal?: AbortSignal,
-  fetchImpl: typeof fetch = globalThis.fetch
-): Promise<ProviderQuota | undefined> => {
-  if (!baseUrl) {
-    return undefined
+export const fetchAnthropicQuota: {
+  (signal?: AbortSignal, fetchImpl?: typeof fetch): (baseUrl: string) => Promise<ProviderQuota | undefined>
+  (baseUrl: string, signal?: AbortSignal, fetchImpl?: typeof fetch): Promise<ProviderQuota | undefined>
+} = Function.dual(
+  (args) => typeof args[0] === 'string',
+  async (baseUrl: string, signal?: AbortSignal, fetchImpl: typeof fetch = globalThis.fetch): Promise<ProviderQuota | undefined> => {
+    if (baseUrl === '') {
+      return undefined
+    }
+    try {
+      const endpoint = `${baseUrl.replace(/\/+$/, '')}/v1/usage/quota/all`
+      const response = await fetchImpl(endpoint, { signal })
+      if (!response.ok) {
+        return undefined
+      }
+      const payload: unknown = await response.json()
+      if (!Check(GatewayQuotaResponseSchema, payload)) {
+        return undefined
+      }
+      const profile = activeProfile(payload)
+      if (profile === undefined) {
+        return undefined
+      }
+      const windows = profile.windows ?? []
+      const session = windows.find((window) => window.type === 'five_hour')
+      const weekly = windows.find((window) => window.type === 'seven_day')
+      if (typeof session?.utilization !== 'number' || typeof weekly?.utilization !== 'number') {
+        return undefined
+      }
+      const sessionPercent = session.utilization * 100
+      const weeklyPercent = weekly.utilization * 100
+      const extraUsage = extraUsageDetail(profile)
+      const weeklyDetail = extraUsage === '' ? '' : ` ${extraUsage}`
+      return {
+        detail: `${formatReset(session.resetsAt)}  Weekly: ${progressBar(weeklyPercent, 10)} ${weeklyPercent.toFixed(1)}%${weeklyDetail}`,
+        label: 'anthropic',
+        percent: sessionPercent,
+        windows: [
+          quotaWindow('Session', sessionPercent, session.resetsAt),
+          { ...quotaWindow('Weekly', weeklyPercent, weekly.resetsAt), ...(extraUsage === '' ? {} : { detail: extraUsage }) },
+        ],
+      }
+    } catch {
+      return undefined
+    }
   }
-  try {
-    const endpoint = `${baseUrl.replace(/\/+$/, '')}/v1/usage/quota/all`
-    const response = await fetchImpl(endpoint, { signal })
-    if (!response.ok) {
-      return undefined
-    }
-    const payload: unknown = await response.json()
-    if (!Check(GatewayQuotaResponseSchema, payload)) {
-      return undefined
-    }
-    const profile = activeProfile(payload)
-    if (!profile) {
-      return undefined
-    }
-    const windows = profile.windows ?? []
-    const session = windows.find((window) => window.type === 'five_hour')
-    const weekly = windows.find((window) => window.type === 'seven_day')
-    if (typeof session?.utilization !== 'number' || typeof weekly?.utilization !== 'number') {
-      return undefined
-    }
-    const sessionPercent = session.utilization * 100
-    const weeklyPercent = weekly.utilization * 100
-    const extraUsage = extraUsageDetail(profile)
-    const weeklyDetail = extraUsage ? ` ${extraUsage}` : ''
-    return {
-      detail: `${formatReset(session.resetsAt)}  Weekly: ${progressBar(weeklyPercent, 10)} ${weeklyPercent.toFixed(1)}%${weeklyDetail}`,
-      label: 'anthropic',
-      percent: sessionPercent,
-      windows: [
-        quotaWindow('Session', sessionPercent, session.resetsAt),
-        { ...quotaWindow('Weekly', weeklyPercent, weekly.resetsAt), ...(extraUsage ? { detail: extraUsage } : {}) },
-      ],
-    }
-  } catch {
-    return undefined
-  }
-}
+)
 
-export const quotaFromHeaders = (provider: string, headers: Record<string, string>): ProviderQuota | undefined => {
+export const quotaFromHeaders: {
+  (headers: Record<string, string>): (provider: string) => ProviderQuota | undefined
+  (provider: string, headers: Record<string, string>): ProviderQuota | undefined
+} = Function.dual(2, (provider: string, headers: Record<string, string>): ProviderQuota | undefined => {
   if (!provider.startsWith('azure')) {
     return undefined
   }
@@ -202,4 +215,4 @@ export const quotaFromHeaders = (provider: string, headers: Record<string, strin
     return undefined
   }
   return { label: 'azure', percent: Math.max(0, Math.min(100, ((limit - remaining) / limit) * 100)) }
-}
+})

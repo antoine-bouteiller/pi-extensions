@@ -45,7 +45,7 @@ export const createFakePi = (
       },
     },
     async exec(command: string, args: string[], execOptions?: Record<string, unknown>) {
-      return options.exec ? options.exec(command, args, execOptions) : { code: 0, killed: false, stderr: '', stdout: '' }
+      return options.exec === undefined ? { code: 0, killed: false, stderr: '', stdout: '' } : options.exec(command, args, execOptions)
     },
     getActiveTools: () => [],
     getAllTools: () => [],

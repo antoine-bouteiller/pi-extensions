@@ -101,7 +101,7 @@ const harness = (
       return {
         async callTool(params: { name: string; arguments: Record<string, unknown> }) {
           calls.toolCalls.push(params)
-          if (options.call) {
+          if (options.call !== undefined) {
             return options.call(params)
           }
           return options.callResult ?? { content: [{ text: 'ok', type: 'text' }] }
@@ -120,7 +120,7 @@ const harness = (
         async listTools(params?: { cursor?: string }) {
           calls.lists.push(params?.cursor)
           const page = pages[params?.cursor ?? 'root']
-          if (!page) {
+          if (page === undefined) {
             throw new Error('missing fixture page')
           }
           return page
@@ -154,7 +154,7 @@ const freePort = async (): Promise<number> => {
   const server = createServer()
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()
-  if (!address || typeof address === 'string') {
+  if (address === null || typeof address === 'string') {
     throw new Error('missing address')
   }
   const { port } = address
@@ -570,7 +570,7 @@ describe('MCP manager', () => {
         if (authorized) {
           return
         }
-        if (!provider) {
+        if (provider === undefined) {
           throw new Error('provider missing')
         }
         await provider.saveCodeVerifier('verifier')
@@ -719,7 +719,7 @@ describe('MCP manager', () => {
           /* Empty: this failure test never deletes a credential. */
         },
         async get() {
-          throw new KeychainCredentialError('macOS Keychain lookup failed. Ensure Keychain is available and unlocked, then retry.')
+          throw KeychainCredentialError.make({ message: 'macOS Keychain lookup failed. Ensure Keychain is available and unlocked, then retry.' })
         },
         async set() {
           /* Empty: this failure test never writes a credential. */

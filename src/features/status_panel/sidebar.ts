@@ -81,7 +81,7 @@ const pad = (text: string, width: number) => {
 }
 
 const spaced = (left: string, right: string, width: number) => {
-  if (!right) {
+  if (right === '') {
     return truncateToWidth(left, width, '')
   }
   const leftWidth = Math.min(visibleWidth(left), Math.max(0, Math.floor(width * 0.55)))
@@ -139,7 +139,7 @@ const agentRows = (state: SidebarState, width: number, theme: SidebarTheme) => {
     .map((value) => sanitize(value).toUpperCase())
     .filter(Boolean)
     .join(` ${paint(theme, 'dim', '·')} `)
-  return [spaced(status, model, width), metadata ? paint(theme, 'muted', metadata) : paint(theme, 'dim', '—')]
+  return [spaced(status, model, width), metadata === '' ? paint(theme, 'dim', '—') : paint(theme, 'muted', metadata)]
 }
 
 const contextRows = (state: SidebarState, width: number, theme: SidebarTheme) => {
@@ -163,9 +163,9 @@ const contextRows = (state: SidebarState, width: number, theme: SidebarTheme) =>
 const subagentRow = (agent: RunningAgent, width: number, theme: SidebarTheme) => {
   const marker = '▸ '
   const profile = truncateToWidth(sanitize(agent.profile ?? ''), Math.floor(width * 0.4), '…')
-  const nameWidth = width - visibleWidth(marker) - (profile ? visibleWidth(profile) + 1 : 0)
+  const nameWidth = width - visibleWidth(marker) - (profile === '' ? 0 : visibleWidth(profile) + 1)
   const name = truncateToWidth(sanitize(agent.name), Math.max(0, nameWidth), '…')
-  const gap = ' '.repeat(Math.max(profile ? 1 : 0, width - visibleWidth(marker) - visibleWidth(name) - visibleWidth(profile)))
+  const gap = ' '.repeat(Math.max(profile === '' ? 0 : 1, width - visibleWidth(marker) - visibleWidth(name) - visibleWidth(profile)))
   return truncateToWidth(`${paint(theme, 'dim', marker)}${theme.fg(agent.color, name)}${gap}${paint(theme, 'muted', profile)}`, width, '')
 }
 
@@ -181,7 +181,9 @@ const subagentRows = (agents: readonly RunningAgent[], width: number, theme: Sid
 const workspaceRows = (state: SidebarState, theme: SidebarTheme) => {
   const project = basename(state.cwd) || formatDirectory(state.cwd)
   const rows = [paint(theme, 'primary', sanitize(project)), paint(theme, 'muted', formatDirectory(state.cwd))]
-  if (state.git.branch) {
+  if (state.git.branch === undefined) {
+    rows.push(paint(theme, 'dim', 'not a Git repository'))
+  } else {
     const fileLabel = state.git.changedFiles === 1 ? 'file' : 'files'
     const change = state.git.changedFiles > 0 ? `${state.git.changedFiles} ${fileLabel} changed` : 'clean'
     rows.push(
@@ -191,10 +193,8 @@ const workspaceRows = (state: SidebarState, theme: SidebarTheme) => {
         change
       )}`
     )
-  } else {
-    rows.push(paint(theme, 'dim', 'not a Git repository'))
   }
-  if (state.git.pullRequest) {
+  if (state.git.pullRequest !== undefined) {
     rows.push(paint(theme, 'accent', `PR #${state.git.pullRequest.number}`))
   }
   return rows
@@ -217,25 +217,29 @@ const quotaWindowRows = (window: QuotaWindow, width: number, theme: SidebarTheme
   const role = quotaRole(percent)
   const resetsIn = sanitize(window.resetsIn ?? '')
   const detail = sanitize(window.detail ?? '')
-  const trailingWidth = visibleWidth(resetsIn) + (detail ? visibleWidth(detail) + 1 : 0)
-  const meterWidth = Math.max(1, Math.min(12, width - (trailingWidth ? trailingWidth + 1 : 0)))
+  const trailingWidth = visibleWidth(resetsIn) + (detail === '' ? 0 : visibleWidth(detail) + 1)
+  const meterWidth = Math.max(1, Math.min(12, width - (trailingWidth === 0 ? 0 : trailingWidth + 1)))
   const filled = Math.max(0, Math.min(meterWidth, Math.round((percent / 100) * meterWidth)))
   const meter = `${paint(theme, role, '■'.repeat(filled))}${paint(theme, 'dim', '·'.repeat(meterWidth - filled))}`
-  const headerDetail = detail && !resetsIn ? ` ${detail}` : ''
+  const headerDetail = detail !== '' && resetsIn === '' ? ` ${detail}` : ''
   const header = spaced(paint(theme, role, sanitize(window.label)), paint(theme, role, `${percent.toFixed(1)}%${headerDetail}`), width)
-  if (!resetsIn) {
+  if (resetsIn === '') {
     return [header, meter]
   }
   const gap = ' '.repeat(Math.max(1, width - meterWidth - trailingWidth))
-  return [header, truncateToWidth(`${meter}${gap}${paint(theme, 'muted', resetsIn)}${detail ? ` ${paint(theme, role, detail)}` : ''}`, width, '')]
+  return [
+    header,
+    truncateToWidth(`${meter}${gap}${paint(theme, 'muted', resetsIn)}${detail === '' ? '' : ` ${paint(theme, role, detail)}`}`, width, ''),
+  ]
 }
 
 const quotaRows = (quota: ProviderQuota, width: number, theme: SidebarTheme) => {
-  const windows: readonly QuotaWindow[] = quota.windows?.length
-    ? quota.windows
-    : [{ label: quota.label === 'anthropic' ? 'Session' : 'Azure', percent: quota.percent }]
+  const windows: readonly QuotaWindow[] =
+    quota.windows?.length === undefined || quota.windows.length === 0
+      ? [{ label: quota.label === 'anthropic' ? 'Session' : 'Azure', percent: quota.percent }]
+      : quota.windows
   const rows = windows.flatMap((window) => quotaWindowRows(window, width, theme))
-  if (!quota.windows?.length && quota.detail) {
+  if ((quota.windows?.length ?? 0) === 0 && quota.detail !== undefined && quota.detail !== '') {
     rows.push(paint(theme, 'muted', sanitize(quota.detail)))
   }
   return rows
@@ -284,7 +288,7 @@ export const renderSidebarLines = ({ state, theme, width, height, now = Date.now
       name: 'agent',
       required: true,
       rows: panel({
-        jewel: state.activity === 'working' && Math.floor(now / 400) % 2 ? '✧' : '✦',
+        jewel: state.activity === 'working' && Math.floor(now / 400) % 2 === 1 ? '✧' : '✦',
         role: state.activity === 'working' ? 'working' : 'ready',
         rows: agentRows(state, rowWidth, theme),
         theme,
@@ -340,7 +344,7 @@ export const renderSidebarLines = ({ state, theme, width, height, now = Date.now
             required: false,
             rows: panel({
               role: quotaRole(Math.max(...Object.values(state.quotas).map((quota) => quotaPercent(quota.percent)))),
-              rows: [state.quotas.anthropic, state.quotas.azure].flatMap((quota) => (quota ? quotaRows(quota, rowWidth, theme) : [])),
+              rows: [state.quotas.anthropic, state.quotas.azure].flatMap((quota) => (quota === undefined ? [] : quotaRows(quota, rowWidth, theme))),
               theme,
               title: 'QUOTA',
               width: panelWidth,
@@ -376,13 +380,14 @@ export const renderSidebarLines = ({ state, theme, width, height, now = Date.now
 
   let visible = groups
   while (visible.flatMap((group) => group.rows).length > safeHeight) {
-    const [droppable] = visible
+    const droppableGroups = visible
       .map((group, index) => ({ group, index }))
       .filter(({ group }) => !group.required)
       .toSorted((left, right) => left.group.dropRank - right.group.dropRank)
-    if (!droppable) {
+    if (droppableGroups.length === 0) {
       break
     }
+    const [droppable] = droppableGroups
     visible = visible.filter((_group, index) => index !== droppable.index)
   }
   const contentRows = visible.flatMap((group) => group.rows).slice(0, safeHeight)
@@ -419,17 +424,17 @@ const unrefSleep = (milliseconds: number): Effect.Effect<void> =>
   })
 
 export const createSidebarController = (options: SidebarControllerOptions): SidebarController => {
-  const enabledRef = Effect.runSync(Ref.make(false))
-  const disposedRef = Effect.runSync(Ref.make(false))
-  const generationRef = Effect.runSync(Ref.make(0))
-  const overlayHandleRef = Effect.runSync(Ref.make<OverlayHandle | undefined>(undefined))
-  const requestOverlayRenderRef = Effect.runSync(Ref.make<(() => void) | undefined>(undefined))
-  const redrawScopeRef = Effect.runSync(Ref.make<Scope.Closeable | undefined>(undefined))
+  const enabledRef = Ref.makeUnsafe(false)
+  const disposedRef = Ref.makeUnsafe(false)
+  const generationRef = Ref.makeUnsafe(0)
+  const overlayHandleRef = Ref.makeUnsafe<OverlayHandle | undefined>(undefined)
+  const requestOverlayRenderRef = Ref.makeUnsafe<(() => void) | undefined>(undefined)
+  const redrawScopeRef = Ref.makeUnsafe<Scope.Closeable | undefined>(undefined)
   const split: SplitPaneController = createSplitPaneController({ onError: options.onError })
 
   const stopRedraw = () => {
     const scope = getRef(redrawScopeRef)
-    if (!scope) {
+    if (scope === undefined) {
       return
     }
     setRef(redrawScopeRef, undefined)
@@ -437,10 +442,10 @@ export const createSidebarController = (options: SidebarControllerOptions): Side
   }
 
   const startRedraw = (requestRender: () => void, currentGeneration: number) => {
-    if (getRef(redrawScopeRef) || options.getState().activity !== 'working') {
+    if (getRef(redrawScopeRef) !== undefined || options.getState().activity !== 'working') {
       return
     }
-    const scope = Effect.runSync(Scope.make())
+    const scope = Scope.makeUnsafe()
     setRef(redrawScopeRef, scope)
     Effect.runFork(
       Effect.forkScoped(
@@ -465,7 +470,7 @@ export const createSidebarController = (options: SidebarControllerOptions): Side
   }
 
   const hide = () => {
-    if (!getRef(enabledRef) && !getRef(overlayHandleRef)) {
+    if (!getRef(enabledRef) && getRef(overlayHandleRef) === undefined) {
       return
     }
     setRef(enabledRef, false)
@@ -560,15 +565,15 @@ export const createSidebarController = (options: SidebarControllerOptions): Side
     isVisible: () => getRef(enabledRef),
     requestRender() {
       const requestOverlayRender = getRef(requestOverlayRenderRef)
-      if (requestOverlayRender) {
+      if (requestOverlayRender === undefined) {
+        split.requestRender()
+      } else {
         requestOverlayRender()
         if (options.getState().activity === 'working') {
           startRedraw(requestOverlayRender, getRef(generationRef))
         } else {
           stopRedraw()
         }
-      } else {
-        split.requestRender()
       }
     },
     show,

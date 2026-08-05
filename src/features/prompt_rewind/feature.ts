@@ -22,6 +22,7 @@ import {
   type ToolExecutionStartEvent,
 } from '@earendil-works/pi-coding-agent'
 import { type EditorComponent, isKeyRelease, isKeyRepeat, matchesKey, type TUI } from '@earendil-works/pi-tui'
+import { Function } from 'effect'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 
@@ -32,7 +33,7 @@ interface RewindCapture {
   readonly parentId: string | null
 }
 
-export const register = (pi: ExtensionAPI, _runtime: AppRuntime): void => {
+const registerImpl = (pi: ExtensionAPI, _runtime: AppRuntime): void => {
   let pendingInputText: string | undefined
   let capturedParent: RewindCapture | undefined
   let armed: RewindCapture | undefined
@@ -67,7 +68,7 @@ export const register = (pi: ExtensionAPI, _runtime: AppRuntime): void => {
       if (isKeyRelease(data) || isKeyRepeat(data)) {
         return undefined
       }
-      if (tui?.hasOverlay()) {
+      if (tui?.hasOverlay() === true) {
         disarm()
         return undefined
       }
@@ -77,7 +78,7 @@ export const register = (pi: ExtensionAPI, _runtime: AppRuntime): void => {
       if (canceling) {
         return { consume: true }
       }
-      if (!armed || !submitToApp) {
+      if (armed === undefined || submitToApp === undefined) {
         return undefined
       }
       // Queued messages take priority: let the built-in Escape restore them instead of hijacking it.
@@ -155,7 +156,7 @@ export const register = (pi: ExtensionAPI, _runtime: AppRuntime): void => {
     handler: async (_args: string, ctx: ExtensionCommandContext) => {
       const capture = pendingRewind
       pendingRewind = undefined
-      if (!capture) {
+      if (capture === undefined) {
         canceling = false
         return
       }
@@ -169,7 +170,7 @@ export const register = (pi: ExtensionAPI, _runtime: AppRuntime): void => {
         const userEntry = branch
           .slice(parentIndex + 1)
           .find((entry): entry is SessionMessageEntry => entry.type === 'message' && entry.message.role === 'user')
-        if ((capture.parentId !== null && parentIndex === -1) || !userEntry) {
+        if ((capture.parentId !== null && parentIndex === -1) || userEntry === undefined) {
           ctx.ui.notify('prompt_rewind: could not find the cancelled message to rewind.', 'warning')
           return
         }
@@ -185,3 +186,8 @@ export const register = (pi: ExtensionAPI, _runtime: AppRuntime): void => {
     },
   })
 }
+
+export const register: {
+  (runtime: AppRuntime): (pi: ExtensionAPI) => void
+  (pi: ExtensionAPI, runtime: AppRuntime): void
+} = Function.dual((args) => typeof args[0].on === 'function', registerImpl)

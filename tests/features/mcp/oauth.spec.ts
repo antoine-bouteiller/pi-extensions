@@ -10,7 +10,7 @@ const freePort = async (): Promise<number> => {
   const server = createServer()
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()
-  if (!address || typeof address === 'string') {
+  if (address === null || typeof address === 'string') {
     throw new Error('missing address')
   }
   const { port } = address

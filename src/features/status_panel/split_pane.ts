@@ -67,7 +67,7 @@ export const createSplitPaneController = (options: SplitPaneOptions = {}): Split
       if (tui === nextTui) {
         return
       }
-      if (tui) {
+      if (tui !== undefined) {
         throw new Error('Status panel is already attached to another TUI')
       }
       tui = nextTui
@@ -93,7 +93,7 @@ export const createSplitPaneController = (options: SplitPaneOptions = {}): Split
       }
       disposed = true
       enabled = false
-      if (tui && originalRender && tui.render === wrappedRender) {
+      if (tui !== undefined && originalRender !== undefined && tui.render === wrappedRender) {
         tui.render = originalRender
       }
       requestRender()

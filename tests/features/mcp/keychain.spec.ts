@@ -110,7 +110,7 @@ describe('Keychain OAuth credential store', () => {
     ])
 
     const serialized = keyring.values.get(keychainAccount('slack'))
-    if (!serialized) {
+    if (serialized === undefined) {
       throw new Error('expected a serialized credential')
     }
     expect(JSON.parse(serialized)).toEqual(credential)

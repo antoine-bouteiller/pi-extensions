@@ -12,7 +12,7 @@ import {
   type SessionTreeEvent,
   type ToolResultEvent,
 } from '@earendil-works/pi-coding-agent'
-import { Context, Deferred, Effect, HashSet, Ref } from 'effect'
+import { Context, Deferred, Effect, Function, HashSet, Ref } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
 import { type PlatformError } from 'effect/PlatformError'
 
@@ -72,7 +72,7 @@ const isWithin = (child: string, parent: string): boolean => {
  * treated as "file missing".
  */
 const orSkip = <Value>(effect: Effect.Effect<Value, PlatformError, FileSystem>): Effect.Effect<Value | undefined, never, FileSystem> =>
-  effect.pipe(Effect.catch(() => Effect.succeed(undefined)))
+  effect.pipe(Effect.orElseSucceed(() => undefined))
 
 const discoverRuleFilesEffect = (root: string, containmentRoot?: string): Effect.Effect<RuleFile[], never, FileSystem> =>
   Effect.gen(function* () {
@@ -83,7 +83,10 @@ const discoverRuleFilesEffect = (root: string, containmentRoot?: string): Effect
     const registerRuleFile = (path: string, containmentBoundary: string | undefined): Effect.Effect<void, never, FileSystem> =>
       Effect.gen(function* () {
         const canonicalPath = yield* orSkip(fs.realPath(path))
-        if (canonicalPath === undefined || (containmentBoundary && !isWithin(canonicalPath, containmentBoundary))) {
+        if (
+          canonicalPath === undefined ||
+          (containmentBoundary !== undefined && containmentBoundary !== '' && !isWithin(canonicalPath, containmentBoundary))
+        ) {
           return
         }
         files.push({ path, realPath: canonicalPath, relativePath: normalizePath(relative(root, path)) })
@@ -94,7 +97,7 @@ const discoverRuleFilesEffect = (root: string, containmentRoot?: string): Effect
         const canonicalDirectory = yield* orSkip(fs.realPath(directory))
         if (
           canonicalDirectory === undefined ||
-          (containmentBoundary && !isWithin(canonicalDirectory, containmentBoundary)) ||
+          (containmentBoundary !== undefined && containmentBoundary !== '' && !isWithin(canonicalDirectory, containmentBoundary)) ||
           visitedDirectories.has(canonicalDirectory)
         ) {
           return
@@ -126,15 +129,18 @@ const discoverRuleFilesEffect = (root: string, containmentRoot?: string): Effect
     const rootResolution = yield* orSkip(
       Effect.gen(function* () {
         const canonicalRoot = yield* fs.realPath(root)
-        const canonicalBoundary = containmentRoot ? yield* fs.realPath(containmentRoot) : undefined
+        const canonicalBoundary = containmentRoot !== undefined && containmentRoot !== '' ? yield* fs.realPath(containmentRoot) : undefined
         const rootInfo = yield* fs.stat(canonicalRoot)
-        if (rootInfo.type !== 'Directory' || (canonicalBoundary && !isWithin(canonicalRoot, canonicalBoundary))) {
+        if (
+          rootInfo.type !== 'Directory' ||
+          (canonicalBoundary !== undefined && canonicalBoundary !== '' && !isWithin(canonicalRoot, canonicalBoundary))
+        ) {
           return undefined
         }
         return { canonicalBoundary }
       })
     )
-    if (!rootResolution) {
+    if (rootResolution === undefined) {
       return []
     }
 
@@ -174,7 +180,7 @@ const stripComment = (value: string): string => {
 
 const parseString = (value: string): string => {
   const trimmed = value.trim()
-  if (!trimmed) {
+  if (trimmed.length === 0) {
     return ''
   }
   if (trimmed.startsWith('"')) {
@@ -242,7 +248,7 @@ const parsePathValue = (rawValue: string, lines: string[], lineIndex: number): {
   if (rawValue.startsWith('[')) {
     return { consumed: 1, paths: splitInlineList(rawValue) }
   }
-  if (rawValue) {
+  if (rawValue.length > 0) {
     const value = parseString(rawValue)
     return {
       consumed: 1,
@@ -257,12 +263,12 @@ const parsePathValue = (rawValue: string, lines: string[], lineIndex: number): {
   let consumed = 1
   for (let index = lineIndex + 1; index < lines.length; index++) {
     const line = stripComment(lines[index] ?? '')
-    if (!line.trim()) {
+    if (line.trim().length === 0) {
       consumed++
       continue
     }
     const match = /^\s+-\s*(?<item>.*)$/.exec(line)
-    if (!match) {
+    if (match === null) {
       break
     }
     paths.push(parseString(match.groups?.item ?? ''))
@@ -279,7 +285,7 @@ interface FrontmatterLineResult {
 
 const parseFrontmatterLine = (lines: string[], index: number): FrontmatterLineResult => {
   const line = stripComment(lines[index] ?? '').trim()
-  if (!line) {
+  if (line.length === 0) {
     return { consumed: 1 }
   }
 
@@ -311,7 +317,7 @@ export const parseRuleFrontmatter = (content: string): RuleFrontmatter => {
   }
 
   const match = /^---\r?\n(?<frontmatter>[\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(normalized)
-  if (!match) {
+  if (match === null) {
     return {
       alwaysApply: false,
       body: normalized,
@@ -327,7 +333,7 @@ export const parseRuleFrontmatter = (content: string): RuleFrontmatter => {
 
     for (let index = 0; index < lines.length;) {
       const result = parseFrontmatterLine(lines, index)
-      if (result.paths) {
+      if (result.paths !== undefined) {
         for (const path of result.paths) {
           if (!paths.includes(path)) {
             paths.push(path)
@@ -370,7 +376,7 @@ const readRulesEffect = (root: string, displayRoot: string, containmentRoot?: st
         continue
       }
       const parsed = parseRuleFrontmatter(content)
-      if (parsed.diagnostic || !parsed.body.trim()) {
+      if ((parsed.diagnostic !== undefined && parsed.diagnostic !== '') || parsed.body.trim().length === 0) {
         continue
       }
       rules.push({
@@ -509,18 +515,21 @@ const record = (value: unknown): Record<string, unknown> | undefined => (isRecor
 
 const stringProperty = (value: unknown, property: string): string | undefined => {
   const candidate = record(value)?.[property]
-  return typeof candidate === 'string' && candidate ? candidate : undefined
+  return typeof candidate === 'string' && candidate.length > 0 ? candidate : undefined
 }
 
 /** Extract paths from Pi's file tools, including the local hashline compatibility tools. */
-export const extractToolPaths = (event: ToolResultEvent, cwd: string): string[] => {
+export const extractToolPaths: {
+  (cwd: string): (event: ToolResultEvent) => string[]
+  (event: ToolResultEvent, cwd: string): string[]
+} = Function.dual(2, (event: ToolResultEvent, cwd: string): string[] => {
   if (event.isError || !['read', 'edit', 'write', 'hashline_read', 'hashline_write'].includes(event.toolName)) {
     return []
   }
 
   const paths = new Set<string>()
   const add = (path: string | undefined) => {
-    if (path) {
+    if (path !== undefined && path !== '') {
       paths.add(isAbsolute(path) ? path : resolve(cwd, path))
     }
   }
@@ -530,7 +539,7 @@ export const extractToolPaths = (event: ToolResultEvent, cwd: string): string[] 
 
   if (event.toolName === 'hashline_write') {
     const patch = stringProperty(event.input, 'patch')
-    if (patch) {
+    if (patch !== undefined && patch !== '') {
       for (const match of patch.matchAll(/^\[(?<path>[^\]#]+)#[^\]]+\]/gm)) {
         add(match.groups?.path)
       }
@@ -547,7 +556,7 @@ export const extractToolPaths = (event: ToolResultEvent, cwd: string): string[] 
   }
 
   return [...paths]
-}
+})
 
 interface DiscoverySlot {
   key: string
@@ -559,7 +568,7 @@ interface RulesStateShape {
   readonly activeDiscovery: Ref.Ref<DiscoverySlot | undefined>
 }
 
-class RulesState extends Context.Service<RulesState, RulesStateShape>()('@rules/State') {}
+class RulesState extends Context.Service<RulesState, RulesStateShape>()('pi-extensions/features/rules/feature/RulesState') {}
 
 /**
  * `activeDiscovery` only coalesces concurrent scans that share a (cwd, trusted) key; it is cleared
@@ -608,7 +617,7 @@ const clearDynamicInjections = (
     yield* Ref.set(state.dynamicInjections, HashSet.empty<string>())
   })
 
-export const register = (pi: ExtensionAPI, runtime: AppRuntime, environment: RulesEnvironment = { homeDirectory: homedir() }): void => {
+const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime, environment: RulesEnvironment = { homeDirectory: homedir() }): void => {
   const rulesState = Effect.runSync(
     Effect.gen(function* () {
       return {
@@ -632,7 +641,7 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, environment: Rul
       let addition = formatted.block
       const scopedRules = rules.filter((rule) => !rule.alwaysApply && rule.paths.length > 0)
       addition += formatRulePointers(scopedRules, MAX_BLOCK_CHARS - addition.length)
-      return addition ? { systemPrompt: event.systemPrompt + addition } : undefined
+      return addition.length > 0 ? { systemPrompt: event.systemPrompt + addition } : undefined
     })
 
   const toolResult = (
@@ -671,7 +680,7 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, environment: Rul
         }
         return [nextFormatted, next]
       })
-      return formatted.block ? { content: [...event.content, { text: formatted.block, type: 'text' as const }] } : undefined
+      return formatted.block.length > 0 ? { content: [...event.content, { text: formatted.block, type: 'text' as const }] } : undefined
     })
 
   pi.on(
@@ -695,3 +704,8 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, environment: Rul
     makeEventHandler(runtime)((event, ctx) => withRulesState(toolResult(event, ctx)))
   )
 }
+
+export const register: {
+  (runtime: AppRuntime, environment?: RulesEnvironment): (pi: ExtensionAPI) => void
+  (pi: ExtensionAPI, runtime: AppRuntime, environment?: RulesEnvironment): void
+} = Function.dual((args) => typeof args[0].on === 'function', registerImpl)

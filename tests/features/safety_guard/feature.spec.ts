@@ -84,16 +84,16 @@ const setup = (activeTools: string[] = ['safe_rm']) => {
     throw new Error('tool_call handlers were not registered')
   }
   const [resultHandler] = resultHandlers
-  if (!resultHandler) {
+  if (resultHandler === undefined) {
     throw new Error('tool_result handler was not registered')
   }
-  if (!sessionStart) {
+  if (sessionStart === undefined) {
     throw new Error('session_start handler was not registered')
   }
   const handler: Handler = async (event, ctx) => {
     for (const registeredHandler of toolCallHandlers) {
       const result = await registeredHandler(event, ctx)
-      if (result?.block) {
+      if (result?.block === true) {
         return result
       }
     }

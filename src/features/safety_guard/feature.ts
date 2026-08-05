@@ -7,10 +7,11 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import { Effect, Match } from 'effect'
 import { type FileSystem } from 'effect/FileSystem'
+import { dual } from 'effect/Function'
 import { type PlatformError } from 'effect/PlatformError'
 
 import { type AppRuntime, StatusBar } from '@/shared/effect/app_services.js'
-import { Pi, piLayer, Ui } from '@/shared/effect/pi_services.js'
+import { Pi, piContext, Ui } from '@/shared/effect/pi_services.js'
 import { makeEventHandler } from '@/shared/effect/runtime.js'
 import { resolveProtectedPathEffect } from '@/shared/utils/protected_paths.js'
 
@@ -34,6 +35,8 @@ const commandExcerpt = (command: string, pattern: RegExp): string => {
     })
     .join('\n')
 }
+
+const allow = undefined
 
 type GuardDecision =
   | { readonly _tag: 'Allow' }
@@ -96,7 +99,7 @@ const confirmRisk = ({ label, message }: { label: string; message: string }): Ef
 
 const runDecision = (decision: GuardDecision): Effect.Effect<ToolCallEventResult | undefined, never, Pi | Ui> =>
   Match.valueTags(decision, {
-    Allow: () => Effect.succeed(undefined),
+    Allow: () => Effect.succeed(allow),
     Block: (block) =>
       Effect.gen(function* () {
         if (block.notifyLabel !== undefined) {
@@ -153,8 +156,11 @@ const handleToolCall = (
     return yield* runDecision(decision)
   })
 
-export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
-  const providedPi = piLayer(pi)
+export const register: {
+  (runtime: AppRuntime): (pi: ExtensionAPI) => void
+  (pi: ExtensionAPI, runtime: AppRuntime): void
+} = dual(2, (pi: ExtensionAPI, runtime: AppRuntime): void => {
+  const providedPi = piContext(pi)
   const withPi = <Success, Failure, Requirements>(
     effect: Effect.Effect<Success, Failure, Requirements | Pi>
   ): Effect.Effect<Success, Failure, Exclude<Requirements, Pi>> => effect.pipe(Effect.provide(providedPi))
@@ -173,4 +179,4 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
       })
     )
   )
-}
+})
