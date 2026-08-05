@@ -17,6 +17,7 @@ src/
 ├── features/
 │   ├── ask_user/{feature,prompt}.ts
 │   ├── background_poll/feature.ts
+│   ├── caffeinate/feature.ts
 │   ├── claude_code/feature.ts
 │   ├── comment_checker/feature.ts
 │   ├── hashline/feature.ts

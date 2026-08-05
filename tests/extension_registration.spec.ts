@@ -9,6 +9,7 @@ const EXPECTED_FEATURES = [
   'ask_user',
   'auto_compact',
   'background_poll',
+  'caffeinate',
   'claude_code',
   'comment_checker',
   'hashline',

@@ -46,6 +46,7 @@ Each row below is one internal capability registered by `src/config/features.ts`
 | --------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | `ask_user`                  | Asks the user a multiple-choice question mid-turn                                                           |
 | `background_poll`           | Polls a shell command in the background and wakes the agent when it succeeds                                |
+| `caffeinate`                | Prevents macOS idle sleep while the parent Pi session is running                                            |
 | `claude_code`               | Converts global and trusted-project `.claude/commands/` files into temporary Pi skills                      |
 | `comment_checker`           | Runs the `comment-checker` binary after successful writes and edits, appending warnings to the tool result  |
 | `hashline`                  | Content-hash anchored file reads and writes that reject stale edits                                         |
