@@ -10,21 +10,21 @@ This capability is maintained in the [`pi-extensions`](../../..) repository as o
 
 ## Tools
 
-| Tool                  | Purpose                                                                |
-| --------------------- | ---------------------------------------------------------------------- |
-| `spawn_agent`         | Spawn a fresh-context child Pi process                                 |
-| `wait_agent`          | Block for one completion and return its final text                     |
-| `wait_all_agents`     | Block until every selected agent finishes                              |
-| `list_agents`         | List current-session agents, or explicitly include historical sessions |
-| `read_agent_response` | Read an agent's latest final raw text response                         |
-| `send_message`        | Steer a running agent or start another turn when settled               |
-| `interrupt_agent`     | Abort the current turn while preserving its session for later messages |
+| Tool                  | Purpose                                                                        |
+| --------------------- | ------------------------------------------------------------------------------ |
+| `spawn_agent`         | Spawn a fresh-context child Pi process                                         |
+| `wait_agent`          | Block for one completion and return its final text                             |
+| `wait_all_agents`     | Block until every selected agent finishes                                      |
+| `list_agents`         | List current-session agents, or explicitly include historical sessions         |
+| `read_agent_response` | Read an agent's latest final raw text response                                 |
+| `send_message`        | Send the one allowed steering or continuation message to a logical agent       |
+| `interrupt_agent`     | Abort the current turn while preserving its unused follow-up, when one remains |
 
 Agent names are unique within their parent session. The same task name can exist safely in different Pi sessions. Read and control tools are always scoped to the current parent session; only `list_agents(include_all: true)` crosses session boundaries, and that view is read-only.
 
 ## Source-defined agent profiles
 
-Agent profiles live only in [`profiles.ts`](./profiles.ts). `agent_type` is required. User JSON/Markdown agents, omitted generic agent types, and caller-added skills are intentionally unsupported. The built-in profiles are `scout`, `librarian`, `implementer`, and `reviewer`; adding another profile requires one registry entry using this generic contract:
+Agent profiles live only in [`profiles.ts`](./profiles.ts). `agent_type` is required. User JSON/Markdown agents, omitted generic agent types, and caller-added skills are intentionally unsupported. The built-in profiles are `scout`, `librarian`, and `reviewer`; adding another profile requires one registry entry using this generic contract:
 
 ```ts
 type AgentConfig = {
@@ -48,17 +48,23 @@ const example: AgentConfig = {
 }
 ```
 
-The first four fields are required. `description` defaults to the registry key, `thinking` to `high`, and `color` to `accent`. Built-ins currently select only the configured OpenAI and Anthropic models.
+The first four fields are required. `description` defaults to the registry key, `thinking` to `high`, and `color` to `accent`. Built-ins currently select configured OpenAI models; any source-defined profile may select Claude.
 
-Model selectors are exact. A bare ID such as `claude-sonnet-5` selects that exact authenticated ID, preferring its canonical `openai` or `anthropic` provider, then official OAuth/cloud variants, then other authenticated non-Google providers deterministically. A qualified selector such as `anthropic/claude-sonnet-5` requires that exact pair. Selector functions receive an immutable authenticated-model snapshot and the parent provider/model, and return one of the same exact selector strings. Spawning fails before run artifacts are created when a profile or selected model is unavailable.
+Model selectors are exact. A bare ID such as `claude-sonnet-5` selects that exact authenticated ID, preferring its canonical `openai` or `anthropic` provider, then official OAuth/cloud variants, then other authenticated non-Google providers deterministically. A qualified selector such as `anthropic/claude-sonnet-5` requires that exact pair. Selector functions receive an immutable authenticated-model snapshot and the parent provider/model, and return one of the same exact selector strings. Spawning fails before run artifacts are created when a profile or selected model is unavailable. Claude is recommended primarily for short research and review tasks, but it is not restricted by `isReadonly`.
 
 Children rediscover normally configured global and project extensions on every launch and restart. Temporary extensions supplied only through a parent CLI/factory invocation are not guaranteed because Pi does not expose an exact loaded-extension list. `allowedTools` is always passed as the strict model-callable tool boundary. Names for an extension that is not installed, such as optional FFF tools, are harmless; they become usable when that extension registers them.
 
 Skills, prompt templates, context files, `AGENTS.md`, and `CLAUDE.md` remain isolated. Children start fresh sessions with Pi's normal system prompt plus the profile prompt. Conversation and parent context are never copied. The normalized profile, provider/model, thinking level, prompt, tools, color, and read-only metadata are persisted, so a hibernated child restarts deterministically while rediscovering extensions afresh.
 
-`isReadonly` adds generic prompt guidance and selects the MCP gateway policy; it is metadata, not a local filesystem or shell sandbox. It does not inspect `bash` commands or rewrite `allowedTools`. In read-only mode MCP permits tools annotated `readOnlyHint: true` and not destructive, plus the four unannotated DBX metadata operations `dbx_list_connections`, `dbx_list_tables`, `dbx_describe_table`, and `dbx_get_schema_context`. Other unannotated, mutating, or destructive MCP operations are hidden and denied. False mode is unrestricted; the implementer profile does not allow MCP at all.
+`isReadonly` adds generic prompt guidance and selects the MCP gateway policy; it is metadata, not a local filesystem or shell sandbox. It does not inspect `bash` commands or rewrite `allowedTools`. In read-only mode MCP permits tools annotated `readOnlyHint: true` and not destructive, plus the four unannotated DBX metadata operations `dbx_list_connections`, `dbx_list_tables`, `dbx_describe_table`, and `dbx_get_schema_context`. Other unannotated, mutating, or destructive MCP operations are hidden and denied. All built-in profiles are read-only.
 
 Every child receives `PI_SUBAGENT_OWNER_TOKEN`, `PI_SUBAGENT_PROFILE`, and `PI_SUBAGENT_READONLY` (`1` or `0`). Parent session/provider/model environment variables are removed. The owner token limits the custom status panel to forwarding Azure response quota; it does not render UI, poll Claude quota, or fetch Git state in children. Profile identity uses theme-aware colors across spawn, completion, activity, browser, and peek surfaces while lifecycle status retains independent semantic colors.
+
+## Cache-aware lifecycle limits
+
+Each logical agent should receive one narrow, self-contained initial task. It accepts at most one successful `send_message` follow-up across active steering and hibernated-session continuation; rejected delivery attempts do not consume that allowance. Start a fresh agent for a distinct task instead of repeatedly steering an old context.
+
+One manager runs at most three Claude-backed child processes concurrently, regardless of profile capabilities. Claude continuation is refused once the latest active-branch assistant usage reaches 112,000 context input tokens (`input + cacheRead + cacheWrite`), leaving headroom before 128k. If a settled Claude session has no trustworthy usage record, continuation fails closed and requests a fresh agent.
 
 ## Configuration
 
@@ -82,7 +88,7 @@ A child completion or failure is delivered automatically to its parent session a
 
 ## Delegation guidance
 
-The extension appends a short delegation section to the parent system prompt on every `before_agent_start`. It encourages spawning subagents generously for read-heavy exploration and research, using small specialized implementers with narrow non-overlapping ownership and focused verification, parallelizing independent questions, not blocking on waits, and writing self-contained tasks. The block is skipped when `PI_SUBAGENT_OWNER_TOKEN` is set, so children never receive it; no profile grants `spawn_agent`, so subagents cannot spawn further agents.
+The extension appends a short delegation section to the parent system prompt on every `before_agent_start`. It asks for narrow, self-contained tasks, caps parallel Claude work at three children, prefers fresh agents to repeated steering, and recommends Claude primarily for short research and review. The block is skipped when `PI_SUBAGENT_OWNER_TOKEN` is set, so children never receive it; no profile grants `spawn_agent`, so subagents cannot spawn further agents.
 
 ## Commands and TUI
 
@@ -92,7 +98,7 @@ While agents are starting or running, the wide status panel shows them in its `S
 
 The full-chat view uses the child working directory for tool rendering and synchronizes in-progress output when opened midway through a run. Use Left/Right to switch between agents in the current browser scope. Escape returns to the parent chat; press Escape again immediately to interrupt the agent you just viewed. Any other key disarms that second-Escape action.
 
-Child RPC processes are terminated after completion, failure, or interruption so settled agents do not keep consuming memory. `send_message` starts a fresh child process with the persisted session and continues from there. On startup, the extension also reconciles and terminates validated owned children left behind by an earlier extension process.
+Child RPC processes are terminated after completion, failure, or interruption so settled agents do not keep consuming memory. When its single follow-up is still available, `send_message` can start a fresh child process with the persisted session and continue from there; Claude sessions at or above the context threshold must be replaced instead. On startup, the extension also reconciles and terminates validated owned children left behind by an earlier extension process.
 
 ## Output limits
 

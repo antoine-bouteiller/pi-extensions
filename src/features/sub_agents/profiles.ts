@@ -40,15 +40,6 @@ export interface ResolvedAgentConfig {
 const EXPLORATION_TOOLS = ['read', 'bash', 'grep', 'find', 'ls', 'mcp', 'fffind', 'ffgrep', 'fff-multi-grep'] as const
 
 export const AGENT_CONFIGS = {
-  implementer: {
-    allowedTools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'hashline_read', 'hashline_write', 'safe_rm'],
-    color: 'success',
-    description: 'Scoped code implementation and verification',
-    isReadonly: false,
-    model: 'gpt-5.6-terra',
-    prompt: `You are an implementation subagent. Make the requested code changes within the assigned scope, preserve existing conventions, and verify the result with focused tests and typechecking. Report changed files, verification performed, and any remaining risks. Do not expand the task beyond the request.`,
-    thinking: 'medium',
-  },
   librarian: {
     allowedTools: ['webfetch', 'mcp'],
     color: 'mdLink',
@@ -82,7 +73,7 @@ export const AGENT_CONFIGS = {
 export type AgentProfileName = keyof typeof AGENT_CONFIGS
 
 // Order is semantic, so it is declared here rather than read back from the sorted lookup table.
-export const AGENT_PROFILE_NAMES = Object.freeze(['scout', 'librarian', 'implementer', 'reviewer'] as const satisfies readonly AgentProfileName[])
+export const AGENT_PROFILE_NAMES = Object.freeze(['scout', 'librarian', 'reviewer'] as const satisfies readonly AgentProfileName[])
 
 const GOOGLE_PROVIDER_PATTERN = /(?:^|[-_])(?<provider>google|gemini)(?:$|[-_])/i
 const GOOGLE_MODEL_PATTERN = /^gemini(?:$|[-_.])/i
@@ -90,15 +81,13 @@ const OFFICIAL_OPENAI_PROVIDERS = new Set(['openai-codex', 'azure-openai', 'azur
 const OFFICIAL_ANTHROPIC_PROVIDERS = new Set(['anthropic-oauth', 'amazon-bedrock', 'aws-bedrock', 'anthropic-vertex'])
 
 const isGoogleCandidate = (model: AvailableModel): boolean => GOOGLE_PROVIDER_PATTERN.test(model.provider) || GOOGLE_MODEL_PATTERN.test(model.id)
+export const isClaudeModelId = (modelId: string): boolean => /^claude(?:-|$)/i.test(modelId)
 
 const canonicalProvider = (modelId: string): 'openai' | 'anthropic' | undefined => {
   if (/^(?:gpt-|o[1-9](?:-|$)|chatgpt-)/i.test(modelId)) {
     return 'openai'
   }
-  if (/^claude(?:-|$)/i.test(modelId)) {
-    return 'anthropic'
-  }
-  return undefined
+  return isClaudeModelId(modelId) ? 'anthropic' : undefined
 }
 
 const providerRank = (provider: string, modelId: string): number => {

@@ -8,6 +8,7 @@ import {
   getAgentProfileNames,
   getAgentProfilesDescription,
   hasModelId,
+  isClaudeModelId,
   parseModelSelector,
   resolveAgentConfig,
   resolveModelSelector,
@@ -59,11 +60,17 @@ describe('model selectors', () => {
     expect(hasModelId(availableModels, 'claude-opus-5')).toBe(true)
     expect(firstAvailable(availableModels, 'missing', 'claude-opus-5')).toBe('claude-opus-5')
   })
+
+  test('recognizes Claude by model family across providers', () => {
+    expect(isClaudeModelId('claude-opus-5')).toBe(true)
+    expect(isClaudeModelId('CLAUDE-custom')).toBe(true)
+    expect(isClaudeModelId('gpt-5.6-sol')).toBe(false)
+  })
 })
 
 describe('generic agent registry', () => {
-  test('contains the four built-ins and generates descriptions from registry keys', () => {
-    expect(AGENT_PROFILE_NAMES).toEqual(['scout', 'librarian', 'implementer', 'reviewer'])
+  test('contains the three built-ins and generates descriptions from registry keys', () => {
+    expect(AGENT_PROFILE_NAMES).toEqual(['scout', 'librarian', 'reviewer'])
     const description = getAgentProfilesDescription()
     for (const key of AGENT_PROFILE_NAMES) {
       expect(description).toContain(`\`${key}\``)
@@ -117,22 +124,16 @@ describe('generic agent registry', () => {
 
   test('resolves every built-in solely from its config', () => {
     const expected = {
-      implementer: {
-        color: 'success',
-        isReadonly: false,
-        modelId: 'claude-sonnet-5',
-        thinking: 'high',
-      },
       librarian: {
         color: 'mdLink',
         isReadonly: true,
-        modelId: 'claude-haiku-4-5',
+        modelId: 'gpt-5.6-luna',
         thinking: 'low',
       },
       reviewer: {
         color: 'warning',
         isReadonly: true,
-        modelId: 'claude-opus-5',
+        modelId: 'gpt-5.6-sol',
         thinking: 'high',
       },
       scout: {
@@ -159,9 +160,9 @@ describe('generic agent registry', () => {
   test('fails unknown, unavailable, and invalid selector results', () => {
     expect(() => resolveAgentConfig('missing', context)).toThrow('Unknown agent profile')
     expect(() =>
-      resolveAgentConfig('implementer', {
+      resolveAgentConfig('scout', {
         ...context,
-        availableModels: availableModels.filter((model) => model.id !== 'claude-sonnet-5'),
+        availableModels: availableModels.filter((model) => model.id !== 'gpt-5.6-luna'),
       })
     ).toThrow('not authenticated')
     const registry = {

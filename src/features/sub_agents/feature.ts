@@ -129,13 +129,13 @@ const DELEGATION_GUIDANCE = `
 
 ## Subagent delegation
 
-Subagents are available through \`spawn_agent\`. Prefer delegating over doing context-heavy work yourself, and spawn generously:
+Subagents are available through \`spawn_agent\`. Prefer delegation over pulling context-heavy work into the parent:
 
-- Delegate by default for read-heavy work: codebase exploration, "where is X handled", library and API research, log or test-output triage, and pre-implementation reconnaissance. A \`scout\` or \`librarian\` run costs one short report instead of dozens of tool results in your own context.
-- Parallelize. Independent questions should become several agents spawned in the same response, not a sequence of your own searches.
+- Delegate read-heavy exploration, research, log triage, and review. Give each child one narrow, self-contained task with the relevant paths and expected answer shape.
+- Parallelize independent questions, but keep Claude-backed children to at most three live agents. Prefer Claude for short research and review tasks.
+- Prefer spawning a fresh child over repeatedly steering an existing one. Each logical agent accepts at most one \`send_message\` follow-up; Claude continuations are refused at 112k context input tokens.
 - Do not block. \`spawn_agent\` returns as soon as the child accepts its task and completions arrive on their own, so keep working; reach for \`wait_agent\`/\`wait_all_agents\` only when your next step depends on a result and no useful work remains.
-- Prefer small, specialized implementation agents. Give each \`implementer\` a narrow goal, explicit non-overlapping file ownership, and focused verification; split broad work into independent slices instead of handing one agent the whole change. Use \`reviewer\` for a fresh-context check of a plan or finished change.
-- Write self-contained tasks. Children share none of your conversation, so state the goal, the relevant paths, and the shape of the answer you want back.
+- Use \`reviewer\` for a fresh-context check of a plan or finished change.
 
 Keep work in your own context when it depends on conversation history that is expensive to restate or when the user is waiting on one quick answer. Available profiles: ${AGENT_PROFILE_NAMES.join(', ')}.`
 
@@ -304,9 +304,9 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: 
 
   const spawnAgentTool = {
     get description() {
-      return `Spawn a fresh-context Pi subagent using a required source-defined profile. Children rediscover configured global and project extensions normally while skills, prompt templates, and context files remain isolated. Each profile fixes its model, thinking level, prompt, read-only metadata, and model-callable tool boundary.
+      return `Spawn a fresh-context Pi subagent using a required source-defined profile. Give it one narrow, self-contained task. Children rediscover configured global and project extensions normally while skills, prompt templates, and context files remain isolated. Each profile fixes its model, thinking level, prompt, read-only metadata, and model-callable tool boundary.
 
-Returns after the child accepts its initial task. Continue with independent work instead of waiting; the child's final response will be delivered automatically when ready. Use \`wait_agent\` or \`wait_all_agents\` only when your next action depends on the subagent response and you have no useful work to do meanwhile.
+Returns after the child accepts its initial task. Continue with independent work instead of waiting; the child's final response will be delivered automatically when ready. Use \`wait_agent\` or \`wait_all_agents\` only when your next action depends on the subagent response and you have no useful work to do meanwhile. Claude-backed children are limited to three live agents and cannot be continued at 112k context input tokens. Prefer a fresh child to steering; each logical agent accepts one \`send_message\` follow-up.
 
 Available agent profiles:
 ${getAgentProfilesDescription()}`
@@ -603,7 +603,8 @@ ${getAgentProfilesDescription()}`
   })
 
   pi.registerTool({
-    description: 'Send a message to a session-owned agent. Steers the current run when active; otherwise starts a new turn.',
+    description:
+      'Send the single allowed follow-up to a session-owned agent. Steers the current run when active; otherwise starts one final turn. Prefer spawning a fresh agent for a distinct task.',
     execute(_id: string, params, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
       return runtime.runPromise(
         Effect.tryPromise({
@@ -654,7 +655,7 @@ ${getAgentProfilesDescription()}`
   })
 
   pi.registerTool({
-    description: "Abort a session-owned agent's current turn while keeping its session available for later send_message calls.",
+    description: "Abort a session-owned agent's current turn while keeping its session available for its single send_message follow-up.",
     execute(_id: string, params, _signal: AbortSignal | undefined, _onUpdate, ctx: ExtensionContext) {
       return runtime.runPromise(
         Effect.tryPromise({

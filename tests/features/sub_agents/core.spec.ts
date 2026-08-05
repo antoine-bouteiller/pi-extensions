@@ -31,6 +31,7 @@ const {
   taskStorageKey,
   writeFullToolOutput,
 } = await import('@/features/sub_agents/core.js')
+const { AGENT_CONFIGS } = await import('@/features/sub_agents/profiles.js')
 const { SubagentPeekOverlay } = await import('@/features/sub_agents/peek.js')
 const { azureQuota } = await import('@/shared/state/azure_quota.js')
 const { runningAgents } = await import('@/shared/state/agent_activity.js')
@@ -88,6 +89,17 @@ const createAgentManager = (options: Record<string, unknown> = {}) =>
 
 const processTest = (name: string, run: () => void | Promise<void>): void => {
   test(name, run, 15_000)
+}
+
+const withScoutProfile = async <Result>(patch: Partial<{ model: string; isReadonly: boolean }>, run: () => Promise<Result>): Promise<Result> => {
+  const profile = AGENT_CONFIGS.scout
+  const original = { isReadonly: profile.isReadonly, model: profile.model }
+  Object.assign(profile, patch)
+  try {
+    return await run()
+  } finally {
+    Object.assign(profile, original)
+  }
 }
 
 describe('RPC framing', () => {
@@ -355,7 +367,7 @@ const AVAILABLE_MODELS = [
 ]
 
 const spawnParams = (parentSessionId: string, task_name: string, message: string) => ({
-  agent_type: 'implementer' as const,
+  agent_type: 'scout' as const,
   availableModels: AVAILABLE_MODELS,
   cwd: TEST_AGENT_DIR,
   message,
@@ -363,6 +375,40 @@ const spawnParams = (parentSessionId: string, task_name: string, message: string
   parentSessionId,
   task_name,
 })
+
+const writeSessionWithContextUsage = (sessionFile: string, contextTokens: number): void => {
+  const timestamp = new Date().toISOString()
+  writeFileSync(
+    sessionFile,
+    `${[
+      JSON.stringify({ cwd: TEST_AGENT_DIR, id: '11111111-1111-4111-8111-111111111111', timestamp, type: 'session', version: 3 }),
+      JSON.stringify({
+        id: 'a1b2c3d4',
+        message: {
+          api: 'anthropic-messages',
+          content: [{ text: 'done', type: 'text' }],
+          model: 'claude-sonnet-5',
+          provider: 'anthropic',
+          role: 'assistant',
+          stopReason: 'stop',
+          timestamp: Date.now(),
+          usage: {
+            cacheRead: contextTokens - 2,
+            cacheWrite: 0,
+            cost: { cacheRead: 0, cacheWrite: 0, input: 0, output: 0, total: 0 },
+            input: 2,
+            output: 10,
+            totalTokens: contextTokens + 10,
+          },
+        },
+        // oxlint-disable-next-line unicorn/no-null -- Session roots require a literal null parent.
+        parentId: null,
+        timestamp,
+        type: 'message',
+      }),
+    ].join('\n')}\n`
+  )
+}
 
 describe('child process lifecycle', () => {
   processTest('resolves profiles before creating task artifacts', async () => {
@@ -374,12 +420,121 @@ describe('child process lifecycle', () => {
       expect(
         manager.spawnAgent({
           ...spawnParams(parentSessionId, 'worker', 'must not start'),
-          availableModels: AVAILABLE_MODELS.filter((model) => model.id !== 'claude-sonnet-5'),
+          availableModels: AVAILABLE_MODELS.filter((model) => model.id !== 'gpt-5.6-luna'),
         })
       ).rejects.toThrow('not authenticated or available')
       expect(existsSync(scope)).toBe(false)
     } finally {
       await manager.shutdown()
+    }
+  })
+
+  processTest('allows write-capable Claude profiles', async () => {
+    const parentSessionId = 'claude-write-capable'
+    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+    rmSync(scope, { force: true, recursive: true })
+    const manager = createAgentManager()
+    try {
+      await withScoutProfile({ isReadonly: false, model: 'claude-sonnet-5' }, async () => {
+        await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold write-capable'))
+        expect(manager.getAgentInfo('worker', parentSessionId)).toMatchObject({
+          isReadonly: false,
+          modelId: 'claude-sonnet-5',
+          status: 'running',
+        })
+      })
+    } finally {
+      await manager.shutdown()
+      rmSync(scope, { force: true, recursive: true })
+    }
+  })
+
+  processTest('limits one manager to three live Claude subagents', async () => {
+    const parentSessionId = 'claude-live-limit'
+    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+    rmSync(scope, { force: true, recursive: true })
+    const manager = createAgentManager()
+    try {
+      await withScoutProfile({ model: 'claude-sonnet-5' }, async () => {
+        for (const task of ['one', 'two', 'three']) {
+          await manager.spawnAgent(spawnParams(parentSessionId, task, `hold ${task}`))
+        }
+        expect(manager.spawnAgent(spawnParams(parentSessionId, 'four', 'hold four'))).rejects.toThrow('At most 3 Claude-backed subagents')
+        expect(() => manager.getAgentInfo('four', parentSessionId)).toThrow('Agent not found')
+      })
+    } finally {
+      await manager.shutdown()
+      rmSync(scope, { force: true, recursive: true })
+    }
+  })
+
+  processTest('allows one follow-up per logical agent and persists the consumed allowance', async () => {
+    const parentSessionId = 'single-follow-up'
+    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+    rmSync(scope, { force: true, recursive: true })
+    const manager = createAgentManager()
+    try {
+      await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold initial'))
+      expect(await manager.sendMessage(parentSessionId, 'worker', 'one correction')).toEqual({ delivery: 'steer' })
+      expect(manager.getAgentInfo('worker', parentSessionId).followUpUsed).toBe(true)
+      expect(manager.sendMessage(parentSessionId, 'worker', 'another correction')).rejects.toThrow('single follow-up')
+    } finally {
+      await manager.shutdown()
+      rmSync(scope, { force: true, recursive: true })
+    }
+  })
+
+  processTest('allows only one concurrent follow-up claim across managers', async () => {
+    const parentSessionId = 'atomic-follow-up'
+    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+    rmSync(scope, { force: true, recursive: true })
+    const firstManager = createAgentManager()
+    const secondManager = createAgentManager()
+    try {
+      await firstManager.spawnAgent(spawnParams(parentSessionId, 'worker', 'first'))
+      await waitUntil(() => {
+        const info = firstManager.getAgentInfo('worker', parentSessionId)
+        return info.status === 'completed' && !info.childProcess
+      })
+      await secondManager.ready()
+
+      const results = await Promise.allSettled([
+        firstManager.sendMessage(parentSessionId, 'worker', 'hold first follow-up'),
+        secondManager.sendMessage(parentSessionId, 'worker', 'hold competing follow-up'),
+      ])
+      expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+      expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1)
+      expect(firstManager.getAgentInfo('worker', parentSessionId).followUpUsed).toBe(true)
+    } finally {
+      await Promise.all([firstManager.shutdown(), secondManager.shutdown()])
+      rmSync(scope, { force: true, recursive: true })
+    }
+  })
+
+  processTest('starts a fresh Claude agent instead of continuing at 112k context input tokens', async () => {
+    const parentSessionId = 'claude-context-limit'
+    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+    rmSync(scope, { force: true, recursive: true })
+    const manager = createAgentManager()
+    try {
+      await withScoutProfile({ model: 'claude-sonnet-5' }, async () => {
+        await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'first'))
+        await waitUntil(() => {
+          const info = manager.getAgentInfo('worker', parentSessionId)
+          return info.status === 'completed' && !info.childProcess
+        })
+        const info = manager.getAgentInfo('worker', parentSessionId)
+        writeSessionWithContextUsage(info.sessionFile, 112_000)
+        expect(manager.sendMessage(parentSessionId, 'worker', 'too much context')).rejects.toThrow('112000 context input tokens')
+        expect(manager.getAgentInfo('worker', parentSessionId).childProcess).toBeUndefined()
+        expect(manager.getAgentInfo('worker', parentSessionId).followUpUsed).toBe(false)
+
+        writeSessionWithContextUsage(info.sessionFile, 111_999)
+        expect(await manager.sendMessage(parentSessionId, 'worker', 'hold below limit')).toEqual({ delivery: 'prompt' })
+      })
+    } finally {
+      await manager.shutdown()
+      rmSync(scope, { force: true, recursive: true })
     }
   })
 
@@ -655,6 +810,8 @@ describe('child process lifecycle', () => {
       })
       expect(pidAlive(secondPid)).toBe(false)
       expect(manager.readAgentResponse('worker', parentSessionId).finalResponse).toBe('response:second')
+      expect(manager.getAgentInfo('worker', parentSessionId).followUpUsed).toBe(true)
+      expect(manager.sendMessage(parentSessionId, 'worker', 'third')).rejects.toThrow('single follow-up')
       const sessionRecords = readFileSync(first.sessionFile, 'utf8')
         .trim()
         .split('\n')
@@ -668,18 +825,18 @@ describe('child process lifecycle', () => {
         expect(start.args).not.toContain('--no-extensions')
         expect(start.args).not.toContain('--extension')
         expect(start.args).not.toContain('--system-prompt')
-        expect(start.args[start.args.indexOf('--append-system-prompt') + 1]).toContain('You are an implementation subagent.')
+        expect(start.args[start.args.indexOf('--append-system-prompt') + 1]).toContain('You are a fast codebase scout.')
         expect(start.args.slice(start.args.indexOf('--provider'), start.args.indexOf('--provider') + 4)).toEqual([
           '--provider',
-          'anthropic',
+          'openai',
           '--model',
-          'claude-sonnet-5',
+          'gpt-5.6-luna',
         ])
-        expect(start.args[start.args.indexOf('--thinking') + 1]).toBe('high')
-        expect(start.args[start.args.indexOf('--tools') + 1]).toBe('read,bash,edit,write,grep,find,ls,hashline_read,hashline_write,safe_rm')
+        expect(start.args[start.args.indexOf('--thinking') + 1]).toBe('low')
+        expect(start.args[start.args.indexOf('--tools') + 1]).toBe('read,bash,grep,find,ls,mcp,fffind,ffgrep,fff-multi-grep')
         expect(start.env).toMatchObject({
-          PI_SUBAGENT_PROFILE: 'implementer',
-          PI_SUBAGENT_READONLY: '0',
+          PI_SUBAGENT_PROFILE: 'scout',
+          PI_SUBAGENT_READONLY: '1',
         })
         expect(start.env.PI_SUBAGENT_OWNER_TOKEN).toBeString()
         expect(start.env).not.toHaveProperty('PI_SESSION_ID')
@@ -694,6 +851,31 @@ describe('child process lifecycle', () => {
         force: true,
         recursive: true,
       })
+    }
+  })
+
+  processTest('does not restart persisted agents whose profiles were removed', async () => {
+    const parentSessionId = 'removed-profile'
+    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+    rmSync(scope, { force: true, recursive: true })
+    const manager = createAgentManager()
+    try {
+      await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'first'))
+      await waitUntil(() => {
+        const info = manager.getAgentInfo('worker', parentSessionId)
+        return info.status === 'completed' && !info.childProcess
+      })
+      const info = manager.getAgentInfo('worker', parentSessionId)
+      writeFileSync(
+        info.infoFile,
+        JSON.stringify({ ...info, agentType: 'implementer', allowedTools: ['write'], isReadonly: false, profile: 'implementer' }, undefined, 2)
+      )
+
+      expect(manager.sendMessage(parentSessionId, 'worker', 'must not restart')).rejects.toThrow('unavailable profile: implementer')
+      expect(manager.getAgentInfo('worker', parentSessionId).childProcess).toBeUndefined()
+    } finally {
+      await manager.shutdown()
+      rmSync(scope, { force: true, recursive: true })
     }
   })
 
@@ -1112,12 +1294,12 @@ describe('extension completion delivery and status activity', () => {
       expect(renderers.has('pi-codex-subagent-completion')).toBe(true)
       expect(requireTool('spawn_agent').parameters.required).toContain('agent_type')
       expect(requireTool('spawn_agent').parameters.properties.skills).toBeUndefined()
-      expect(requireTool('spawn_agent').parameters.properties.agent_type.enum).toEqual(['scout', 'librarian', 'implementer', 'reviewer'])
+      expect(requireTool('spawn_agent').parameters.properties.agent_type.enum).toEqual(['scout', 'librarian', 'reviewer'])
 
       await requireTool('spawn_agent').execute(
         'spawn-1',
         {
-          agent_type: 'implementer',
+          agent_type: 'scout',
           message: 'slow finish',
           task_name: 'x'.repeat(200),
         },
@@ -1159,7 +1341,7 @@ describe('extension completion delivery and status activity', () => {
       await requireTool('spawn_agent').execute(
         'spawn-2',
         {
-          agent_type: 'implementer',
+          agent_type: 'scout',
           message: 'large response',
           task_name: 'large-output',
         },
@@ -1238,6 +1420,7 @@ describe('subagent peek overlay', () => {
       color: 'warning' as const,
       createdAt: now,
       cwd: TEST_AGENT_DIR,
+      followUpUsed: false,
       id: '44444444-4444-4444-8444-444444444444',
       infoFile: join(TEST_AGENT_DIR, 'nonexistent-peek.info.json'),
       isReadonly: true,

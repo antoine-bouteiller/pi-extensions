@@ -25,7 +25,7 @@ import { homedir, tmpdir, userInfo } from 'node:os'
 import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
-import { getAgentDir, type ThemeColor } from '@earendil-works/pi-coding-agent'
+import { getAgentDir, SessionManager, type ThemeColor } from '@earendil-works/pi-coding-agent'
 import { Clock, Deferred, Effect, Exit, HashMap, Option, Ref, Scope } from 'effect'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
@@ -42,6 +42,8 @@ import {
   type ProcessSnapshot,
 } from './process_ownership.js'
 import {
+  AGENT_CONFIGS,
+  isClaudeModelId,
   persistedProfileColor,
   resolveAgentConfig,
   THEME_COLOR_VALUES,
@@ -64,6 +66,8 @@ const SOCKET_DIR = join(TEMP_ROOT, 'sockets')
 const DEFAULT_STARTUP_TIMEOUT_MS = 15_000
 const DEFAULT_INACTIVITY_MINUTES = 5
 const DEFAULT_RETENTION_DAYS = 7
+const MAX_LIVE_CLAUDE_AGENTS = 3
+const CLAUDE_CONTEXT_TOKEN_LIMIT = 112_000
 const FINAL_STATUSES = new Set<AgentRuntimeStatus>(['completed', 'failed', 'interrupted'])
 
 const AGENT_RUNTIME_STATUSES = ['starting', 'running', 'completed', 'failed', 'interrupted'] as const
@@ -95,6 +99,7 @@ const StoredAgentInfoSchema = Type.Object({
   cwd: Type.Optional(Type.String()),
   error: Type.Optional(Type.String()),
   finalResponse: Type.Optional(Type.String()),
+  followUpUsed: Type.Optional(Type.Boolean()),
   id: Type.String(),
   infoFile: Type.Optional(Type.String()),
   isReadonly: Type.Optional(Type.Boolean()),
@@ -160,6 +165,7 @@ export interface AgentInfo {
   completedAt?: number
   lastActivity?: number
   messageCount: number
+  followUpUsed: boolean
   status: AgentRuntimeStatus
   lastTaskMessage?: string
   finalResponse?: string
@@ -284,6 +290,12 @@ interface Waiter {
   resolve: (event: AgentCompletionEvent) => void
 }
 
+interface FollowUpClaim {
+  fd: number
+  file: string
+  token: string
+}
+
 const abortError = (signal?: AbortSignal): Error => (signal?.reason instanceof Error ? signal.reason : new Error('Wait canceled.'))
 
 const throwIfAborted = (signal?: AbortSignal): void => {
@@ -362,7 +374,8 @@ const isAgentArtifact = (name: string, agentId: string): boolean =>
   name === `${agentId}.jsonl` ||
   name === `${agentId}.info.json` ||
   name === `${agentId}.log` ||
-  new RegExp(`^${agentId}\\.info\\.json\\.\\d+\\.tmp$`).test(name)
+  name === `${agentId}.follow-up` ||
+  new RegExp(`^${agentId}[.]info[.]json[.][0-9]+[.]tmp$`).test(name)
 
 const latestArtifactMtime = (directory: string, agentEntries: Dirent[]): number => {
   let latest = 0
@@ -648,6 +661,7 @@ const readInfoFile = (file: string): AgentInfo | undefined => {
       ...parsed,
       canonicalName: parsed.canonicalName ?? canonicalAgentName(parsed.taskName),
       cwd: parsed.cwd ?? '',
+      followUpUsed: parsed.followUpUsed ?? false,
       infoFile: parsed.infoFile ?? file,
       logFile: parsed.logFile ?? '',
       messageCount: parsed.messageCount ?? 0,
@@ -1119,6 +1133,22 @@ const canonicalAgentName = (target: string): string => (target.startsWith('/') ?
 
 const targetMatches = (event: AgentCompletionEvent, targets?: Set<string>): boolean => !targets || targets.has(event.agentName)
 
+const latestContextTokens = (sessionFile: string): number | undefined => {
+  try {
+    const latestAssistant = SessionManager.open(sessionFile)
+      .getBranch()
+      .toReversed()
+      .find((entry) => entry.type === 'message' && entry.message.role === 'assistant')
+    if (latestAssistant?.type !== 'message' || latestAssistant.message.role !== 'assistant') {
+      return undefined
+    }
+    const { input, cacheRead, cacheWrite } = latestAssistant.message.usage
+    return [input, cacheRead, cacheWrite].every((value) => Number.isFinite(value) && value >= 0) ? input + cacheRead + cacheWrite : undefined
+  } catch {
+    return undefined
+  }
+}
+
 const buildChildArgs = (launch: { command: string; prefixArgs: string[] }, info: AgentInfo): string[] => {
   const args = [
     ...launch.prefixArgs,
@@ -1302,6 +1332,129 @@ export class AgentManager {
     this.resetInactivityMonitor(live)
   }
 
+  private countLiveClaudeAgents(excludeAgentId?: string): number {
+    return [...this.live.values()].filter((live) => live.info.id !== excludeAgentId && !live.processFinished && isClaudeModelId(live.info.modelId))
+      .length
+  }
+
+  private assertClaudeLaunchAllowed(info: Pick<AgentInfo, 'id' | 'modelId'>): void {
+    if (!isClaudeModelId(info.modelId)) {
+      return
+    }
+    if (this.countLiveClaudeAgents(info.id) >= MAX_LIVE_CLAUDE_AGENTS) {
+      throw new Error(
+        `At most ${MAX_LIVE_CLAUDE_AGENTS} Claude-backed subagents may run at once. Wait for one to finish or use a non-Claude profile.`
+      )
+    }
+  }
+
+  private assertContinuationAllowed(info: AgentInfo, live: LiveAgent | undefined): void {
+    if (info.followUpUsed) {
+      throw new Error(`Agent ${info.canonicalName} already used its single follow-up. Spawn a fresh agent with a narrow task instead.`)
+    }
+    if (!isClaudeModelId(info.modelId)) {
+      return
+    }
+    const contextTokens = latestContextTokens(info.sessionFile)
+    if (contextTokens === undefined) {
+      if (!live) {
+        throw new Error(`Claude context usage is unavailable for ${info.canonicalName}. Spawn a fresh agent instead of continuing it.`)
+      }
+      return
+    }
+    if (contextTokens >= CLAUDE_CONTEXT_TOKEN_LIMIT) {
+      throw new Error(
+        `Agent ${info.canonicalName} reached ${contextTokens} context input tokens. Spawn a fresh agent before continuing past ${CLAUDE_CONTEXT_TOKEN_LIMIT}.`
+      )
+    }
+  }
+
+  private setFollowUpUsed(info: AgentInfo, live: LiveAgent | undefined, used: boolean): void {
+    info.followUpUsed = used
+    if (live) {
+      live.info.followUpUsed = used
+      saveInfo(live.info)
+    } else {
+      saveInfo(info)
+    }
+  }
+
+  private claimFollowUp(info: AgentInfo, live: LiveAgent | undefined): FollowUpClaim {
+    const file = join(dirname(info.infoFile), `${info.id}.follow-up`)
+    const token = randomUUID()
+    let fd: number | undefined
+    try {
+      fd = openSync(file, 'wx')
+      writeFileSync(fd, JSON.stringify({ token }))
+      this.setFollowUpUsed(info, live, true)
+      return { fd, file, token }
+    } catch (error) {
+      if (fd !== undefined) {
+        releaseTaskLock(file, fd, token)
+      }
+      if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
+        throw new Error(`Agent ${info.canonicalName} already used its single follow-up. Spawn a fresh agent with a narrow task instead.`, {
+          cause: error,
+        })
+      }
+      throw error
+    }
+  }
+
+  private commitFollowUp(claim: FollowUpClaim): void {
+    closeSync(claim.fd)
+  }
+
+  private rollbackFollowUp(info: AgentInfo, live: LiveAgent | undefined, claim: FollowUpClaim): void {
+    try {
+      this.setFollowUpUsed(info, live, false)
+    } finally {
+      releaseTaskLock(claim.file, claim.fd, claim.token)
+    }
+  }
+
+  private async restartForFollowUp(info: AgentInfo, claim: FollowUpClaim): Promise<LiveAgent> {
+    try {
+      if (info.childProcess) {
+        await this.terminateOwnedChild(info)
+      }
+      if (info.status === 'starting' || info.status === 'running') {
+        info.status = 'interrupted'
+        info.lastActivity = Date.now()
+        saveInfo(info)
+      }
+      return await this.startLiveAgent(info)
+    } catch (error) {
+      this.rollbackFollowUp(info, undefined, claim)
+      throw error
+    }
+  }
+
+  private async steerFollowUp(info: AgentInfo, live: LiveAgent, message: string, claim: FollowUpClaim): Promise<{ delivery: 'steer' }> {
+    try {
+      await this.sendCommand(live, { message, type: 'steer' })
+    } catch (error) {
+      this.rollbackFollowUp(info, live, claim)
+      throw error
+    }
+    this.commitFollowUp(claim)
+    live.info.lastTaskMessage = message
+    this.recordActivity(live)
+    return { delivery: 'steer' }
+  }
+
+  private async promptFollowUp(info: AgentInfo, live: LiveAgent, message: string, claim: FollowUpClaim): Promise<{ delivery: 'prompt' }> {
+    try {
+      await this.prompt(live, message, message)
+    } catch (error) {
+      this.rollbackFollowUp(info, live, claim)
+      await this.terminateProcess(live)
+      throw error
+    }
+    this.commitFollowUp(claim)
+    return { delivery: 'prompt' }
+  }
+
   private clearChildOwnership(info: AgentInfo, expectedToken: string): void {
     const persisted = readInfoFile(info.infoFile)
     if (persisted?.childProcess?.token === expectedToken) {
@@ -1425,6 +1578,11 @@ export class AgentManager {
       availableModels: params.availableModels,
       parentModel: params.parentModel,
     })
+    if (isClaudeModelId(resolved.modelId) && this.countLiveClaudeAgents() >= MAX_LIVE_CLAUDE_AGENTS) {
+      throw new Error(
+        `At most ${MAX_LIVE_CLAUDE_AGENTS} Claude-backed subagents may run at once. Wait for one to finish or use a non-Claude profile.`
+      )
+    }
     const cwd = resolvePath(params.cwd)
     const directory = scopeDir(params.parentSessionId)
     ensurePrivateDir(directory, true)
@@ -1470,6 +1628,7 @@ export class AgentManager {
         color: resolved.color,
         createdAt: Date.now(),
         cwd,
+        followUpUsed: false,
         id,
         infoFile: join(directory, `${id}.info.json`),
         isReadonly: resolved.isReadonly,
@@ -1617,6 +1776,7 @@ export class AgentManager {
   }
 
   private async startLiveAgent(info: AgentInfo, initialMessage?: string, displayMessage?: string): Promise<LiveAgent> {
+    this.assertClaudeLaunchAllowed(info)
     if (info.status !== 'starting' && info.status !== 'running') {
       this.notifyStatusChange({ ...info, lastActivity: Date.now(), status: 'starting' })
     }
@@ -2160,37 +2320,28 @@ export class AgentManager {
   async sendMessage(parentSessionId: string, target: string, message: string): Promise<{ delivery: 'steer' | 'prompt' }> {
     await this.reconciliation
     let info = this.getAgentInfo(target, parentSessionId)
+    const assertProfileAvailable = (): void => {
+      const profile = info.profile ?? info.agentType
+      if (profile && !Object.hasOwn(AGENT_CONFIGS, profile)) {
+        throw new Error(`Agent ${info.canonicalName} uses an unavailable profile: ${profile}`)
+      }
+    }
+    assertProfileAvailable()
     let live = this.live.get(info.id)
     if (live?.expectedExit) {
       await live.termination
       live = undefined
       info = this.getAgentInfo(target, parentSessionId)
+      assertProfileAvailable()
     }
+    this.assertClaudeLaunchAllowed(info)
+    this.assertContinuationAllowed(info, live)
     const wasLive = Boolean(live)
-    if (!live) {
-      if (info.childProcess) {
-        await this.terminateOwnedChild(info)
-      }
-      if (info.status === 'starting' || info.status === 'running') {
-        info.status = 'interrupted'
-        info.lastActivity = Date.now()
-        saveInfo(info)
-      }
-      live = await this.startLiveAgent(info)
-    }
-    if (wasLive && (info.status === 'starting' || info.status === 'running')) {
-      await this.sendCommand(live, { message, type: 'steer' })
-      live.info.lastTaskMessage = message
-      this.recordActivity(live)
-      return { delivery: 'steer' }
-    }
-    try {
-      await this.prompt(live, message, message)
-      return { delivery: 'prompt' }
-    } catch (error) {
-      await this.terminateProcess(live)
-      throw error
-    }
+    const claim = this.claimFollowUp(info, live)
+    live ??= await this.restartForFollowUp(info, claim)
+    return wasLive && (info.status === 'starting' || info.status === 'running')
+      ? this.steerFollowUp(info, live, message, claim)
+      : this.promptFollowUp(info, live, message, claim)
   }
 
   async interruptAgent(parentSessionId: string, target: string): Promise<{ previous_status: AgentRuntimeStatus }> {
