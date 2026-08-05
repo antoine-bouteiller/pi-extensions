@@ -11,5 +11,10 @@
       groupName: 'pi-agent',
       matchPackageNames: ['@earendil-works/*'],
     },
+    {
+      description: 'Effect Group',
+      groupName: 'effect',
+      matchPackageNames: ['effect', '@effect/**'],
+    },
   ],
 }
