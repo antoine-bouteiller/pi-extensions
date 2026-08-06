@@ -92,7 +92,10 @@ interface AskUserResult {
   details: AskUserDetails
 }
 
-class AskUserUiError extends Data.TaggedError('AskUserUiError')<{ readonly cause: unknown }> {}
+class AskUserUiError extends Data.TaggedError('AskUserUiError')<{
+  readonly cause: unknown
+  readonly message: string
+}> {}
 
 const showQuestion = (
   ctx: ExtensionContext,
@@ -101,7 +104,7 @@ const showQuestion = (
   uiSignal: AbortSignal | undefined
 ): Effect.Effect<SelectionResult, AskUserUiError> =>
   Effect.tryPromise({
-    catch: (cause) => new AskUserUiError({ cause }),
+    catch: (cause) => new AskUserUiError({ cause, message: cause instanceof Error ? cause.message : String(cause) }),
     try: () =>
       ctx.ui.custom<SelectionResult>((tui, theme, _kb, done) => {
         let optionIndex = 0
@@ -367,13 +370,6 @@ const askUserEffect = (
     )
   })
 
-const toRejection = (error: ToolFailure | AskUserUiError): Error => {
-  if (error instanceof ToolFailure) {
-    return new Error(error.message)
-  }
-  return error.cause instanceof Error ? error.cause : new Error(String(error.cause))
-}
-
 export const register: {
   (runtime: AppRuntime): (pi: ExtensionAPI) => void
   (pi: ExtensionAPI, runtime: AppRuntime): void
@@ -389,7 +385,7 @@ export const register: {
        * would instead reject the tool call, which is exactly what "neither path may fail" rules out.
        */
       execute: async (_toolCallId, params, signal, _onUpdate, ctx) =>
-        runtime.runPromise(askUserEffect(params, signal ?? undefined).pipe(Effect.provide(perInvocation(ctx)), Effect.mapError(toRejection))),
+        runtime.runPromise(askUserEffect(params, signal ?? undefined).pipe(Effect.provide(perInvocation(ctx)))),
       label: 'Ask User',
       name: 'ask_user',
       parameters: AskUserParams,

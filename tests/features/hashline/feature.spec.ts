@@ -135,12 +135,20 @@ describe('hashline extension', () => {
     expect(writtenLines.at(2999)).toBe(lines.at(2999))
   })
 
-  test('rejects a read when no complete source line fits the output limit', async () => {
+  test('preserves tagged hashline failures at the tool boundary', async () => {
     const { read } = setup()
     const directory = await workspace()
     await writeFile(join(directory, 'wide.txt'), 'x'.repeat(DEFAULT_MAX_BYTES))
 
-    expect(read.execute('wide', { path: 'wide.txt' }, undefined, undefined, { cwd: directory })).rejects.toThrow('exceeds the hashline output limit')
+    const rejection = await read.execute('wide', { path: 'wide.txt' }, undefined, undefined, { cwd: directory }).then(
+      () => undefined,
+      (error: unknown) => error
+    )
+
+    expect(rejection).toMatchObject({
+      _tag: 'HashlineToolError',
+      message: expect.stringContaining('exceeds the hashline output limit'),
+    })
   })
   test('prunes superseded and duplicate reads without removing tool results', async () => {
     const { emit, pi } = createFakePi()

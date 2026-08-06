@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { asTool } from '@tests/utils/casts.js'
+import { withFileMutationQueue } from '@earendil-works/pi-coding-agent'
+import { asNarrowed, asTool } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 
@@ -23,6 +24,7 @@ interface Tool {
   ) => Promise<SafeRmResult>
 }
 
+const noop = (): void => undefined
 const temporaryDirectories: string[] = []
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { force: true, recursive: true })))
@@ -151,14 +153,71 @@ describe('safe rm', () => {
     expect(await Bun.file(join(cwd, 'artifacts', 'checkout', '.git', 'config')).exists()).toBeTrue()
   })
 
-  test('honors cancellation before removing anything', async () => {
+  test('preserves tagged cancellation failures at the tool boundary', async () => {
     const { cwd } = await workspace()
     await writeFile(join(cwd, 'keep.txt'), 'content')
     const controller = new AbortController()
     controller.abort()
 
-    expect(setup().execute('cancelled', { paths: ['keep.txt'] }, controller.signal, undefined, { cwd })).rejects.toThrow('cancelled')
+    const rejection = await setup()
+      .execute('cancelled', { paths: ['keep.txt'] }, controller.signal, undefined, { cwd })
+      .then(
+        () => undefined,
+        (error: unknown) => error
+      )
+
+    expect(rejection).toMatchObject({ _tag: 'CancelledError', message: 'Deletion was cancelled' })
     expect(await Bun.file(join(cwd, 'keep.txt')).exists()).toBeTrue()
+  })
+
+  test('preserves tagged cancellation after waiting for the mutation queue', async () => {
+    const { cwd } = await workspace()
+    const target = join(cwd, 'keep.txt')
+    await writeFile(target, 'content')
+
+    let markLockStarted: () => void = noop
+    const lockStarted = new Promise<void>((resolve) => {
+      markLockStarted = resolve
+    })
+    let releaseLock: () => void = noop
+    const lock = withFileMutationQueue(
+      target,
+      () =>
+        new Promise<void>((resolve) => {
+          releaseLock = resolve
+          markLockStarted()
+        })
+    )
+    await lockStarted
+
+    const controller = new AbortController()
+    let cancellationChecks = 0
+    let markQueued: () => void = noop
+    const queued = new Promise<void>((resolve) => {
+      markQueued = resolve
+    })
+    const signal = asNarrowed<AbortSignal, { readonly aborted: boolean }>({
+      get aborted() {
+        cancellationChecks += 1
+        if (cancellationChecks === 3) {
+          markQueued()
+        }
+        return controller.signal.aborted
+      },
+    })
+    const deletion = setup().execute('queued-cancellation', { paths: ['keep.txt'] }, signal, undefined, { cwd })
+
+    await queued
+    controller.abort()
+    releaseLock()
+    await lock
+    const rejection = await deletion.then(
+      () => undefined,
+      (error: unknown) => error
+    )
+
+    expect(rejection).toMatchObject({ _tag: 'CancelledError', message: 'Deletion was cancelled' })
+    expect(await Bun.file(target).exists()).toBeTrue()
   })
 
   test('rejects distinct targets where one contains the other', async () => {

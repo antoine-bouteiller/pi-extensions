@@ -265,7 +265,7 @@ const registerPoll = (
               command: params.command,
               exec: (timeoutMs) =>
                 Effect.tryPromise({
-                  catch: (cause) => ToolFailure.make({ message: cause instanceof Error ? cause.message : String(cause) }),
+                  catch: (cause) => ToolFailure.make({ cause, message: cause instanceof Error ? cause.message : String(cause) }),
                   try: (signal) => pi.exec('sh', ['-lc', params.command], { signal, timeout: timeoutMs }),
                 }),
               intervalMs: (params.interval_seconds ?? DEFAULT_INTERVAL_SECONDS) * 1000,
@@ -307,15 +307,13 @@ const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime): void => {
     description:
       'Register a shell command that is polled in the background until it exits successfully. The current agent run can end completely; completion, timeout, or failure automatically wakes the agent with the final output. Output is truncated to 50KB or 2000 lines.',
     async execute(toolCallId, params, signal, _onUpdate, ctx) {
-      if (isTrue(signal?.aborted)) {
-        throw new Error('Background poll registration was cancelled')
-      }
-
-      await runtime
-        .runPromise(registerPoll(pi, toolCallId, params, ctx).pipe(Effect.provideService(PollState, pollState)))
-        .catch((error: unknown) => {
-          throw new Error(error instanceof ToolFailure ? error.message : String(error))
-        })
+      await runtime.runPromise(
+        Effect.suspend(() =>
+          isTrue(signal?.aborted)
+            ? ToolFailure.make({ message: 'Background poll registration was cancelled' })
+            : registerPoll(pi, toolCallId, params, ctx)
+        ).pipe(Effect.provideService(PollState, pollState))
+      )
       const taskId = `poll-${toolCallId}`
       const label = params.label?.trim() || params.command
       return {

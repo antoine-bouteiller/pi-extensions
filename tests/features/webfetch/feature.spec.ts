@@ -116,6 +116,18 @@ describe('webfetch', () => {
     })
   })
 
+  test('tags transport failures while preserving their cause and message', async () => {
+    const cause = new Error('socket exploded')
+    const harness = createHarness(() => Promise.reject(cause))
+
+    const rejection = await harness.execute({ url: 'https://example.com/failure' }).then(
+      () => undefined,
+      (error: unknown) => error
+    )
+
+    expect(rejection).toMatchObject({ _tag: 'ToolFailure', cause, message: 'socket exploded' })
+  })
+
   test('supports plain text and raw HTML output', async () => {
     const html =
       "<html><head><title>Title</title></head><body><main><h1>Heading</h1><p>A <strong>bold</strong> link to <a href='https://example.com'>home</a>.</p></main></body></html>"
@@ -292,7 +304,7 @@ describe('webfetch', () => {
       (error: unknown) => error
     )
 
-    expect(asError(rejection).message).toBe('webfetch was cancelled')
+    expect(rejection).toMatchObject({ _tag: 'ToolFailure', message: 'webfetch was cancelled' })
     expect(requests).toBe(0)
   })
 

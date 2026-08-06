@@ -379,9 +379,13 @@ const writeHashlinePatch = async (
 
 class Snapshots extends Context.Service<Snapshots, InMemorySnapshotStore>()('pi-extensions/features/hashline/feature/Snapshots') {}
 
-class HashlineToolError extends Data.TaggedError('HashlineToolError')<{ readonly cause: unknown }> {}
+class HashlineToolError extends Data.TaggedError('HashlineToolError')<{
+  readonly cause: unknown
+  readonly message: string
+}> {}
 
-const toRejection = (failure: HashlineToolError): Error => (failure.cause instanceof Error ? failure.cause : new Error(String(failure.cause)))
+const hashlineToolError = (cause: unknown): HashlineToolError =>
+  new HashlineToolError({ cause, message: cause instanceof Error ? cause.message : String(cause) })
 
 const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime): void => {
   const snapshotsStore = new InMemorySnapshotStore()
@@ -400,9 +404,7 @@ const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime): void => {
       body: (params: Params, signal: AbortSignal | undefined) => Effect.Effect<Result, HashlineToolError, HandlerServices | Snapshots>
     ) =>
     async (_toolCallId: string, params: Params, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext): Promise<Result> =>
-      runtime.runPromise(
-        body(params, signal).pipe(Effect.mapError(toRejection), Effect.provideService(Snapshots, snapshotsStore), Effect.provide(perInvocation(ctx)))
-      )
+      runtime.runPromise(body(params, signal).pipe(Effect.provideService(Snapshots, snapshotsStore), Effect.provide(perInvocation(ctx))))
 
   pi.registerTool({
     description:
@@ -412,7 +414,7 @@ const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime): void => {
         const ctx = yield* PiCtx
         const snapshots = yield* Snapshots
         return yield* Effect.tryPromise({
-          catch: (cause) => new HashlineToolError({ cause }),
+          catch: hashlineToolError,
           try: () => readHashlineFile({ cwd: ctx.cwd, limit, offset, path, signal, snapshots }),
         })
       })
@@ -438,7 +440,7 @@ const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime): void => {
         const ctx = yield* PiCtx
         const snapshots = yield* Snapshots
         return yield* Effect.tryPromise({
-          catch: (cause) => new HashlineToolError({ cause }),
+          catch: hashlineToolError,
           try: () => writeHashlinePatch(patch, ctx.cwd, signal, snapshots),
         })
       })

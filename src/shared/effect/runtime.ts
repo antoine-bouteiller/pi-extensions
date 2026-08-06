@@ -12,9 +12,6 @@ export type HandlerServices = PiCtx | Ui
  */
 export const perInvocation = (ctx: ExtensionContext): Context.Context<HandlerServices> => Context.make(PiCtx, ctx).pipe(Context.add(Ui, makeUi(ctx)))
 
-// Isolated so `Effect.fail` never wraps a literal `new Error(...)` inline.
-const toolExecutionError = (message: string): Error => new Error(message)
-
 export const makeToolExecutor =
   <AppServices>(runtime: ManagedRuntime.ManagedRuntime<AppServices, never>) =>
   <Params, Result>(body: (params: Params) => Effect.Effect<Result, ToolFailure, AppServices | HandlerServices>) =>
@@ -26,14 +23,7 @@ export const makeToolExecutor =
        * run the body's synchronous side effects. Suspending means the body is never constructed
        * when the signal has already fired.
        */
-      Effect.suspend(() => (signal !== undefined && signal.aborted ? Effect.interrupt : body(params))).pipe(
-        Effect.provide(perInvocation(ctx)),
-        /*
-         * A tool failure is expected, not a defect: reject with the same plain Error the
-         * pre-Effect code threw, because the message is the contract Pi renders to the model.
-         */
-        Effect.catchTag('ToolFailure', (failure) => Effect.fail(toolExecutionError(failure.message)))
-      ),
+      Effect.suspend(() => (signal !== undefined && signal.aborted ? Effect.interrupt : body(params))).pipe(Effect.provide(perInvocation(ctx))),
       { signal }
     )
 

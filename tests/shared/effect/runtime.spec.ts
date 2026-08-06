@@ -48,11 +48,8 @@ const fakeContext = (overrides: { cwd?: string; hasUI?: boolean; confirm?: boole
 
 const emptyRuntime = () => ManagedRuntime.make(Layer.empty)
 
-// Isolated so `Effect.fail` never wraps a literal `new Error(...)` inline.
-const discoveryError = (message: string): Error => new Error(message)
-
 describe('tool executor boundary', () => {
-  it('rejects with the exact Error message a ToolFailure carries', async () => {
+  it('rejects with the tagged ToolFailure and its exact message', async () => {
     const runtime = emptyRuntime()
     const execute = makeToolExecutor(runtime)(() => Effect.fail(ToolFailure.make({ message: 'path is outside the workspace' })))
 
@@ -61,7 +58,7 @@ describe('tool executor boundary', () => {
       (error: unknown) => error
     )
 
-    expect(rejection).toBeInstanceOf(Error)
+    expect(rejection).toBeInstanceOf(ToolFailure)
     expect(asError(rejection).message).toBe('path is outside the workspace')
     await runtime.dispose()
   })
@@ -154,7 +151,7 @@ describe('tool executor boundary', () => {
 describe('event handler boundary', () => {
   it('keeps the error channel intact so a failing handler rejects', async () => {
     const runtime = emptyRuntime()
-    const handler = makeEventHandler(runtime)(() => Effect.fail(discoveryError('discovery failed')))
+    const handler = makeEventHandler(runtime)(() => Effect.fail(ToolFailure.make({ message: 'discovery failed' })))
 
     const rejection = await handler({}, fakeContext().ctx).then(
       () => undefined,

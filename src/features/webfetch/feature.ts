@@ -85,7 +85,7 @@ const parseUrl = (value: string): URL => {
 
 const parseUrlEffect = (value: string): Effect.Effect<URL, ToolFailure> =>
   Effect.try({
-    catch: (cause) => ToolFailure.make({ message: cause instanceof Error ? cause.message : String(cause) }),
+    catch: (cause) => ToolFailure.make({ cause, message: cause instanceof Error ? cause.message : String(cause) }),
     try: () => parseUrl(value),
   })
 
@@ -237,6 +237,17 @@ const readCappedBody = (response: HttpClientResponse.HttpClientResponse): Effect
     return body
   })
 
+const webfetchFailure = (failure: ToolFailure | HttpClientError.HttpClientError): ToolFailure => {
+  if (failure._tag === 'ToolFailure') {
+    return failure
+  }
+  const transportCause = failure.reason._tag === 'TransportError' ? failure.reason.cause : undefined
+  return ToolFailure.make({
+    cause: transportCause ?? failure,
+    message: transportCause instanceof Error ? transportCause.message : failure.message,
+  })
+}
+
 interface BuildFetchResultOptions {
   readonly body: Uint8Array
   readonly dependencies: WebfetchDependencies
@@ -310,7 +321,7 @@ const fetchResult = ({
   onUpdate,
   params,
   signal,
-}: FetchResultOptions): Effect.Effect<AgentToolResult<WebfetchDetails>, ToolFailure | HttpClientError.HttpClientError, HttpClient.HttpClient> =>
+}: FetchResultOptions): Effect.Effect<AgentToolResult<WebfetchDetails>, ToolFailure, HttpClient.HttpClient> =>
   Effect.gen(function* () {
     const url = yield* parseUrlEffect(params.url)
     const format = resolveFormat(params.format)
@@ -336,7 +347,7 @@ const fetchResult = ({
         timeoutSeconds,
         url,
       })
-    })
+    }).pipe(Effect.mapError(webfetchFailure))
 
     const withTimeout = main.pipe(
       Effect.timeout(Duration.seconds(timeoutSeconds)),
@@ -345,23 +356,6 @@ const fetchResult = ({
 
     return yield* signal === undefined ? withTimeout : Effect.raceFirst(withTimeout, cancellationEffect(signal))
   })
-
-const toRejection = (failure: unknown): Error => {
-  if (failure instanceof ToolFailure) {
-    return new Error(failure.message)
-  }
-  if (HttpClientError.isHttpClientError(failure)) {
-    const { reason } = failure
-    if (reason._tag === 'TransportError' && reason.cause instanceof Error) {
-      return reason.cause
-    }
-    return new Error(failure.message)
-  }
-  if (failure instanceof Error) {
-    return failure
-  }
-  return new Error(String(failure))
-}
 
 /**
  * Overriding `httpClient`/`clock` (tests only) builds a dedicated runtime from those layers
@@ -383,7 +377,7 @@ export const createWebfetchExtension: {
           overrides.saveFullOutput ??
           ((content) =>
             writePrivateTempFileEffect(content, { prefix: 'pi-webfetch-' }).pipe(
-              Effect.mapError((cause) => ToolFailure.make({ message: cause.message }))
+              Effect.mapError((cause) => ToolFailure.make({ cause, message: cause.message }))
             )),
       }
       const hasOverride = overrides.clock !== undefined || overrides.httpClient !== undefined
@@ -403,7 +397,7 @@ export const createWebfetchExtension: {
               isTrue(signal?.aborted)
                 ? Effect.fail(ToolFailure.make({ message: 'webfetch was cancelled' }))
                 : fetchResult({ dependencies, onUpdate, params, signal })
-            ).pipe(Effect.mapError(toRejection))
+            )
           )
         },
         label: 'Web Fetch',

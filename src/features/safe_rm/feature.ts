@@ -146,17 +146,22 @@ const rejectMetadataPath = (absolutePath: string): Effect.Effect<void, GitMetada
     ? Effect.fail(GitMetadataError.make({ message: `Refusing to remove Git metadata: ${absolutePath}` }))
     : Effect.void
 
-const lstatEffect = (path: string): Effect.Effect<Stats, Cause.UnknownError> => Effect.tryPromise(() => lstat(path))
+const unknownError = (cause: unknown): Cause.UnknownError =>
+  Cause.isUnknownError(cause) ? cause : new Cause.UnknownError(cause, cause instanceof Error ? cause.message : String(cause))
 
-const realpathEffect = (path: string): Effect.Effect<string, Cause.UnknownError> => Effect.tryPromise(() => realpath(path))
+const lstatEffect = (path: string): Effect.Effect<Stats, Cause.UnknownError> => Effect.tryPromise({ catch: unknownError, try: () => lstat(path) })
 
-const readdirEffect = (path: string): Effect.Effect<Dirent[], Cause.UnknownError> => Effect.tryPromise(() => readdir(path, { withFileTypes: true }))
+const realpathEffect = (path: string): Effect.Effect<string, Cause.UnknownError> =>
+  Effect.tryPromise({ catch: unknownError, try: () => realpath(path) })
+
+const readdirEffect = (path: string): Effect.Effect<Dirent[], Cause.UnknownError> =>
+  Effect.tryPromise({ catch: unknownError, try: () => readdir(path, { withFileTypes: true }) })
 
 const removeEffect = (path: string, options: { force: boolean; recursive: boolean }): Effect.Effect<void, Cause.UnknownError> =>
-  Effect.tryPromise(() => remove(path, options))
+  Effect.tryPromise({ catch: unknownError, try: () => remove(path, options) })
 
 const assertUnprotectedEffect = (path: string, cwd: string, operation: string): Effect.Effect<void, Cause.UnknownError> =>
-  Effect.tryPromise(() => assertUnprotectedPath(path, cwd, operation))
+  Effect.tryPromise({ catch: unknownError, try: () => assertUnprotectedPath(path, cwd, operation) })
 
 /**
  * Recursive removal must not turn a harmless-looking parent directory into
@@ -251,6 +256,20 @@ interface RevalidateTargetOptions {
 
 type RevalidateTargetError = CancelledError | Cause.UnknownError | SymlinkEscapeError | TargetChangedError | GitRepositoryError | GitMetadataError
 
+const mutationQueueError = (cause: unknown): RevalidateTargetError => {
+  if (
+    Cause.isUnknownError(cause) ||
+    cause instanceof CancelledError ||
+    cause instanceof SymlinkEscapeError ||
+    cause instanceof TargetChangedError ||
+    cause instanceof GitRepositoryError ||
+    cause instanceof GitMetadataError
+  ) {
+    return cause
+  }
+  return unknownError(cause)
+}
+
 const revalidateTargetEffect = ({ target, roots, cwd, signal }: RevalidateTargetOptions): Effect.Effect<void, RevalidateTargetError> =>
   Effect.gen(function* () {
     yield* checkCancelled(signal)
@@ -285,19 +304,6 @@ const rejectOverlappingTargets = (targets: ValidatedTarget[]): Effect.Effect<voi
     return undefined
   })
 
-/*
- * Cancellation stays cooperative through `checkCancelled`, so the signal is deliberately never
- * handed to `Effect.runPromise`: forwarding it would let Effect interrupt the fiber mid-flight and
- * replace the exact rejection message tests and Pi both depend on with a generic interrupted-fiber
- * one.
- */
-const toRejection = (error: unknown): Error => {
-  if (Cause.isUnknownError(error) && error.cause instanceof Error) {
-    return error.cause
-  }
-  return error instanceof Error ? error : new Error(String(error))
-}
-
 interface SafeRmToolParams {
   paths: string[]
   recursive?: boolean
@@ -308,13 +314,14 @@ interface ToolOutput {
   details: SafeRmDetails
 }
 
-type SafeRmToolError = ValidateTargetError | OverlappingTargetsError | Cause.UnknownError
+type SafeRmToolError = ValidateTargetError | RevalidateTargetError | OverlappingTargetsError
 
+// Cancellation stays cooperative so an interrupted fiber cannot replace the tagged validation failure.
 const createSafeRmTool = (runtime: AppRuntime) => {
   const runTool =
     <Params, Result, Failure>(body: (params: Params, signal: AbortSignal | undefined, ctx: ExtensionContext) => Effect.Effect<Result, Failure>) =>
     async (_toolCallId: string, params: Params, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext): Promise<Result> =>
-      runtime.runPromise(body(params, signal, ctx).pipe(Effect.mapError(toRejection)))
+      runtime.runPromise(body(params, signal, ctx))
 
   return {
     description:
@@ -344,20 +351,22 @@ const createSafeRmTool = (runtime: AppRuntime) => {
           }
           yield* checkCancelled(signal)
 
-          yield* Effect.tryPromise(() =>
-            withFileMutationQueue(target.absolute, () =>
-              runtime.runPromise(
-                Effect.gen(function* () {
-                  /*
-                   * Deliberately a genuine second pass, not a reuse of validateTargetEffect: a parent may
-                   * have been replaced by a symlink while this target waited in queue.
-                   */
-                  yield* revalidateTargetEffect({ cwd, roots, signal, target })
-                  yield* removeEffect(target.absolute, { force: false, recursive: target.directory })
-                })
-              )
-            )
-          )
+          yield* Effect.tryPromise({
+            catch: mutationQueueError,
+            try: () =>
+              withFileMutationQueue(target.absolute, () =>
+                runtime.runPromise(
+                  Effect.gen(function* () {
+                    /*
+                     * Deliberately a genuine second pass, not a reuse of validateTargetEffect: a parent may
+                     * have been replaced by a symlink while this target waited in queue.
+                     */
+                    yield* revalidateTargetEffect({ cwd, roots, signal, target })
+                    yield* removeEffect(target.absolute, { force: false, recursive: target.directory })
+                  })
+                )
+              ),
+          })
           details.removed.push(target.input)
         }
 

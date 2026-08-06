@@ -38,7 +38,7 @@ const params = {
   question: 'When should this ship?',
 }
 
-const setup = () => {
+const setup = (customError?: Error) => {
   let component: PromptComponent | undefined
   let customCalls = 0
   const tui = {
@@ -52,6 +52,9 @@ const setup = () => {
   const ui = {
     custom: (factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: unknown) => void) => PromptComponent) => {
       customCalls++
+      if (customError !== undefined) {
+        return Promise.reject(customError)
+      }
       return new Promise<unknown>((resolve) => {
         component = factory(tui, theme, {}, resolve)
       })
@@ -147,6 +150,18 @@ describe('ask_user tool behavior', () => {
     expect(result.content[0].text).toContain('Ask the user in plain text instead')
     expect(result.details).toMatchObject({ answer: undefined, cancelled: true })
     expect(fixture.customCalls).toBe(0)
+  })
+
+  test('preserves tagged UI failures at the tool boundary', async () => {
+    const cause = new Error('UI exploded')
+    const fixture = setup(cause)
+
+    const rejection = await fixture.tool.execute('ui-error', params, undefined, undefined, fixture.tuiContext).then(
+      () => undefined,
+      (error: unknown) => error
+    )
+
+    expect(rejection).toMatchObject({ _tag: 'AskUserUiError', cause, message: 'UI exploded' })
   })
 })
 

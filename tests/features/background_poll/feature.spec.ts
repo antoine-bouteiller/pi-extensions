@@ -136,12 +136,18 @@ describe('background poll', () => {
     expect(fixture.notifications[0]?.level).toBe('warning')
   })
 
-  it('rejects registration without a live session scope', async () => {
+  it('rejects registration with a tagged failure when no session is active', async () => {
     const fixture = setup(async () => ({ code: 0, stderr: '', stdout: 'ready' }))
 
-    expect(await rejectionMessage(fixture.tool.execute('inactive', { command: 'check' }, undefined, undefined, fixture.ctx))).toBe(
-      'Cannot register a background poll without an active session'
+    const rejection = await fixture.tool.execute('inactive', { command: 'check' }, undefined, undefined, fixture.ctx).then(
+      () => undefined,
+      (error: unknown) => error
     )
+
+    expect(rejection).toMatchObject({
+      _tag: 'ToolFailure',
+      message: 'Cannot register a background poll without an active session',
+    })
   })
 
   it('replaces the session scope and accepts registrations in the new session', async () => {

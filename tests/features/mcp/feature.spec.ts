@@ -425,11 +425,16 @@ describe('MCP gateway registration and lifecycle', () => {
     ])
   })
 
-  test('rejects ambiguous selectors and orphan modifiers before delegation', async () => {
+  test('rejects ambiguous selectors with a tagged failure before delegation', async () => {
     const harness = createHarness()
     await harness.start()
 
-    expect(harness.execute({ search: 'two', tool: 'one' })).rejects.toThrow('Ambiguous mcp request')
+    const rejection = await harness.execute({ search: 'two', tool: 'one' }).then(
+      () => undefined,
+      (error: unknown) => error
+    )
+
+    expect(rejection).toMatchObject({ _tag: 'ToolFailure', message: expect.stringContaining('Ambiguous mcp request') })
     expect(harness.execute({ connect: 'one', server: 'two' })).rejects.toThrow('connect already names the server')
     expect(harness.execute({ args: {} })).rejects.toThrow('args can only be used with tool')
     expect(harness.execute({ regex: true })).rejects.toThrow('regex can only be used with search')
@@ -446,6 +451,19 @@ describe('MCP gateway registration and lifecycle', () => {
       expect(harness.execute({ args, tool: 'one' })).rejects.toThrow('must be a JSON object')
     }
     expect(callsFor(harness, 'call')).toHaveLength(0)
+  })
+
+  test('tags manager promise failures and preserves their cause', async () => {
+    const cause = new Error('manager exploded')
+    const harness = createHarness({ call: () => Promise.reject(cause) })
+    await harness.start()
+
+    const rejection = await harness.execute({ tool: 'one' }).then(
+      () => undefined,
+      (error: unknown) => error
+    )
+
+    expect(rejection).toMatchObject({ _tag: 'McpOperationError', cause, message: 'manager exploded' })
   })
 
   test('session_shutdown awaits in-flight initialization cleanup and clears UI', async () => {

@@ -226,7 +226,7 @@ interface LiveAgent {
   proc: ChildProcessWithoutNullStreams
   broadcaster: EventBroadcaster
   logger: SessionLogger
-  pending: Ref.Ref<HashMap.HashMap<string, Deferred.Deferred<unknown, Error>>>
+  pending: Ref.Ref<HashMap.HashMap<string, Deferred.Deferred<unknown, SubagentProcessError>>>
   reqId: number
   stderr: string
   expectedExit: boolean
@@ -1254,8 +1254,7 @@ class SubagentProcessError extends Data.TaggedError('SubagentProcessError')<{
   readonly cause?: unknown
 }> {}
 
-const toPlainError = (error: SubagentProcessError | Error): Error =>
-  error instanceof SubagentProcessError ? new Error(error.message, { cause: error.cause }) : error
+const subagentProcessError = (message: string, cause?: unknown): SubagentProcessError => new SubagentProcessError({ cause, message })
 
 const waitForOwnedExitEffect = (inspector: ProcessInspectorShape, ownership: ChildProcessOwnership, timeoutMs: number): Effect.Effect<boolean> =>
   Effect.gen(function* () {
@@ -1829,7 +1828,7 @@ export class AgentManager {
       Effect.gen(function* () {
         const pending = yield* Ref.getAndSet(live.pending, HashMap.empty())
         for (const [, deferred] of HashMap.entries(pending)) {
-          yield* Deferred.fail(deferred, error ?? new Error('Child Pi process exited before responding.'))
+          yield* Deferred.fail(deferred, subagentProcessError(error?.message ?? 'Child Pi process exited before responding.', error))
         }
       })
     )
@@ -1881,7 +1880,7 @@ export class AgentManager {
     proc.on('exit', (code, signal) => {
       logger.info('exit', 'child exited', { code, signal })
       const suffix = isNotEmptyString(live.stderr.trim()) ? `: ${live.stderr.trim().slice(-1000)}` : ''
-      this.finishProcess(live, live.expectedExit ? undefined : new Error(`Child Pi exited (code=${code}, signal=${signal})${suffix}`))
+      this.finishProcess(live, live.expectedExit ? undefined : subagentProcessError(`Child Pi exited (code=${code}, signal=${signal})${suffix}`))
     })
   }
 
@@ -1943,9 +1942,9 @@ export class AgentManager {
 
     try {
       if (proc.pid === undefined) {
-        throw new Error('Child Pi process did not provide a PID.')
+        throw subagentProcessError('Child Pi process did not provide a PID.')
       }
-      const snapshot = await Effect.runPromise(verifyChildOwnershipEffect(this.inspector, proc.pid, childToken).pipe(Effect.mapError(toPlainError)))
+      const snapshot = await Effect.runPromise(verifyChildOwnershipEffect(this.inspector, proc.pid, childToken))
       // Persist ownership before the first RPC round trip. If this process crashes while
       // The child is starting, the next manager can identify and terminate the orphan.
       info.childProcess = {
@@ -1981,19 +1980,19 @@ export class AgentManager {
 
   private sendCommand(live: LiveAgent, command: Record<string, unknown>, timeoutMs = DEFAULT_STARTUP_TIMEOUT_MS): Promise<unknown> {
     if (live.processFinished || live.expectedExit) {
-      return Promise.reject(new Error(`Agent ${live.info.taskName} process is not available.`))
+      return Promise.reject(subagentProcessError(`Agent ${live.info.taskName} process is not available.`))
     }
     const id = `req-${++live.reqId}`
     const commandType = typeof command.type === 'string' ? command.type : 'unknown'
     const payload = `${JSON.stringify({ id, ...command })}\n`
     const wait = Effect.gen(function* () {
       const context = yield* Effect.context()
-      const deferred = yield* Deferred.make<unknown, Error>()
+      const deferred = yield* Deferred.make<unknown, SubagentProcessError>()
       yield* Ref.update(live.pending, HashMap.set(id, deferred))
       yield* Effect.sync(() => {
         live.proc.stdin.write(payload, (error) => {
           if (isNotNullOrUndefined(error)) {
-            Effect.runSyncWith(context)(Deferred.fail(deferred, error))
+            Effect.runSyncWith(context)(Deferred.fail(deferred, subagentProcessError(error.message, error)))
           }
         })
       })
@@ -2002,8 +2001,8 @@ export class AgentManager {
     return Effect.runPromise(
       Effect.timeoutOrElse(wait, {
         duration: timeoutMs,
-        orElse: () => new SubagentProcessError({ message: `Timed out waiting for child Pi RPC command: ${commandType}` }),
-      }).pipe(Effect.ensuring(Ref.update(live.pending, HashMap.remove(id))), Effect.mapError(toPlainError))
+        orElse: () => subagentProcessError(`Timed out waiting for child Pi RPC command: ${commandType}`),
+      }).pipe(Effect.ensuring(Ref.update(live.pending, HashMap.remove(id))))
     )
   }
 
@@ -2069,7 +2068,7 @@ export class AgentManager {
         yield* Ref.update(live.pending, HashMap.remove(id))
         yield* isTrue(event.success)
           ? Deferred.succeed(deferred.value, event.data)
-          : Deferred.fail(deferred.value, new Error(event.error || 'RPC command failed'))
+          : Deferred.fail(deferred.value, subagentProcessError(event.error || 'RPC command failed'))
       })
     )
   }

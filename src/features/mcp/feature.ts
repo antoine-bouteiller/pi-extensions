@@ -2,7 +2,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import { type AgentToolResult, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
-import { type Cause, Deferred, Effect, Function, Match, Option, Ref } from 'effect'
+import { Data, Deferred, Effect, Function, Match, Option, Ref } from 'effect'
 import { Type, type Static } from 'typebox'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
@@ -126,25 +126,24 @@ const textResult = async (text: string, details?: unknown): Promise<AgentToolRes
   }
 }
 
-const parseArgs = (args: unknown): Record<string, unknown> => {
-  let parsed = args
-  if (typeof args === 'string') {
-    try {
-      parsed = JSON.parse(args) as unknown
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error)
-      throw new Error(`mcp args must be valid JSON: ${reason}`, { cause: error })
-    }
-  }
+const parseArgs = (args: unknown): Effect.Effect<Record<string, unknown>, ToolFailure> =>
+  Effect.gen(function* () {
+    const parsed =
+      typeof args === 'string'
+        ? yield* Effect.try({
+            catch: (cause) => ToolFailure.make({ cause, message: `mcp args must be valid JSON: ${errorMessage(cause)}` }),
+            try: () => JSON.parse(args) as unknown,
+          })
+        : args
 
-  if (parsed === undefined) {
-    return {}
-  }
-  if (!isRecord(parsed) || Array.isArray(parsed)) {
-    throw new Error('mcp args must be a JSON object, not an array, scalar, or null')
-  }
-  return parsed
-}
+    if (parsed === undefined) {
+      return {}
+    }
+    if (!isRecord(parsed) || Array.isArray(parsed)) {
+      return yield* ToolFailure.make({ message: 'mcp args must be a JSON object, not an array, scalar, or null' })
+    }
+    return parsed
+  })
 
 const compareNames = (left: { name: string }, right: { name: string }): number => left.name.localeCompare(right.name)
 
@@ -215,7 +214,7 @@ const validateSelectors = (params: {
   server?: string
   args?: unknown
   regex?: boolean
-}): void => {
+}): Effect.Effect<void, ToolFailure> => {
   const selectors = [
     params.tool === undefined ? undefined : 'tool',
     params.connect === undefined ? undefined : 'connect',
@@ -224,17 +223,18 @@ const validateSelectors = (params: {
   ].filter((selector): selector is string => selector !== undefined)
 
   if (selectors.length > 1) {
-    throw new Error(`Ambiguous mcp request: choose only one of ${selectors.join(', ')}`)
+    return ToolFailure.make({ message: `Ambiguous mcp request: choose only one of ${selectors.join(', ')}` })
   }
   if (params.connect !== undefined && params.server !== undefined) {
-    throw new Error('Ambiguous mcp request: connect already names the server; omit server')
+    return ToolFailure.make({ message: 'Ambiguous mcp request: connect already names the server; omit server' })
   }
   if (params.args !== undefined && params.tool === undefined) {
-    throw new Error('mcp args can only be used with tool')
+    return ToolFailure.make({ message: 'mcp args can only be used with tool' })
   }
   if (params.regex !== undefined && params.search === undefined) {
-    throw new Error('mcp regex can only be used with search')
+    return ToolFailure.make({ message: 'mcp regex can only be used with search' })
   }
+  return Effect.void
 }
 
 const errorMessage = (error: unknown): string => {
@@ -247,19 +247,17 @@ const errorMessage = (error: unknown): string => {
   return String(error)
 }
 
-/** Maps a caught failure back onto the plain `Error` the pre-Effect gateway rejected with. */
-const toRejection = (error: unknown): Error => {
-  if (error instanceof ToolFailure) {
-    return new Error(error.message)
-  }
-  if (error instanceof Error) {
-    return error
-  }
-  return new Error(String(error))
-}
+class McpOperationError extends Data.TaggedError('McpOperationError')<{
+  readonly cause: unknown
+  readonly message: string
+}> {}
 
-/** Wraps a manager (or gateway helper) Promise call, keeping the raw rejection identity in the error channel. */
-const callManager = <Value>(run: () => Promise<Value>): Effect.Effect<Value, Cause.UnknownError> => Effect.tryPromise(run)
+/** Wraps manager and gateway Promise calls in a tagged failure while preserving their cause. */
+const callManager = <Value>(run: () => Promise<Value>): Effect.Effect<Value, McpOperationError> =>
+  Effect.tryPromise({
+    catch: (cause) => new McpOperationError({ cause, message: errorMessage(cause) }),
+    try: run,
+  })
 
 type McpSelector =
   | { readonly _tag: 'Call'; readonly tool: string; readonly server: string | undefined; readonly rawArgs: unknown }
@@ -271,45 +269,42 @@ type McpSelector =
 
 /** Validates mutual exclusivity/orphan modifiers (`validateSelectors`) then classifies which operation to dispatch. */
 const classifySelector = (params: McpGatewayInput): Effect.Effect<McpSelector, ToolFailure> =>
-  Effect.try({
-    catch: (cause) => ToolFailure.make({ message: errorMessage(cause) }),
-    try: (): McpSelector => {
-      validateSelectors(params)
-      if (params.tool !== undefined) {
-        return { _tag: 'Call', rawArgs: params.args, server: params.server, tool: params.tool }
-      }
-      if (params.connect !== undefined) {
-        return { _tag: 'Connect', server: params.connect }
-      }
-      if (params.describe !== undefined) {
-        return { _tag: 'Describe', server: params.server, tool: params.describe }
-      }
-      if (params.search !== undefined) {
-        return { _tag: 'Search', query: params.search, regex: params.regex ?? false, server: params.server }
-      }
-      if (params.server !== undefined) {
-        return { _tag: 'List', server: params.server }
-      }
-      return { _tag: 'Status' }
-    },
+  Effect.gen(function* () {
+    yield* validateSelectors(params)
+    if (params.tool !== undefined) {
+      return { _tag: 'Call' as const, rawArgs: params.args, server: params.server, tool: params.tool }
+    }
+    if (params.connect !== undefined) {
+      return { _tag: 'Connect' as const, server: params.connect }
+    }
+    if (params.describe !== undefined) {
+      return { _tag: 'Describe' as const, server: params.server, tool: params.describe }
+    }
+    if (params.search !== undefined) {
+      return { _tag: 'Search' as const, query: params.search, regex: params.regex ?? false, server: params.server }
+    }
+    if (params.server !== undefined) {
+      return { _tag: 'List' as const, server: params.server }
+    }
+    return { _tag: 'Status' as const }
   })
 
 interface McpGatewayStateShape {
   readonly generation: Ref.Ref<number>
   readonly manager: Ref.Ref<Option.Option<McpGatewayManager>>
-  readonly initialization: Ref.Ref<Option.Option<Deferred.Deferred<void, Cause.UnknownError>>>
+  readonly initialization: Ref.Ref<Option.Option<Deferred.Deferred<void, McpOperationError>>>
 }
 
 const makeState: Effect.Effect<McpGatewayStateShape> = Effect.gen(function* () {
   return {
     generation: yield* Ref.make(0),
-    initialization: yield* Ref.make<Option.Option<Deferred.Deferred<void, Cause.UnknownError>>>(Option.none()),
+    initialization: yield* Ref.make<Option.Option<Deferred.Deferred<void, McpOperationError>>>(Option.none()),
     manager: yield* Ref.make<Option.Option<McpGatewayManager>>(Option.none()),
   }
 })
 
 /** Mirrors `if (initialization) { await initialization }` then requires an installed manager. */
-const requireManager = (state: McpGatewayStateShape): Effect.Effect<McpGatewayManager, Cause.UnknownError | ToolFailure> =>
+const requireManager = (state: McpGatewayStateShape): Effect.Effect<McpGatewayManager, McpOperationError | ToolFailure> =>
   Effect.gen(function* () {
     const pending = yield* Ref.get(state.initialization)
     if (Option.isSome(pending)) {
@@ -327,7 +322,7 @@ const dispatchGateway = (
   state: McpGatewayStateShape,
   params: McpGatewayInput,
   signal: AbortSignal | undefined
-): Effect.Effect<AgentToolResult<unknown>, Cause.UnknownError | ToolFailure> =>
+): Effect.Effect<AgentToolResult<unknown>, McpOperationError | ToolFailure> =>
   Effect.gen(function* () {
     const selector = yield* classifySelector(params)
     const manager = yield* requireManager(state)
@@ -335,10 +330,7 @@ const dispatchGateway = (
     return yield* Match.valueTags(selector, {
       Call: (op) =>
         Effect.gen(function* () {
-          const args = yield* Effect.try({
-            catch: (cause) => ToolFailure.make({ message: errorMessage(cause) }),
-            try: () => parseArgs(op.rawArgs),
-          })
+          const args = yield* parseArgs(op.rawArgs)
           return yield* callManager(() => manager.call(op.tool, args, { server: op.server, signal }))
         }),
 
@@ -442,11 +434,11 @@ export const createMcpExtension: {
     function mcpGateway(pi: ExtensionAPI): void {
       const state = Effect.runSync(makeState)
 
-      const startSession = (ctx: ExtensionContext): Effect.Effect<void, Cause.UnknownError> =>
+      const startSession = (ctx: ExtensionContext): Effect.Effect<void, McpOperationError> =>
         Effect.gen(function* () {
           const generation = yield* Ref.updateAndGet(state.generation, (value) => value + 1)
           const previousManager = yield* Ref.getAndSet(state.manager, Option.none())
-          const deferred = yield* Deferred.make<void, Cause.UnknownError>()
+          const deferred = yield* Deferred.make<void, McpOperationError>()
           yield* Ref.set(state.initialization, Option.some(deferred))
 
           yield* Effect.gen(function* () {
@@ -482,7 +474,7 @@ export const createMcpExtension: {
           }).pipe(Effect.onExit((exit) => Deferred.done(deferred, exit)))
         })
 
-      const stopSession = (ctx: ExtensionContext): Effect.Effect<void, Cause.UnknownError> =>
+      const stopSession = (ctx: ExtensionContext): Effect.Effect<void, McpOperationError> =>
         Effect.gen(function* () {
           yield* Ref.update(state.generation, (value) => value + 1)
           const pending = yield* Ref.get(state.initialization)
@@ -503,7 +495,7 @@ export const createMcpExtension: {
         description:
           "Access configured remote MCP capabilities through one lazy gateway. Use Pi's native tools directly whenever possible. Search or describe unfamiliar MCP tools before calling them.",
         async execute(_toolCallId, params, signal) {
-          return runtime.runPromise(dispatchGateway(dependencies.configPath, state, params, signal).pipe(Effect.mapError(toRejection)))
+          return runtime.runPromise(dispatchGateway(dependencies.configPath, state, params, signal))
         },
         label: 'MCP Gateway',
         name: 'mcp',
