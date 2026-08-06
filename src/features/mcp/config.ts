@@ -329,7 +329,7 @@ export const parseMcpConfigEffect = (value: unknown): Effect.Effect<McpServerMap
         cause instanceof McpConfigError ? cause : McpConfigError.from('mcpServers', cause instanceof Error ? cause.message : String(cause)),
       try: () => parseMcpConfig(value),
     })
-    yield* Schema.decodeUnknownEffect(McpServerMapSchema, { onExcessProperty: 'error' })(parsed).pipe(
+    yield* Schema.decodeEffect(McpServerMapSchema, { onExcessProperty: 'error' })(parsed).pipe(
       Effect.mapError((cause) => McpConfigError.from('mcpServers', String(cause)))
     )
     return parsed
