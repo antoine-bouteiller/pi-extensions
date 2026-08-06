@@ -25,6 +25,7 @@ interface SplitPaneOptions {
 }
 
 const finiteInteger = (value: number, fallback: number) => (Number.isFinite(value) ? Math.trunc(value) : fallback)
+const isRenderFunction = (value: unknown): value is RenderFunction => typeof value === 'function'
 
 export const createSplitPaneController = (options: SplitPaneOptions = {}): SplitPaneController => {
   const minSidebarWidth = Math.max(1, finiteInteger(options.minSidebarWidth ?? MIN_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH))
@@ -35,7 +36,6 @@ export const createSplitPaneController = (options: SplitPaneOptions = {}): Split
   const minMainWidth = Math.max(1, finiteInteger(options.minMainWidth ?? MIN_MAIN_WIDTH, MIN_MAIN_WIDTH))
   let tui: TUI | undefined
   let originalRender: RenderFunction | undefined
-  let wrappedRender: RenderFunction | undefined
   let enabled = false
   let disposed = false
 
@@ -71,20 +71,26 @@ export const createSplitPaneController = (options: SplitPaneOptions = {}): Split
         throw new Error('Status panel is already attached to another TUI')
       }
       tui = nextTui
-      // oxlint-disable-next-line typescript/unbound-method -- deliberate render swizzle: the original is kept to restore on dispose and is only ever invoked with an explicit receiver.
-      const previousRender = nextTui.render
-      originalRender = previousRender
-      wrappedRender = function (this: TUI, terminalWidth: number): string[] {
+      /*
+       * Pi passes extensions a stable Proxy whose methods dynamically forward to
+       * the active renderer. Capture the concrete prototype method before replacing
+       * `render`; saving the Proxy wrapper would recurse into this replacement.
+       */
+      const prototypeRender: unknown = Reflect.get(Object.getPrototypeOf(nextTui), 'render', nextTui)
+      if (!isRenderFunction(prototypeRender)) {
+        throw new Error('Status panel could not resolve the TUI render function')
+      }
+      originalRender = prototypeRender
+      nextTui.render = function render(this: TUI, terminalWidth: number): string[] {
         const reservedWidth = effectiveWidth(terminalWidth)
         syncOverlayWidth(terminalWidth)
         try {
-          return previousRender.call(nextTui, terminalWidth - reservedWidth)
+          return prototypeRender.call(nextTui, terminalWidth - reservedWidth)
         } catch (error) {
           options.onError?.(error)
-          return previousRender.call(nextTui, terminalWidth)
+          return prototypeRender.call(nextTui, terminalWidth)
         }
       }
-      nextTui.render = wrappedRender
       requestRender()
     },
     dispose() {
@@ -93,13 +99,12 @@ export const createSplitPaneController = (options: SplitPaneOptions = {}): Split
       }
       disposed = true
       enabled = false
-      if (tui !== undefined && originalRender !== undefined && tui.render === wrappedRender) {
+      if (tui !== undefined && originalRender !== undefined) {
         tui.render = originalRender
       }
       requestRender()
       tui = undefined
       originalRender = undefined
-      wrappedRender = undefined
     },
     hide() {
       if (!enabled) {

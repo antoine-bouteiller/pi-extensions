@@ -27,7 +27,7 @@ const inMemoryKeyring = (initial: Record<string, string> = {}, failure?: Failure
       this.account = account
     }
 
-    getPassword(): string {
+    async getPassword(): Promise<string> {
       calls.push({ account: this.account, operation: 'get', service: this.service })
       if (failure === 'get') {
         throw new Error('native failure containing secret-token')
@@ -42,7 +42,7 @@ const inMemoryKeyring = (initial: Record<string, string> = {}, failure?: Failure
       return stored
     }
 
-    setPassword(password: string): void {
+    async setPassword(password: string): Promise<void> {
       calls.push({ account: this.account, operation: 'set', service: this.service })
       if (failure === 'set') {
         throw new Error(`could not save ${password}`)
@@ -50,7 +50,7 @@ const inMemoryKeyring = (initial: Record<string, string> = {}, failure?: Failure
       values.set(this.account, password)
     }
 
-    deletePassword(): boolean {
+    async deletePassword(): Promise<boolean> {
       calls.push({ account: this.account, operation: 'delete', service: this.service })
       if (failure === 'delete') {
         throw new Error('native delete failure containing secret-token')
@@ -114,6 +114,39 @@ describe('Keychain OAuth credential store', () => {
       throw new Error('expected a serialized credential')
     }
     expect(JSON.parse(serialized)).toEqual(credential)
+  })
+
+  test('awaits async keyring operations and forwards cancellation', async () => {
+    const controller = new AbortController()
+    const signals: (AbortSignal | undefined)[] = []
+    let serialized: string | undefined
+    const store = new KeychainCredentialStore({
+      createEntry: () => ({
+        async deletePassword(signal) {
+          await Promise.resolve()
+          signals.push(signal ?? undefined)
+          serialized = undefined
+          return true
+        },
+        async getPassword(signal) {
+          await Promise.resolve()
+          signals.push(signal ?? undefined)
+          return serialized
+        },
+        async setPassword(password, signal) {
+          await Promise.resolve()
+          signals.push(signal ?? undefined)
+          serialized = password
+        },
+      }),
+    })
+
+    await store.set('slack', credential, controller.signal)
+    expect(await store.get('slack', credential.serverUrl, controller.signal)).toEqual(credential)
+    await store.delete('slack', controller.signal)
+
+    expect(serialized).toBeUndefined()
+    expect(signals).toEqual([controller.signal, controller.signal, controller.signal])
   })
 
   test('uses a stable SHA-256 account without exposing the server name', () => {

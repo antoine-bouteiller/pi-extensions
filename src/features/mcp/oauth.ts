@@ -335,7 +335,7 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
     if (scope === 'all') {
       this.verifier = undefined
       this.discovery = undefined
-      await this.options.store.delete(this.options.serverName)
+      await this.options.store.delete(this.options.serverName, this.options.signal)
       return
     }
     await this.update((credential) => {
@@ -351,7 +351,7 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
   }
 
   private load(): Promise<OAuthCredentialPayload | undefined> {
-    return this.options.store.get(this.options.serverName, this.options.serverUrl)
+    return this.options.store.get(this.options.serverName, this.options.serverUrl, this.options.signal)
   }
 
   private update(updater: (current: OAuthCredentialPayload | undefined) => OAuthCredentialPayload | undefined): Promise<void> {
@@ -359,7 +359,9 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
       this.mutation.withPermits(1)(
         Effect.tryPromise(async () => {
           const next = updater(await this.load())
-          await (next === undefined ? this.options.store.delete(this.options.serverName) : this.options.store.set(this.options.serverName, next))
+          await (next === undefined
+            ? this.options.store.delete(this.options.serverName, this.options.signal)
+            : this.options.store.set(this.options.serverName, next, this.options.signal))
         })
       )
     )

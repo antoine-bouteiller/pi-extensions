@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 
-import { Entry } from '@napi-rs/keyring'
+import { AsyncEntry } from '@napi-rs/keyring'
 import { Context, Effect, Layer, Option, Schema } from 'effect'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
@@ -48,9 +48,9 @@ export interface OAuthCredentialPayload {
 
 /** Async boundary consumed by the OAuth provider; tests can supply an in-memory store. */
 export interface CredentialStore {
-  get: (serverName: string, serverUrl: string) => Promise<OAuthCredentialPayload | undefined>
-  set: (serverName: string, credential: OAuthCredentialPayload) => Promise<void>
-  delete: (serverName: string) => Promise<void>
+  get: (serverName: string, serverUrl: string, signal?: AbortSignal) => Promise<OAuthCredentialPayload | undefined>
+  set: (serverName: string, credential: OAuthCredentialPayload, signal?: AbortSignal) => Promise<void>
+  delete: (serverName: string, signal?: AbortSignal) => Promise<void>
 }
 
 interface CredentialStoreEffectShape {
@@ -64,7 +64,7 @@ export class CredentialStoreEffect extends Context.Service<CredentialStoreEffect
   'pi-extensions/features/mcp/keychain/CredentialStoreEffect'
 ) {}
 
-type KeyringEntry = Pick<Entry, 'deletePassword' | 'getPassword' | 'setPassword'>
+type KeyringEntry = Pick<AsyncEntry, 'deletePassword' | 'getPassword' | 'setPassword'>
 type EntryFactory = (service: string, account: string) => KeyringEntry
 
 export interface KeychainCredentialStoreOptions {
@@ -178,25 +178,25 @@ export class KeychainCredentialStore implements CredentialStore {
 
   constructor(options: KeychainCredentialStoreOptions = {}) {
     this.serviceName = options.serviceName ?? MCP_OAUTH_KEYCHAIN_SERVICE
-    this.createEntry = options.createEntry ?? ((service, account) => new Entry(service, account))
+    this.createEntry = options.createEntry ?? ((service, account) => new AsyncEntry(service, account))
   }
 
   private entry(serverName: string): KeyringEntry {
     return this.createEntry(this.serviceName, keychainAccount(serverName))
   }
 
-  async get(serverName: string, serverUrl: string): Promise<OAuthCredentialPayload | undefined> {
-    let serialized: string | null
+  async get(serverName: string, serverUrl: string, signal?: AbortSignal): Promise<OAuthCredentialPayload | undefined> {
+    let serialized: string | undefined
     try {
       const entry = this.entry(serverName)
-      serialized = entry.getPassword()
+      serialized = await entry.getPassword(signal)
     } catch (error) {
       if (isMissingCredential(error)) {
         return undefined
       }
       throw operationError('lookup', serverName)
     }
-    if (serialized === null) {
+    if (serialized === undefined) {
       return undefined
     }
     if (typeof serialized !== 'string') {
@@ -213,20 +213,20 @@ export class KeychainCredentialStore implements CredentialStore {
     return credential.serverUrl === serverUrl ? credential : undefined
   }
 
-  async set(serverName: string, credential: OAuthCredentialPayload): Promise<void> {
+  async set(serverName: string, credential: OAuthCredentialPayload, signal?: AbortSignal): Promise<void> {
     const validated = validateCredentialPayload(credential, serverName)
     try {
       const entry = this.entry(serverName)
-      entry.setPassword(JSON.stringify(validated))
+      await entry.setPassword(JSON.stringify(validated), signal)
     } catch {
       throw operationError('write', serverName)
     }
   }
 
-  async delete(serverName: string): Promise<void> {
+  async delete(serverName: string, signal?: AbortSignal): Promise<void> {
     try {
       const entry = this.entry(serverName)
-      entry.deletePassword()
+      await entry.deletePassword(signal)
     } catch (error) {
       if (isMissingCredential(error)) {
         return

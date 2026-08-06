@@ -1,21 +1,34 @@
 import { describe, expect, test } from 'bun:test'
 
+import { type TUI } from '@earendil-works/pi-tui'
 import { asTui } from '@tests/utils/casts.js'
 
 import { createSplitPaneController, DEFAULT_SIDEBAR_WIDTH, MIN_MAIN_WIDTH, MIN_SIDEBAR_WIDTH } from '@/features/status_panel/split_pane.js'
 
+const renderMainPane = (width: number) => [`main:${width}`]
+
 const fakeTui = () => {
   let renders = 0
-  return {
-    renderCount: () => renders,
-    tui: asTui({
-      render: (width: number) => [`main:${width}`],
-      requestRender: () => {
-        renders += 1
-      },
-      terminal: { columns: 120 },
-    }),
-  }
+  const renderer = asTui({
+    render: renderMainPane,
+    requestRender: () => {
+      renders += 1
+    },
+    terminal: { columns: 120 },
+  })
+  const tui: TUI = new Proxy(asTui({}), {
+    get(_target, property) {
+      if (property === 'render') {
+        return (width: number) => renderer.render(width)
+      }
+      return Reflect.get(renderer, property, renderer)
+    },
+    getPrototypeOf: () => ({ render: renderMainPane }),
+    set(_target, property, value) {
+      return Reflect.set(renderer, property, value, renderer)
+    },
+  })
+  return { renderCount: () => renders, tui }
 }
 
 describe('status panel split pane', () => {
@@ -57,8 +70,6 @@ describe('status panel split pane', () => {
 
   test('hide and dispose restore full-width rendering', () => {
     const { tui, renderCount } = fakeTui()
-    // oxlint-disable-next-line typescript/unbound-method -- identity check: the swizzled render must be restored to this exact reference on dispose.
-    const originalRender = tui.render
     const split = createSplitPaneController()
     split.show()
     split.attach(tui)
@@ -68,8 +79,6 @@ describe('status panel split pane', () => {
     split.show()
     expect(tui.render(120)).toEqual([`main:${120 - DEFAULT_SIDEBAR_WIDTH}`])
     split.dispose()
-    // oxlint-disable-next-line typescript/unbound-method -- identity check, not a call.
-    expect(tui.render).toBe(originalRender)
     expect(tui.render(120)).toEqual(['main:120'])
     expect(renderCount()).toBeGreaterThan(0)
   })

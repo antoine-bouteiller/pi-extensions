@@ -221,11 +221,30 @@ interface CustomCall {
   resolve: (value: void) => void
 }
 
-const fakeTui = (onRender: () => void = () => undefined) => ({
-  render: (_width: number) => [],
-  requestRender: onRender,
-  terminal: { columns: 120, rows: 30 },
-})
+const renderMainPane = (_width: number) => []
+
+const fakeTui = (onRender: () => void = () => undefined) => {
+  const renderer = {
+    render: renderMainPane,
+    requestRender: onRender,
+    terminal: { columns: 120, rows: 30 },
+  }
+  return new Proxy(
+    {},
+    {
+      get(_target, property) {
+        if (property === 'render') {
+          return (width: number) => renderer.render(width)
+        }
+        return Reflect.get(renderer, property, renderer)
+      },
+      getPrototypeOf: () => ({ render: renderMainPane }),
+      set(_target, property, value) {
+        return Reflect.set(renderer, property, value, renderer)
+      },
+    }
+  )
+}
 
 const controllerTheme = { bold: (text: string) => text, fg: (_color: string, text: string) => text }
 

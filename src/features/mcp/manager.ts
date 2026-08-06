@@ -789,7 +789,7 @@ export class McpManager {
     const timeout = AbortSignal.timeout(this.connectTimeoutMs)
     const signal = combineSignals(this.lifecycle.signal, timeout, options.signal)
     const retainAuthorization = options.retainAuthorization ?? false
-    const provider = options.provider ?? this.defaultOAuthProvider(runtime)
+    const provider = options.provider ?? this.defaultOAuthProvider(runtime, signal)
 
     if (runtime.config.type === 'stdio') {
       return this.connectTransport(runtime, { kind: 'stdio', provider, retainAuthorization, signal })
@@ -797,8 +797,10 @@ export class McpManager {
     return this.establishHttp(runtime, { provider, retainAuthorization, signal })
   }
 
-  private defaultOAuthProvider(runtime: ServerRuntime): KeychainOAuthProvider | undefined {
-    return runtime.config.type === 'http' && runtime.config.oauth !== undefined ? this.createOAuthProvider(runtime, runtime.config.oauth) : undefined
+  private defaultOAuthProvider(runtime: ServerRuntime, signal: AbortSignal): KeychainOAuthProvider | undefined {
+    return runtime.config.type === 'http' && runtime.config.oauth !== undefined
+      ? this.createOAuthProvider(runtime, runtime.config.oauth, signal)
+      : undefined
   }
 
   private async establishHttp(
@@ -814,7 +816,7 @@ export class McpManager {
         signal,
       })
     } catch (error) {
-      const retriedProvider = this.implicitOAuthProvider(runtime, provider, error)
+      const retriedProvider = this.implicitOAuthProvider(runtime, provider, error, signal)
       if (retriedProvider === undefined) {
         return this.fallbackToSse(runtime, { ...attempt, provider }, error)
       }
@@ -834,7 +836,8 @@ export class McpManager {
   private implicitOAuthProvider(
     runtime: ServerRuntime,
     provider: OAuthClientProvider | undefined,
-    failure: unknown
+    failure: unknown,
+    signal: AbortSignal
   ): KeychainOAuthProvider | undefined {
     if (runtime.config.type !== 'http') {
       return undefined
@@ -845,7 +848,7 @@ export class McpManager {
     if (provider !== undefined || implicitOAuth === undefined || !isOAuthChallenge(failure)) {
       return undefined
     }
-    return this.createOAuthProvider(runtime, implicitOAuth)
+    return this.createOAuthProvider(runtime, implicitOAuth, signal)
   }
 
   private fallbackToSse(
@@ -860,7 +863,7 @@ export class McpManager {
     return this.connectTransport(runtime, { kind: 'sse', provider, retainAuthorization, signal })
   }
 
-  private createOAuthProvider(runtime: ServerRuntime, config: OAuthConfig): KeychainOAuthProvider {
+  private createOAuthProvider(runtime: ServerRuntime, config: OAuthConfig, signal: AbortSignal): KeychainOAuthProvider {
     if (runtime.config.type !== 'http') {
       throw new Error('OAuth requires an HTTP server')
     }
@@ -868,6 +871,7 @@ export class McpManager {
       config,
       serverName: runtime.name,
       serverUrl: runtime.config.url,
+      signal,
       store: this.credentialStore,
     })
   }
