@@ -32,7 +32,7 @@ const registerImpl = (pi: ExtensionAPI, _runtime: AppRuntime, dependencies: Caff
 
   let running: { child: CaffeinateProcess; exited: Promise<void> } | undefined
 
-  pi.on('session_start', () => {
+  pi.on('agent_start', () => {
     if (dependencies.platform !== 'darwin' || running !== undefined) {
       return
     }
@@ -53,7 +53,7 @@ const registerImpl = (pi: ExtensionAPI, _runtime: AppRuntime, dependencies: Caff
     child.once('exit', clear)
   })
 
-  pi.on('session_shutdown', () => {
+  const stop = (): Promise<void> => {
     const current = running
     if (current === undefined) {
       return Promise.resolve()
@@ -61,7 +61,10 @@ const registerImpl = (pi: ExtensionAPI, _runtime: AppRuntime, dependencies: Caff
     running = undefined
     current.child.kill()
     return current.exited
-  })
+  }
+
+  pi.on('agent_settled', (_event, ctx) => (ctx.isIdle() ? stop() : undefined))
+  pi.on('session_shutdown', stop)
 }
 
 export const register: {

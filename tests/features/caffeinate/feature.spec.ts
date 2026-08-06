@@ -40,15 +40,19 @@ const createHarness = (platform: NodeJS.Platform = 'darwin', exitOnKill = true, 
     },
   })
 
-  return { children, fixture, spawns }
+  const settle = (isIdle = true) => fixture.emit('agent_settled', {}, { isIdle: () => isIdle })
+  return { children, fixture, settle, spawns }
 }
 
 describe('caffeinate', () => {
-  test('runs caffeinate for the Pi process and stops it on shutdown', async () => {
+  test('runs caffeinate only while the agent is active', async () => {
     const harness = createHarness()
 
     await harness.fixture.emit('session_start')
-    await harness.fixture.emit('session_shutdown')
+    expect(harness.spawns).toHaveLength(0)
+
+    await harness.fixture.emit('agent_start')
+    await harness.settle()
 
     expect(harness.spawns).toEqual([{ args: ['-w', '1234'], command: '/usr/bin/caffeinate' }])
     expect(harness.children[0]?.unrefCalls).toBe(1)
@@ -58,8 +62,8 @@ describe('caffeinate', () => {
   test('does nothing outside macOS', async () => {
     const harness = createHarness('linux')
 
-    await harness.fixture.emit('session_start')
-    await harness.fixture.emit('session_shutdown')
+    await harness.fixture.emit('agent_start')
+    await harness.settle()
 
     expect(harness.spawns).toHaveLength(0)
   })
@@ -71,32 +75,67 @@ describe('caffeinate', () => {
     expect(harness.spawns).toHaveLength(0)
   })
 
-  test('keeps one process per session and tolerates repeated shutdown', async () => {
+  test('keeps one process until the agent settles and tolerates repeated settled events', async () => {
     const harness = createHarness()
 
-    await harness.fixture.emit('session_start')
-    await harness.fixture.emit('session_start')
-    await harness.fixture.emit('session_shutdown')
-    await harness.fixture.emit('session_shutdown')
+    await harness.fixture.emit('agent_start')
+    await harness.fixture.emit('agent_start')
+    await harness.fixture.emit('agent_end')
+    expect(harness.children[0]?.killCalls).toBe(0)
+
+    await harness.settle()
+    await harness.settle()
 
     expect(harness.children).toHaveLength(1)
     expect(harness.children[0]?.killCalls).toBe(1)
   })
 
-  test('waits for caffeinate to exit during shutdown', async () => {
+  test('starts caffeinate again for the next agent run', async () => {
+    const harness = createHarness()
+
+    await harness.fixture.emit('agent_start')
+    await harness.settle()
+    await harness.fixture.emit('agent_start')
+    await harness.settle()
+
+    expect(harness.children).toHaveLength(2)
+    expect(harness.children.map((child) => child.killCalls)).toEqual([1, 1])
+  })
+
+  test('waits for caffeinate to exit when the agent settles', async () => {
     const harness = createHarness('darwin', false)
-    await harness.fixture.emit('session_start')
+    await harness.fixture.emit('agent_start')
     let stopped = false
 
-    const shutdown = harness.fixture.emit('session_shutdown').then(() => {
+    const settled = harness.settle().then(() => {
       stopped = true
     })
     await Promise.resolve()
     expect(stopped).toBeFalse()
 
     harness.children[0]?.events.get('exit')?.()
-    await shutdown
+    await settled
 
     expect(stopped).toBeTrue()
+  })
+
+  test('keeps caffeinate running when settlement already triggered follow-up work', async () => {
+    const harness = createHarness()
+
+    await harness.fixture.emit('agent_start')
+    await harness.settle(false)
+    expect(harness.children[0]?.killCalls).toBe(0)
+
+    await harness.settle()
+    expect(harness.children[0]?.killCalls).toBe(1)
+  })
+
+  test('stops caffeinate on session shutdown as a fallback', async () => {
+    const harness = createHarness()
+
+    await harness.fixture.emit('agent_start')
+    await harness.fixture.emit('session_shutdown')
+
+    expect(harness.children[0]?.killCalls).toBe(1)
   })
 })
