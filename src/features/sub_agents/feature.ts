@@ -179,12 +179,11 @@ const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: Age
   const completionMessageType = 'pi-codex-subagent-completion'
   let activeContext: PiExtensionContext | undefined
   const activeAgents = new Map<string, { profile?: string; color: ThemeColor }>()
-  let armedEscapeUnsubscribe: (() => void) | undefined
+  let terminalUnsubscribe: (() => void) | undefined
 
-  const clearEscapeArm = (): void => {
-    const unsubscribe = armedEscapeUnsubscribe
-    armedEscapeUnsubscribe = undefined
-    unsubscribe?.()
+  const unsubscribeTerminal = (): void => {
+    terminalUnsubscribe?.()
+    terminalUnsubscribe = undefined
   }
   const isCurrentSession = (parentId: string) => {
     try {
@@ -282,6 +281,29 @@ const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: Age
     onInactivity: deliverInactivity,
     onUnclaimedCompletion: deliverCompletion,
   })
+
+  const registerEscapeInterrupt = (ctx: PiExtensionContext): void => {
+    unsubscribeTerminal()
+    if (ctx.mode !== 'tui') {
+      return
+    }
+    terminalUnsubscribe = ctx.ui.onTerminalInput((data) => {
+      if (isKeyRelease(data) || isKeyRepeat(data) || !matchesKey(data, 'escape') || !ctx.isIdle() || activeAgents.size === 0) {
+        return undefined
+      }
+      let currentParentId: string
+      try {
+        currentParentId = parentSessionId(ctx)
+      } catch {
+        return undefined
+      }
+      const targets = [...activeAgents.keys()]
+      void Promise.all(targets.map((target) => manager.interruptAgent(currentParentId, target))).catch((error: unknown) => {
+        ctx.ui.notify(error instanceof Error ? error.message : String(error), 'error')
+      })
+      return { consume: true }
+    })
+  }
 
   const colorForTarget = (target: string): ThemeColor => {
     if (activeContext === undefined) {
@@ -462,7 +484,7 @@ ${getAgentProfilesDescription()}`
   pi.on('session_start', (_event, ctx) =>
     runtime.runPromise(
       Effect.gen(function* () {
-        clearEscapeArm()
+        unsubscribeTerminal()
         activeContext = ctx
         activeAgents.clear()
         yield* Effect.tryPromise({
@@ -478,6 +500,7 @@ ${getAgentProfilesDescription()}`
           }
         }
         publishAgentActivity()
+        registerEscapeInterrupt(ctx)
       })
     )
   )
@@ -492,7 +515,7 @@ ${getAgentProfilesDescription()}`
         activeContext = undefined
         activeAgents.clear()
         publishAgentActivity()
-        clearEscapeArm()
+        unsubscribeTerminal()
         yield* Effect.tryPromise({
           catch: (cause) => featureError(cause instanceof Error ? cause.message : String(cause), cause),
           try: () => manager.shutdown(),
@@ -805,52 +828,6 @@ ${getAgentProfilesDescription()}`
     includeAll?: boolean
   }
 
-  /** Second Escape interrupts the just-viewed agent; any other key disarms it. */
-  const armEscapeInterrupt = (ctx: PiExtensionContext, target: string, currentParentId: string): void => {
-    if (ctx.mode !== 'tui') {
-      return
-    }
-    clearEscapeArm()
-    armedEscapeUnsubscribe = ctx.ui.onTerminalInput((data) => {
-      if (isKeyRelease(data) || isKeyRepeat(data)) {
-        return undefined
-      }
-      if (!matchesKey(data, 'escape')) {
-        clearEscapeArm()
-        return undefined
-      }
-      clearEscapeArm()
-      let agent: AgentInfo
-      try {
-        agent = manager.getAgentInfo(target, currentParentId)
-      } catch {
-        return undefined
-      }
-      const { status } = agent
-      if (status !== 'starting' && status !== 'running') {
-        return undefined
-      }
-      void manager.interruptAgent(currentParentId, target).catch((error: unknown) => {
-        ctx.ui.notify(error instanceof Error ? error.message : String(error), 'error')
-      })
-      return { consume: true }
-    })
-  }
-
-  const armViewedAgentInterrupt = (ctx: PiExtensionContext, info: AgentInfo, includeAll: boolean): void => {
-    if (includeAll) {
-      return
-    }
-    try {
-      const currentParentId = parentSessionId(ctx)
-      if (info.parentSessionId === currentParentId) {
-        armEscapeInterrupt(ctx, info.canonicalName, currentParentId)
-      }
-    } catch {
-      // The parent session may have changed while the viewer was open.
-    }
-  }
-
   const openAgentOverlay = async (options: OpenAgentOverlayOptions): Promise<void> => {
     const { ctx, task } = options
     const scopeId = options.scopeId ?? parentSessionId(ctx)
@@ -859,7 +836,6 @@ ${getAgentProfilesDescription()}`
       ctx.ui.notify('Subagent views require interactive TUI mode.', 'warning')
       return
     }
-    clearEscapeArm()
     let info: AgentInfo
     try {
       info = manager.getAgentInfo(task, scopeId)
@@ -869,8 +845,19 @@ ${getAgentProfilesDescription()}`
     }
 
     while (true) {
-      const navigation = await ctx.ui.custom<'previous' | 'next' | 'back' | undefined>(
-        (tui, theme, _keybindings, done) => new SubagentPeekOverlay({ done, info, theme, tui }),
+      const navigation = await ctx.ui.custom<'previous' | 'next' | undefined>(
+        (tui, theme, _keybindings, done) =>
+          new SubagentPeekOverlay({
+            done,
+            info,
+            onEscape: () => {
+              if (!ctx.isIdle()) {
+                ctx.abort()
+              }
+            },
+            theme,
+            tui,
+          }),
         {
           overlay: true,
           overlayOptions: {
@@ -880,10 +867,6 @@ ${getAgentProfilesDescription()}`
           },
         }
       )
-      if (navigation === 'back') {
-        armViewedAgentInterrupt(ctx, info, includeAll)
-        return
-      }
       if (navigation !== 'previous' && navigation !== 'next') {
         return
       }

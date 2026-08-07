@@ -29,7 +29,7 @@ interface InputSubmission {
   text: string
 }
 
-const createHarness = () => {
+const createHarness = (dispatchSubmittedCommands = false) => {
   const fixture = createFakePi()
   registerPromptRewind(fixture.pi, runtime)
 
@@ -46,12 +46,20 @@ const createHarness = () => {
   const aborts: number[] = []
   const notifications: { level: string; message: string }[] = []
   const submittedCommands: string[] = []
+  const submittedCommandTasks: Promise<void>[] = []
   const waitForIdleCalls: number[] = []
   const navigateTreeCalls: string[] = []
   let navigateTreeResult: { cancelled: boolean } = { cancelled: false }
 
   const editor = {
-    onSubmit: (text: string) => submittedCommands.push(text),
+    onSubmit: (text: string) => {
+      submittedCommands.push(text)
+      // Pi only dispatches extension commands through this path while the main run is still active.
+      if (dispatchSubmittedCommands && aborts.length === 0) {
+        const registered = asCommand<CommandHandler>(fixture.state.commands.get(REWIND_COMMAND))
+        submittedCommandTasks.push(registered.handler('', ctx))
+      }
+    },
   }
   const tui = { hasOverlay: () => overlay }
 
@@ -143,6 +151,9 @@ const createHarness = () => {
     editorText: () => editorText,
     escape,
     fixture,
+    flushSubmittedCommands: async () => {
+      await Promise.all(submittedCommandTasks)
+    },
     hasTerminalHandler: () => terminalHandler !== undefined,
     navigateTreeCalls,
     notifications,
@@ -197,16 +208,21 @@ describe('prompt rewind', () => {
     expect(harness.hasTerminalHandler()).toBeFalse()
   })
 
-  test('arms after an idle interactive text submission and invokes the internal command on Escape', async () => {
-    const harness = createHarness()
+  test('Escape dispatches the internal command before aborting and restores the prompt for editing', async () => {
+    const harness = createHarness(true)
     await harness.startSession()
     await harness.submitAndArm('original raw text')
+    harness.addUserEntry('user-1', 'root', 'original raw text')
+    harness.addAssistantEntry('aborted-1', 'user-1')
 
     const result = harness.escape()
+    await harness.flushSubmittedCommands()
 
     expect(result).toEqual({ consume: true })
-    expect(harness.aborts).toHaveLength(1)
     expect(harness.submittedCommands).toEqual([`/${REWIND_COMMAND}`])
+    expect(harness.aborts).toHaveLength(1)
+    expect(harness.navigateTreeCalls).toEqual(['user-1'])
+    expect(harness.editorText()).toBe('original raw text')
   })
 
   test('never arms for image attachments', async () => {
@@ -307,7 +323,7 @@ describe('prompt rewind', () => {
     const second = harness.escape()
 
     expect(second).toEqual({ consume: true })
-    expect(harness.aborts).toHaveLength(1)
+    expect(harness.aborts).toHaveLength(0)
   })
 
   test('disarms on the first assistant message update', async () => {
@@ -367,7 +383,7 @@ describe('prompt rewind', () => {
 
     await harness.command().handler('', harness.ctx)
 
-    expect(harness.aborts).toHaveLength(2)
+    expect(harness.aborts).toHaveLength(1)
     expect(harness.waitForIdleCalls).toHaveLength(1)
     expect(harness.navigateTreeCalls).toEqual(['user-1'])
     expect(harness.editorText()).toBe('/skill:foo do the thing')

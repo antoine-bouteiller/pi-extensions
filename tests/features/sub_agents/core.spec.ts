@@ -1428,17 +1428,13 @@ describe('extension completion delivery and status activity', () => {
     interface FakeCommand {
       handler: (args: string | undefined, ctx: unknown) => Promise<void>
     }
-    interface FakeViewer {
-      handleInput: (data: string) => void
-    }
     type FakeTerminalInputHandler = (data: string) => { consume?: boolean; data?: string } | undefined
 
     const commands = new Map<string, FakeCommand>()
     const renderers = new Map<string, FakeRenderer>()
     const sentMessages: { message: FakeMessage; options: unknown }[] = []
     let terminalInputHandler: FakeTerminalInputHandler | undefined
-    let viewer: FakeViewer | undefined
-    let viewerOptions: { overlay?: boolean; overlayOptions?: unknown } | undefined
+    let mainIdle = true
     const requireTool = (name: string): FakeToolDefinition => {
       const tool = tools.get(name)
       if (tool === undefined) {
@@ -1479,15 +1475,9 @@ describe('extension completion delivery and status activity', () => {
       },
     }
     const parentSessionId = 'index-integration-parent'
-    const viewerTui = asTui({
-      requestRender() {
-        /* No-op stub; the test drives the viewer directly. */
-      },
-      terminal: { columns: 80, rows: 24 },
-    })
-    const viewerTheme = asTheme({ fg: (_color: string, text: string) => text })
     const ctx = {
       cwd: TEST_AGENT_DIR,
+      isIdle: () => mainIdle,
       mode: 'tui',
       model: { id: 'fake', provider: 'test' },
       modelRegistry: { getAvailable: () => AVAILABLE_MODELS },
@@ -1496,15 +1486,6 @@ describe('extension completion delivery and status activity', () => {
         getSessionId: () => parentSessionId,
       },
       ui: {
-        custom(
-          factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: unknown) => void) => FakeViewer,
-          options: { overlay?: boolean; overlayOptions?: unknown }
-        ) {
-          viewerOptions = options
-          return new Promise<unknown>((resolve) => {
-            viewer = factory(viewerTui, viewerTheme, {}, resolve)
-          })
-        },
         notify() {
           /* Interrupt failures are not expected in this integration test. */
         },
@@ -1734,26 +1715,14 @@ describe('extension completion delivery and status activity', () => {
       )
       expect(runningAgents.list().map((agent) => agent.name)).toEqual(['/hold-scout', '/hold-library'])
 
-      const subagentCommand = commands.get('subagent')
-      if (subagentCommand === undefined) {
-        throw new Error('subagent command was not registered')
-      }
-      const viewing = subagentCommand.handler('hold-scout', ctx)
-      await waitUntil(() => viewer !== undefined)
-      expect(viewerOptions).toMatchObject({
-        overlay: true,
-        overlayOptions: { anchor: 'top-left', maxHeight: '100%', width: '100%' },
-      })
-      viewer?.handleInput('\x1b')
-      await viewing
       expect(terminalInputHandler?.('\x1b[27;1:3u')).toBeUndefined()
-      expect(runningAgents.list().some((agent) => agent.name === '/hold-scout')).toBe(true)
+      mainIdle = false
+      expect(terminalInputHandler?.('\x1b')).toBeUndefined()
+      expect(runningAgents.list().map((agent) => agent.name)).toEqual(['/hold-scout', '/hold-library'])
+
+      mainIdle = true
       expect(terminalInputHandler?.('\x1b')).toEqual({ consume: true })
-      await waitUntil(() => !runningAgents.list().some((agent) => agent.name === '/hold-scout'))
-      await waitUntil(() => sentMessages.some(({ message }) => message.content.includes('"status": "inactive"')))
-      const inactivity = sentMessages.find(({ message }) => message.content.includes('"status": "inactive"'))
-      expect(inactivity?.options).toEqual({ deliverAs: 'steer', triggerTurn: true })
-      expect(inactivity?.message.details.status).toBe('inactive')
+      await waitUntil(() => runningAgents.list().length === 0)
     } finally {
       await emit('session_shutdown', { reason: 'quit' })
       rmSync(scope, { force: true, recursive: true })
@@ -1772,8 +1741,11 @@ describe('subagent peek overlay', () => {
   const createOverlay = (
     columns = 80,
     rows = 20,
-    done: (navigation?: 'previous' | 'next' | 'back') => void = () => {
+    done: (navigation?: 'previous' | 'next') => void = () => {
       /* No-op by default; navigation tests pass a callback. */
+    },
+    onEscape: () => void = () => {
+      /* No-op by default; Escape behavior tests pass a callback. */
     }
   ) => {
     const now = Date.now()
@@ -1810,6 +1782,7 @@ describe('subagent peek overlay', () => {
     return new SubagentPeekOverlay({
       done,
       info,
+      onEscape,
       theme,
       tui,
     })
@@ -1865,11 +1838,20 @@ describe('subagent peek overlay', () => {
     }
   })
 
-  test('escape returns to the parent without treating q as an interrupt arm', () => {
-    const navigation: ('previous' | 'next' | 'back' | undefined)[] = []
-    createOverlay(80, 20, (result) => navigation.push(result)).handleInput('\x1b')
-    createOverlay(80, 20, (result) => navigation.push(result)).handleInput('q')
-    expect(navigation).toEqual(['back', undefined])
+  test('escape cancels the running parent without closing the overlay while q closes it', () => {
+    const navigation: ('previous' | 'next' | undefined)[] = []
+    let escapes = 0
+    const overlay = createOverlay(
+      80,
+      20,
+      (result) => navigation.push(result),
+      () => escapes++
+    )
+    overlay.handleInput('\x1b')
+    expect(escapes).toBe(1)
+    expect(navigation).toEqual([])
+    overlay.handleInput('q')
+    expect(navigation).toEqual([undefined])
   })
 })
 

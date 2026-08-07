@@ -94,7 +94,6 @@ const registerImpl = (pi: ExtensionAPI, _runtime: AppRuntime): void => {
       pendingRewind = armed
       armed = undefined
       canceling = true
-      ctx.abort()
       submitToApp(`/${REWIND_COMMAND}`)
       return { consume: true }
     })

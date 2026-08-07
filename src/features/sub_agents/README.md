@@ -104,7 +104,7 @@ While agents are starting or running, the wide status panel shows them in its `S
 
 `/subagents` and `/agents` browse agents in the current session. Press Tab to switch to the read-only all-sessions view. `/subagent <task-name>` opens one current-session agent directly.
 
-The full-chat view uses the child working directory for tool rendering and synchronizes in-progress output when opened midway through a run. Use Left/Right to switch between agents in the current browser scope. Escape returns to the parent chat; press Escape again immediately to interrupt the agent you just viewed. Any other key disarms that second-Escape action.
+The full-chat view uses the child working directory for tool rendering and synchronizes in-progress output when opened midway through a run. Use Left/Right to switch between agents in the current browser scope and Q to return to the parent chat. When the main thread is idle, one Escape interrupts every starting or running subagent in the current session, without requiring a prior selection. While the main thread is running, Escape remains available for Pi's normal cancellation behavior.
 
 Child RPC processes are terminated after completion, failure, or interruption so settled agents do not keep consuming memory. When its single follow-up is still available, `send_message` can start a fresh child process with the persisted session and continue from there; Claude sessions at or above the context threshold must be replaced instead. On startup, the extension also reconciles and terminates validated owned children left behind by an earlier extension process.
 

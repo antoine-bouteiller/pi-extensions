@@ -284,16 +284,18 @@ export interface SubagentPeekOverlayOptions {
   tui: TUI
   theme: Theme
   info: AgentInfo
-  done: (navigation?: 'previous' | 'next' | 'back') => void
+  done: (navigation?: 'previous' | 'next') => void
+  onEscape: () => void
 }
 
 export class SubagentPeekOverlay {
   private readonly tui: TUI
   private readonly theme: Theme
   private readonly info: AgentInfo
-  private readonly done: (navigation?: 'previous' | 'next' | 'back') => void
-  private readonly sessionFile: string
+  private readonly done: (navigation?: 'previous' | 'next') => void
+  private readonly onEscape: () => void
   private readonly cwd: string
+  private readonly sessionFile: string
   private readonly modelName: string
   private sessionManager: SessionManager | undefined = undefined
   private lastFileSize = 0
@@ -318,6 +320,7 @@ export class SubagentPeekOverlay {
     this.theme = options.theme
     this.info = options.info
     this.done = options.done
+    this.onEscape = options.onEscape
     this.sessionFile = options.info.sessionFile
     this.cwd = options.info.cwd
     this.modelName = options.info.modelId || options.info.model
@@ -709,8 +712,7 @@ export class SubagentPeekOverlay {
 
   private handleNavigationInput(data: string): boolean {
     if (matchesKey(data, 'escape')) {
-      this.dispose()
-      this.done('back')
+      this.onEscape()
       return true
     }
     if (matchesKey(data, 'ctrl+c') || data === 'q') {
@@ -827,7 +829,7 @@ export class SubagentPeekOverlay {
         : `${contentLines.length}L`
     const followIcon = this.followMode ? this.theme.fg('success', '●') : this.theme.fg('dim', '○')
     lines.push(this.theme.fg('border', `├${'─'.repeat(innerWidth)}┤`))
-    const footer = ` ${scrollInfo} ${followIcon} │ esc back/again stop │ ←/→ agent │ j/k scroll │ g/G top/end │ q close `
+    const footer = ` ${scrollInfo} ${followIcon} │ esc stop all │ ←/→ agent │ j/k scroll │ g/G top/end │ q close `
     const clippedFooter = truncateToWidth(footer, innerWidth, '')
     lines.push(
       this.theme.fg('border', '│') +
