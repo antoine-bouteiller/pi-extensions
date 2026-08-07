@@ -495,20 +495,7 @@ export const createSidebarController = (options: SidebarControllerOptions): Side
     try {
       const pending = options.ctx.ui.custom<void>(
         (tui, theme) => {
-          if (getRef(enabledRef) && isCurrent()) {
-            try {
-              split.attach(tui)
-              const requestRender = () => tui.requestRender()
-              setRef(requestOverlayRenderRef, requestRender)
-              startRedraw(requestRender, currentGeneration)
-            } catch (error) {
-              options.onError?.(error)
-              setRef(enabledRef, false)
-              stopRedraw()
-              split.hide()
-            }
-          }
-          return {
+          const component = {
             invalidate() {
               /* Empty */
             },
@@ -520,6 +507,20 @@ export const createSidebarController = (options: SidebarControllerOptions): Side
                 width: sidebarWidth,
               }),
           } satisfies Component
+          if (getRef(enabledRef) && isCurrent()) {
+            try {
+              split.attach(tui, component)
+              const requestRender = () => tui.requestRender()
+              setRef(requestOverlayRenderRef, requestRender)
+              startRedraw(requestRender, currentGeneration)
+            } catch (error) {
+              options.onError?.(error)
+              setRef(enabledRef, false)
+              stopRedraw()
+              split.hide()
+            }
+          }
+          return component
         },
         {
           onHandle: (handle) => {

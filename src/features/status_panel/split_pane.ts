@@ -94,7 +94,7 @@ const setLayoutRoot = (tui: TUI, component: Component) => {
 }
 
 export interface SplitPaneController {
-  attach: (tui: TUI) => void
+  attach: (tui: TUI, sidebar?: Component) => void
   show: () => void
   hide: () => void
   isEnabled: () => boolean
@@ -120,18 +120,26 @@ export const createSplitPaneController = (options: SplitPaneOptions = {}): Split
   )
   const minMainWidth = Math.max(1, finiteInteger(options.minMainWidth ?? MIN_MAIN_WIDTH, MIN_MAIN_WIDTH))
   let tui: TUI | undefined
+  let sidebar: Component | undefined
   let enabled = false
   let disposed = false
   const adapterOwner = {}
 
   const isVisible = (terminalWidth: number) => enabled && Number.isFinite(terminalWidth) && terminalWidth >= minMainWidth + minSidebarWidth
   const effectiveWidth = (terminalWidth: number) => (isVisible(terminalWidth) ? Math.min(sidebarWidth, terminalWidth - minMainWidth) : 0)
+  const hasFullscreenSplitLayout = () => {
+    if (tui === undefined || tui.mode !== 'fullscreen') {
+      return false
+    }
+    const state = fullscreenAdapterState(tui)
+    return state?.owner === adapterOwner && Reflect.get(tui, 'layoutRoot') === state.splitRoot
+  }
   const overlayLayout: OverlayOptions = {
     anchor: 'top-right',
     margin: 0,
     maxHeight: '100%',
     nonCapturing: true,
-    visible: (terminalWidth) => isVisible(terminalWidth),
+    visible: (terminalWidth) => isVisible(terminalWidth) && !hasFullscreenSplitLayout(),
     width: sidebarWidth,
   }
 
@@ -193,7 +201,7 @@ export const createSplitPaneController = (options: SplitPaneOptions = {}): Split
       { basis: 0, component: originalRoot, grow: 1, minSize: minMainWidth, shrink: 1 },
       {
         basis: sidebarWidth,
-        component: { invalidate: () => undefined, render: () => [] },
+        component: sidebar ?? { invalidate: () => undefined, render: () => [] },
         grow: 0,
         maxSize: MAX_SIDEBAR_WIDTH,
         minSize: minSidebarWidth,
@@ -243,17 +251,25 @@ export const createSplitPaneController = (options: SplitPaneOptions = {}): Split
   }
 
   return {
-    attach(nextTui) {
+    attach(nextTui, nextSidebar) {
       if (disposed) {
         throw new Error('Cannot attach a disposed status panel')
       }
       if (tui === nextTui) {
+        if (nextSidebar === undefined || sidebar === nextSidebar) {
+          return
+        }
+        sidebar = nextSidebar
+        restoreFullscreenLayoutAdapter()
+        syncFullscreenLayoutAdapter()
+        requestRender()
         return
       }
       if (tui !== undefined) {
         throw new Error('Status panel is already attached to another TUI')
       }
       tui = nextTui
+      sidebar = nextSidebar
       syncOverlayWidth(nextTui.terminal.columns)
       syncRegularRenderAdapter()
       syncFullscreenLayoutAdapter()
@@ -269,6 +285,7 @@ export const createSplitPaneController = (options: SplitPaneOptions = {}): Split
       restoreFullscreenLayoutAdapter()
       requestRender()
       tui = undefined
+      sidebar = undefined
     },
     hide() {
       if (!enabled) {
