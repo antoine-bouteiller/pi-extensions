@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 
-import { type AgentToolResult } from '@earendil-works/pi-coding-agent'
-import { asError, asNarrowed, asTool } from '@tests/utils/casts.js'
+import { type AgentToolResult, type Theme } from '@earendil-works/pi-coding-agent'
+import { asError, asNarrowed, asTheme, asTool } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { type Clock, Effect, Layer } from 'effect'
@@ -76,6 +76,28 @@ describe('webfetch', () => {
     expect([...harness.fixture.state.tools.keys()]).toEqual(['webfetch'])
     expect(harness.tool?.label).toBe('Web Fetch')
     expect(harness.tool?.promptSnippet).toContain('static web pages')
+  })
+
+  test('shows a short preview until tool output is expanded', async () => {
+    const complete = Array.from({ length: 25 }, (_value, index) => `line ${index + 1}`).join('\n')
+    const harness = createHarness(async () => new Response(complete, { headers: { 'content-type': 'text/plain' } }))
+    const result = await harness.execute({ url: 'https://example.com/preview.txt' })
+    const tool = asTool<{
+      renderResult: (
+        result: AgentToolResult<WebfetchDetails>,
+        options: { expanded: boolean; isPartial: boolean },
+        theme: Theme
+      ) => { render: (width: number) => string[] }
+    }>(harness.tool)
+    const theme = asTheme({ fg: (_color: string, value: string) => value })
+
+    const collapsed = tool.renderResult(result, { expanded: false, isPartial: false }, theme).render(120).join('\n')
+    const expanded = tool.renderResult(result, { expanded: true, isPartial: false }, theme).render(120).join('\n')
+
+    expect(collapsed).toContain('line 20')
+    expect(collapsed).not.toContain('line 21')
+    expect(collapsed).toContain('to expand')
+    expect(expanded).toContain('line 25')
   })
 
   test('fetches HTML, extracts article content, and converts it to markdown', async () => {

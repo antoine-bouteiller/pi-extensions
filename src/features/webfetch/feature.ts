@@ -1,5 +1,6 @@
 import { StringEnum } from '@earendil-works/pi-ai'
-import { type AgentToolResult, type ExtensionAPI, formatSize } from '@earendil-works/pi-coding-agent'
+import { type AgentToolResult, type ExtensionAPI, formatSize, keyText } from '@earendil-works/pi-coding-agent'
+import { Text } from '@earendil-works/pi-tui'
 import { Clock, Duration, Effect, Function, Layer, ManagedRuntime, Schema, Stream } from 'effect'
 import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest, type HttpClientResponse } from 'effect/unstable/http'
 import TurndownService from 'turndown'
@@ -15,6 +16,7 @@ const MAX_TIMEOUT_SECONDS = 120
 const MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024
 const MAX_OUTPUT_BYTES = 50 * 1024
 const MAX_OUTPUT_LINES = 2000
+const PREVIEW_LINES = 20
 
 const WebfetchParams = Type.Object({
   format: Type.Optional(
@@ -407,6 +409,24 @@ export const createWebfetchExtension: {
           'Use webfetch to read a known static web page or HTTP endpoint. Use agent-browser instead when the task requires interaction, authentication, screenshots, or JavaScript-rendered content.',
         ],
         promptSnippet: 'Fetch and read static web pages or HTTP endpoints',
+        renderResult(result, { expanded }, theme) {
+          const content = result.content.find((item) => item.type === 'text')
+          const output = new Text(theme.fg('toolOutput', content?.text ?? ''), 0, 0)
+          if (expanded) {
+            return output
+          }
+          const hint = new Text(`${theme.fg('dim', '… ')}${keyText('app.tools.expand')} to expand`, 0, 0)
+          return {
+            invalidate() {
+              output.invalidate()
+              hint.invalidate()
+            },
+            render(width) {
+              const lines = output.render(width)
+              return lines.length > PREVIEW_LINES ? [...lines.slice(0, PREVIEW_LINES), ...hint.render(width)] : lines
+            },
+          }
+        },
       })
     }
 )
