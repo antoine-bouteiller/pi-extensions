@@ -74,6 +74,36 @@ describe('sidebar rendering', () => {
     expect(text).toContain('╭─ ✦ QUOTA')
   })
 
+  test('does not apply palette or theme colors when NO_COLOR is set', () => {
+    const previousNoColor = process.env.NO_COLOR
+    let colorCalls = 0
+    process.env.NO_COLOR = '1'
+
+    try {
+      const lines = renderSidebarLines({
+        height: 36,
+        state: withAgents(1),
+        theme: {
+          bold: (text: string) => `\x1b[1m${text}\x1b[22m`,
+          fg: (_color: string, text: string) => {
+            colorCalls += 1
+            return `\x1b[31m${text}\x1b[39m`
+          },
+        },
+        width: 44,
+      })
+
+      expect(colorCalls).toBe(0)
+      expect(lines.join('\n')).not.toContain('\x1b[38;2;')
+    } finally {
+      if (previousNoColor === undefined) {
+        delete process.env.NO_COLOR
+      } else {
+        process.env.NO_COLOR = previousNoColor
+      }
+    }
+  })
+
   test('renders session and weekly quota as matching bars with their time left', () => {
     const lines = renderSidebarLines({ height: 36, now: 0, state, theme, width: 44 }).map(stripAnsi)
     const quotaIndex = lines.findIndex((line) => line.includes('QUOTA'))

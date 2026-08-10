@@ -29,38 +29,37 @@ export interface SidebarState {
 
 const MAX_AGENT_ROWS = 5
 
-type PaletteRole = 'accent' | 'primary' | 'muted' | 'dim' | 'ready' | 'working' | 'context' | 'warning' | 'error'
+type PaletteColor = 'purple' | 'blue' | 'green' | 'red' | 'orange' | 'gray' | 'white'
 type Rgb = readonly [number, number, number]
 
-const COLORS: Record<PaletteRole, Rgb> = {
-  accent: [177, 140, 255],
-  context: [110, 168, 254],
-  dim: [102, 102, 102],
-  error: [255, 93, 115],
-  muted: [128, 128, 128],
-  primary: [212, 212, 212],
-  ready: [110, 168, 254],
-  warning: [255, 159, 67],
-  working: [255, 159, 67],
+const COLORS: Record<PaletteColor, Rgb> = {
+  blue: [110, 168, 254],
+  gray: [128, 128, 128],
+  green: [95, 211, 148],
+  orange: [255, 159, 67],
+  purple: [177, 140, 255],
+  red: [255, 93, 115],
+  white: [212, 212, 212],
 }
 
-const THEME_ROLES: Record<PaletteRole, ThemeColor> = {
-  accent: 'accent',
-  context: 'thinkingLow',
-  dim: 'dim',
-  error: 'error',
-  muted: 'muted',
-  primary: 'text',
-  ready: 'success',
-  warning: 'warning',
-  working: 'warning',
+const THEME_FALLBACKS: Record<PaletteColor, ThemeColor> = {
+  blue: 'thinkingLow',
+  gray: 'muted',
+  green: 'success',
+  orange: 'warning',
+  purple: 'accent',
+  red: 'error',
+  white: 'text',
 }
 
-const paint = (theme: SidebarTheme, role: PaletteRole, text: string) => {
-  if (process.env.NO_COLOR !== undefined || !getCapabilities().trueColor) {
-    return theme.fg(THEME_ROLES[role], text)
+const paint = (theme: SidebarTheme, color: PaletteColor, text: string) => {
+  if (process.env.NO_COLOR !== undefined) {
+    return text
   }
-  const [red, green, blue] = COLORS[role]
+  if (!getCapabilities().trueColor) {
+    return theme.fg(THEME_FALLBACKS[color], text)
+  }
+  const [red, green, blue] = COLORS[color]
   return `\x1b[38;2;${red};${green};${blue}m${text}\x1b[39m`
 }
 
@@ -97,11 +96,11 @@ interface PanelOptions {
   rows: readonly string[]
   width: number
   theme: SidebarTheme
-  role: PaletteRole
+  color: PaletteColor
   jewel?: string
 }
 
-const panel = ({ title, rows, width, theme, role, jewel = '✦' }: PanelOptions) => {
+const panel = ({ title, rows, width, theme, color, jewel = '✦' }: PanelOptions) => {
   if (width <= 0) {
     return []
   }
@@ -110,55 +109,55 @@ const panel = ({ title, rows, width, theme, role, jewel = '✦' }: PanelOptions)
   const prefix = `╭─ ${jewel} `
   const fill = '─'.repeat(Math.max(0, width - visibleWidth(prefix) - visibleWidth(safeTitle) - 2))
   const top = truncateToWidth(
-    `${paint(theme, role, prefix)}${bold(theme, paint(theme, role, safeTitle))} ${paint(theme, role, `${fill}╮`)}`,
+    `${paint(theme, color, prefix)}${bold(theme, paint(theme, color, safeTitle))} ${paint(theme, color, `${fill}╮`)}`,
     width,
     ''
   )
-  const body = rows.map((row) => truncateToWidth(`${paint(theme, 'dim', '│')} ${pad(row, innerWidth)} ${paint(theme, 'dim', '│')}`, width, ''))
-  const bottom = paint(theme, 'dim', `╰${'─'.repeat(Math.max(0, width - 2))}╯`)
+  const body = rows.map((row) => truncateToWidth(`${paint(theme, 'gray', '│')} ${pad(row, innerWidth)} ${paint(theme, 'gray', '│')}`, width, ''))
+  const bottom = paint(theme, 'gray', `╰${'─'.repeat(Math.max(0, width - 2))}╯`)
   return [top, ...body, truncateToWidth(bottom, width, ''), '']
 }
 
-const contextRole = (percent: number | undefined): PaletteRole => {
+const contextColor = (percent: number | undefined): PaletteColor => {
   if (percent === undefined || !Number.isFinite(percent)) {
-    return 'dim'
+    return 'gray'
   }
   if (percent >= 90) {
-    return 'error'
+    return 'red'
   }
   if (percent >= 70) {
-    return 'warning'
+    return 'orange'
   }
-  return 'context'
+  return 'blue'
 }
 
 const agentRows = (state: SidebarState, width: number, theme: SidebarTheme) => {
   const working = state.activity === 'working'
-  const status = bold(theme, paint(theme, working ? 'working' : 'ready', working ? '◆ Working' : '● Ready'))
-  const model = paint(theme, 'primary', sanitize(state.model.modelId) || 'no model')
+  const status = bold(theme, paint(theme, working ? 'orange' : 'green', working ? '◆ Working' : '● Ready'))
+  const model = paint(theme, 'white', sanitize(state.model.modelId) || 'no model')
   const metadata = [state.model.provider, state.model.thinking]
     .map((value) => sanitize(value).toUpperCase())
     .filter(Boolean)
-    .join(` ${paint(theme, 'dim', '·')} `)
-  return [spaced(status, model, width), isEmptyString(metadata) ? paint(theme, 'dim', '—') : paint(theme, 'muted', metadata)]
+    .join(` ${paint(theme, 'gray', '·')} `)
+  return [spaced(status, model, width), paint(theme, 'gray', isEmptyString(metadata) ? '—' : metadata)]
 }
 
 const contextRows = (state: SidebarState, width: number, theme: SidebarTheme) => {
   const { contextPercent, contextTokens, contextWindow } = state.model
   if (contextPercent === undefined || contextTokens === undefined) {
-    return [paint(theme, 'dim', 'Context unavailable')]
+    return [paint(theme, 'gray', 'Context unavailable')]
   }
-  const role = contextRole(contextPercent)
+  const color = contextColor(contextPercent)
   const usage = `${formatTokens(contextTokens)} / ${contextWindow > 0 ? formatTokens(contextWindow) : '—'}`
   const percent = `${contextPercent.toFixed(1)}%`
   const meterWidth = Math.max(1, Math.min(16, width - 2))
   const filled = Math.max(0, Math.min(meterWidth, Math.round((contextPercent / 100) * meterWidth)))
-  const meter = `${paint(theme, 'dim', '[')}${paint(theme, role, '■'.repeat(filled))}${paint(
+  const meter = `${paint(theme, 'gray', '[')}${paint(theme, color, '■'.repeat(filled))}${paint(
     theme,
-    'dim',
+    'gray',
     '·'.repeat(meterWidth - filled)
-  )}${paint(theme, 'dim', ']')}`
-  return [spaced(paint(theme, role, usage), paint(theme, role, percent), width), meter]
+  )}${paint(theme, 'gray', ']')}`
+  return [spaced(paint(theme, color, usage), paint(theme, color, percent), width), meter]
 }
 
 const subagentRow = (agent: RunningAgent, width: number, theme: SidebarTheme) => {
@@ -167,70 +166,71 @@ const subagentRow = (agent: RunningAgent, width: number, theme: SidebarTheme) =>
   const nameWidth = width - visibleWidth(marker) - (isEmptyString(profile) ? 0 : visibleWidth(profile) + 1)
   const name = truncateToWidth(sanitize(agent.name), Math.max(0, nameWidth), '…')
   const gap = ' '.repeat(Math.max(isEmptyString(profile) ? 0 : 1, width - visibleWidth(marker) - visibleWidth(name) - visibleWidth(profile)))
-  return truncateToWidth(`${paint(theme, 'dim', marker)}${theme.fg(agent.color, name)}${gap}${paint(theme, 'muted', profile)}`, width, '')
+  const coloredName = process.env.NO_COLOR === undefined ? theme.fg(agent.color, name) : name
+  return truncateToWidth(`${paint(theme, 'gray', marker)}${coloredName}${gap}${paint(theme, 'gray', profile)}`, width, '')
 }
 
 const subagentRows = (agents: readonly RunningAgent[], width: number, theme: SidebarTheme) => {
   const shown = agents.slice(0, MAX_AGENT_ROWS)
   const rows = shown.map((agent) => subagentRow(agent, width, theme))
   if (agents.length > shown.length) {
-    rows.push(paint(theme, 'dim', `+${agents.length - shown.length} more`))
+    rows.push(paint(theme, 'gray', `+${agents.length - shown.length} more`))
   }
   return rows
 }
 
 const workspaceRows = (state: SidebarState, theme: SidebarTheme) => {
   const project = basename(state.cwd) || formatDirectory(state.cwd)
-  const rows = [paint(theme, 'primary', sanitize(project)), paint(theme, 'muted', formatDirectory(state.cwd))]
+  const rows = [paint(theme, 'white', sanitize(project)), paint(theme, 'gray', formatDirectory(state.cwd))]
   if (state.git.branch === undefined) {
-    rows.push(paint(theme, 'dim', 'not a Git repository'))
+    rows.push(paint(theme, 'gray', 'not a Git repository'))
   } else {
     const fileLabel = state.git.changedFiles === 1 ? 'file' : 'files'
     const change = state.git.changedFiles > 0 ? `${state.git.changedFiles} ${fileLabel} changed` : 'clean'
     rows.push(
-      `${paint(theme, 'accent', sanitize(state.git.branch))} ${paint(theme, 'dim', '·')} ${paint(
+      `${paint(theme, 'purple', sanitize(state.git.branch))} ${paint(theme, 'gray', '·')} ${paint(
         theme,
-        state.git.changedFiles > 0 ? 'warning' : 'ready',
+        state.git.changedFiles > 0 ? 'orange' : 'green',
         change
       )}`
     )
   }
   if (state.git.pullRequest !== undefined) {
-    rows.push(paint(theme, 'accent', `PR #${state.git.pullRequest.number}`))
+    rows.push(paint(theme, 'purple', `PR #${state.git.pullRequest.number}`))
   }
   return rows
 }
 
 const quotaPercent = (percent: number) => (Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : 0)
 
-const quotaRole = (percent: number): PaletteRole => {
+const quotaColor = (percent: number): PaletteColor => {
   if (percent >= 90) {
-    return 'error'
+    return 'red'
   }
   if (percent >= 70) {
-    return 'warning'
+    return 'orange'
   }
-  return 'context'
+  return 'blue'
 }
 
 const quotaWindowRows = (window: QuotaWindow, width: number, theme: SidebarTheme) => {
   const percent = quotaPercent(window.percent)
-  const role = quotaRole(percent)
+  const color = quotaColor(percent)
   const resetsIn = sanitize(window.resetsIn ?? '')
   const detail = sanitize(window.detail ?? '')
   const trailingWidth = visibleWidth(resetsIn) + (isEmptyString(detail) ? 0 : visibleWidth(detail) + 1)
   const meterWidth = Math.max(1, Math.min(12, width - (trailingWidth === 0 ? 0 : trailingWidth + 1)))
   const filled = Math.max(0, Math.min(meterWidth, Math.round((percent / 100) * meterWidth)))
-  const meter = `${paint(theme, role, '■'.repeat(filled))}${paint(theme, 'dim', '·'.repeat(meterWidth - filled))}`
+  const meter = `${paint(theme, color, '■'.repeat(filled))}${paint(theme, 'gray', '·'.repeat(meterWidth - filled))}`
   const headerDetail = isNotEmptyString(detail) && isEmptyString(resetsIn) ? ` ${detail}` : ''
-  const header = spaced(paint(theme, role, sanitize(window.label)), paint(theme, role, `${percent.toFixed(1)}%${headerDetail}`), width)
+  const header = spaced(paint(theme, color, sanitize(window.label)), paint(theme, color, `${percent.toFixed(1)}%${headerDetail}`), width)
   if (isEmptyString(resetsIn)) {
     return [header, meter]
   }
   const gap = ' '.repeat(Math.max(1, width - meterWidth - trailingWidth))
   return [
     header,
-    truncateToWidth(`${meter}${gap}${paint(theme, 'muted', resetsIn)}${isEmptyString(detail) ? '' : ` ${paint(theme, role, detail)}`}`, width, ''),
+    truncateToWidth(`${meter}${gap}${paint(theme, 'gray', resetsIn)}${isEmptyString(detail) ? '' : ` ${paint(theme, color, detail)}`}`, width, ''),
   ]
 }
 
@@ -241,24 +241,24 @@ const quotaRows = (quota: ProviderQuota, width: number, theme: SidebarTheme) => 
       : quota.windows
   const rows = windows.flatMap((window) => quotaWindowRows(window, width, theme))
   if ((quota.windows?.length ?? 0) === 0 && quota.detail !== undefined && isNotEmptyString(quota.detail)) {
-    rows.push(paint(theme, 'muted', sanitize(quota.detail)))
+    rows.push(paint(theme, 'gray', sanitize(quota.detail)))
   }
   return rows
 }
 
-const STATUS_TONE_ROLES: Record<StatusTone, PaletteRole> = {
-  error: 'error',
-  info: 'context',
-  muted: 'muted',
-  success: 'ready',
-  warning: 'warning',
+const STATUS_TONE_COLORS: Record<StatusTone, PaletteColor> = {
+  error: 'red',
+  info: 'blue',
+  muted: 'gray',
+  success: 'green',
+  warning: 'orange',
 }
 
 const statusRows = (statuses: readonly StatusEntry[], theme: SidebarTheme) =>
   statuses
-    .map((status) => ({ role: STATUS_TONE_ROLES[status.tone ?? 'muted'], text: sanitize(formatStatusText(status)) }))
+    .map((status) => ({ color: STATUS_TONE_COLORS[status.tone ?? 'muted'], text: sanitize(formatStatusText(status)) }))
     .filter(({ text }) => text)
-    .map(({ role, text }) => paint(theme, role, text))
+    .map(({ color, text }) => paint(theme, color, text))
 
 interface PanelGroup {
   name: string
@@ -289,8 +289,8 @@ export const renderSidebarLines = ({ state, theme, width, height, now = Date.now
       name: 'agent',
       required: true,
       rows: panel({
+        color: state.activity === 'working' ? 'orange' : 'green',
         jewel: state.activity === 'working' && Math.floor(now / 400) % 2 === 1 ? '✧' : '✦',
-        role: state.activity === 'working' ? 'working' : 'ready',
         rows: agentRows(state, rowWidth, theme),
         theme,
         title: 'AGENT',
@@ -302,7 +302,7 @@ export const renderSidebarLines = ({ state, theme, width, height, now = Date.now
       name: 'context',
       required: true,
       rows: panel({
-        role: contextRole(state.model.contextPercent),
+        color: contextColor(state.model.contextPercent),
         rows: contextRows(state, rowWidth, theme),
         theme,
         title: 'CONTEXT',
@@ -316,7 +316,7 @@ export const renderSidebarLines = ({ state, theme, width, height, now = Date.now
             name: 'subagents',
             required: false,
             rows: panel({
-              role: 'accent',
+              color: 'purple',
               rows: subagentRows(state.agents, rowWidth, theme),
               theme,
               title: 'SUBAGENTS',
@@ -330,7 +330,7 @@ export const renderSidebarLines = ({ state, theme, width, height, now = Date.now
       name: 'workspace',
       required: false,
       rows: panel({
-        role: 'accent',
+        color: 'purple',
         rows: workspaceRows(state, theme),
         theme,
         title: 'WORKSPACE',
@@ -344,7 +344,7 @@ export const renderSidebarLines = ({ state, theme, width, height, now = Date.now
             name: 'quota',
             required: false,
             rows: panel({
-              role: quotaRole(Math.max(...Object.values(state.quotas).map((quota) => quotaPercent(quota.percent)))),
+              color: quotaColor(Math.max(...Object.values(state.quotas).map((quota) => quotaPercent(quota.percent)))),
               rows: [state.quotas.anthropic, state.quotas.azure].flatMap((quota) => (quota === undefined ? [] : quotaRows(quota, rowWidth, theme))),
               theme,
               title: 'QUOTA',
@@ -363,7 +363,7 @@ export const renderSidebarLines = ({ state, theme, width, height, now = Date.now
       dropRank: 15,
       name: 'mcp',
       required: false,
-      rows: panel({ role: 'context', rows: mcp, theme, title: 'MCP', width: panelWidth }),
+      rows: panel({ color: 'blue', rows: mcp, theme, title: 'MCP', width: panelWidth }),
     })
   }
   const statuses = statusRows(
@@ -375,7 +375,7 @@ export const renderSidebarLines = ({ state, theme, width, height, now = Date.now
       dropRank: 10,
       name: 'statuses',
       required: false,
-      rows: panel({ role: 'muted', rows: statuses, theme, title: 'STATUS', width: panelWidth }),
+      rows: panel({ color: 'gray', rows: statuses, theme, title: 'STATUS', width: panelWidth }),
     })
   }
 
@@ -392,7 +392,7 @@ export const renderSidebarLines = ({ state, theme, width, height, now = Date.now
     visible = visible.filter((_group, index) => index !== droppable.index)
   }
   const contentRows = visible.flatMap((group) => group.rows).slice(0, safeHeight)
-  const divider = paint(theme, 'dim', '│')
+  const divider = paint(theme, 'gray', '│')
   return Array.from({ length: safeHeight }, (_value, index) => {
     const content = truncateToWidth(contentRows[index] ?? '', panelWidth, '')
     return truncateToWidth(`${divider} ${pad(content, panelWidth)}`, safeWidth, '')
