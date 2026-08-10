@@ -275,11 +275,66 @@ describe('safety guard', () => {
     }
   })
 
-  test('allows Git rebase commands', async () => {
+  test('hard-blocks Git force pushes', async () => {
+    const { handler } = setup()
+    const ctx = {
+      cwd: '/work/project',
+      hasUI: true,
+      ui: { confirm: async () => true, notify: () => undefined },
+    }
+
+    for (const command of [
+      'git push --force origin main',
+      'git push origin main -f',
+      'git push -uf origin main',
+      'git -C /work/project push --force origin main',
+      'git --git-dir=.git push -f origin main',
+      'git --no-optional-locks push --force origin main',
+      "git push '--force' origin main",
+      String.raw`git pu\
+sh --force origin main`,
+      String.raw`git push --for\
+ce origin main`,
+      String.raw`git push \
+ --force origin main`,
+      'git push --force; echo done',
+    ]) {
+      const result = await handler(event(command), ctx)
+      expect(result?.block, command).toBeTrue()
+      expect(result?.reason, command).toContain('Git force push')
+      expect(result?.reason, command).toContain('CRITICAL')
+    }
+  })
+
+  test('allows all other Git operations', async () => {
     const { handler } = setup()
     const ctx = { cwd: '/work/project', hasUI: false }
 
-    for (const command of ['git rebase main', 'git rebase --continue', 'git rebase --onto main feature~2 feature']) {
+    for (const command of [
+      'git reset --hard HEAD~1',
+      'git clean -fd',
+      'git checkout -- package.json',
+      'git restore package.json',
+      'git branch -D feature',
+      'git tag -d v1.0.0',
+      'git filter-repo --path secrets.txt --invert-paths',
+      'git replace old new',
+      'git update-ref -d refs/heads/feature',
+      'git prune',
+      'git push --delete origin feature',
+      'git push origin :refs/heads/feature',
+      'git push --force-with-lease origin main',
+      'git push origin topic-f',
+      'git push origin feature--force',
+      'git push -of origin main',
+      'git push -ofoo origin main',
+      'git push --mirror origin',
+      'git push origin +main',
+      'git --no-pager status push --force',
+      'git commit --amend --no-edit',
+      'git commit --fixup HEAD',
+      'git rebase --onto main feature~2 feature',
+    ]) {
       expect(await handler(event(command), ctx), command).toBeUndefined()
     }
   })

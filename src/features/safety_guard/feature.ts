@@ -44,8 +44,9 @@ type GuardDecision =
   | { readonly _tag: 'Confirm'; readonly label: string; readonly message: string }
 
 const decideForCommand = (command: string): GuardDecision => {
+  const scannedCommand = command.replaceAll(/\\\r?\n/g, '')
   for (const rule of ALL_PATTERNS) {
-    if (!rule.pattern.test(command)) {
+    if (!rule.pattern.test(scannedCommand)) {
       continue
     }
     if (rule.severity === 'critical') {

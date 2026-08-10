@@ -52,6 +52,13 @@ const CRITICAL_PATTERNS = [
     pattern: /\b(?:ip6tables|iptables)\s+-F\b/i,
     severity: 'critical',
   },
+  {
+    category: 'git',
+    label: 'Git force push',
+    pattern:
+      /\bgit\b(?:[ \t]+(?:(?:-C|-c|--(?:config-env|git-dir|namespace|super-prefix|work-tree))(?:=[^\s;&|]+|[ \t]+[^\s;&|]+)|--[^\s;&|]+|-[pP]))*[ \t]+push\b[^\n;&|]*[ \t]+["']?(?:--force|-(?!-)[46dnquv]*f[46dnquv]*)["']?(?=$|[\s;&|])/i,
+    severity: 'critical',
+  },
 ] as const satisfies readonly DangerousPattern[]
 
 const HIGH_PATTERNS = [
@@ -59,36 +66,6 @@ const HIGH_PATTERNS = [
     category: 'filesystem',
     label: 'Destructive file operation',
     pattern: /\b(?:shred\b|truncate\s+-s\s+0\b|dd\b)/i,
-    severity: 'high',
-  },
-  {
-    category: 'git',
-    label: 'Git reset/history rewrite',
-    pattern: /\bgit\s+reset\s+(?:--hard|--merge|--keep|HEAD[~^]|[a-f0-9]{7,40}\b)/i,
-    severity: 'high',
-  },
-  {
-    category: 'git',
-    label: 'Git clean',
-    pattern: /\bgit\s+clean\b[^\n;&|]*\s-[^\s;&|]*f/i,
-    severity: 'high',
-  },
-  {
-    category: 'git',
-    label: 'Destructive Git working-tree/ref operation',
-    pattern: /\bgit\s+(?:checkout\s+--\s+|restore\b|branch\s+-[dD]\b|tag\s+-d\b)/i,
-    severity: 'high',
-  },
-  {
-    category: 'git',
-    label: 'Git history rewrite',
-    pattern: /\bgit\s+(?:filter-(?:branch|repo)\b|replace\b|update-ref\b|prune\b)/i,
-    severity: 'high',
-  },
-  {
-    category: 'git',
-    label: 'Git history/ref mutation',
-    pattern: /\bgit\s+(?:push\b[^\n;&|]*(?:--force(?:-with-lease)?|--delete|:refs\/heads\/)|commit\b[^\n;&|]*--(?:amend|fixup|squash)\b)/i,
     severity: 'high',
   },
   {
