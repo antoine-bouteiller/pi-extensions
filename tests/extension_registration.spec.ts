@@ -7,7 +7,6 @@ import { asResult } from '@tests/utils/casts.js'
 
 const EXPECTED_FEATURES = [
   'ask_user',
-  'auto_compact',
   'background_poll',
   'caffeinate',
   'claude_code',

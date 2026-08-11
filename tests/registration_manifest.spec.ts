@@ -5,7 +5,6 @@ import { asResult } from '@tests/utils/casts.js'
 
 const FEATURE_MODULES = [
   'ask_user',
-  'auto_compact',
   'background_poll',
   'caffeinate',
   'claude_code',
@@ -24,7 +23,6 @@ const FEATURE_MODULES = [
 
 const EXPECTED_FEATURE_NAMES = [
   'ask-user',
-  'auto-compact',
   'background-poll',
   'caffeinate',
   'claude-code',
@@ -64,7 +62,7 @@ const EXPECTED_MESSAGE_RENDERERS = ['pi-codex-subagent-completion'].toSorted()
 const EXPECTED_HANDLER_COUNTS: Record<string, number> = {
   after_provider_response: 1,
   agent_end: 1,
-  agent_settled: 3,
+  agent_settled: 2,
   agent_start: 3,
   before_agent_start: 3,
   before_provider_headers: 1,
@@ -75,7 +73,7 @@ const EXPECTED_HANDLER_COUNTS: Record<string, number> = {
   resources_discover: 1,
   session_compact: 1,
   session_shutdown: 7,
-  session_start: 8,
+  session_start: 7,
   session_tree: 1,
   thinking_level_select: 1,
   tool_call: 2,

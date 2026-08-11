@@ -2,7 +2,6 @@ import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Function } from 'effect'
 
 import { register as askUser } from '@/features/ask_user/feature.js'
-import { register as autoCompact } from '@/features/auto_compact/feature.js'
 import { register as backgroundPoll } from '@/features/background_poll/feature.js'
 import { register as caffeinate } from '@/features/caffeinate/feature.js'
 import { register as claudeCode } from '@/features/claude_code/feature.js'
@@ -26,7 +25,6 @@ export interface FeatureRegistration {
 
 export const features: readonly FeatureRegistration[] = [
   { name: 'ask-user', register: askUser },
-  { name: 'auto-compact', register: autoCompact },
   { name: 'background-poll', register: backgroundPoll },
   { name: 'caffeinate', register: caffeinate },
   { name: 'claude-code', register: claudeCode },
