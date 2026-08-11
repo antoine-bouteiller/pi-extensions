@@ -1,6 +1,7 @@
 import { type BeforeProviderHeadersEvent, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { Effect, Function } from 'effect'
 
+import { scrubPiFingerprints } from '@/features/meridian_session_affinity/scrub.js'
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { makeEventHandler } from '@/shared/effect/runtime.js'
 import { isEmptyString, isNullOrUndefined } from '@/shared/utils/predicates.js'
@@ -26,14 +27,17 @@ const normalizedUrl = (value: string | undefined): string | undefined => {
 const hasHeader = (headers: BeforeProviderHeadersEvent['headers'], expectedName: string): boolean =>
   Object.entries(headers).some(([name, value]) => name.toLowerCase() === expectedName && typeof value === 'string')
 
-const isMeridianRequest = (event: BeforeProviderHeadersEvent, ctx: ExtensionContext): boolean => {
-  if (hasHeader(event.headers, MERIDIAN_AGENT_HEADER)) {
+const isMeridianModel = (ctx: ExtensionContext): boolean => {
+  if (!isNullOrUndefined(ctx.model) && hasHeader(ctx.model.headers ?? {}, MERIDIAN_AGENT_HEADER)) {
     return true
   }
 
   const configuredBaseUrl = process.env.MERIDIAN_BASE_URL ?? DEFAULT_MERIDIAN_BASE_URL
   return normalizedUrl(ctx.model?.baseUrl) === normalizedUrl(configuredBaseUrl)
 }
+
+const isMeridianRequest = (event: BeforeProviderHeadersEvent, ctx: ExtensionContext): boolean =>
+  hasHeader(event.headers, MERIDIAN_AGENT_HEADER) || isMeridianModel(ctx)
 
 const setCanonicalHeader = (headers: BeforeProviderHeadersEvent['headers'], name: string, value: string): void => {
   for (const existingName of Object.keys(headers)) {
@@ -64,6 +68,14 @@ export const register: {
 } = Function.dual(
   (args) => typeof args[0].on === 'function',
   (pi: ExtensionAPI, runtime: AppRuntime): void => {
+    pi.on('before_agent_start', (event, ctx) => {
+      if (!isMeridianModel(ctx)) {
+        return undefined
+      }
+
+      const systemPrompt = scrubPiFingerprints(event.systemPrompt)
+      return systemPrompt === event.systemPrompt ? undefined : { systemPrompt }
+    })
     pi.on('before_provider_headers', makeEventHandler(runtime)(applySessionAffinity))
   }
 )

@@ -21,19 +21,72 @@ const createHarness = () => {
   return fixture
 }
 
-const context = (sessionId: string, baseUrl = 'https://api.anthropic.com') => ({
-  model: { baseUrl },
+const context = (sessionId: string, baseUrl = 'https://api.anthropic.com', headers: Record<string, string> = {}) => ({
+  model: { baseUrl, headers },
   sessionManager: {
     getSessionId: () => sessionId,
   },
 })
 
 describe('meridian session affinity', () => {
-  test('registers no daemon or session-start lifecycle behavior', () => {
+  test('registers only request-scoped lifecycle behavior', () => {
     const fixture = createHarness()
 
-    expect([...fixture.state.handlers.keys()]).toEqual(['before_provider_headers'])
+    expect([...fixture.state.handlers.keys()]).toEqual(['before_agent_start', 'before_provider_headers'])
     expect(fixture.state.commands.size).toBe(0)
+  })
+
+  test('scrubs Pi fingerprints from the system prompt before an agent starts', async () => {
+    const fixture = createHarness()
+    const systemPrompt = `You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
+
+Available tools:
+- read: Read files
+
+Pi documentation (read only when the user asks about pi itself):
+- Main documentation: /home/user/pi-coding-agent/README.md
+Current date: 7/10/2026
+Current working directory: /repo`
+
+    const results = await fixture.emit('before_agent_start', { systemPrompt }, context('session-a', 'http://127.0.0.1:3456'))
+
+    expect(results).toEqual([
+      {
+        systemPrompt: `You are an expert coding assistant. You help users by reading files, executing commands, editing code, and writing new files.
+Available tools:
+- read: Read files
+
+Current date: 7/10/2026
+Current working directory: /repo`,
+      },
+    ])
+  })
+
+  test('recognizes a Meridian header configured on the model when scrubbing', async () => {
+    const fixture = createHarness()
+    const systemPrompt =
+      'You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.\n'
+
+    const results = await fixture.emit(
+      'before_agent_start',
+      { systemPrompt },
+      context('session-a', 'https://api.anthropic.com', { 'X-Meridian-Agent': 'pi' })
+    )
+
+    expect(results).toEqual([
+      {
+        systemPrompt: 'You are an expert coding assistant. You help users by reading files, executing commands, editing code, and writing new files.',
+      },
+    ])
+  })
+
+  test('does not scrub system prompts sent directly to non-Meridian providers', async () => {
+    const fixture = createHarness()
+    const systemPrompt = 'You are an expert coding assistant operating inside pi, a coding agent harness. Keep this direct-provider prompt.\n'
+
+    const results = await fixture.emit('before_agent_start', { systemPrompt }, context('session-a'))
+
+    expect(results).toEqual([undefined])
   })
 
   test('adds the Pi session id to requests identified by the Meridian agent header', async () => {
