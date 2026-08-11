@@ -8,6 +8,7 @@ export interface FakePiState {
   handlers: Map<string, EventHandler[]>
   tools: Map<string, ToolDefinition>
   commands: Map<string, CommandDefinition>
+  messageRenderers: string[]
   messages: { message: unknown; options: unknown }[]
   emittedEvents: { name: string; data: unknown }[]
 }
@@ -31,6 +32,7 @@ export const createFakePi = (
     commands: new Map(),
     emittedEvents: [],
     handlers: new Map(),
+    messageRenderers: [],
     messages: [],
     tools: new Map(),
   }
@@ -64,8 +66,8 @@ export const createFakePi = (
     registerFlag() {
       /* Empty */
     },
-    registerMessageRenderer() {
-      /* Empty */
+    registerMessageRenderer(type: string) {
+      state.messageRenderers.push(type)
     },
     registerProvider() {
       /* Empty */

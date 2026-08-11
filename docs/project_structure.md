@@ -38,9 +38,8 @@ src/
 
 tests/
 ├── bun_effect.spec.ts
-├── extension_registration.spec.ts
 ├── project_structure.spec.ts
-├── registration_manifest.spec.ts
+├── registration.spec.ts
 ├── config/runtime.spec.ts
 ├── features/<feature>/...*.spec.ts   # mirrors src/features
 ├── shared/effect/{app_services,runtime}.spec.ts
@@ -82,9 +81,11 @@ is the only discovered entrypoint.
 
 Source-owned tests mirror `src/` under `tests/`, using `.spec.ts` instead of `.test.ts`
 (`tests/features/<name>/...` mirrors `src/features/<name>/...`, `tests/shared/...` mirrors
-`src/shared/...`, and so on). `tests/bun_effect.spec.ts`, `tests/extension_registration.spec.ts`,
-`tests/registration_manifest.spec.ts`, and `tests/project_structure.spec.ts` are the four
-package-contract specs, allowed at the `tests/` root without a mirrored source module.
+`src/shared/...`, and so on). `tests/bun_effect.spec.ts`, `tests/project_structure.spec.ts`, and
+`tests/registration.spec.ts` are the three package-contract specs, allowed at the `tests/` root
+without a mirrored source module. `registration.spec.ts` derives every expectation from the
+feature folders on disk instead of hardcoding an inventory of features, tools, commands, and
+hooks, so it never needs editing when the feature set changes.
 `tests/utils/` holds shared test infrastructure (`bun_effect`, `casts`, `fake_pi`, and a
 `runtime` helper that exposes the process `AppRuntime`); it is also an explicit exception to the
 mirroring rule.
@@ -107,3 +108,7 @@ mirroring rule.
    existing features.
 
 No other file needs to change: `src/index.ts` always registers every feature in `src/config/features.ts` through one shared runtime.
+
+Step 3 is the step the package-contract specs enforce. A feature folder that is never added to
+the registry, or a registry entry whose folder is gone, fails `tests/registration.spec.ts`; the
+tool, command, and hook coverage for the feature itself belongs in its mirrored spec folder.

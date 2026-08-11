@@ -64,11 +64,6 @@ describe('project structure', () => {
 
   test('root specs are only package contracts', async () => {
     const rootTests = await namesByKind(TESTS)
-    expect(rootTests.files).toEqual([
-      'bun_effect.spec.ts',
-      'extension_registration.spec.ts',
-      'project_structure.spec.ts',
-      'registration_manifest.spec.ts',
-    ])
+    expect(rootTests.files).toEqual(['bun_effect.spec.ts', 'project_structure.spec.ts', 'registration.spec.ts'])
   })
 })
