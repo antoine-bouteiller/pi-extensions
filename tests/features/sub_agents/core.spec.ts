@@ -1,11 +1,14 @@
 import { describe, expect, mock, test } from 'bun:test'
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- Fixture setup and teardown that must be ordered against the child processes these specs start.
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { userInfo } from 'node:os'
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- Lexical path math for the fixture locations below.
 import { dirname, join } from 'node:path'
 
 import { type Theme } from '@earendil-works/pi-coding-agent'
 import { visibleWidth } from '@earendil-works/pi-tui'
 import { asError, asExtensionApi, asNarrowed, asResult, asTheme, asTui } from '@tests/utils/casts.js'
+import { Data, Effect } from 'effect'
 
 const TEST_AGENT_DIR = '/tmp/pi-codex-subagents-tests'
 const FAKE_RPC_CHILD = join(import.meta.dir, 'fixtures', 'fake_rpc_child.js')
@@ -35,6 +38,20 @@ const { AGENT_CONFIGS } = await import('@/features/sub_agents/profiles.js')
 const { SubagentPeekOverlay } = await import('@/features/sub_agents/peek.js')
 const { azureQuota } = await import('@/shared/state/azure_quota.js')
 const { runningAgents } = await import('@/shared/state/agent_activity.js')
+
+/*
+ * Fixtures need concrete epoch values to build on-disk records and mtimes, and the assertions compare
+ * them directly. These two are the only clock reads in the file.
+ */
+// oxlint-disable-next-line effecttsgo/global-date -- See above.
+const nowMs = (): number => Date.now()
+
+// oxlint-disable-next-line effecttsgo/global-date -- Builds a fixed `Date` from an explicit epoch value instead of reading the clock.
+const dateOf = (epochMs: number): Date => new Date(epochMs)
+
+const sleep = (durationMs: number): Promise<void> => Effect.runPromise(Effect.sleep(durationMs))
+
+class TestLaunchError extends Data.TaggedError('TestLaunchError')<{ readonly message: string }> {}
 
 const requireChildProcess = <ChildProcess>(childProcess: ChildProcess | undefined): ChildProcess => {
   if (childProcess === undefined) {
@@ -101,11 +118,31 @@ interface FakeMessage {
   details: Record<string, string>
 }
 
+/*
+ * The manager's asynchronous surface is Effect-returning; this is the single place these specs leave
+ * Effect, so each test below keeps asserting on plain promises.
+ */
+const promising = (manager: InstanceType<typeof AgentManager>) => ({
+  getAgentInfo: manager.getAgentInfo.bind(manager),
+  instance: manager,
+  interruptAgent: (...args: Parameters<typeof manager.interruptAgent>) => Effect.runPromise(manager.interruptAgent(...args)),
+  listAgents: manager.listAgents.bind(manager),
+  readAgentResponse: manager.readAgentResponse.bind(manager),
+  ready: () => Effect.runPromise(manager.ready()),
+  sendMessage: (...args: Parameters<typeof manager.sendMessage>) => Effect.runPromise(manager.sendMessage(...args)),
+  shutdown: () => Effect.runPromise(manager.shutdown()),
+  spawnAgent: (...args: Parameters<typeof manager.spawnAgent>) => Effect.runPromise(manager.spawnAgent(...args)),
+  waitAgent: (...args: Parameters<typeof manager.waitAgent>) => Effect.runPromise(manager.waitAgent(...args)),
+  waitAllAgents: (...args: Parameters<typeof manager.waitAllAgents>) => Effect.runPromise(manager.waitAllAgents(...args)),
+})
+
 const createAgentManager = (options: Record<string, unknown> = {}) =>
-  new AgentManager({
-    piCommand: { command: FAKE_RPC_CHILD },
-    ...options,
-  })
+  promising(
+    new AgentManager({
+      piCommand: { command: FAKE_RPC_CHILD },
+      ...options,
+    })
+  )
 
 const processTest = (name: string, run: () => void | Promise<void>): void => {
   test(name, run, 15_000)
@@ -159,12 +196,12 @@ describe('run storage', () => {
     writeFileSync(
       join(legacyScope, `${id}.info.json`),
       JSON.stringify({
-        createdAt: Date.now(),
+        createdAt: nowMs(),
         finalResponse: 'legacy response',
         id,
         status: 'closed',
         taskName: 'legacy',
-        updatedAt: Date.now(),
+        updatedAt: nowMs(),
       })
     )
 
@@ -180,7 +217,7 @@ describe('run storage', () => {
     rmSync(configFile, { force: true })
     const parentSessionId = 'creation-order'
     const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    const now = Date.now()
+    const now = nowMs()
     const agents = [
       {
         createdAt: now - 2000,
@@ -223,8 +260,8 @@ describe('run storage', () => {
     rmSync(fixtureDir, { force: true, recursive: true })
     writeFileSync(configFile, JSON.stringify({ retentionDays: 3, storageDir: fixtureDir }))
 
-    const now = Date.now()
-    const oldTime = new Date(now - 4 * 24 * 60 * 60 * 1000)
+    const now = nowMs()
+    const oldTime = dateOf(now - 4 * 24 * 60 * 60 * 1000)
     const scope = join(fixtureDir, 'a'.repeat(24))
     const unrelatedScope = join(fixtureDir, 'unrelated')
     const outputs = join(fixtureDir, '_outputs')
@@ -359,12 +396,12 @@ describe('run storage', () => {
 })
 
 const waitUntil = async (predicate: () => boolean, timeoutMs = 12_000): Promise<void> => {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
+  const deadline = nowMs() + timeoutMs
+  while (nowMs() < deadline) {
     if (predicate()) {
       return
     }
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    await sleep(20)
   }
   throw new Error('Timed out waiting for condition.')
 }
@@ -397,7 +434,7 @@ const spawnParams = (parentSessionId: string, task_name: string, message: string
 })
 
 const writeSessionWithContextUsage = (sessionFile: string, contextTokens: number): void => {
-  const timestamp = new Date().toISOString()
+  const timestamp = dateOf(nowMs()).toISOString()
   writeFileSync(
     sessionFile,
     `${[
@@ -411,7 +448,7 @@ const writeSessionWithContextUsage = (sessionFile: string, contextTokens: number
           provider: 'anthropic',
           role: 'assistant',
           stopReason: 'stop',
-          timestamp: Date.now(),
+          timestamp: nowMs(),
           usage: {
             cacheRead: contextTokens - 2,
             cacheWrite: 0,
@@ -623,7 +660,7 @@ describe('child process lifecycle', () => {
     writeFileSync(
       lockFile,
       JSON.stringify({
-        createdAt: Date.now(),
+        createdAt: nowMs(),
         pid: process.pid,
         processIdentity: 'identity-from-an-exited-process',
       })
@@ -653,7 +690,7 @@ describe('child process lifecycle', () => {
     writeFileSync(
       lockFile,
       JSON.stringify({
-        createdAt: Date.now(),
+        createdAt: nowMs(),
         pid: process.pid,
         processIdentity: 'identity-from-an-exited-process',
         token: 'dead-instance',
@@ -670,7 +707,7 @@ describe('child process lifecycle', () => {
         writeFileSync(
           file,
           JSON.stringify({
-            createdAt: Date.now(),
+            createdAt: nowMs(),
             pid: process.pid,
             token: 'live-replacement',
           })
@@ -707,7 +744,7 @@ describe('child process lifecycle', () => {
         writeFileSync(
           file,
           JSON.stringify({
-            createdAt: Date.now(),
+            createdAt: nowMs(),
             pid: process.pid,
             token: 'concurrent-winner',
           })
@@ -731,7 +768,7 @@ describe('child process lifecycle', () => {
     const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
     const id = '33333333-3333-4333-8333-333333333333'
     const infoFile = join(scope, `${id}.info.json`)
-    const now = Date.now()
+    const now = nowMs()
     rmSync(scope, { force: true, recursive: true })
     mkdirSync(scope, { recursive: true })
     writeFileSync(
@@ -989,7 +1026,7 @@ describe('child process lifecycle', () => {
       recursive: true,
     })
     const owner = createAgentManager()
-    const reconcilers: InstanceType<typeof AgentManager>[] = []
+    const reconcilers: ReturnType<typeof createAgentManager>[] = []
     try {
       await owner.spawnAgent(spawnParams(parentSessionId, 'orphan', 'hold orphan'))
       const orphanPid = requireChildProcess(owner.getAgentInfo('orphan', parentSessionId).childProcess).pid
@@ -1210,12 +1247,8 @@ describe('completion delivery', () => {
     const controller = new AbortController()
     const manager = createAgentManager()
     let reconciler: ReturnType<typeof createAgentManager> | undefined
-    let rejectLaunch: ((reason?: unknown) => void) | undefined
-    const internals = asNarrowed<{ startLiveAgent: () => Promise<never> }, typeof manager>(manager)
-    internals.startLiveAgent = () =>
-      new Promise<never>((_resolve, reject) => {
-        rejectLaunch = reject
-      })
+    // A launch that never settles leaves the abort observable only through the foreground wait.
+    asNarrowed<{ startLiveAgent: () => Effect.Effect<never> }, typeof manager.instance>(manager.instance).startLiveAgent = () => Effect.never
     try {
       const spawn = manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'unused'), {
         signal: controller.signal,
@@ -1229,8 +1262,6 @@ describe('completion delivery', () => {
       await reconciler.ready()
       expect(reconciler.getAgentInfo('worker', parentSessionId).status).toBe('starting')
     } finally {
-      rejectLaunch?.(new Error('test launch cleanup'))
-      await Promise.resolve()
       await Promise.all([manager.shutdown(), ...(reconciler === undefined ? [] : [reconciler.shutdown()])])
       rmSync(scope, { force: true, recursive: true })
     }
@@ -1247,12 +1278,12 @@ describe('completion delivery', () => {
     const internals = asNarrowed<
       {
         pushMailbox: (event: Record<string, unknown>) => void
-        startLiveAgent: () => Promise<never>
+        startLiveAgent: () => Effect.Effect<never, TestLaunchError>
         waiters: unknown[]
       },
-      typeof manager
-    >(manager)
-    internals.startLiveAgent = () => Promise.reject(new Error('launch rejected'))
+      typeof manager.instance
+    >(manager.instance)
+    internals.startLiveAgent = () => Effect.fail(new TestLaunchError({ message: 'launch rejected' }))
     try {
       const spawn = manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'unused'), {
         waitForCompletion: true,
@@ -1263,7 +1294,7 @@ describe('completion delivery', () => {
       internals.pushMailbox({
         agentName: '/worker',
         color: 'accent',
-        createdAt: Date.now(),
+        createdAt: nowMs(),
         finalResponse: 'later result',
         id: 'later-event',
         isReadonly: true,
@@ -1318,7 +1349,7 @@ describe('completion delivery', () => {
       await waitUntil(() => manager.getAgentInfo('fast', parentSessionId).status === 'completed')
       expect(completions).toEqual([])
       controller.abort(new Error('cancelled'))
-      expect(wait).rejects.toThrow('aborted')
+      expect(wait).rejects.toThrow('cancelled')
       await waitUntil(() => completions.some((event) => event.agentName === '/fast'))
       expect(completions.filter((event) => event.agentName === '/fast')).toHaveLength(1)
     } finally {
@@ -1386,7 +1417,7 @@ describe('completion delivery', () => {
       expect(await manager.sendMessage(parentSessionId, 'worker', 'new direction')).toEqual({ delivery: 'steer' })
       expect(manager.listAgents(undefined, parentSessionId)[0].last_task_message).toBe('new direction')
       await waitUntil(() => inactivity.length === 2)
-      await new Promise((resolve) => setTimeout(resolve, 80))
+      await sleep(80)
       expect(inactivity).toHaveLength(2)
     } finally {
       await manager.shutdown()
@@ -1409,7 +1440,7 @@ describe('completion delivery', () => {
       })
       const firstResult = await first
       expect(firstResult.event).toMatchObject({ agentName: '/worker', status: 'completed' })
-      await new Promise((resolve) => setTimeout(resolve, 20))
+      await sleep(20)
       expect(secondSettled).toBe(false)
       secondController.abort(new Error('no second completion is coming'))
       expect(second).rejects.toThrow('no second completion is coming')
@@ -1748,7 +1779,7 @@ describe('subagent peek overlay', () => {
       /* No-op by default; Escape behavior tests pass a callback. */
     }
   ) => {
-    const now = Date.now()
+    const now = nowMs()
     const info = {
       canonicalName: '/a-very-long-agent-name',
       color: 'warning' as const,
@@ -1859,7 +1890,7 @@ describe('completion mailbox', () => {
   test('waits until explicitly cancelled when no completion exists', async () => {
     const manager = createAgentManager()
     const controller = new AbortController()
-    setTimeout(() => controller.abort(new Error('cancelled')), 10)
+    Effect.runFork(Effect.flatMap(Effect.sleep(10), () => Effect.sync(() => controller.abort(new Error('cancelled')))))
     expect(manager.waitAgent('empty-parent', undefined, controller.signal)).rejects.toThrow('cancelled')
     await manager.shutdown()
   })

@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+/* oxlint-disable effecttsgo/node-builtin-import -- Stands in for the child Pi binary: `AgentManager` spawns this file as a bare `node` process, so it has no Effect runtime and may depend only on Node builtins. */
+/* oxlint-disable effecttsgo/global-timers -- Same boundary: this fake child schedules its scripted replies with plain timers. */
+
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir, userInfo } from 'node:os'
 import { join } from 'node:path'

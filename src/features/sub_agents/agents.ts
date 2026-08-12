@@ -72,6 +72,10 @@ const waitError = (operation: string, aborted: boolean, cause: unknown): Subagen
 const preserveWaitCancellation = <Result>(promise: Promise<Result>): Promise<Result> =>
   promise.catch((error: unknown) => Promise.reject(error instanceof SubagentWaitError && error.aborted ? error.cause : error))
 
+/** `parentSessionId` throws when Pi has no parent session, which callers report as their own tool failure. */
+const sessionIdOf = <Failure>(ctx: ExtensionContext, onError: (cause: unknown) => Failure): Effect.Effect<string, Failure> =>
+  Effect.try({ catch: onError, try: () => parentSessionId(ctx) })
+
 const boundedText = (text: string, maxBytes = DEFAULT_MAX_BYTES, maxLines = DEFAULT_MAX_LINES): BoundedText => {
   const initial = truncateOutput(text, { maxBytes, maxLines })
   if (!initial.truncated) {
@@ -307,9 +311,12 @@ export const makeSubagentFeature = ({ managerOptions = {}, pi, runtime }: Subage
         return undefined
       }
       const targets = [...activeAgents.keys()]
-      void Promise.all(targets.map((target) => manager.interruptAgent(currentParentId, target))).catch((error: unknown) => {
-        ctx.ui.notify(error instanceof Error ? error.message : String(error), 'error')
-      })
+      Effect.runFork(
+        Effect.forEach(targets, (target) => manager.interruptAgent(currentParentId, target), { concurrency: 'unbounded' }).pipe(
+          Effect.tapError((error) => Effect.sync(() => ctx.ui.notify(error.message, 'error'))),
+          Effect.ignore
+        )
+      )
       return { consume: true }
     })
   }
@@ -371,7 +378,7 @@ export const makeSubagentFeature = ({ managerOptions = {}, pi, runtime }: Subage
     }),
   })
   type SpawnAgentParams = Static<typeof spawnAgentParameters>
-  type SpawnAgentResultDetails = Awaited<ReturnType<AgentManager['spawnAgent']>>
+  type SpawnAgentResultDetails = Effect.Success<ReturnType<AgentManager['spawnAgent']>>
 
   const spawnAgentTool = {
     get description() {
@@ -405,26 +412,25 @@ ${getAgentProfilesDescription()}`
             return yield* featureError('spawn_agent failed: authenticated model availability is unavailable.', undefined)
           }
           const runInBackground = params.run_in_background === true
-          const result = yield* Effect.tryPromise({
-            catch: (cause) => featureError(`spawn_agent failed: ${cause instanceof Error ? cause.message : String(cause)}`, cause),
-            try: () =>
-              manager.spawnAgent(
-                {
-                  agent_type: params.agent_type,
-                  availableModels: availableModels.map((model) => ({
-                    id: model.id,
-                    provider: model.provider,
-                  })),
-                  cwd: ctx.cwd,
-                  message: params.message,
-                  parentModel: { id: currentModel.id, provider: currentModel.provider },
-                  parentSessionFile: ctx.sessionManager.getSessionFile(),
-                  parentSessionId: parentSessionId(ctx),
-                  task_name: params.task_name,
-                },
-                { signal, waitForCompletion: !runInBackground }
-              ),
-          })
+          const spawnFailure = (cause: unknown) => featureError(`spawn_agent failed: ${causeMessage(cause)}`, cause)
+          const result = yield* manager
+            .spawnAgent(
+              {
+                agent_type: params.agent_type,
+                availableModels: availableModels.map((model) => ({
+                  id: model.id,
+                  provider: model.provider,
+                })),
+                cwd: ctx.cwd,
+                message: params.message,
+                parentModel: { id: currentModel.id, provider: currentModel.provider },
+                parentSessionFile: ctx.sessionManager.getSessionFile(),
+                parentSessionId: yield* sessionIdOf(ctx, spawnFailure),
+                task_name: params.task_name,
+              },
+              { signal, waitForCompletion: !runInBackground }
+            )
+            .pipe(Effect.mapError((error) => featureError(`spawn_agent failed: ${error.message}`, error.cause ?? error)))
           if (runInBackground) {
             return textResult(
               `Spawned ${result.task_name} in background. Do not duplicate its task; continue only with clearly independent work.`,
@@ -496,10 +502,7 @@ ${getAgentProfilesDescription()}`
         unsubscribeTerminal()
         activeContext = ctx
         activeAgents.clear()
-        yield* Effect.tryPromise({
-          catch: (cause) => featureError(cause instanceof Error ? cause.message : String(cause), cause),
-          try: () => manager.ready(),
-        })
+        yield* manager.ready()
         if (activeContext !== ctx) {
           return
         }
@@ -523,10 +526,7 @@ ${getAgentProfilesDescription()}`
         activeAgents.clear()
         publishAgentActivity()
         unsubscribeTerminal()
-        yield* Effect.tryPromise({
-          catch: (cause) => featureError(cause instanceof Error ? cause.message : String(cause), cause),
-          try: () => manager.shutdown(),
-        })
+        yield* manager.shutdown()
       })
     )
 
@@ -542,19 +542,19 @@ ${getAgentProfilesDescription()}`
     description:
       'Wait for one explicitly background agent completion, or for the next background completion if targets is omitted. Use when pending work is needed before the next step or would otherwise overlap. Returns one final response. Use wait_all_agents when every target must finish.',
     execute(_id: string, params: Static<typeof waitAgentParameters>, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+      const failure = (cause: unknown) => waitError('wait_agent', isTrue(signal?.aborted), cause)
       return preserveWaitCancellation(
         runtime.runPromise(
-          Effect.tryPromise({
-            catch: (cause) => waitError('wait_agent', isTrue(signal?.aborted), cause),
-            try: () => manager.waitAgent(parentSessionId(ctx), parseTargets(params.targets), signal),
-          }).pipe(
-            Effect.map((result) =>
-              boundedTextResult(prettyJsonText(result), {
-                event: result.event,
-                message: result.message,
-              })
-            )
-          )
+          Effect.gen(function* () {
+            const sessionId = yield* sessionIdOf(ctx, failure)
+            const result = yield* manager
+              .waitAgent(sessionId, parseTargets(params.targets), signal)
+              .pipe(Effect.mapError((error) => failure(error.cause ?? error)))
+            return boundedTextResult(prettyJsonText(result), {
+              event: result.event,
+              message: result.message,
+            })
+          })
         )
       )
     },
@@ -608,19 +608,19 @@ ${getAgentProfilesDescription()}`
     description:
       'Wait until all targeted explicitly background agents reach a final status. Use to synchronize background work before a dependent or overlapping next step. Returns their final text responses.',
     execute(_id: string, params: Static<typeof waitAllAgentsParameters>, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+      const failure = (cause: unknown) => waitError('wait_all_agents', isTrue(signal?.aborted), cause)
       return preserveWaitCancellation(
         runtime.runPromise(
-          Effect.tryPromise({
-            catch: (cause) => waitError('wait_all_agents', isTrue(signal?.aborted), cause),
-            try: () => manager.waitAllAgents(parentSessionId(ctx), parseTargets(params.targets), signal),
-          }).pipe(
-            Effect.map((result) =>
-              boundedTextResult(prettyJsonText(result), {
-                message: result.message,
-                responses: result.responses,
-              })
-            )
-          )
+          Effect.gen(function* () {
+            const sessionId = yield* sessionIdOf(ctx, failure)
+            const result = yield* manager
+              .waitAllAgents(sessionId, parseTargets(params.targets), signal)
+              .pipe(Effect.mapError((error) => failure(error.cause ?? error)))
+            return boundedTextResult(prettyJsonText(result), {
+              message: result.message,
+              responses: result.responses,
+            })
+          })
         )
       )
     },
@@ -745,10 +745,13 @@ ${getAgentProfilesDescription()}`
     description:
       'Send the single allowed follow-up to a session-owned agent. Steers the current run when active; otherwise starts one final turn. Prefer spawning a fresh agent for a distinct task.',
     execute(_id: string, params: Static<typeof sendMessageParameters>, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+      const failure = (cause: unknown) => featureError(`send_message failed: ${causeMessage(cause)}`, cause)
       return runtime.runPromise(
-        Effect.tryPromise({
-          catch: (cause) => featureError(`send_message failed: ${cause instanceof Error ? cause.message : String(cause)}`, cause),
-          try: () => manager.sendMessage(parentSessionId(ctx), cleanTarget(params.target), params.message),
+        Effect.gen(function* () {
+          const sessionId = yield* sessionIdOf(ctx, failure)
+          return yield* manager
+            .sendMessage(sessionId, cleanTarget(params.target), params.message)
+            .pipe(Effect.mapError((error) => failure(error.cause ?? error)))
         }).pipe(
           Effect.map((result) => {
             const info = manager.getAgentInfo(cleanTarget(params.target), parentSessionId(ctx))
@@ -807,10 +810,8 @@ ${getAgentProfilesDescription()}`
       const sessionId = parentSessionId(ctx)
       const target = cleanTarget(params.target)
       return runtime.runPromise(
-        Effect.tryPromise({
-          catch: (cause) => featureError(`interrupt_agent failed: ${cause instanceof Error ? cause.message : String(cause)}`, cause),
-          try: () => manager.interruptAgent(sessionId, target),
-        }).pipe(
+        manager.interruptAgent(sessionId, target).pipe(
+          Effect.mapError((error) => featureError(`interrupt_agent failed: ${error.message}`, error.cause ?? error)),
           Effect.map((result) => {
             const info = manager.getAgentInfo(target, sessionId)
             return textResult('Interrupt request handled.', {
