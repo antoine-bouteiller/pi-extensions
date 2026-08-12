@@ -1,15 +1,17 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type Theme, withFileMutationQueue } from '@earendil-works/pi-coding-agent'
 import { type Component } from '@earendil-works/pi-tui'
 import { asTheme, asTool } from '@tests/utils/casts.js'
+import { deferred } from '@tests/utils/deferred.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
+import { platform } from '@tests/utils/platform.js'
 import { runtime } from '@tests/utils/runtime.js'
 
 import { register as hashline } from '@/features/hashline/index.js'
+
+const { join, mkdtemp, readFile, rm, symlink, writeFile } = platform
 
 interface ToolOutput {
   content: { text: string; type: string }[]
@@ -320,17 +322,14 @@ describe('hashline extension', () => {
     const path = join(directory, 'queued.txt')
     await writeFile(path, 'before\n')
     const currentHeader = await header(read, directory, 'queued.txt')
-    let release!: () => void
-    const gate = new Promise<void>((resolve) => {
-      release = resolve
-    })
-    const holding = withFileMutationQueue(path, () => gate)
+    const gate = deferred<void>()
+    const holding = withFileMutationQueue(path, () => gate.promise)
     await Bun.sleep(0)
 
     const controller = new AbortController()
     const pending = write.execute('cancelled', { patch: put(currentHeader, 1, 'after') }, controller.signal, undefined, { cwd: directory })
     controller.abort()
-    release()
+    gate.resolve(undefined)
     await holding
 
     expect(pending).rejects.toThrow('aborted')

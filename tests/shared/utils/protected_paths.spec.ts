@@ -1,15 +1,16 @@
 import { afterAll, describe, expect, it } from 'bun:test'
-import { chmod, mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 
 import { NodeFileSystem } from '@effect/platform-node'
+import { platform } from '@tests/utils/platform.js'
 import { Effect } from 'effect'
 import { type FileSystem, layerNoop } from 'effect/FileSystem'
 import { systemError } from 'effect/PlatformError'
 
 import { assertUnprotectedPathEffect, ProtectedPathError, resolveProtectedPathEffect } from '@/shared/utils/protected_paths.js'
 import { isRecord } from '@/shared/utils/records.js'
+
+const { chmod, join, mkdir, mkdtemp, realpath, rm, symlink, writeFile } = platform
 
 const roots: string[] = []
 // Realpath, because on macOS mkdtemp hands back /var/... while /var is a symlink to /private/var.

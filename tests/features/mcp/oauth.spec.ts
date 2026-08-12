@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test'
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- The spec asserts real loopback listener binding and cleanup; an HTTP client cannot create the server under test.
 import { createServer } from 'node:http'
 
+import { httpGet } from '@tests/utils/http.js'
 import { Effect } from 'effect'
 
 import { type CredentialStore, type OAuthCredentialPayload } from '@/features/mcp/keychain.js'
@@ -8,13 +10,29 @@ import { KeychainOAuthProvider, createOAuthState, startOAuthCallback, type OAuth
 
 const freePort = async (): Promise<number> => {
   const server = createServer()
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  await Effect.runPromise(
+    Effect.callback<void>((resume) => {
+      const onError = (error: Error) => resume(Effect.die(error))
+      server.once('error', onError)
+      server.listen(0, '127.0.0.1', () => {
+        server.off('error', onError)
+        resume(Effect.void)
+      })
+      return Effect.sync(() => {
+        server.close()
+      })
+    })
+  )
   const address = server.address()
   if (address === null || typeof address === 'string') {
     throw new Error('missing address')
   }
   const { port } = address
-  await new Promise<void>((resolve) => server.close(() => resolve()))
+  await Effect.runPromise(
+    Effect.callback<void>((resume) => {
+      server.close((error) => resume(error === undefined ? Effect.void : Effect.die(error)))
+    })
+  )
   return port
 }
 
@@ -43,7 +61,7 @@ describe('OAuth callback', () => {
   test('accepts a matching callback and releases the port', async () => {
     const port = await freePort()
     await withCallback({ expectedState: 'right', port }, async (callback) => {
-      const response = await fetch(`${callback.redirectUrl}?code=code-1&state=right`)
+      const response = await httpGet(`${callback.redirectUrl}?code=code-1&state=right`)
 
       expect(response.status).toBe(200)
       expect(await Effect.runPromise(callback.waitForCode)).toBe('code-1')
@@ -55,9 +73,9 @@ describe('OAuth callback', () => {
   test('rejects a wrong state without consuming the legitimate callback', async () => {
     const port = await freePort()
     await withCallback({ expectedState: 'right', port }, async (callback) => {
-      const badResponse = await fetch(`${callback.redirectUrl}?code=bad&state=wrong`)
+      const badResponse = await httpGet(`${callback.redirectUrl}?code=bad&state=wrong`)
       expect(badResponse.status).toBe(400)
-      const goodResponse = await fetch(`${callback.redirectUrl}?code=good&state=right`)
+      const goodResponse = await httpGet(`${callback.redirectUrl}?code=good&state=right`)
       expect(goodResponse.status).toBe(200)
       expect(await Effect.runPromise(callback.waitForCode)).toBe('good')
     })
@@ -67,7 +85,7 @@ describe('OAuth callback', () => {
     const port = await freePort()
     await withCallback({ expectedState: 'state', port }, async (callback) => {
       const payload = `<script>alert("x")</script>&'`
-      const response = await fetch(
+      const response = await httpGet(
         `${callback.redirectUrl}?error=${encodeURIComponent(payload)}&error_description=${encodeURIComponent(payload)}&state=state`
       )
       const html = await response.text()
@@ -86,7 +104,7 @@ describe('OAuth callback', () => {
 
   test('handles OAuth errors, timeout, cancellation, and occupied ports', async () => {
     await withCallback({ expectedState: 'state', port: await freePort() }, async (callback) => {
-      await fetch(`${callback.redirectUrl}?error=access_denied&error_description=nope&state=state`)
+      await httpGet(`${callback.redirectUrl}?error=access_denied&error_description=nope&state=state`)
       expect(Effect.runPromise(callback.waitForCode)).rejects.toThrow('access_denied')
     })
 

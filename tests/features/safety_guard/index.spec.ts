@@ -1,9 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 
 import { asExtensionApi, asResult } from '@tests/utils/casts.js'
+import { platform } from '@tests/utils/platform.js'
 import { runtime } from '@tests/utils/runtime.js'
 
 import { register as safeRm } from '@/features/safe_rm/index.js'
@@ -11,6 +10,8 @@ import { SAFETY_STATUS_KEY } from '@/features/safety_guard/constants.js'
 import { register as safetyGuard } from '@/features/safety_guard/index.js'
 import { publishStatus, statusBar } from '@/shared/state/status_bar.js'
 import { isTrue } from '@/shared/utils/predicates.js'
+
+const { join, mkdir, mkdtemp, rm, symlink, writeFile } = platform
 
 const temporaryDirectories: string[] = []
 afterEach(async () => {

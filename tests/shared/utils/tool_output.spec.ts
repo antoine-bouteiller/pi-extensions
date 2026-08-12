@@ -1,7 +1,8 @@
-import { describe, expect, test } from 'bun:test'
-import { readFile, stat } from 'node:fs/promises'
+import { test } from 'bun:test'
 
-import { Effect } from 'effect'
+import { NodeFileSystem } from '@effect/platform-node'
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { Effect, FileSystem } from 'effect'
 
 import { boundToolTextEffect, truncateOutput, truncationNotice, writePrivateTempFileEffect } from '@/shared/utils/tool_output.js'
 
@@ -49,13 +50,15 @@ describe('truncationNotice', () => {
 })
 
 describe('bounded tool output', () => {
-  test('writePrivateTempFileEffect writes owner-only content', async () => {
-    const path = await Effect.runPromise(writePrivateTempFileEffect('secret', { prefix: 'tool-output-effect-' }))
+  it.effect('writePrivateTempFileEffect writes owner-only content', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const path = yield* writePrivateTempFileEffect('secret', { prefix: 'tool-output-effect-' })
 
-    const stats = await stat(path)
-    expect(await readFile(path, 'utf8')).toBe('secret')
-    expect(stats.mode & 0o777).toBe(0o600)
-  })
+      expect(yield* fs.readFileString(path)).toBe('secret')
+      expect((yield* fs.stat(path)).mode & 0o777).toBe(0o600)
+    }).pipe(Effect.provide(NodeFileSystem.layer))
+  )
 
   test('boundToolTextEffect spills the complete text and keeps the notice inside the budget', async () => {
     const text = lines(500)

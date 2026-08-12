@@ -28,6 +28,7 @@ interface RecordedCall {
 
 const deferred = <Value>() => {
   let resolve!: (value: Value | PromiseLike<Value>) => void
+  // oxlint-disable-next-line effecttsgo/new-promise -- The harness exposes this gate before the Effect under test and the test body owns its resolver.
   const promise = new Promise<Value>((done) => {
     resolve = done
   })

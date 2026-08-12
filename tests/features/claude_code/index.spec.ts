@@ -1,14 +1,15 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
 
 import { asResult } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
+import { platform } from '@tests/utils/platform.js'
 import { runtime } from '@tests/utils/runtime.js'
 
 import { parseCommandFrontmatter } from '@/features/claude_code/discovery.js'
 import { register as registerClaudeCode } from '@/features/claude_code/index.js'
+
+const { chmod, dirname, join, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } = platform
 
 interface DiscoveryResult {
   skillPaths: string[]
@@ -144,10 +145,10 @@ describe('Claude Code compatibility', () => {
       writeFixture(join(outsideDirectory, 'escaped.md'), 'Escaped command'),
     ])
     await Promise.all([
-      symlink(join(commandsDirectory, 'safe.md'), join(commandsDirectory, 'alias.md'), 'file'),
-      symlink(commandsDirectory, join(commandsDirectory, 'cycle'), 'dir'),
-      symlink(outsideDirectory, join(commandsDirectory, 'escape'), 'dir'),
-      symlink(join(outsideDirectory, 'missing.md'), join(commandsDirectory, 'missing.md'), 'file'),
+      symlink(join(commandsDirectory, 'safe.md'), join(commandsDirectory, 'alias.md')),
+      symlink(commandsDirectory, join(commandsDirectory, 'cycle')),
+      symlink(outsideDirectory, join(commandsDirectory, 'escape')),
+      symlink(join(outsideDirectory, 'missing.md'), join(commandsDirectory, 'missing.md')),
     ])
 
     const result = await fixture.invoke<DiscoveryResult>('resources_discover', { cwd: fixture.projectDirectory }, fixture.context(false))

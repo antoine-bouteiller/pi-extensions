@@ -1,3 +1,4 @@
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- This standalone child process writes its PID marker before any application Effect runtime exists.
 import { writeFile } from 'node:fs/promises'
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'

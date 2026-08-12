@@ -1,6 +1,6 @@
 import { NodeFileSystem } from '@effect/platform-node'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { Effect, Fiber } from 'effect'
+import { Effect, Fiber, Schema } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
 import { TestClock } from 'effect/testing'
 
@@ -13,11 +13,11 @@ describe('bun-effect shim', () => {
 
   it.effect('virtual clock: 1h sleep completes with no real delay', () =>
     Effect.gen(function* () {
-      const started = Date.now()
+      const started = performance.now()
       const fiber = yield* Effect.forkChild(Effect.as(Effect.sleep('1 hour'), 'woke'))
       yield* TestClock.adjust('1 hour')
       expect(yield* Fiber.join(fiber)).toBe('woke')
-      expect(Date.now() - started).toBeLessThan(500)
+      expect(performance.now() - started).toBeLessThan(500)
     })
   )
 
@@ -55,7 +55,8 @@ describe('node platform layer', () => {
     Effect.gen(function* () {
       const fs = yield* FileSystem
       const pkg = yield* fs.readFileString('package.json')
-      expect(JSON.parse(pkg).name).toBe('pi-extensions')
+      const parsed = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(pkg)
+      expect(parsed).toMatchObject({ name: 'pi-extensions' })
     }).pipe(Effect.provide(NodeFileSystem.layer))
   )
 })

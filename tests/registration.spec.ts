@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'bun:test'
-import { readdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 
+import { NodeFileSystem, NodePath } from '@effect/platform-node'
 import { asResult } from '@tests/utils/casts.js'
+import { Effect, FileSystem, Layer, Path } from 'effect'
 
 /*
  * These are package contracts, not an inventory: every expectation is derived from the feature
@@ -36,13 +37,23 @@ const PATHS = {
   runtime: fileURLToPath(new URL('../src/config/runtime.ts', import.meta.url)),
 }
 
-const featureDirectories = async (): Promise<string[]> => {
-  const entries = await readdir(PATHS.featuresDir, { withFileTypes: true })
-  return entries
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name)
-    .toSorted()
-}
+const featureDirectories = (): Promise<string[]> =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const path = yield* Path.Path
+      const names = yield* fs.readDirectory(PATHS.featuresDir)
+      const entries = yield* Effect.forEach(
+        names,
+        (name) => fs.stat(path.join(PATHS.featuresDir, name)).pipe(Effect.map((info) => ({ info, name }))),
+        {}
+      )
+      return entries
+        .filter(({ info }) => info.type === 'Directory')
+        .map(({ name }) => name)
+        .toSorted()
+    }).pipe(Effect.provide(Layer.merge(NodeFileSystem.layer, NodePath.layer)))
+  )
 
 const toFeatureName = (directory: string): string => directory.replaceAll('_', '-')
 

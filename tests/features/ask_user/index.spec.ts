@@ -4,6 +4,7 @@ import { CURSOR_MARKER, visibleWidth, type Component, type Focusable } from '@ea
 import { asTool } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
+import { Effect } from 'effect'
 
 import { register as askUser } from '@/features/ask_user/index.js'
 
@@ -55,9 +56,11 @@ const setup = (customError?: Error) => {
       if (customError !== undefined) {
         return Promise.reject(customError)
       }
-      return new Promise<unknown>((resolve) => {
-        component = factory(tui, theme, {}, resolve)
-      })
+      return Effect.runPromise(
+        Effect.callback<unknown>((resume) => {
+          component = factory(tui, theme, {}, (result) => resume(Effect.succeed(result)))
+        })
+      )
     },
   }
 

@@ -2,6 +2,7 @@ import { expect } from 'bun:test'
 
 import { describe, it } from '@tests/utils/bun_effect.js'
 import { asExtensionApi } from '@tests/utils/casts.js'
+import { deferred } from '@tests/utils/deferred.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect, Fiber } from 'effect'
 import { TestClock } from 'effect/testing'
@@ -39,10 +40,7 @@ const setup = (exec: Exec) => {
   const messages: { message: Record<string, unknown>; options: Record<string, unknown> }[] = []
   const notifications: { message: string; level: string }[] = []
   const statuses: unknown[] = []
-  let messageSent: (() => void) | undefined
-  const sent = new Promise<void>((resolve) => {
-    messageSent = resolve
-  })
+  const messageSent = deferred<void>()
 
   backgroundPoll(
     asExtensionApi({
@@ -53,7 +51,7 @@ const setup = (exec: Exec) => {
       },
       sendMessage: (message: Record<string, unknown>, options: Record<string, unknown>) => {
         messages.push({ message, options })
-        messageSent?.()
+        messageSent.resolve(undefined)
       },
     }),
     runtime
@@ -72,7 +70,7 @@ const setup = (exec: Exec) => {
     throw new Error('background-poll did not register a tool')
   }
 
-  return { ctx, handlers, messages, notifications, sent, statuses, tool }
+  return { ctx, handlers, messages, notifications, sent: messageSent.promise, statuses, tool }
 }
 
 const startSession = async (fixture: ReturnType<typeof setup>): Promise<void> => {
@@ -156,9 +154,11 @@ describe('background poll', () => {
       if (args[1] === 'new-check') {
         return Promise.resolve({ code: 0, stderr: '', stdout: 'new session ready' })
       }
-      return new Promise((resolve) => {
-        options.signal?.addEventListener('abort', () => resolve({ code: 1, stderr: 'stopped', stdout: '' }), { once: true })
-      })
+      return Effect.runPromise(
+        Effect.callback<{ stdout: string; stderr: string; code: number }>((resume) => {
+          options.signal?.addEventListener('abort', () => resume(Effect.succeed({ code: 1, stderr: 'stopped', stdout: '' })), { once: true })
+        })
+      )
     })
     await startSession(fixture)
     await fixture.tool.execute('old', { command: 'old-check' }, undefined, undefined, fixture.ctx)
@@ -172,11 +172,12 @@ describe('background poll', () => {
   })
 
   it('suppresses completion and clears status when the session shuts down', async () => {
-    const fixture = setup(
-      (_command, _args, options) =>
-        new Promise((resolve) => {
-          options.signal?.addEventListener('abort', () => resolve({ code: 1, stderr: 'stopped', stdout: '' }), { once: true })
+    const fixture = setup((_command, _args, options) =>
+      Effect.runPromise(
+        Effect.callback<{ stdout: string; stderr: string; code: number }>((resume) => {
+          options.signal?.addEventListener('abort', () => resume(Effect.succeed({ code: 1, stderr: 'stopped', stdout: '' })), { once: true })
         })
+      )
     )
     await startSession(fixture)
 

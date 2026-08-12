@@ -1,8 +1,7 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp, readFile } from 'node:fs/promises'
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- The spec reserves a real loopback listener to verify ephemeral-port release; an HTTP client cannot create that server.
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { DEFAULT_MAX_BYTES } from '@earendil-works/pi-coding-agent'
@@ -11,13 +10,17 @@ import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamable
 import { type Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { type JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
 import { asError, asNarrowed } from '@tests/utils/casts.js'
+import { deferred } from '@tests/utils/deferred.js'
+import { httpGet } from '@tests/utils/http.js'
+import { platform } from '@tests/utils/platform.js'
 import { Effect } from 'effect'
 
-import { readonlyMcpPolicy } from '@/features/mcp/gateway.js'
-import { type McpOperationOptions, type McpSearchOptions } from '@/features/mcp/gateway.js'
+import { readonlyMcpPolicy, type McpOperationOptions, type McpSearchOptions } from '@/features/mcp/gateway.js'
 import { KeychainCredentialError, type CredentialStore } from '@/features/mcp/keychain.js'
 import { McpManager, McpManagerService, mcpManagerLayer } from '@/features/mcp/manager.js'
 import { type McpGatewayPolicy, type McpServerMap } from '@/features/mcp/types.js'
+
+const { join, mkdtemp, readFile, rm } = platform
 
 class FakeTransport {
   onclose?: () => void
@@ -166,13 +169,29 @@ const promised = (manager: McpManager) => ({
 
 const freePort = async (): Promise<number> => {
   const server = createServer()
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  await Effect.runPromise(
+    Effect.callback<void>((resume) => {
+      const onError = (error: Error) => resume(Effect.die(error))
+      server.once('error', onError)
+      server.listen(0, '127.0.0.1', () => {
+        server.off('error', onError)
+        resume(Effect.void)
+      })
+      return Effect.sync(() => {
+        server.close()
+      })
+    })
+  )
   const address = server.address()
   if (address === null || typeof address === 'string') {
     throw new Error('missing address')
   }
   const { port } = address
-  await new Promise<void>((resolve) => server.close(() => resolve()))
+  await Effect.runPromise(
+    Effect.callback<void>((resume) => {
+      server.close((error) => resume(error === undefined ? Effect.void : Effect.die(error)))
+    })
+  )
   return port
 }
 
@@ -223,17 +242,14 @@ describe('MCP manager', () => {
   })
 
   test('the first concurrent list shares one lazy stdio connection', async () => {
-    let release!: () => void
-    const gate = new Promise<void>((resolve) => {
-      release = resolve
-    })
-    const fixture = harness({ connect: async () => gate })
+    const gate = deferred<void>()
+    const fixture = harness({ connect: async () => gate.promise })
 
     const first = fixture.manager.list('local')
     const second = fixture.manager.list('local')
     await Promise.resolve()
     expect(fixture.calls.clients).toBe(1)
-    release()
+    gate.resolve(undefined)
 
     const [one, two] = await Promise.all([first, second])
     expect(one).toEqual(two)
@@ -599,7 +615,7 @@ describe('MCP manager', () => {
       openUrl: async (authorizationUrl) => {
         opened.push(authorizationUrl)
         const state = new URL(authorizationUrl).searchParams.get('state')
-        void fetch(`http://localhost:${port}/callback?code=oauth-code&state=${state}`)
+        void httpGet(`http://localhost:${port}/callback?code=oauth-code&state=${state}`)
       },
     })
 
@@ -613,10 +629,7 @@ describe('MCP manager', () => {
     const port = await freePort()
     let authorized = false
     let openedUrl = ''
-    let signalBrowserOpened!: () => void
-    const browserOpened = new Promise<void>((resolve) => {
-      signalBrowserOpened = resolve
-    })
+    const browserOpened = deferred<void>()
     const fixture = harness({
       config: {
         slack: {
@@ -638,7 +651,7 @@ describe('MCP manager', () => {
       },
       openUrl: async (authorizationUrl) => {
         openedUrl = authorizationUrl
-        signalBrowserOpened()
+        browserOpened.resolve(undefined)
       },
     })
 
@@ -647,11 +660,11 @@ describe('MCP manager', () => {
       () => undefined,
       (error: unknown) => error
     )
-    await browserOpened
+    await browserOpened.promise
     const second = fixture.manager.authenticate('slack')
     firstController.abort()
     const state = new URL(openedUrl).searchParams.get('state')
-    await fetch(`http://localhost:${port}/callback?code=oauth-code&state=${state}`)
+    await httpGet(`http://localhost:${port}/callback?code=oauth-code&state=${state}`)
 
     expect(await first).toBeInstanceOf(Error)
     await second
@@ -704,6 +717,7 @@ describe('MCP manager', () => {
     await manager.close()
     await Bun.sleep(20)
     expect(() => process.kill(pid, 0)).toThrow()
+    await rm(directory, { force: true, recursive: true })
   })
 
   test('redacts transport and SDK request errors from status and callers', async () => {
@@ -746,7 +760,7 @@ describe('MCP manager', () => {
   })
 
   test('cancelling the sole connection waiter aborts and closes the shared attempt', async () => {
-    const fixture = harness({ connect: () => new Promise<void>(() => undefined) })
+    const fixture = harness({ connect: () => Effect.runPromise(Effect.never) })
     const controller = new AbortController()
     const connecting = fixture.manager.connect('local', { signal: controller.signal })
     await Promise.resolve()
@@ -757,7 +771,7 @@ describe('MCP manager', () => {
   })
 
   test('close aborts and awaits an in-flight connection', async () => {
-    const fixture = harness({ connect: () => new Promise<void>(() => undefined) })
+    const fixture = harness({ connect: () => Effect.runPromise(Effect.never) })
     const connecting = fixture.manager.connect('local')
     await Promise.resolve()
     await fixture.manager.close()

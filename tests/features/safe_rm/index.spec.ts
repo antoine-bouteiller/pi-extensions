@@ -1,14 +1,16 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 
 import { withFileMutationQueue } from '@earendil-works/pi-coding-agent'
 import { asNarrowed, asTool } from '@tests/utils/casts.js'
+import { deferred } from '@tests/utils/deferred.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
+import { platform } from '@tests/utils/platform.js'
 import { runtime } from '@tests/utils/runtime.js'
 
 import { register as safeRm } from '@/features/safe_rm/index.js'
+
+const { join, mkdir, mkdtemp, rm, symlink, writeFile } = platform
 
 interface SafeRmResult {
   details: { removed: string[]; missing: string[] }
@@ -24,7 +26,6 @@ interface Tool {
   ) => Promise<SafeRmResult>
 }
 
-const noop = (): void => undefined
 const temporaryDirectories: string[] = []
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { force: true, recursive: true })))
@@ -175,41 +176,31 @@ describe('safe rm', () => {
     const target = join(cwd, 'keep.txt')
     await writeFile(target, 'content')
 
-    let markLockStarted: () => void = noop
-    const lockStarted = new Promise<void>((resolve) => {
-      markLockStarted = resolve
+    const lockStarted = deferred<void>()
+    const lockGate = deferred<void>()
+    const lock = withFileMutationQueue(target, () => {
+      lockStarted.resolve(undefined)
+      return lockGate.promise
     })
-    let releaseLock: () => void = noop
-    const lock = withFileMutationQueue(
-      target,
-      () =>
-        new Promise<void>((resolve) => {
-          releaseLock = resolve
-          markLockStarted()
-        })
-    )
-    await lockStarted
+    await lockStarted.promise
 
     const controller = new AbortController()
     let cancellationChecks = 0
-    let markQueued: () => void = noop
-    const queued = new Promise<void>((resolve) => {
-      markQueued = resolve
-    })
+    const queued = deferred<void>()
     const signal = asNarrowed<AbortSignal, { readonly aborted: boolean }>({
       get aborted() {
         cancellationChecks += 1
         if (cancellationChecks === 3) {
-          markQueued()
+          queued.resolve(undefined)
         }
         return controller.signal.aborted
       },
     })
     const deletion = setup().execute('queued-cancellation', { paths: ['keep.txt'] }, signal, undefined, { cwd })
 
-    await queued
+    await queued.promise
     controller.abort()
-    releaseLock()
+    lockGate.resolve(undefined)
     await lock
     const rejection = await deletion.then(
       () => undefined,

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
+import { Effect } from 'effect'
 
 import { register as statusPanel } from '@/features/status_panel/index.js'
 import { columns, formatTokens, progressBar } from '@/features/status_panel/render.js'
@@ -113,15 +114,17 @@ describe('status panel formatting', () => {
         factory: (...args: unknown[]) => { render: (width: number) => string[] },
         options: { onHandle?: (handle: { hide: () => void }) => void }
       ) {
-        return new Promise<void>((resolve) => {
-          const component = factory(tui, theme, {}, resolve)
-          renderSidebar = (width) => component.render(width)
-          options.onHandle?.({
-            hide() {
-              hiddenOverlays += 1
-            },
+        return Effect.runPromise(
+          Effect.callback<void>((resume) => {
+            const component = factory(tui, theme, {}, () => resume(Effect.void))
+            renderSidebar = (width) => component.render(width)
+            options.onHandle?.({
+              hide() {
+                hiddenOverlays += 1
+              },
+            })
           })
-        })
+        )
       },
       setFooter(factory?: (...args: unknown[]) => { render: (width: number) => string[] }) {
         if (factory === undefined) {
@@ -204,7 +207,7 @@ describe('status panel quota lifecycle', () => {
     statusPanel(pi, runtime, {
       fetchAnthropicQuota: (_baseUrl, signal) => {
         signals.push(signal)
-        return new Promise(() => undefined)
+        return Effect.runPromise(Effect.never)
       },
     })
     const ctx = quotaLifecycleContext('rpc')
@@ -223,7 +226,7 @@ describe('status panel quota lifecycle', () => {
       fetchAnthropicQuota: (baseUrl, signal) => {
         baseUrls.push(baseUrl)
         signals.push(signal)
-        return new Promise(() => undefined)
+        return Effect.runPromise(Effect.never)
       },
     })
     const ctx = quotaLifecycleContext('tui', 'azure-openai-responses')
@@ -268,15 +271,17 @@ describe('status panel cross-feature sharing', () => {
         factory: (...args: unknown[]) => { render: (width: number) => string[] },
         options: { onHandle?: (handle: { hide: () => void }) => void }
       ) {
-        return new Promise<void>((resolve) => {
-          const component = factory(tui, theme, {}, resolve)
-          renderSidebar = (width) => component.render(width)
-          options.onHandle?.({
-            hide() {
-              /* Empty */
-            },
+        return Effect.runPromise(
+          Effect.callback<void>((resume) => {
+            const component = factory(tui, theme, {}, () => resume(Effect.void))
+            renderSidebar = (width) => component.render(width)
+            options.onHandle?.({
+              hide() {
+                /* Empty */
+              },
+            })
           })
-        })
+        )
       },
       setFooter() {
         /* Empty */

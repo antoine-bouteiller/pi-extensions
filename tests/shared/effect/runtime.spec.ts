@@ -23,15 +23,17 @@ const fakeContext = (overrides: { cwd?: string; hasUI?: boolean; confirm?: boole
         const entry = { aborted: false, message, title }
         calls.confirms.push(entry)
         if (opts?.signal !== undefined) {
-          await new Promise<void>((resolve) => {
-            opts.signal?.addEventListener('abort', () => {
-              entry.aborted = true
-              resolve()
+          await Effect.runPromise(
+            Effect.callback<void>((resume) => {
+              opts.signal?.addEventListener('abort', () => {
+                entry.aborted = true
+                resume(Effect.void)
+              })
+              if (overrides.confirm !== undefined) {
+                resume(Effect.void)
+              }
             })
-            if (overrides.confirm !== undefined) {
-              resolve()
-            }
-          })
+          )
         }
         return overrides.confirm ?? false
       },

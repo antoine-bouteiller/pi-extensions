@@ -1,15 +1,16 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
 
 import { type ToolResultEvent } from '@earendil-works/pi-coding-agent'
 import { asResult } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
+import { platform } from '@tests/utils/platform.js'
 import { runtime } from '@tests/utils/runtime.js'
 
 import { register as registerRules } from '@/features/rules/index.js'
 import { extractToolPaths, parseRuleFrontmatter } from '@/features/rules/rules.js'
+
+const { dirname, join, mkdir, mkdtemp, rm, symlink, writeFile } = platform
 
 interface PromptResult {
   systemPrompt: string

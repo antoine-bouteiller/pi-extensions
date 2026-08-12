@@ -1,18 +1,11 @@
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asFetch } from '@tests/utils/casts.js'
-import { Effect } from 'effect'
+import { deferred } from '@tests/utils/deferred.js'
+import { Clock, Effect } from 'effect'
 import { TestClock } from 'effect/testing'
 
 import { fetchAnthropicQuota, makeQuotaPoller, quotaFromHeaders } from '@/features/status_panel/provider.js'
 import { type ProviderQuota } from '@/features/status_panel/state.js'
-
-const deferred = <Value>() => {
-  let resolve!: (value: Value) => void
-  const promise = new Promise<Value>((complete) => {
-    resolve = complete
-  })
-  return { promise, resolve }
-}
 
 const flushPromises = async () => {
   await Promise.resolve()
@@ -20,80 +13,87 @@ const flushPromises = async () => {
 }
 
 const gatewayResponse = (profiles: unknown) => Promise.resolve(Response.json(profiles, { status: 200 }))
+const makeAbortController = () => new AbortController()
 
 describe('Anthropic quota provider', () => {
-  it('passes the abort signal and converts gateway fractions to percentages', async () => {
-    const controller = new AbortController()
-    let requestedUrl = ''
-    let requestedInit: RequestInit | undefined
-    const fakeFetch = asFetch((input, init) => {
-      requestedUrl = String(input)
-      requestedInit = init
-      return gatewayResponse({
-        activeProfile: 'default',
-        profiles: [
-          {
-            extraUsage: { isEnabled: true, monthlyLimit: 20_000, usedCredits: 3162 },
-            id: 'default',
-            isActive: true,
-            windows: [
-              { resetsAt: Date.now() + 90 * 60_000, type: 'five_hour', utilization: 0.375 },
-              { resetsAt: Date.now() + 102 * 60 * 60_000, type: 'seven_day', utilization: 0.62 },
-              { type: 'seven_day_fable', utilization: 0.02 },
-            ],
-          },
-        ],
+  it.live('passes the abort signal and converts gateway fractions to percentages', () =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis
+      const controller = makeAbortController()
+      let requestedUrl = ''
+      let requestedInit: RequestInit | undefined
+      const fakeFetch = asFetch((input, init) => {
+        requestedUrl = String(input)
+        requestedInit = init
+        return gatewayResponse({
+          activeProfile: 'default',
+          profiles: [
+            {
+              extraUsage: { isEnabled: true, monthlyLimit: 20_000, usedCredits: 3162 },
+              id: 'default',
+              isActive: true,
+              windows: [
+                { resetsAt: now + 90 * 60_000, type: 'five_hour', utilization: 0.375 },
+                { resetsAt: now + 102 * 60 * 60_000, type: 'seven_day', utilization: 0.62 },
+                { type: 'seven_day_fable', utilization: 0.02 },
+              ],
+            },
+          ],
+        })
       })
+
+      const quota = yield* Effect.promise(() => fetchAnthropicQuota('http://127.0.0.1:3456', controller.signal, fakeFetch))
+      if (quota === undefined) {
+        throw new Error('expected a quota')
+      }
+      const { windows } = quota
+      if (windows === undefined) {
+        throw new Error('expected quota windows')
+      }
+
+      expect(requestedUrl).toBe('http://127.0.0.1:3456/v1/usage/quota/all')
+      expect(requestedInit?.signal).toBe(controller.signal)
+      expect(quota.label).toBe('anthropic')
+      expect(quota.percent).toBe(37.5)
+      expect(quota.detail).toContain('1h 30m')
+      expect(quota.detail).toContain('Weekly:')
+      expect(quota.detail).toContain('62.0%')
+      expect(quota.detail).toContain('31.62/200$')
+      expect(windows.map((window) => window.label)).toEqual(['Session', 'Weekly'])
+      expect(windows[0]?.percent).toBeCloseTo(37.5)
+      expect(windows[0]?.resetsIn).toBe('1h 30m')
+      expect(windows[1]?.percent).toBeCloseTo(62)
+      expect(windows[1]?.resetsIn).toBe('4d 6h')
+      expect(windows[1]?.detail).toBe('31.62/200$')
     })
+  )
 
-    const quota = await fetchAnthropicQuota('http://127.0.0.1:3456', controller.signal, fakeFetch)
-    if (quota === undefined) {
-      throw new Error('expected a quota')
-    }
-    const { windows } = quota
-    if (windows === undefined) {
-      throw new Error('expected quota windows')
-    }
+  it.live('keeps weekly quota when the current session has no reset time', () =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis
+      const fakeFetch = asFetch(() =>
+        gatewayResponse({
+          profiles: [
+            {
+              isActive: true,
+              windows: [
+                // oxlint-disable-next-line unicorn/no-null -- Meridian uses null when no session timer is active.
+                { resetsAt: null, type: 'five_hour', utilization: 0 },
+                { resetsAt: now + 24 * 60 * 60_000, type: 'seven_day', utilization: 0.45 },
+              ],
+            },
+          ],
+        })
+      )
 
-    expect(requestedUrl).toBe('http://127.0.0.1:3456/v1/usage/quota/all')
-    expect(requestedInit?.signal).toBe(controller.signal)
-    expect(quota.label).toBe('anthropic')
-    expect(quota.percent).toBe(37.5)
-    expect(quota.detail).toContain('1h 30m')
-    expect(quota.detail).toContain('Weekly:')
-    expect(quota.detail).toContain('62.0%')
-    expect(quota.detail).toContain('31.62/200$')
-    expect(windows.map((window) => window.label)).toEqual(['Session', 'Weekly'])
-    expect(windows[0]?.percent).toBeCloseTo(37.5)
-    expect(windows[0]?.resetsIn).toBe('1h 30m')
-    expect(windows[1]?.percent).toBeCloseTo(62)
-    expect(windows[1]?.resetsIn).toBe('4d 6h')
-    expect(windows[1]?.detail).toBe('31.62/200$')
-  })
+      const quota = yield* Effect.promise(() => fetchAnthropicQuota('http://gateway', undefined, fakeFetch))
 
-  it('keeps weekly quota when the current session has no reset time', async () => {
-    const fakeFetch = asFetch(() =>
-      gatewayResponse({
-        profiles: [
-          {
-            isActive: true,
-            windows: [
-              // oxlint-disable-next-line unicorn/no-null -- Meridian uses null when no session timer is active.
-              { resetsAt: null, type: 'five_hour', utilization: 0 },
-              { resetsAt: Date.now() + 24 * 60 * 60_000, type: 'seven_day', utilization: 0.45 },
-            ],
-          },
-        ],
-      })
-    )
-
-    const quota = await fetchAnthropicQuota('http://gateway', undefined, fakeFetch)
-
-    expect(quota?.percent).toBe(0)
-    expect(quota?.windows?.[0]).toEqual({ label: 'Session', percent: 0 })
-    expect(quota?.windows?.[1]?.percent).toBe(45)
-    expect(quota?.windows?.[1]?.resetsIn).toBe('1d 0h')
-  })
+      expect(quota?.percent).toBe(0)
+      expect(quota?.windows?.[0]).toEqual({ label: 'Session', percent: 0 })
+      expect(quota?.windows?.[1]?.percent).toBe(45)
+      expect(quota?.windows?.[1]?.resetsIn).toBe('1d 0h')
+    })
+  )
 
   it('reads the active profile rather than the first one', async () => {
     const fakeFetch = asFetch(() =>

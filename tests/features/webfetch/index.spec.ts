@@ -2,9 +2,10 @@ import { describe, expect, test } from 'bun:test'
 
 import { type AgentToolResult, type Theme } from '@earendil-works/pi-coding-agent'
 import { asError, asNarrowed, asTheme, asTool } from '@tests/utils/casts.js'
+import { deferred } from '@tests/utils/deferred.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
-import { type Clock, Effect, Layer } from 'effect'
+import { type Clock, Data, Effect, Layer } from 'effect'
 import { TestClock } from 'effect/testing'
 import { FetchHttpClient, type HttpClient } from 'effect/unstable/http'
 
@@ -14,6 +15,16 @@ import { isTrue } from '@/shared/utils/predicates.js'
 
 const stubHttpClient = (fetchImpl: WebfetchFetch): Layer.Layer<HttpClient.HttpClient> =>
   Layer.mergeAll(FetchHttpClient.layer, Layer.succeed(FetchHttpClient.Fetch)(asNarrowed<typeof fetch, WebfetchFetch>(fetchImpl)))
+
+class StubFetchError extends Data.TaggedError('StubFetchError')<{ readonly cause: unknown }> {}
+
+const pendingFetch = (signal: AbortSignal | null | undefined, onStart?: () => void): Promise<Response> =>
+  Effect.runPromise(
+    Effect.callback<Response, StubFetchError>((resume) => {
+      onStart?.()
+      signal?.addEventListener('abort', () => resume(Effect.fail(new StubFetchError({ cause: signal.reason }))), { once: true })
+    })
+  )
 
 const createHarness = (fetchImpl: WebfetchFetch, saveFullOutput?: (content: string) => Effect.Effect<string>, clock?: Clock.Clock) => {
   const fixture = createFakePi()
@@ -262,25 +273,14 @@ describe('webfetch', () => {
       Effect.scoped(
         Effect.gen(function* () {
           const clock = yield* TestClock.make()
-          let markStarted: (() => void) | undefined
-          const started = new Promise<void>((resolve) => {
-            markStarted = resolve
-          })
-          const harness = createHarness(
-            (_url, init) =>
-              new Promise<Response>((_resolve, reject) => {
-                markStarted?.()
-                init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
-              }),
-            undefined,
-            clock
-          )
+          const started = deferred<void>()
+          const harness = createHarness((_url, init) => pendingFetch(init?.signal, () => started.resolve(undefined)), undefined, clock)
           const pending = harness.execute({ timeout: 0.05, url: 'https://example.com/slow' }).then(
             () => undefined,
             (error: unknown) => error
           )
 
-          yield* Effect.promise(() => started)
+          yield* Effect.promise(() => started.promise)
           yield* clock.adjust('1 second')
           return yield* Effect.promise(() => pending)
         })
@@ -332,14 +332,7 @@ describe('webfetch', () => {
   })
 
   test('propagates cancellation as a concise, exact tool error, distinct from a timeout', async () => {
-    const harness = createHarness(
-      (_url, init) =>
-        new Promise<Response>((_resolve, reject) => {
-          init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), {
-            once: true,
-          })
-        })
-    )
+    const harness = createHarness((_url, init) => pendingFetch(init?.signal))
     const controller = new AbortController()
     const pending = harness.execute({ url: 'https://example.com/slow' }, controller.signal)
 

@@ -1,8 +1,8 @@
 import { describe, expect, mock, test } from 'bun:test'
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- Fixture setup and teardown that must be ordered against the child processes these specs start.
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- Fixture setup and teardown must stay synchronously ordered against the child processes these specs start.
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { userInfo } from 'node:os'
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- Lexical path math for the fixture locations below.
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- Lexical path math builds fixture locations at synchronous test boundaries with no Path service in scope.
 import { dirname, join } from 'node:path'
 
 import { type Theme } from '@earendil-works/pi-coding-agent'

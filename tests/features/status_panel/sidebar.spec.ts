@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 
 import { visibleWidth } from '@earendil-works/pi-tui'
 import { asExtensionContext } from '@tests/utils/casts.js'
+import { deferred } from '@tests/utils/deferred.js'
 
 import { createSidebarController, renderSidebarLines, type SidebarState } from '@/features/status_panel/sidebar.js'
 
@@ -293,10 +294,11 @@ describe('sidebar controller overlay race', () => {
     const ctx = asExtensionContext({
       mode: 'tui',
       ui: {
-        custom: (factory: CustomCall['factory'], options: CustomCall['options']) =>
-          new Promise<void>((resolve) => {
-            calls.push({ factory, options, resolve })
-          }),
+        custom: (factory: CustomCall['factory'], options: CustomCall['options']) => {
+          const result = deferred<void>()
+          calls.push({ factory, options, resolve: () => result.resolve(undefined) })
+          return result.promise
+        },
       },
     })
 
@@ -349,10 +351,11 @@ describe('sidebar controller overlay race', () => {
     const ctx = asExtensionContext({
       mode: 'tui',
       ui: {
-        custom: (factory: CustomCall['factory'], options: CustomCall['options']) =>
-          new Promise<void>((resolve) => {
-            calls.push({ factory, options, resolve })
-          }),
+        custom: (factory: CustomCall['factory'], options: CustomCall['options']) => {
+          const result = deferred<void>()
+          calls.push({ factory, options, resolve: () => result.resolve(undefined) })
+          return result.promise
+        },
       },
     })
     const sidebar = createSidebarController({ ctx, getState: () => currentState, redrawMs: 10 })

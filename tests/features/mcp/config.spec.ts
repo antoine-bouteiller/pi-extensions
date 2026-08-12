@@ -1,9 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 
 import { NodeFileSystem } from '@effect/platform-node'
+import { fileSystem, pathService, runPlatform } from '@tests/utils/platform.js'
 import { Effect } from 'effect'
 
 import { loadMcpConfigFile as loadMcpConfigFileEffect, parseMcpConfig, parseMcpConfigEffect, parseMcpConfigText } from '@/features/mcp/config.js'
@@ -11,14 +10,12 @@ import { loadMcpConfigFile as loadMcpConfigFileEffect, parseMcpConfig, parseMcpC
 const loadMcpConfigFile = (path: string) => Effect.runPromise(Effect.provide(loadMcpConfigFileEffect(path), NodeFileSystem.layer))
 
 const temporaryDirectories: string[] = []
-afterEach(async () => {
-  await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { force: true, recursive: true })))
-})
+afterEach(() => Promise.all(temporaryDirectories.splice(0).map((path) => runPlatform(fileSystem.remove(path, { recursive: true })))))
 
 const temporaryPath = async (name: string): Promise<string> => {
-  const directory = await mkdtemp(join(tmpdir(), 'pi-mcp-config-test-'))
+  const directory = await runPlatform(fileSystem.makeTempDirectory({ directory: tmpdir(), prefix: 'pi-mcp-config-test-' }))
   temporaryDirectories.push(directory)
-  return join(directory, name)
+  return pathService.join(directory, name)
 }
 
 describe('global MCP config parsing', () => {
@@ -218,7 +215,7 @@ describe('global MCP config parsing', () => {
 
   test('loads JSON from a supplied test path', async () => {
     const path = await temporaryPath('mcp.json')
-    await writeFile(path, JSON.stringify({ mcpServers: { local: { command: 'server' } } }))
+    await runPlatform(fileSystem.writeFileString(path, JSON.stringify({ mcpServers: { local: { command: 'server' } } })))
     expect(await loadMcpConfigFile(path)).toEqual({
       local: { command: 'server', type: 'stdio' },
     })
@@ -227,7 +224,7 @@ describe('global MCP config parsing', () => {
   test('does not swallow malformed JSON', async () => {
     expect(() => parseMcpConfigText('{ nope', 'fixture.json')).toThrow('fixture.json: contains malformed JSON')
     const path = await temporaryPath('malformed.json')
-    await writeFile(path, '{ nope')
+    await runPlatform(fileSystem.writeFileString(path, '{ nope'))
     expect(loadMcpConfigFile(path)).rejects.toThrow('contains malformed JSON')
   })
 })
