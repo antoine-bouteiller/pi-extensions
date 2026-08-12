@@ -5,7 +5,7 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { type Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import { Context, Effect, Function, Layer } from 'effect'
+import { Context, Data, Effect, Function, Layer, Schema } from 'effect'
 
 import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 import { isRecord } from '@/shared/utils/records.js'
@@ -104,16 +104,10 @@ export interface McpManagerOptions {
   policy?: McpGatewayPolicy
 }
 
-class PendingAuthorization extends Error {
+class PendingAuthorization extends Data.TaggedError('PendingAuthorization')<{
   readonly client: ClientLike
   readonly transport: Transport & { finishAuth?: (code: string) => Promise<void> }
-
-  constructor(client: ClientLike, transport: Transport & { finishAuth?: (code: string) => Promise<void> }) {
-    super('OAuth authorization is required')
-    this.client = client
-    this.transport = transport
-  }
-}
+}> {}
 
 const errorMessage = (error: unknown): string => {
   if (error instanceof Error) {
@@ -128,7 +122,7 @@ const safeOperationError = (error: unknown, operation: string, server: string): 
     cancelled.name = 'AbortError'
     return cancelled
   }
-  if (error instanceof KeychainCredentialError) {
+  if (Schema.is(KeychainCredentialError)(error)) {
     return KeychainCredentialError.make({ message: error.message.slice(0, 500) })
   }
   if (isAuthorizationFailure(error)) {
@@ -897,7 +891,7 @@ export class McpManager {
       return { client, instructions: client.getInstructions(), tools, transport }
     } catch (error) {
       if (retainAuthorization && isAuthorizationFailure(error)) {
-        throw new PendingAuthorization(client, transport)
+        throw new PendingAuthorization({ client, transport })
       }
       await client.close().catch(() => undefined)
       throw error

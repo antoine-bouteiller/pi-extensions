@@ -85,8 +85,15 @@ export default defineConfig({
     'sort-keys': ['error', 'asc', { allowLineSeparatedGroups: true, natural: true }],
     'throw-new-error': 'off',
     'unicorn/filename-case': ['error', { cases: { snakeCase: true } }],
+
     // Off by design — default-on in standalone oxlint but not pertinent here:
     // Zod schemas nest calls inherently; fs.ts exposes deliberate safe*Sync wrappers.
     'unicorn/max-nested-calls': 'off',
+
+    /*
+     * Every environment read in this package is either a module-level constant resolved at import
+     * time or a synchronous Pi/TUI callback, and `Config` can only be read from an Effect context.
+     */
+    'effecttsgo/process-env': 'off',
   },
 })

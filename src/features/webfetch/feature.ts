@@ -181,6 +181,7 @@ interface RawResponseMeta {
 }
 
 const capturingFetch = (raw: typeof fetch, box: { current?: RawResponseMeta }): typeof fetch => {
+  // oxlint-disable-next-line effecttsgo/async-function -- Must stay assignable to `typeof fetch` for the callers that receive it.
   const wrapped = async (input: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1]): ReturnType<typeof fetch> => {
     const response = await raw(input, init)
     box.current = { statusText: response.statusText, url: response.url }
@@ -393,6 +394,7 @@ export const createWebfetchExtension: {
 
       pi.registerTool({
         description: `Fetch an HTTP(S) URL and return its content as markdown, plain text, or raw HTML. HTML defaults to markdown. Downloads are limited to ${formatSize(MAX_DOWNLOAD_BYTES)}; output is truncated to ${MAX_OUTPUT_LINES} lines or ${formatSize(MAX_OUTPUT_BYTES)} and saved to a temporary file when larger.`,
+        // oxlint-disable-next-line effecttsgo/async-function -- Pi awaits the value returned by `execute`, so this boundary must stay a promise.
         async execute(_toolCallId, params, signal, onUpdate) {
           return await executor.runPromise(
             Effect.suspend(() =>

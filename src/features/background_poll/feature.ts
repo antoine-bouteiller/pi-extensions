@@ -306,6 +306,7 @@ const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime): void => {
   pi.registerTool({
     description:
       'Register a shell command that is polled in the background until it exits successfully. The current agent run can end completely; completion, timeout, or failure automatically wakes the agent with the final output. Output is truncated to 50KB or 2000 lines.',
+    // oxlint-disable-next-line effecttsgo/async-function -- Pi awaits the value returned by `execute`, so this boundary must stay a promise.
     async execute(toolCallId, params, signal, _onUpdate, ctx) {
       await runtime.runPromise(
         Effect.suspend(() =>

@@ -263,6 +263,7 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
     return this.options.state
   }
 
+  // oxlint-disable-next-line effecttsgo/async-function -- Implements the MCP SDK's `OAuthClientProvider`, which declares promise-returning members.
   async clientInformation(): Promise<OAuthClientInformationMixed | undefined> {
     if (isNotNullOrUndefined(this.options.config.clientId) && isNotEmptyString(this.options.config.clientId)) {
       return {
@@ -276,6 +277,7 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
     return credential?.clientInformation
   }
 
+  // oxlint-disable-next-line effecttsgo/async-function -- Implements the MCP SDK's `OAuthClientProvider`, which declares promise-returning members.
   async saveClientInformation(clientInformation: OAuthClientInformationMixed): Promise<void> {
     await this.update((credential) => ({
       serverUrl: this.options.serverUrl,
@@ -284,11 +286,13 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
     }))
   }
 
+  // oxlint-disable-next-line effecttsgo/async-function -- Implements the MCP SDK's `OAuthClientProvider`, which declares promise-returning members.
   async tokens(): Promise<OAuthTokens | undefined> {
     const credential = await this.load()
     return credential?.tokens
   }
 
+  // oxlint-disable-next-line effecttsgo/async-function -- Implements the MCP SDK's `OAuthClientProvider`, which declares promise-returning members.
   async saveTokens(tokens: OAuthTokens): Promise<void> {
     await this.update((credential) => ({
       serverUrl: this.options.serverUrl,
@@ -297,6 +301,7 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
     }))
   }
 
+  // oxlint-disable-next-line effecttsgo/async-function -- Implements the MCP SDK's `OAuthClientProvider`, which declares promise-returning members.
   async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
     if (!isTrue(this.options.interactive) || isNullOrUndefined(this.options.openUrl)) {
       throw new UnauthorizedError('OAuth authorization is required; use /mcp-auth <server>')
@@ -323,6 +328,7 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
     return this.discovery
   }
 
+  // oxlint-disable-next-line effecttsgo/async-function -- Implements the MCP SDK's `OAuthClientProvider`, which declares promise-returning members.
   async invalidateCredentials(scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery'): Promise<void> {
     if (scope === 'verifier') {
       this.verifier = undefined

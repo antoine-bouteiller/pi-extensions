@@ -419,6 +419,7 @@ const setRef = <Value>(ref: Ref.Ref<Value>, value: Value): void => Effect.runSyn
 
 const unrefSleep = (milliseconds: number): Effect.Effect<void> =>
   Effect.callback<void>((resume) => {
+    // oxlint-disable-next-line effecttsgo/global-timers-in-effect -- `Effect.sleep` cannot unref its timer, and this redraw tick must not keep the process alive.
     const timer = setTimeout(() => resume(Effect.void), milliseconds)
     timer.unref?.()
     return Effect.sync(() => clearTimeout(timer))

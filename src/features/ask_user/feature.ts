@@ -384,6 +384,7 @@ export const register: {
        * "Cancelled" as a normal result; letting `runPromise` interrupt the fiber on the same signal
        * would instead reject the tool call, which is exactly what "neither path may fail" rules out.
        */
+      // oxlint-disable-next-line effecttsgo/async-function -- Pi awaits the value returned by `execute`, so this boundary must stay a promise.
       execute: async (_toolCallId, params, signal, _onUpdate, ctx) =>
         runtime.runPromise(askUserEffect(params, signal ?? undefined).pipe(Effect.provide(perInvocation(ctx)))),
       label: 'Ask User',

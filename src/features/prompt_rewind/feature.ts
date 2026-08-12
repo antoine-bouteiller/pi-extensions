@@ -153,6 +153,7 @@ const registerImpl = (pi: ExtensionAPI, _runtime: AppRuntime): void => {
 
   pi.registerCommand(REWIND_COMMAND, {
     description: 'Internal: rewinds the just-cancelled prompt from the active branch and restores its raw text to the editor.',
+    // oxlint-disable-next-line effecttsgo/async-function -- Pi awaits the command handler, so this boundary must stay a promise.
     handler: async (_args: string, ctx: ExtensionCommandContext) => {
       const capture = pendingRewind
       pendingRewind = undefined

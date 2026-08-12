@@ -5,6 +5,7 @@ import { type Cause, Context, Effect, Function } from 'effect'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { makeEventHandler } from '@/shared/effect/runtime.js'
+import { jsonText } from '@/shared/utils/json.js'
 import { isEmptyString } from '@/shared/utils/predicates.js'
 import { isRecord } from '@/shared/utils/records.js'
 
@@ -102,7 +103,7 @@ const runCommentChecker = (input: HookInput): Effect.Effect<CheckerResult> =>
       resume(Effect.succeed({ exitCode, stderr, stdout }))
     })
     child.stdin?.on('error', () => undefined)
-    child.stdin?.end(JSON.stringify(input))
+    child.stdin?.end(jsonText(input))
     return Effect.sync(() => {
       child.kill()
     })

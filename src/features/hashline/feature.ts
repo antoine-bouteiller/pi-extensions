@@ -63,6 +63,7 @@ const throwIfAborted = (signal: AbortSignal | undefined): void => {
 }
 
 /** Keep every path used internally by hashline rooted in the tool context. */
+/* oxlint-disable effecttsgo/async-function -- These overrides must keep the promise-returning signatures declared by hashline's NodeFilesystem. */
 class CwdFilesystem extends NodeFilesystem {
   private readonly cwd: string
 
@@ -127,6 +128,7 @@ class CwdFilesystem extends NodeFilesystem {
     return false
   }
 }
+/* oxlint-enable effecttsgo/async-function */
 
 const withMutationQueues = async <Result>(paths: readonly string[], callback: () => Promise<Result>): Promise<Result> => {
   const ordered = [...new Set(paths)].toSorted((left, right) => left.localeCompare(right))
@@ -403,6 +405,7 @@ const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime): void => {
     <Params, Result>(
       body: (params: Params, signal: AbortSignal | undefined) => Effect.Effect<Result, HashlineToolError, HandlerServices | Snapshots>
     ) =>
+    // oxlint-disable-next-line effecttsgo/async-function -- Pi awaits the value returned by `execute`, so this boundary must stay a promise.
     async (_toolCallId: string, params: Params, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext): Promise<Result> =>
       runtime.runPromise(body(params, signal).pipe(Effect.provideService(Snapshots, snapshotsStore), Effect.provide(perInvocation(ctx))))
 

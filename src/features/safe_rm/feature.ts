@@ -9,7 +9,7 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
 } from '@earendil-works/pi-coding-agent'
-import { Cause, Effect, Function, Result } from 'effect'
+import { Cause, Effect, Function, Result, Schema } from 'effect'
 import { Type } from 'typebox'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
@@ -320,6 +320,7 @@ type SafeRmToolError = ValidateTargetError | RevalidateTargetError | Overlapping
 const createSafeRmTool = (runtime: AppRuntime) => {
   const runTool =
     <Params, Result, Failure>(body: (params: Params, signal: AbortSignal | undefined, ctx: ExtensionContext) => Effect.Effect<Result, Failure>) =>
+    // oxlint-disable-next-line effecttsgo/async-function -- Pi awaits the value returned by `execute`, so this boundary must stay a promise.
     async (_toolCallId: string, params: Params, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext): Promise<Result> =>
       runtime.runPromise(body(params, signal, ctx))
 
@@ -416,6 +417,7 @@ export const register: {
       event.input.command = ROUTED_RM_SENTINEL
     })
 
+    // oxlint-disable-next-line effecttsgo/async-function -- Pi awaits event listeners, so this boundary must stay a promise.
     pi.on('tool_result', async (event, ctx) => {
       if (!isBashToolResult(event) || event.input.command !== ROUTED_RM_SENTINEL) {
         return undefined

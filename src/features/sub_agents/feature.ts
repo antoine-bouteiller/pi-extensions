@@ -18,6 +18,7 @@ import { Check } from 'typebox/value'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { runningAgents } from '@/shared/state/agent_activity.js'
+import { prettyJsonText } from '@/shared/utils/json.js'
 import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 import { truncateOutput, truncationNotice } from '@/shared/utils/tool_output.js'
 
@@ -403,8 +404,8 @@ ${getAgentProfilesDescription()}`
                 {
                   agent_type: params.agent_type,
                   availableModels: availableModels.map((model) => ({
-                    provider: model.provider,
                     id: model.id,
+                    provider: model.provider,
                   })),
                   cwd: ctx.cwd,
                   message: params.message,
@@ -425,7 +426,7 @@ ${getAgentProfilesDescription()}`
           if (result.completion === undefined) {
             return yield* featureError('spawn_agent failed: foreground completion was not returned.', undefined)
           }
-          return boundedTextResult(JSON.stringify(result.completion, undefined, 2), { ...result })
+          return boundedTextResult(prettyJsonText(result.completion), { ...result })
         })
       )
       return operation.catch((error: unknown) => {
@@ -536,7 +537,7 @@ ${getAgentProfilesDescription()}`
             catch: (cause) => waitError('wait_agent', isTrue(signal?.aborted), cause),
             try: async () => {
               const result = await manager.waitAgent(parentSessionId(ctx), parseTargets(params.targets), signal)
-              return boundedTextResult(JSON.stringify(result, undefined, 2), {
+              return boundedTextResult(prettyJsonText(result), {
                 event: result.event,
                 message: result.message,
               })
@@ -599,7 +600,7 @@ ${getAgentProfilesDescription()}`
             catch: (cause) => waitError('wait_all_agents', isTrue(signal?.aborted), cause),
             try: async () => {
               const result = await manager.waitAllAgents(parentSessionId(ctx), parseTargets(params.targets), signal)
-              return boundedTextResult(JSON.stringify(result, undefined, 2), {
+              return boundedTextResult(prettyJsonText(result), {
                 message: result.message,
                 responses: result.responses,
               })
@@ -640,7 +641,7 @@ ${getAgentProfilesDescription()}`
       return runtime.runPromise(
         Effect.sync(() => {
           const agents = manager.listAgents(params.path_prefix, parentSessionId(ctx), isTrue(params.include_all))
-          return boundedTextResult(JSON.stringify({ agents }, undefined, 2), { agents })
+          return boundedTextResult(prettyJsonText({ agents }), { agents })
         })
       )
     },
@@ -664,7 +665,7 @@ ${getAgentProfilesDescription()}`
       }
       const [firstContent] = result.content
       const text = firstContent?.type === 'text' ? firstContent.text : undefined
-      return new Text(text || JSON.stringify({ agents }, undefined, 2), 0, 0)
+      return new Text(text || prettyJsonText({ agents }), 0, 0)
     },
   })
 
@@ -676,7 +677,7 @@ ${getAgentProfilesDescription()}`
           catch: (cause) => featureError(`read_agent_response failed: ${cause instanceof Error ? cause.message : String(cause)}`, cause),
           try: () => {
             const result = manager.readAgentResponse(cleanTarget(params.target), parentSessionId(ctx))
-            return boundedTextResult(JSON.stringify(result, undefined, 2), {
+            return boundedTextResult(prettyJsonText(result), {
               agent_name: result.agent_name,
               color: result.color,
               is_readonly: result.is_readonly,
@@ -1008,6 +1009,7 @@ ${getAgentProfilesDescription()}`
 
   pi.registerCommand('subagent', {
     description: 'Browse subagents, or open one directly. Usage: /subagent [task-name]',
+    // oxlint-disable-next-line effecttsgo/async-function -- Pi awaits the command handler, so this boundary must stay a promise.
     handler: async (args, ctx) => {
       const task = args?.trim().replace(/^\//, '')
       if (isNotNullOrUndefined(task) && isNotEmptyString(task)) {
@@ -1040,11 +1042,13 @@ ${getAgentProfilesDescription()}`
 
   pi.registerCommand('agents', {
     description: 'Browse subagents',
+    // oxlint-disable-next-line effecttsgo/async-function -- Pi awaits the command handler, so this boundary must stay a promise.
     handler: async (_args, ctx) => browseAgents(ctx),
   })
 
   pi.registerCommand('subagents', {
     description: 'Browse subagents',
+    // oxlint-disable-next-line effecttsgo/async-function -- Pi awaits the command handler, so this boundary must stay a promise.
     handler: async (_args, ctx) => browseAgents(ctx),
   })
 }

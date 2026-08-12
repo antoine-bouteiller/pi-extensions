@@ -2,12 +2,13 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import { type AgentToolResult, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
-import { Data, Deferred, Effect, Function, Match, Option, Ref } from 'effect'
+import { Data, Deferred, Effect, Function, Match, Option, Ref, Schema } from 'effect'
 import { Type, type Static } from 'typebox'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { ToolFailure } from '@/shared/effect/errors.js'
 import { createStatusChannel } from '@/shared/state/status_bar.js'
+import { jsonText } from '@/shared/utils/json.js'
 import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 import { isRecord } from '@/shared/utils/records.js'
 
@@ -130,10 +131,9 @@ const parseArgs = (args: unknown): Effect.Effect<Record<string, unknown>, ToolFa
   Effect.gen(function* () {
     const parsed =
       typeof args === 'string'
-        ? yield* Effect.try({
-            catch: (cause) => ToolFailure.make({ cause, message: `mcp args must be valid JSON: ${errorMessage(cause)}` }),
-            try: () => JSON.parse(args) as unknown,
-          })
+        ? yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(args).pipe(
+            Effect.mapError((cause) => ToolFailure.make({ cause, message: `mcp args must be valid JSON: ${errorMessage(cause)}` }))
+          )
         : args
 
     if (parsed === undefined) {
@@ -238,7 +238,7 @@ const validateSelectors = (params: {
 }
 
 const errorMessage = (error: unknown): string => {
-  if (error instanceof ToolFailure) {
+  if (Schema.is(ToolFailure)(error)) {
     return error.message
   }
   if (error instanceof Error) {
@@ -338,7 +338,7 @@ const dispatchGateway = (
         Effect.gen(function* () {
           yield* callManager(() => manager.connect(op.server, { signal }))
           return yield* callManager(() =>
-            textResult(`Connected MCP server ${op.server}.\nList tools with: mcp({ server: ${JSON.stringify(op.server)} })`, { server: op.server })
+            textResult(`Connected MCP server ${op.server}.\nList tools with: mcp({ server: ${jsonText(op.server)} })`, { server: op.server })
           )
         }),
 
@@ -350,8 +350,8 @@ const dispatchGateway = (
             `${description.name}${formatAnnotations(description.annotations)}`,
             ...(isNotNullOrUndefined(description.server) && isNotEmptyString(description.server) ? [`Server: ${description.server}`] : []),
             ...(isEmptyString(summary) ? [] : [summary]),
-            `Input schema: ${JSON.stringify(description.inputSchema ?? {})}`,
-            `Call with: mcp({ tool: ${JSON.stringify(description.name)}, args: { ... } })`,
+            `Input schema: ${jsonText(description.inputSchema ?? {})}`,
+            `Call with: mcp({ tool: ${jsonText(description.name)}, args: { ... } })`,
           ]
           return yield* callManager(() =>
             textResult(lines.join('\n'), {
@@ -494,6 +494,7 @@ export const createMcpExtension: {
       pi.registerTool({
         description:
           "Access configured remote MCP capabilities through one lazy gateway. Use Pi's native tools directly whenever possible. Search or describe unfamiliar MCP tools before calling them.",
+        // oxlint-disable-next-line effecttsgo/async-function -- Pi awaits the value returned by `execute`, so this boundary must stay a promise.
         async execute(_toolCallId, params, signal) {
           return runtime.runPromise(dispatchGateway(dependencies.configPath, state, params, signal))
         },
@@ -521,6 +522,7 @@ export const createMcpExtension: {
             .map((server) => ({ label: server, value: server }))
           return items.length > 0 ? items : null
         },
+        // oxlint-disable-next-line effecttsgo/async-function -- Pi awaits the command handler, so this boundary must stay a promise.
         handler: async (args, ctx) => {
           await runtime.runPromise(
             Effect.gen(function* () {

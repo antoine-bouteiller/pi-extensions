@@ -312,7 +312,7 @@ export const parseMcpConfig = (value: unknown): McpServerMap => {
         }
         return [name, parseServer(name, server)]
       } catch (error) {
-        if (error instanceof McpConfigError) {
+        if (Schema.is(McpConfigError)(error)) {
           return [name, { invalid: true } satisfies InvalidServerConfig]
         }
         throw error
@@ -326,7 +326,7 @@ export const parseMcpConfigEffect = (value: unknown): Effect.Effect<McpServerMap
   Effect.gen(function* () {
     const parsed = yield* Effect.try({
       catch: (cause) =>
-        cause instanceof McpConfigError ? cause : McpConfigError.from('mcpServers', cause instanceof Error ? cause.message : String(cause)),
+        Schema.is(McpConfigError)(cause) ? cause : McpConfigError.from('mcpServers', cause instanceof Error ? cause.message : String(cause)),
       try: () => parseMcpConfig(value),
     })
     yield* Schema.decodeEffect(McpServerMapSchema, { onExcessProperty: 'error' })(parsed).pipe(

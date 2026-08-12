@@ -239,7 +239,7 @@ export class KeychainCredentialStore implements CredentialStore {
 export const createKeychainCredentialStore = (options: KeychainCredentialStoreOptions = {}): CredentialStore => new KeychainCredentialStore(options)
 
 const asKeychainError = (cause: unknown): KeychainCredentialError =>
-  cause instanceof KeychainCredentialError ? cause : KeychainCredentialError.make({ message: 'macOS Keychain OAuth credential operation failed.' })
+  Schema.is(KeychainCredentialError)(cause) ? cause : KeychainCredentialError.make({ message: 'macOS Keychain OAuth credential operation failed.' })
 
 export const credentialStoreEffectLayer = (options: KeychainCredentialStoreOptions = {}): Layer.Layer<CredentialStoreEffect> => {
   const store = createKeychainCredentialStore(options)
