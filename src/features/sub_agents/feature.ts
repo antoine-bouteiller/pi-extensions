@@ -403,8 +403,8 @@ ${getAgentProfilesDescription()}`
                 {
                   agent_type: params.agent_type,
                   availableModels: availableModels.map((model) => ({
-                    id: model.id,
                     provider: model.provider,
+                    id: model.id,
                   })),
                   cwd: ctx.cwd,
                   message: params.message,

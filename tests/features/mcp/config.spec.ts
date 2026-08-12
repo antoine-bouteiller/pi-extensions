@@ -133,7 +133,7 @@ describe('global MCP config parsing', () => {
       parseMcpConfig({
         mcpServers: {
           slack: {
-            oauth: { clientId: 'one', client_id: 'two' },
+            oauth: { client_id: 'two', clientId: 'one' },
             url: 'https://mcp.slack.com/mcp',
           },
         },

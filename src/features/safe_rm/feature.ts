@@ -259,11 +259,11 @@ type RevalidateTargetError = CancelledError | Cause.UnknownError | SymlinkEscape
 const mutationQueueError = (cause: unknown): RevalidateTargetError => {
   if (
     Cause.isUnknownError(cause) ||
-    cause instanceof CancelledError ||
-    cause instanceof SymlinkEscapeError ||
-    cause instanceof TargetChangedError ||
-    cause instanceof GitRepositoryError ||
-    cause instanceof GitMetadataError
+    Schema.is(CancelledError)(cause) ||
+    Schema.is(SymlinkEscapeError)(cause) ||
+    Schema.is(TargetChangedError)(cause) ||
+    Schema.is(GitRepositoryError)(cause) ||
+    Schema.is(GitMetadataError)(cause)
   ) {
     return cause
   }
