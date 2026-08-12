@@ -3,14 +3,22 @@ import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asExtensionContext } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { withProcessEnv } from '@tests/utils/process_env.js'
-import { Effect } from 'effect'
+import { runtime } from '@tests/utils/runtime.js'
+import { Effect, Path } from 'effect'
 
-import { createSidebarController, renderSidebarLines, type SidebarState } from '@/features/status_panel/sidebar.js'
+import {
+  createSidebarController,
+  renderSidebarLines as renderSidebarLinesWithPath,
+  type RenderSidebarLinesOptions,
+  type SidebarState,
+} from '@/features/status_panel/sidebar.js'
 
 const theme = {
   bold: (text: string) => text,
   fg: (_color: string, text: string) => text,
 }
+const path = runtime.runSync(Path.Path)
+const renderSidebarLines = (options: Omit<RenderSidebarLinesOptions, 'path'>) => renderSidebarLinesWithPath({ ...options, path })
 
 const state: SidebarState = {
   activity: 'working',
@@ -322,7 +330,7 @@ describe('sidebar controller overlay race', () => {
         },
       })
 
-      const sidebar = createSidebarController({ ctx, getState: () => state })
+      const sidebar = createSidebarController({ ctx, getState: () => state, path })
 
       sidebar.show()
       expect(calls).toHaveLength(1)
@@ -380,7 +388,7 @@ describe('sidebar controller overlay race', () => {
           },
         },
       })
-      const sidebar = createSidebarController({ ctx, getState: () => currentState, redrawMs: 10 })
+      const sidebar = createSidebarController({ ctx, getState: () => currentState, path, redrawMs: 10 })
 
       sidebar.show()
       if (calls.length === 0) {

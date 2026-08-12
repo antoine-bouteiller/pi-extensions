@@ -1,6 +1,4 @@
 import { createHash } from 'node:crypto'
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- Lexical path math for display paths; `Path` is unreachable from the synchronous renderer below.
-import { relative } from 'node:path'
 
 import {
   DEFAULT_MAX_BYTES,
@@ -21,7 +19,7 @@ import {
   Patch,
   Patcher,
 } from '@oh-my-pi/hashline'
-import { Context, Data, Effect, Function } from 'effect'
+import { Context, Data, Effect, Function, Path } from 'effect'
 import { type FileSystem } from 'effect/FileSystem'
 import { Type, type Static } from 'typebox'
 
@@ -279,16 +277,17 @@ const readHashlineFile = ({
   path,
   signal,
   snapshots,
-}: ReadHashlineFileOptions): Effect.Effect<ToolOutput, HashlineToolError, FileSystem> =>
+}: ReadHashlineFileOptions): Effect.Effect<ToolOutput, HashlineToolError, FileSystem | Path.Path> =>
   Effect.gen(function* () {
     yield* abortCheck(signal)
+    const pathService = yield* Path.Path
     const resolution = yield* assertUnprotectedPathEffect(path, cwd, 'read').pipe(Effect.mapError(hashlineToolError))
     const fs = new CwdFilesystem(cwd, signal)
     const text = yield* Effect.tryPromise({ catch: hashlineToolError, try: () => fs.readText(resolution.absolutePath) })
     const normalized = normalizeToLF(text)
     const tag = computeFileHash(normalized)
     const version = fingerprint(normalized)
-    const displayPath = relative(cwd, resolution.absolutePath) || '.'
+    const displayPath = pathService.relative(cwd, resolution.absolutePath) || '.'
     const lines = normalized.split('\n')
     const startLine = offset ?? 1
     if (startLine > lines.length) {
@@ -338,9 +337,10 @@ const writeHashlinePatch = ({
   runtime,
   signal,
   snapshots,
-}: WriteHashlinePatchOptions): Effect.Effect<ToolOutput, HashlineToolError, FileSystem> =>
+}: WriteHashlinePatchOptions): Effect.Effect<ToolOutput, HashlineToolError, FileSystem | Path.Path> =>
   Effect.gen(function* () {
     yield* abortCheck(signal)
+    const pathService = yield* Path.Path
     const parsed = yield* Effect.try({ catch: hashlineToolError, try: () => Patch.parse(patchText, { cwd }) })
     const affectedPaths: string[] = []
     for (const section of parsed.sections) {
@@ -380,10 +380,10 @@ const writeHashlinePatch = ({
       const applied = yield* Effect.tryPromise({ catch: hashlineToolError, try: () => patcher.apply(parsed) })
       yield* abortCheck(signal)
       const sections = applied.sections.map((section, index) => {
-        const path = relative(cwd, section.canonicalPath) || section.canonicalPath
+        const path = pathService.relative(cwd, section.canonicalPath) || section.canonicalPath
         const parsedSection = parsed.sections[index]
         const sourceAbsolute = resolveToolPath(stripToolPathPrefix(parsedSection?.path ?? section.path), cwd)
-        const sourcePath = relative(cwd, sourceAbsolute) || sourceAbsolute
+        const sourcePath = pathService.relative(cwd, sourceAbsolute) || sourceAbsolute
         return {
           hash: section.fileHash,
           ...(section.moveDest === undefined ? {} : { moveDest: path, sourcePath }),
@@ -432,7 +432,7 @@ export const renderHashlineRead: {
   return new Text(theme.fg(isTrue(readResult.isError) ? 'error' : 'toolOutput', text), 0, 0)
 })
 
-type HashlineToolEffect = Effect.Effect<ToolOutput, HashlineToolError, HandlerServices | FileSystem>
+type HashlineToolEffect = Effect.Effect<ToolOutput, HashlineToolError, HandlerServices | FileSystem | Path.Path>
 
 export interface HashlineTools {
   readonly read: (params: Static<typeof readSchema>, signal: AbortSignal | undefined) => HashlineToolEffect

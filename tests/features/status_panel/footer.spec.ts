@@ -1,10 +1,13 @@
 import { visibleWidth } from '@earendil-works/pi-tui'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { Effect } from 'effect'
+import { runtime } from '@tests/utils/runtime.js'
+import { Effect, Path } from 'effect'
 
-import { renderFooterLines, type FooterState } from '@/features/status_panel/footer.js'
+import { renderFooterLines as renderFooterLinesWithPath, type FooterState, type FooterTheme } from '@/features/status_panel/footer.js'
 
 const theme = { fg: (_color: string, text: string) => text }
+const path = runtime.runSync(Path.Path)
+const renderFooterLines = (state: FooterState, renderTheme: FooterTheme, width: number) => renderFooterLinesWithPath(state, renderTheme, width, path)
 
 const state: FooterState = {
   cwd: '/Users/example/pi-extensions',

@@ -1,17 +1,13 @@
-/*
- * Node's `fs` and `path` on purpose: the spill is a leaf utility used by tool bodies whose Effect
- * signatures declare no requirements, so taking `FileSystem` here would push that service through
- * every caller's public type for no behavioural gain.
- */
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- Private-directory spill, see above.
-import { mkdtemp, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- Lexical path math for the spill location.
-import { join } from 'node:path'
-
 import { formatSize, truncateHead, truncateTail } from '@earendil-works/pi-coding-agent'
-import { type Cause, Effect } from 'effect'
+import { NodeFileSystem } from '@effect/platform-node'
+import { Cause, Effect, FileSystem, ManagedRuntime } from 'effect'
 import { dual } from 'effect/Function'
+
+import { nodePath } from '@/shared/effect/node_path.js'
+
+const nodeFileSystem = ManagedRuntime.make(NodeFileSystem.layer).runSync(FileSystem.FileSystem)
+const unknownError = (cause: unknown): Cause.UnknownError =>
+  Cause.isUnknownError(cause) ? cause : new Cause.UnknownError(cause, cause instanceof Error ? cause.message : String(cause))
 
 export interface Truncation {
   content: string
@@ -70,11 +66,11 @@ export const writePrivateTempFileEffect: {
   2,
   (content: string, { prefix, filename = 'output.txt' }: { prefix: string; filename?: string }): Effect.Effect<string, Cause.UnknownError> =>
     Effect.gen(function* () {
-      const directory = yield* Effect.tryPromise(() => mkdtemp(join(tmpdir(), prefix)))
-      const path = join(directory, filename)
-      yield* Effect.tryPromise(() => writeFile(path, content, { encoding: 'utf8', mode: 0o600 }))
+      const directory = yield* nodeFileSystem.makeTempDirectory({ prefix })
+      const path = nodePath.join(directory, filename)
+      yield* nodeFileSystem.writeFileString(path, content, { mode: 0o600 })
       return path
-    })
+    }).pipe(Effect.mapError(unknownError))
 )
 
 interface BoundToolTextEffectOptions<Failure> extends TruncateOptions {

@@ -1,12 +1,14 @@
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- Synchronous atomic handoff (temp write, chmod, rename) read from a store whose API is synchronous by contract.
 import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir, userInfo } from 'node:os'
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- Lexical path math for the handoff location.
-import { join } from 'node:path'
 
 import { Function } from 'effect'
 
+import { nodePath } from '@/shared/effect/node_path.js'
+
 import { createObservableStore } from './store.js'
+
+const { join } = nodePath
 
 const TOKEN_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const quotaDir = () => join(process.env.PI_SUBAGENT_TEMP_DIR || tmpdir(), 'pi-codex-subagents', userInfo().username, 'quota')

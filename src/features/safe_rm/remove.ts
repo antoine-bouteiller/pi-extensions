@@ -2,15 +2,10 @@
  * Deliberately Node's `fs`: deletion policy is decided from `lstat` (a symlink must never be
  * mistaken for the directory it points at) and from dirent entry types while walking a tree.
  * Effect's `FileSystem.stat` follows symlinks and its `readDirectory` returns plain names, so
- * neither check survives the translation. `node:path` stays for the same reason `Path` cannot be
- * used here: the root predicates below are synchronous.
+ * neither check survives the translation.
  */
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- lstat/dirent semantics, see above.
-import { type Dirent, type Stats } from 'node:fs'
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- lstat/dirent semantics, see above.
 import { lstat, readdir, realpath, rm as remove } from 'node:fs/promises'
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- Lexical path math used by synchronous predicates.
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import {
   isBashToolResult,
@@ -27,6 +22,7 @@ import { type PlatformError } from 'effect/PlatformError'
 import { Type } from 'typebox'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
+import { nodePath } from '@/shared/effect/node_path.js'
 import { isEmptyString, isNotEmptyString } from '@/shared/utils/predicates.js'
 import { assertUnprotectedPathEffect, ProtectedPathError } from '@/shared/utils/protected_paths.js'
 
@@ -41,6 +37,8 @@ import {
   SymlinkEscapeError,
   TargetChangedError,
 } from './errors.js'
+
+const { dirname, isAbsolute, join, relative, resolve, sep } = nodePath
 
 const MAX_TARGETS = 50
 const ROUTED_RM_SENTINEL = ': # pi-safe-rm'
@@ -163,13 +161,12 @@ const rejectMetadataPath = (absolutePath: string): Effect.Effect<void, GitMetada
 const unknownError = (cause: unknown): Cause.UnknownError =>
   Cause.isUnknownError(cause) ? cause : new Cause.UnknownError(cause, cause instanceof Error ? cause.message : String(cause))
 
-const lstatEffect = (path: string): Effect.Effect<Stats, Cause.UnknownError> => Effect.tryPromise({ catch: unknownError, try: () => lstat(path) })
+const lstatEffect = (path: string) => Effect.tryPromise({ catch: unknownError, try: () => lstat(path) })
 
 const realpathEffect = (path: string): Effect.Effect<string, Cause.UnknownError> =>
   Effect.tryPromise({ catch: unknownError, try: () => realpath(path) })
 
-const readdirEffect = (path: string): Effect.Effect<Dirent[], Cause.UnknownError> =>
-  Effect.tryPromise({ catch: unknownError, try: () => readdir(path, { withFileTypes: true }) })
+const readdirEffect = (path: string) => Effect.tryPromise({ catch: unknownError, try: () => readdir(path, { withFileTypes: true }) })
 
 const removeEffect = (path: string, options: { force: boolean; recursive: boolean }): Effect.Effect<void, Cause.UnknownError> =>
   Effect.tryPromise({ catch: unknownError, try: () => remove(path, options) })

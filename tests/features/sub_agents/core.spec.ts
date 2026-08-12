@@ -2,8 +2,6 @@ import { mock } from 'bun:test'
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- Fixture setup and teardown must stay synchronously ordered against the child processes these specs start.
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { userInfo } from 'node:os'
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- Lexical path math builds fixture locations at synchronous test boundaries with no Path service in scope.
-import { dirname, join } from 'node:path'
 
 import { type Theme } from '@earendil-works/pi-coding-agent'
 import { visibleWidth } from '@earendil-works/pi-tui'
@@ -13,8 +11,10 @@ import { asError, asExtensionApi, asNarrowed, asResult, asTheme, asTui } from '@
 import { withProcessEnv } from '@tests/utils/process_env.js'
 import { Data, DateTime, Effect } from 'effect'
 
+import { nodePath } from '@/shared/effect/node_path.js'
 import { jsonText, parseJsonText, prettyJsonText } from '@/shared/utils/json.js'
 
+const { dirname, join } = nodePath
 const TEST_AGENT_DIR = '/tmp/pi-codex-subagents-tests'
 const FAKE_RPC_CHILD = join(import.meta.dir, 'fixtures', 'fake_rpc_child.js')
 const TEST_TEMP_DIR = join(TEST_AGENT_DIR, 'temp')

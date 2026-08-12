@@ -1,4 +1,4 @@
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- Spawns `caffeinate` detached and `unref()`s it so the helper never keeps Pi alive; Effect's scope-bound `ChildProcess` cannot express that lifetime.
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- The synchronous injectable process facade preserves immediate start/stop ordering; Effect spawning is asynchronous and needs lifecycle race handling.
 import { spawn } from 'node:child_process'
 
 interface CaffeinateProcess {

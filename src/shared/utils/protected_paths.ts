@@ -1,11 +1,11 @@
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- Lexical path math for the policy predicates below, which stay synchronous so callers can apply them outside Effect.
-import { basename, dirname, resolve } from 'node:path'
-
 import { Effect, Schema } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
 import { dual } from 'effect/Function'
 import { type PlatformError } from 'effect/PlatformError'
 
+import { nodePath } from '@/shared/effect/node_path.js'
+
+const { basename, dirname, resolve } = nodePath
 /** Filenames that look like dotenv files but are intended to be public examples. */
 const PUBLIC_ENV_FILENAMES = new Set(['.env.example', '.env.sample', '.env.template'])
 

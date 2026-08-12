@@ -1,6 +1,4 @@
 import { homedir } from 'node:os'
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- Lexical path math for the module-level config path, evaluated at import time and outside any Effect.
-import { join } from 'node:path'
 
 import { type AgentToolResult, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { Data, Deferred, Effect, Match, Option, Ref, Schema } from 'effect'
@@ -8,6 +6,7 @@ import { Type, type Static } from 'typebox'
 
 import { type AppServices } from '@/shared/effect/app_services.js'
 import { ToolFailure } from '@/shared/effect/errors.js'
+import { nodePath } from '@/shared/effect/node_path.js'
 import { createStatusChannel } from '@/shared/state/status_bar.js'
 import { jsonText } from '@/shared/utils/json.js'
 import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
@@ -22,6 +21,8 @@ import {
   type McpServerStatus as McpServerStatusValue,
   type McpToolAnnotations,
 } from './types.js'
+
+const { join } = nodePath
 
 const SEARCH_RESULT_LIMIT = 30
 const SEARCH_FETCH_LIMIT = SEARCH_RESULT_LIMIT + 1

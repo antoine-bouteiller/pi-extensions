@@ -1,4 +1,4 @@
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- Spawns detached child Pi process groups that must outlive the spawning fiber, plus `taskkill` on Windows; Effect's scope-bound `ChildProcess` expresses neither.
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- The manager depends on raw child stream events, persisted PID ownership, and imperative process-tree teardown.
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import {
@@ -24,14 +24,13 @@ import {
 } from 'node:fs'
 import { createServer, type Server, type Socket } from 'node:net'
 import { homedir, tmpdir, userInfo } from 'node:os'
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- Lexical path math for the module-level constants and the synchronous readers below.
-import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path'
 
 import { getAgentDir, SessionManager, type ThemeColor } from '@earendil-works/pi-coding-agent'
 import { Clock, Data, DateTime, Deferred, Effect, Exit, Fiber, Function, HashMap, Option, Ref, Scope } from 'effect'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
+import { nodePath } from '@/shared/effect/node_path.js'
 import { azureQuota, consumeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
 import { jsonText } from '@/shared/utils/json.js'
 import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
@@ -57,6 +56,8 @@ import {
   type ThinkingLevel,
 } from './profiles.js'
 import { consumeFirstMatchingMailboxEvent, RpcJsonlDecoder } from './rpc.js'
+
+const { dirname, isAbsolute, join, resolve: resolvePath } = nodePath
 
 export { consumeFirstMatchingMailboxEvent, RpcJsonlDecoder } from './rpc.js'
 

@@ -1,5 +1,5 @@
 import { type ExtensionAPI, type ExtensionContext, type ReadonlyFooterDataProvider } from '@earendil-works/pi-coding-agent'
-import { Effect, Function, Ref } from 'effect'
+import { Effect, Function, Path, Ref } from 'effect'
 
 import { type AppRuntime, AgentActivity, StatusBar } from '@/shared/effect/app_services.js'
 import { azureQuota, writeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
@@ -66,6 +66,7 @@ export const recordSubagentQuota: {
 
 export const makePanelController = ({ dependencies, pi, runtime }: PanelControllerOptions): PanelHandlers => {
   const agentActivity = runtime.runSync(AgentActivity)
+  const path = runtime.runSync(Path.Path)
   const statusBar = runtime.runSync(StatusBar)
   const stateRef = Ref.makeUnsafe<PanelState>(emptyPanelState())
 
@@ -205,7 +206,8 @@ export const makePanelController = ({ dependencies, pi, runtime }: PanelControll
                   statuses: collectStatuses(footerData),
                 },
                 theme,
-                width
+                width,
+                path
               )
             },
           }
@@ -225,10 +227,11 @@ export const makePanelController = ({ dependencies, pi, runtime }: PanelControll
             }
           },
           onError: () => undefined,
+          path,
         })
         requestRender = () => sidebar?.requestRender()
         sidebar.show()
-        ctx.ui.setTitle(`pi · ${formatDirectory(ctx.cwd)}`)
+        ctx.ui.setTitle(`pi · ${formatDirectory(ctx.cwd, path)}`)
       })
       yield* refreshModel(ctx)
       scheduleGitRefresh()

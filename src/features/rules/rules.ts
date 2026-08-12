@@ -1,7 +1,5 @@
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- Lexical path math for the synchronous rule-matching predicates.
-import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import {
   type BeforeAgentStartEvent,
@@ -12,7 +10,7 @@ import {
   type SessionTreeEvent,
   type ToolResultEvent,
 } from '@earendil-works/pi-coding-agent'
-import { Context, Deferred, Effect, Function, HashSet, Ref } from 'effect'
+import { Context, Deferred, Effect, Function, HashSet, Path, Ref } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
 import { type PlatformError } from 'effect/PlatformError'
 
@@ -59,9 +57,9 @@ export interface RulesEnvironment {
 
 const normalizePath = (path: string): string => path.replaceAll('\\', '/').replace(/^\.\//, '')
 
-const isWithin = (child: string, parent: string): boolean => {
-  const pathFromParent = relative(parent, child)
-  return isEmptyString(pathFromParent) || (!pathFromParent.startsWith(`..${sep}`) && pathFromParent !== '..' && !isAbsolute(pathFromParent))
+const isWithin = (child: string, parent: string, path: Path.Path): boolean => {
+  const pathFromParent = path.relative(parent, child)
+  return isEmptyString(pathFromParent) || (!pathFromParent.startsWith(`..${path.sep}`) && pathFromParent !== '..' && !path.isAbsolute(pathFromParent))
 }
 
 /**
@@ -73,9 +71,10 @@ const isWithin = (child: string, parent: string): boolean => {
 const orSkip = <Value>(effect: Effect.Effect<Value, PlatformError, FileSystem>): Effect.Effect<Value | undefined, never, FileSystem> =>
   effect.pipe(Effect.orElseSucceed(() => undefined))
 
-const discoverRuleFilesEffect = (root: string, containmentRoot?: string): Effect.Effect<RuleFile[], never, FileSystem> =>
+const discoverRuleFilesEffect = (root: string, containmentRoot?: string): Effect.Effect<RuleFile[], never, FileSystem | Path.Path> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem
+    const pathService = yield* Path.Path
     const files: RuleFile[] = []
     const visitedDirectories = new Set<string>()
 
@@ -84,11 +83,13 @@ const discoverRuleFilesEffect = (root: string, containmentRoot?: string): Effect
         const canonicalPath = yield* orSkip(fs.realPath(path))
         if (
           canonicalPath === undefined ||
-          (!isNullOrUndefined(containmentBoundary) && isNotEmptyString(containmentBoundary) && !isWithin(canonicalPath, containmentBoundary))
+          (!isNullOrUndefined(containmentBoundary) &&
+            isNotEmptyString(containmentBoundary) &&
+            !isWithin(canonicalPath, containmentBoundary, pathService))
         ) {
           return
         }
-        files.push({ path, realPath: canonicalPath, relativePath: normalizePath(relative(root, path)) })
+        files.push({ path, realPath: canonicalPath, relativePath: normalizePath(pathService.relative(root, path)) })
       })
 
     const walk = (directory: string, depth: number, containmentBoundary: string | undefined): Effect.Effect<void, never, FileSystem> =>
@@ -96,7 +97,9 @@ const discoverRuleFilesEffect = (root: string, containmentRoot?: string): Effect
         const canonicalDirectory = yield* orSkip(fs.realPath(directory))
         if (
           canonicalDirectory === undefined ||
-          (!isNullOrUndefined(containmentBoundary) && isNotEmptyString(containmentBoundary) && !isWithin(canonicalDirectory, containmentBoundary)) ||
+          (!isNullOrUndefined(containmentBoundary) &&
+            isNotEmptyString(containmentBoundary) &&
+            !isWithin(canonicalDirectory, containmentBoundary, pathService)) ||
           visitedDirectories.has(canonicalDirectory)
         ) {
           return
@@ -110,7 +113,7 @@ const discoverRuleFilesEffect = (root: string, containmentRoot?: string): Effect
         const sorted = names.toSorted((left, right) => left.localeCompare(right))
 
         for (const name of sorted) {
-          const path = join(directory, name)
+          const path = pathService.join(directory, name)
           const info = yield* orSkip(fs.stat(path))
           if (info === undefined) {
             continue
@@ -119,7 +122,7 @@ const discoverRuleFilesEffect = (root: string, containmentRoot?: string): Effect
             if (depth < MAX_SCAN_DEPTH && !EXCLUDED_DIRECTORIES.has(name)) {
               yield* walk(path, depth + 1, containmentBoundary)
             }
-          } else if (info.type === 'File' && RULE_EXTENSIONS.has(extname(name))) {
+          } else if (info.type === 'File' && RULE_EXTENSIONS.has(pathService.extname(name))) {
             yield* registerRuleFile(path, containmentBoundary)
           }
         }
@@ -133,7 +136,7 @@ const discoverRuleFilesEffect = (root: string, containmentRoot?: string): Effect
         const rootInfo = yield* fs.stat(canonicalRoot)
         if (
           rootInfo.type !== 'Directory' ||
-          (!isNullOrUndefined(canonicalBoundary) && isNotEmptyString(canonicalBoundary) && !isWithin(canonicalRoot, canonicalBoundary))
+          (!isNullOrUndefined(canonicalBoundary) && isNotEmptyString(canonicalBoundary) && !isWithin(canonicalRoot, canonicalBoundary, pathService))
         ) {
           return undefined
         }
@@ -365,7 +368,7 @@ export const parseRuleFrontmatter = (content: string): RuleFrontmatter => {
 
 const contentHashEffect = (content: string): Effect.Effect<string> => Effect.sync(() => createHash('sha256').update(content).digest('hex'))
 
-const readRulesEffect = (root: string, displayRoot: string, containmentRoot?: string): Effect.Effect<Rule[], never, FileSystem> =>
+const readRulesEffect = (root: string, displayRoot: string, containmentRoot?: string): Effect.Effect<Rule[], never, FileSystem | Path.Path> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem
     const files = yield* discoverRuleFilesEffect(root, containmentRoot)
@@ -391,17 +394,18 @@ const readRulesEffect = (root: string, displayRoot: string, containmentRoot?: st
     return rules
   })
 
-const discoverRulesEffect = (cwd: string, trusted: boolean, homeDirectory: string): Effect.Effect<Rule[], never, FileSystem> =>
+const discoverRulesEffect = (cwd: string, trusted: boolean, homeDirectory: string): Effect.Effect<Rule[], never, FileSystem | Path.Path> =>
   Effect.gen(function* () {
+    const path = yield* Path.Path
     const groups: Rule[][] = []
     // Global guidance comes first so the shared prompt budget cannot starve it;
     // Project guidance remains later in the prompt and can refine it.
     for (const directory of RULE_DIRECTORIES) {
-      groups.push(yield* readRulesEffect(join(homeDirectory, directory), `~/${directory}`))
+      groups.push(yield* readRulesEffect(path.join(homeDirectory, directory), `~/${directory}`))
     }
     if (trusted) {
       for (const directory of RULE_DIRECTORIES) {
-        groups.push(yield* readRulesEffect(join(cwd, directory), directory, cwd))
+        groups.push(yield* readRulesEffect(path.join(cwd, directory), directory, cwd))
       }
     }
 
@@ -480,12 +484,12 @@ const formatRulePointers = (rules: Rule[], maxChars: number): string => {
   return count === 0 ? '' : block
 }
 
-const matchesRule = (rule: Rule, targetPath: string, cwd: string): boolean => {
+const matchesRule = (rule: Rule, targetPath: string, cwd: string, path: Path.Path): boolean => {
   if (rule.alwaysApply || rule.paths.length === 0) {
     return true
   }
-  const absoluteTarget = isAbsolute(targetPath) ? targetPath : resolve(cwd, targetPath)
-  const projectRelative = normalizePath(relative(cwd, absoluteTarget))
+  const absoluteTarget = path.isAbsolute(targetPath) ? targetPath : path.resolve(cwd, targetPath)
+  const projectRelative = normalizePath(path.relative(cwd, absoluteTarget))
   const basename = projectRelative.split('/').at(-1) ?? projectRelative
   const pathBases = [projectRelative, basename]
   const positives = rule.paths.filter((pattern) => !pattern.startsWith('!'))
@@ -494,7 +498,7 @@ const matchesRule = (rule: Rule, targetPath: string, cwd: string): boolean => {
   try {
     const excluded = negatives.some((pattern) => {
       const glob = new Bun.Glob(normalizePath(pattern))
-      return pathBases.some((path) => glob.match(path))
+      return pathBases.some((candidate) => glob.match(candidate))
     })
     if (excluded) {
       return false
@@ -504,7 +508,7 @@ const matchesRule = (rule: Rule, targetPath: string, cwd: string): boolean => {
     }
     return positives.some((pattern) => {
       const glob = new Bun.Glob(normalizePath(pattern).replace(/^\//, ''))
-      return pathBases.some((path) => glob.match(path))
+      return pathBases.some((candidate) => glob.match(candidate))
     })
   } catch {
     return false
@@ -520,17 +524,17 @@ const stringProperty = (value: unknown, property: string): string | undefined =>
 
 /** Extract paths from Pi's file tools, including the local hashline compatibility tools. */
 export const extractToolPaths: {
-  (cwd: string): (event: ToolResultEvent) => string[]
-  (event: ToolResultEvent, cwd: string): string[]
-} = Function.dual(2, (event: ToolResultEvent, cwd: string): string[] => {
+  (cwd: string, pathService: Path.Path): (event: ToolResultEvent) => string[]
+  (event: ToolResultEvent, cwd: string, pathService: Path.Path): string[]
+} = Function.dual(3, (event: ToolResultEvent, cwd: string, pathService: Path.Path): string[] => {
   if (event.isError || !['read', 'edit', 'write', 'hashline_read', 'hashline_write'].includes(event.toolName)) {
     return []
   }
 
   const paths = new Set<string>()
-  const add = (path: string | undefined) => {
-    if (!isNullOrUndefined(path) && isNotEmptyString(path)) {
-      paths.add(isAbsolute(path) ? path : resolve(cwd, path))
+  const add = (candidate: string | undefined) => {
+    if (!isNullOrUndefined(candidate) && isNotEmptyString(candidate)) {
+      paths.add(pathService.isAbsolute(candidate) ? candidate : pathService.resolve(cwd, candidate))
     }
   }
   add(stringProperty(event.input, 'path'))
@@ -576,7 +580,7 @@ class RulesState extends Context.Service<RulesState, RulesStateShape>()('pi-exte
  * and rehashes — editing a rule file makes it immediately eligible for reinjection under its new
  * hash, with no session lifecycle event required.
  */
-const refresh = (cwd: string, trusted: boolean, homeDirectory: string): Effect.Effect<Rule[], never, RulesState | FileSystem> =>
+const refresh = (cwd: string, trusted: boolean, homeDirectory: string): Effect.Effect<Rule[], never, RulesState | FileSystem | Path.Path> =>
   Effect.gen(function* () {
     const state = yield* RulesState
     const key = `${cwd}\0${trusted}`
@@ -627,11 +631,11 @@ export interface RulesHandlers {
   readonly beforeAgentStart: (
     event: BeforeAgentStartEvent,
     ctx: ExtensionContext
-  ) => Effect.Effect<BeforeAgentStartEventResult | undefined, never, FileSystem>
+  ) => Effect.Effect<BeforeAgentStartEventResult | undefined, never, FileSystem | Path.Path>
   readonly toolResult: (
     event: ToolResultEvent,
     ctx: ExtensionContext
-  ) => Effect.Effect<{ content: ToolResultEvent['content'] } | undefined, never, FileSystem>
+  ) => Effect.Effect<{ content: ToolResultEvent['content'] } | undefined, never, FileSystem | Path.Path>
 }
 
 export const makeRulesHandlers = (environment: RulesEnvironment): RulesHandlers => {
@@ -644,13 +648,13 @@ export const makeRulesHandlers = (environment: RulesEnvironment): RulesHandlers 
     })
   )
   const withRulesState = <Success, Failure>(
-    effect: Effect.Effect<Success, Failure, RulesState | FileSystem>
-  ): Effect.Effect<Success, Failure, FileSystem> => effect.pipe(Effect.provideService(RulesState, rulesState))
+    effect: Effect.Effect<Success, Failure, RulesState | FileSystem | Path.Path>
+  ): Effect.Effect<Success, Failure, FileSystem | Path.Path> => effect.pipe(Effect.provideService(RulesState, rulesState))
 
   const beforeAgentStart = (
     event: BeforeAgentStartEvent,
     ctx: ExtensionContext
-  ): Effect.Effect<BeforeAgentStartEventResult | undefined, never, RulesState | FileSystem> =>
+  ): Effect.Effect<BeforeAgentStartEventResult | undefined, never, RulesState | FileSystem | Path.Path> =>
     Effect.gen(function* () {
       const rules = yield* refresh(ctx.cwd, ctx.isProjectTrusted(), environment.homeDirectory)
       const staticRules = rules.filter((rule) => rule.alwaysApply || rule.paths.length === 0)
@@ -664,16 +668,17 @@ export const makeRulesHandlers = (environment: RulesEnvironment): RulesHandlers 
   const toolResult = (
     event: ToolResultEvent,
     ctx: ExtensionContext
-  ): Effect.Effect<{ content: ToolResultEvent['content'] } | undefined, never, RulesState | FileSystem> =>
+  ): Effect.Effect<{ content: ToolResultEvent['content'] } | undefined, never, RulesState | FileSystem | Path.Path> =>
     Effect.gen(function* () {
-      const targetPaths = extractToolPaths(event, ctx.cwd)
+      const path = yield* Path.Path
+      const targetPaths = extractToolPaths(event, ctx.cwd, path)
       if (targetPaths.length === 0) {
         return undefined
       }
 
       const state = yield* RulesState
       const rules = yield* refresh(ctx.cwd, ctx.isProjectTrusted(), environment.homeDirectory)
-      const displayTarget = normalizePath(relative(ctx.cwd, targetPaths[0] ?? ctx.cwd))
+      const displayTarget = normalizePath(path.relative(ctx.cwd, targetPaths[0] ?? ctx.cwd))
       const formatted = yield* Ref.modify(state.dynamicInjections, (current) => {
         const pendingTargetsByRule = new Map<Rule, string[]>()
         for (const rule of rules) {
@@ -681,7 +686,7 @@ export const makeRulesHandlers = (environment: RulesEnvironment): RulesHandlers 
             continue
           }
           const pendingTargets = targetPaths.filter(
-            (target) => matchesRule(rule, target, ctx.cwd) && !HashSet.has(current, `${target}\0${rule.realPath}\0${rule.contentHash}`)
+            (target) => matchesRule(rule, target, ctx.cwd, path) && !HashSet.has(current, `${target}\0${rule.realPath}\0${rule.contentHash}`)
           )
           if (pendingTargets.length > 0) {
             pendingTargetsByRule.set(rule, pendingTargets)
@@ -702,7 +707,7 @@ export const makeRulesHandlers = (environment: RulesEnvironment): RulesHandlers 
 
   return {
     beforeAgentStart: (event, ctx) => withRulesState(beforeAgentStart(event, ctx)),
-    clearInjections: (event, ctx) => withRulesState(clearDynamicInjections(event, ctx)),
+    clearInjections: (event, ctx) => clearDynamicInjections(event, ctx).pipe(Effect.provideService(RulesState, rulesState)),
     toolResult: (event, ctx) => withRulesState(toolResult(event, ctx)),
   }
 }

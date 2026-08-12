@@ -1,9 +1,7 @@
 import { homedir, tmpdir } from 'node:os'
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- Lexical path math for the synchronous skill-name resolution below.
-import { extname, join, relative, sep } from 'node:path'
 
 import { type ExtensionContext, type SessionShutdownEvent } from '@earendil-works/pi-coding-agent'
-import { Context, Effect, Exit, Option, Ref, Scope, Semaphore } from 'effect'
+import { Context, Effect, Exit, Option, Path, Ref, Scope, Semaphore } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
 import { type PlatformError } from 'effect/PlatformError'
 
@@ -49,9 +47,10 @@ const compareText = (left: string, right: string): number => {
  * broken symlink, or a permission error just prunes that branch, matching the original try/catch
  * skip-and-continue behaviour. Cycle detection dedupes on the canonical directory path.
  */
-const walkCommandDirectory = (root: string, directory: string, visited: Set<string>): Effect.Effect<MarkdownFile[], never, FileSystem> =>
+const walkCommandDirectory = (root: string, directory: string, visited: Set<string>): Effect.Effect<MarkdownFile[], never, FileSystem | Path.Path> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem
+    const path = yield* Path.Path
     const canonicalDirectory = yield* Effect.option(fs.realPath(directory))
     if (Option.isNone(canonicalDirectory) || visited.has(canonicalDirectory.value)) {
       return []
@@ -65,7 +64,7 @@ const walkCommandDirectory = (root: string, directory: string, visited: Set<stri
 
     const files: MarkdownFile[] = []
     for (const name of entryNames.value.toSorted((left, right) => left.localeCompare(right))) {
-      const entryPath = join(directory, name)
+      const entryPath = path.join(directory, name)
       /*
        * `stat` (not `lstat`) already follows symlinks to their real type, so a symlinked file or
        * directory needs no separate branch; a broken symlink simply fails here and is skipped.
@@ -76,14 +75,15 @@ const walkCommandDirectory = (root: string, directory: string, visited: Set<stri
       }
       if (info.value.type === 'Directory') {
         files.push(...(yield* walkCommandDirectory(root, entryPath, visited)))
-      } else if (info.value.type === 'File' && extname(name) === '.md') {
-        files.push({ path: entryPath, relativePath: relative(root, entryPath).split(sep).join('/') })
+      } else if (info.value.type === 'File' && path.extname(name) === '.md') {
+        files.push({ path: entryPath, relativePath: path.relative(root, entryPath).split(path.sep).join('/') })
       }
     }
     return files
   })
 
-const discoverMarkdownFiles = (root: string): Effect.Effect<MarkdownFile[], never, FileSystem> => walkCommandDirectory(root, root, new Set())
+const discoverMarkdownFiles = (root: string): Effect.Effect<MarkdownFile[], never, FileSystem | Path.Path> =>
+  walkCommandDirectory(root, root, new Set())
 
 const unquote = (value: string): string => value.replaceAll(/^["']|["']$/g, '')
 
@@ -101,10 +101,10 @@ export const parseCommandFrontmatter = (content: string): CommandFrontmatter => 
   return { body, description: description.slice(0, 1024) }
 }
 
-const commandLogicalName = (relativePath: string): string => relativePath.slice(0, -extname(relativePath).length)
+const commandLogicalName = (relativePath: string, path: Path.Path): string => relativePath.slice(0, -path.extname(relativePath).length)
 
-const commandSkillName = (relativePath: string): string => {
-  const normalized = commandLogicalName(relativePath)
+const commandSkillName = (relativePath: string, path: Path.Path): string => {
+  const normalized = commandLogicalName(relativePath, path)
     .toLowerCase()
     .replaceAll(/[^a-z0-9]+/g, '-')
     .replaceAll(/^-+|-+$/g, '')
@@ -123,10 +123,10 @@ const addNumericSuffix = (name: string, suffix: number): string => {
   return `${name.slice(0, 64 - ending.length).replaceAll(/-+$/g, '')}${ending}`
 }
 
-const resolveCommandNames = (commandsByLogicalName: Map<string, MarkdownFile>): NamedCommand[] => {
+const resolveCommandNames = (commandsByLogicalName: Map<string, MarkdownFile>, path: Path.Path): NamedCommand[] => {
   const commands = [...commandsByLogicalName]
     .map(([logicalName, command]) => ({
-      baseName: commandSkillName(command.relativePath),
+      baseName: commandSkillName(command.relativePath, path),
       command,
       logicalName,
     }))
@@ -162,20 +162,21 @@ const buildCommandMap = (
   event: ResourcesDiscoverEvent,
   ctx: ExtensionContext,
   environment: ClaudeCodeEnvironment
-): Effect.Effect<Map<string, MarkdownFile>, never, FileSystem> =>
+): Effect.Effect<Map<string, MarkdownFile>, never, FileSystem | Path.Path> =>
   Effect.gen(function* () {
+    const path = yield* Path.Path
     /*
      * An identical relative command path denotes the same Claude command, so the project
      * definition intentionally replaces the user definition. Distinct paths that happen to
      * normalize to the same skill name are retained and disambiguated in resolveCommandNames.
      */
     const commandsByLogicalName = new Map<string, MarkdownFile>()
-    for (const command of yield* discoverMarkdownFiles(join(environment.homeDirectory, '.claude', 'commands'))) {
-      commandsByLogicalName.set(commandLogicalName(command.relativePath), command)
+    for (const command of yield* discoverMarkdownFiles(path.join(environment.homeDirectory, '.claude', 'commands'))) {
+      commandsByLogicalName.set(commandLogicalName(command.relativePath, path), command)
     }
     if (ctx.isProjectTrusted()) {
-      for (const command of yield* discoverMarkdownFiles(join(event.cwd, '.claude', 'commands'))) {
-        commandsByLogicalName.set(commandLogicalName(command.relativePath), command)
+      for (const command of yield* discoverMarkdownFiles(path.join(event.cwd, '.claude', 'commands'))) {
+        commandsByLogicalName.set(commandLogicalName(command.relativePath, path), command)
       }
     }
     return commandsByLogicalName
@@ -184,17 +185,18 @@ const buildCommandMap = (
 const writeCommandSkills = (
   skillDirectory: string,
   commandsByLogicalName: Map<string, MarkdownFile>
-): Effect.Effect<void, PlatformError, FileSystem> =>
+): Effect.Effect<void, PlatformError, FileSystem | Path.Path> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem
+    const path = yield* Path.Path
     yield* Effect.forEach(
-      resolveCommandNames(commandsByLogicalName),
+      resolveCommandNames(commandsByLogicalName, path),
       ({ command, name }) =>
         Effect.gen(function* () {
-          const destination = join(skillDirectory, name)
+          const destination = path.join(skillDirectory, name)
           yield* fs.makeDirectory(destination, { recursive: true })
           const parsed = parseCommandFrontmatter(yield* fs.readFileString(command.path))
-          yield* fs.writeFileString(join(destination, 'SKILL.md'), formatCommandSkill(name, parsed))
+          yield* fs.writeFileString(path.join(destination, 'SKILL.md'), formatCommandSkill(name, parsed))
         }),
       { concurrency: 'unbounded' }
     )
@@ -231,7 +233,7 @@ const discoverResources = (
   event: ResourcesDiscoverEvent,
   ctx: ExtensionContext,
   environment: ClaudeCodeEnvironment
-): Effect.Effect<ResourcesDiscoverResult | undefined, PlatformError, FileSystem | DiscoveryState> =>
+): Effect.Effect<ResourcesDiscoverResult | undefined, PlatformError, FileSystem | Path.Path | DiscoveryState> =>
   Effect.gen(function* () {
     const state = yield* DiscoveryState
     return yield* state.mutex.withPermits(1)(
@@ -271,7 +273,7 @@ export interface DiscoveryHandlers {
   readonly discover: (
     event: ResourcesDiscoverEvent,
     ctx: ExtensionContext
-  ) => Effect.Effect<ResourcesDiscoverResult | undefined, PlatformError, FileSystem>
+  ) => Effect.Effect<ResourcesDiscoverResult | undefined, PlatformError, FileSystem | Path.Path>
   readonly shutdown: (event: SessionShutdownEvent, ctx: ExtensionContext) => Effect.Effect<void>
 }
 

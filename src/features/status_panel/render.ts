@@ -1,9 +1,8 @@
 import { homedir } from 'node:os'
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- Lexical path math inside a synchronous TUI formatter.
-import { relative } from 'node:path'
 
 import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui'
 import { Function } from 'effect'
+import { type Path } from 'effect/Path'
 
 import { isEmptyString } from '@/shared/utils/predicates.js'
 
@@ -35,16 +34,19 @@ export interface ProgressLineOptions {
 export const progressLine = ({ label, percent, detail, width = 10 }: ProgressLineOptions) =>
   `${label}: ${progressBar(percent, width)} ${percent.toFixed(1)}%${isEmptyString(detail) ? '' : `  ${detail}`}`
 
-export const formatDirectory = (cwd: string) => {
+export const formatDirectory: {
+  (path: Path): (cwd: string) => string
+  (cwd: string, path: Path): string
+} = Function.dual(2, (cwd: string, path: Path): string => {
   const home = homedir()
   if (cwd === home) {
     return '~'
   }
   if (cwd.startsWith(`${home}/`)) {
-    return `~/${relative(home, cwd)}`
+    return `~/${path.relative(home, cwd)}`
   }
   return cwd
-}
+})
 
 export const columns: {
   (right: string, width: number): (left: string) => string
