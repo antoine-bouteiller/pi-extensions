@@ -84,13 +84,15 @@ const generatedSkills = (skillDirectory: string) =>
 const pathExists = (path: string) => stat(path).pipe(Effect.match({ onFailure: () => false, onSuccess: () => true }))
 
 describe('Claude Code compatibility', () => {
-  it.effect('converts command metadata and derives a fallback description', () => {
-    expect(parseCommandFrontmatter("---\ndescription: 'Review this diff'\n---\nDo it")).toEqual({
-      body: 'Do it',
-      description: 'Review this diff',
+  it.effect('converts command metadata and derives a fallback description', () =>
+    Effect.sync(() => {
+      expect(parseCommandFrontmatter("---\ndescription: 'Review this diff'\n---\nDo it")).toEqual({
+        body: 'Do it',
+        description: 'Review this diff',
+      })
+      expect(parseCommandFrontmatter('# Deploy safely\n\nRun checks.').description).toBe('Deploy safely')
     })
-    expect(parseCommandFrontmatter('# Deploy safely\n\nRun checks.').description).toBe('Deploy safely')
-  })
+  )
 
   it.effect('discovers project commands only for trusted projects', () =>
     Effect.gen(function* () {

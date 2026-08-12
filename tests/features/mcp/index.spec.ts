@@ -193,323 +193,371 @@ const authContext = (notifications: { message: string; level: string }[], select
 const callsFor = (harness: ReturnType<typeof createHarness>, method: string): RecordedCall[] => harness.calls.filter((call) => call.method === method)
 
 describe('MCP gateway policy selection', () => {
-  it.effect('enables read-only policy only for PI_SUBAGENT_READONLY=1', () => {
-    expect(mcpPolicyFromEnvironment({ PI_SUBAGENT_READONLY: '1' })).toBe(readonlyMcpPolicy)
-    expect(mcpPolicyFromEnvironment({ PI_SUBAGENT_READONLY: '0' })).toBe(unrestrictedMcpPolicy)
-    expect(mcpPolicyFromEnvironment({})).toBe(unrestrictedMcpPolicy)
-    expect(mcpPolicyFromEnvironment({ PI_SUBAGENT_READONLY: 'true' })).toBe(unrestrictedMcpPolicy)
-  })
+  it.effect('enables read-only policy only for PI_SUBAGENT_READONLY=1', () =>
+    Effect.sync(() => {
+      expect(mcpPolicyFromEnvironment({ PI_SUBAGENT_READONLY: '1' })).toBe(readonlyMcpPolicy)
+      expect(mcpPolicyFromEnvironment({ PI_SUBAGENT_READONLY: '0' })).toBe(unrestrictedMcpPolicy)
+      expect(mcpPolicyFromEnvironment({})).toBe(unrestrictedMcpPolicy)
+      expect(mcpPolicyFromEnvironment({ PI_SUBAGENT_READONLY: 'true' })).toBe(unrestrictedMcpPolicy)
+    })
+  )
 
-  it.effect('allows annotated safe reads and exact DBX exceptions only', () => {
-    const request = {
-      annotations: { destructiveHint: false, readOnlyHint: true },
-      exposedName: 'linear_get_issue',
-      operation: 'call' as const,
-      remoteName: 'get_issue',
-      server: 'linear',
-    }
-    expect(readonlyMcpPolicy.allows(request)).toBeTrue()
-    expect(
-      readonlyMcpPolicy.allows({
-        ...request,
-        annotations: { destructiveHint: true, readOnlyHint: true },
-      })
-    ).toBeFalse()
-    expect(
-      readonlyMcpPolicy.allows({
-        ...request,
-        annotations: {},
-        remoteName: 'dbx_list_tables',
-        server: 'dbx',
-      })
-    ).toBeTrue()
-    expect(
-      readonlyMcpPolicy.allows({
-        ...request,
-        annotations: {},
-        exposedName: 'dbx_list_tables',
-        remoteName: 'list_tables',
-        server: 'dbx',
-      })
-    ).toBeFalse()
-    expect(
-      readonlyMcpPolicy.allows({
-        ...request,
-        annotations: {},
-        remoteName: 'dbx_execute_sql',
-        server: 'dbx',
-      })
-    ).toBeFalse()
-    expect(
-      readonlyMcpPolicy.allows({
-        ...request,
-        annotations: { readOnlyHint: false },
-        remoteName: 'dbx_list_tables',
-        server: 'dbx',
-      })
-    ).toBeFalse()
-  })
+  it.effect('allows annotated safe reads and exact DBX exceptions only', () =>
+    Effect.sync(() => {
+      const request = {
+        annotations: { destructiveHint: false, readOnlyHint: true },
+        exposedName: 'linear_get_issue',
+        operation: 'call' as const,
+        remoteName: 'get_issue',
+        server: 'linear',
+      }
+      expect(readonlyMcpPolicy.allows(request)).toBeTrue()
+      expect(
+        readonlyMcpPolicy.allows({
+          ...request,
+          annotations: { destructiveHint: true, readOnlyHint: true },
+        })
+      ).toBeFalse()
+      expect(
+        readonlyMcpPolicy.allows({
+          ...request,
+          annotations: {},
+          remoteName: 'dbx_list_tables',
+          server: 'dbx',
+        })
+      ).toBeTrue()
+      expect(
+        readonlyMcpPolicy.allows({
+          ...request,
+          annotations: {},
+          exposedName: 'dbx_list_tables',
+          remoteName: 'list_tables',
+          server: 'dbx',
+        })
+      ).toBeFalse()
+      expect(
+        readonlyMcpPolicy.allows({
+          ...request,
+          annotations: {},
+          remoteName: 'dbx_execute_sql',
+          server: 'dbx',
+        })
+      ).toBeFalse()
+      expect(
+        readonlyMcpPolicy.allows({
+          ...request,
+          annotations: { readOnlyHint: false },
+          remoteName: 'dbx_list_tables',
+          server: 'dbx',
+        })
+      ).toBeFalse()
+    })
+  )
 })
 
 describe('MCP gateway registration and lifecycle', () => {
-  it.effect('registers one gateway tool and the MCP auth command immediately', () => {
-    const harness = createHarness()
+  it.effect('registers one gateway tool and the MCP auth command immediately', () =>
+    Effect.sync(() => {
+      const harness = createHarness()
 
-    expect([...harness.fixture.state.tools.keys()]).toEqual(['mcp'])
-    expect([...harness.fixture.state.commands.keys()]).toEqual(['mcp-auth'])
-    expect(harness.fixture.state.handlers.has('session_start')).toBeTrue()
-    expect(harness.fixture.state.handlers.has('session_shutdown')).toBeTrue()
-    expect(harness.loadCount()).toBe(0)
-    expect(harness.calls).toEqual([])
-  })
-
-  it.effect('session_start publishes every server and eagerly connects disconnected ones', async () => {
-    const statuses: { key: string; value: unknown }[] = []
-    const harness = createHarness()
-    await harness.fixture.emit('session_start', {}, context(statuses))
-
-    expect(harness.loadCount()).toBe(1)
-    expect(harness.callbacks()).toBeDefined()
-    expect(callsFor(harness, 'connect').map((call) => call.values[0])).toEqual(['zeta'])
-    expect(statuses).toEqual([{ key: 'mcp', value: 'MCP alpha: connected\nMCP zeta: disconnected' }])
-    expect([...harness.fixture.state.tools.keys()]).toEqual(['mcp'])
-  })
-
-  it.effect('passes its configured policy into each process-local manager', async () => {
-    const harness = createHarness()
-    let receivedPolicy: unknown
-    harness.dependencies.policy = readonlyMcpPolicy
-    harness.dependencies.createManager = (_config, { policy }) => {
-      receivedPolicy = policy
-      return harness.manager
-    }
-
-    await harness.start()
-    expect(receivedPolicy).toBe(readonlyMcpPolicy)
-  })
-
-  it.effect('manager status callbacks show every server status', async () => {
-    const statuses: { key: string; value: unknown }[] = []
-    const harness = createHarness()
-    await harness.fixture.emit('session_start', {}, context(statuses))
-
-    harness.callbacks()?.onStatusChange([
-      { name: 'broken', status: 'invalid-config' },
-      { name: 'one', status: 'connected' },
-      { name: 'two', status: 'needs-auth' },
-    ])
-    harness.callbacks()?.onStatusChange(0)
-
-    expect(statuses).toEqual([
-      { key: 'mcp', value: 'MCP alpha: connected\nMCP zeta: disconnected' },
-      { key: 'mcp', value: 'MCP broken: invalid config\nMCP one: connected\nMCP two: auth needed' },
-      { key: 'mcp', value: undefined },
-    ])
-  })
-
-  it.effect('empty input is metadata-only status with sorted servers and config path', async () => {
-    const harness = createHarness()
-    await harness.start()
-
-    const result = await harness.execute({})
-
-    expect(callsFor(harness, 'status')).toHaveLength(2)
-    expect(callsFor(harness, 'connect')).toHaveLength(1)
-    expect(result.content[0]).toEqual({
-      text: expect.stringContaining('MCP config: /test-home/.config/mcp/mcp.json'),
-      type: 'text',
+      expect([...harness.fixture.state.tools.keys()]).toEqual(['mcp'])
+      expect([...harness.fixture.state.commands.keys()]).toEqual(['mcp-auth'])
+      expect(harness.fixture.state.handlers.has('session_start')).toBeTrue()
+      expect(harness.fixture.state.handlers.has('session_shutdown')).toBeTrue()
+      expect(harness.loadCount()).toBe(0)
+      expect(harness.calls).toEqual([])
     })
-    const text = result.content[0]?.type === 'text' ? result.content[0].text : ''
-    expect(text.indexOf('alpha: connected')).toBeLessThan(text.indexOf('zeta: disconnected'))
-  })
+  )
 
-  it.effect('metadata status renders invalid config without an error', async () => {
-    const harness = createHarness({
-      status: () => [{ name: 'broken', status: 'invalid-config' }],
+  it.effect('session_start publishes every server and eagerly connects disconnected ones', () =>
+    Effect.gen(function* () {
+      const statuses: { key: string; value: unknown }[] = []
+      const harness = createHarness()
+      yield* Effect.promise(() => harness.fixture.emit('session_start', {}, context(statuses)))
+
+      expect(harness.loadCount()).toBe(1)
+      expect(harness.callbacks()).toBeDefined()
+      expect(callsFor(harness, 'connect').map((call) => call.values[0])).toEqual(['zeta'])
+      expect(statuses).toEqual([{ key: 'mcp', value: 'MCP alpha: connected\nMCP zeta: disconnected' }])
+      expect([...harness.fixture.state.tools.keys()]).toEqual(['mcp'])
     })
-    await harness.start()
+  )
 
-    const result = await harness.execute({})
+  it.effect('passes its configured policy into each process-local manager', () =>
+    Effect.gen(function* () {
+      const harness = createHarness()
+      let receivedPolicy: unknown
+      harness.dependencies.policy = readonlyMcpPolicy
+      harness.dependencies.createManager = (_config, { policy }) => {
+        receivedPolicy = policy
+        return harness.manager
+      }
 
-    expect(result.content[0]).toEqual({ text: expect.stringContaining('- broken: invalid config'), type: 'text' })
-  })
-
-  it.effect('tool calls accept object args and preserve manager results', async () => {
-    const harness = createHarness()
-    await harness.start()
-    const controller = new AbortController()
-
-    const result = await harness.execute({ args: { path: 'README.md' }, server: 'fff', tool: 'fff_read' }, controller.signal)
-
-    expect(result).toBe(harness.callResult)
-    expect(callsFor(harness, 'call')[0]?.values).toEqual(['fff_read', { path: 'README.md' }, { server: 'fff', signal: controller.signal }])
-  })
-
-  it.effect('tool calls parse JSON object args and default omitted args', async () => {
-    const harness = createHarness()
-    await harness.start()
-
-    await harness.execute({ args: '{"count":2}', tool: 'one' })
-    await harness.execute({ tool: 'two' })
-
-    expect(callsFor(harness, 'call').map((call) => call.values[1])).toEqual([{ count: 2 }, {}])
-  })
-
-  it.effect('connect delegates the requested server and signal', async () => {
-    const harness = createHarness()
-    await harness.start()
-    const controller = new AbortController()
-
-    const result = await harness.execute({ connect: 'linear' }, controller.signal)
-
-    expect(callsFor(harness, 'connect').at(-1)?.values).toEqual(['linear', { signal: controller.signal }])
-    expect(result.content[0]).toEqual({
-      text: expect.stringContaining('mcp({ server: "linear" })'),
-      type: 'text',
+      yield* Effect.promise(() => harness.start())
+      expect(receivedPolicy).toBe(readonlyMcpPolicy)
     })
-  })
+  )
 
-  it.effect('describe delegates resolution scope and renders call syntax', async () => {
-    const harness = createHarness()
-    await harness.start()
-    const controller = new AbortController()
+  it.effect('manager status callbacks show every server status', () =>
+    Effect.gen(function* () {
+      const statuses: { key: string; value: unknown }[] = []
+      const harness = createHarness()
+      yield* Effect.promise(() => harness.fixture.emit('session_start', {}, context(statuses)))
 
-    const result = await harness.execute({ describe: 'find_issue', server: 'linear' }, controller.signal)
-
-    expect(callsFor(harness, 'describe')[0]?.values).toEqual(['find_issue', { server: 'linear', signal: controller.signal }])
-    expect(result.content[0]).toEqual({
-      text: expect.stringContaining('mcp({ tool: "find_issue", args: { ... } })'),
-      type: 'text',
-    })
-    expect(result.content[0]).toEqual({
-      text: expect.stringContaining('[read-only, non-destructive]'),
-      type: 'text',
-    })
-    expect(result.details).toEqual(
-      expect.objectContaining({
-        annotations: { destructiveHint: false, readOnlyHint: true },
-      })
-    )
-  })
-
-  it.effect('search delegates regex, scope, signal, and cap then sorts results', async () => {
-    const harness = createHarness()
-    await harness.start()
-    const controller = new AbortController()
-
-    const result = await harness.execute({ regex: true, search: 'issue.*', server: 'linear' }, controller.signal)
-
-    expect(callsFor(harness, 'search')[0]?.values).toEqual(['issue.*', { limit: 31, regex: true, server: 'linear', signal: controller.signal }])
-    const text = result.content[0]?.type === 'text' ? result.content[0].text : ''
-    expect(text.indexOf('a_tool')).toBeLessThan(text.indexOf('z_tool'))
-  })
-
-  it.effect('server-only input lists that server and sorts tools', async () => {
-    const harness = createHarness()
-    await harness.start()
-    const controller = new AbortController()
-
-    const result = await harness.execute({ server: 'fff' }, controller.signal)
-
-    expect(callsFor(harness, 'list')[0]?.values).toEqual(['fff', { signal: controller.signal }])
-    const text = result.content[0]?.type === 'text' ? result.content[0].text : ''
-    expect(text.indexOf('fff_a')).toBeLessThan(text.indexOf('fff_z'))
-  })
-
-  it.effect('mcp-auth authenticates an explicit server and infers the sole OAuth server', async () => {
-    const harness = createHarness()
-    const notifications: { message: string; level: string }[] = []
-    await harness.start()
-
-    await harness.invokeCommand(' slack ', authContext(notifications))
-    await harness.invokeCommand('', authContext(notifications))
-
-    expect(callsFor(harness, 'authenticate').map((call) => call.values)).toEqual([
-      ['slack', undefined],
-      ['slack', undefined],
-    ])
-    expect(notifications).toEqual([
-      { level: 'info', message: 'Authenticated and connected MCP server slack.' },
-      { level: 'info', message: 'Authenticated and connected MCP server slack.' },
-    ])
-  })
-
-  it.effect('rejects ambiguous selectors with a tagged failure before delegation', async () => {
-    const harness = createHarness()
-    await harness.start()
-
-    const rejection = await harness.execute({ search: 'two', tool: 'one' }).then(
-      () => undefined,
-      (error: unknown) => error
-    )
-
-    expect(rejection).toMatchObject({ _tag: 'ToolFailure', message: expect.stringContaining('Ambiguous mcp request') })
-    expect(harness.execute({ connect: 'one', server: 'two' })).rejects.toThrow('connect already names the server')
-    expect(harness.execute({ args: {} })).rejects.toThrow('args can only be used with tool')
-    expect(harness.execute({ regex: true })).rejects.toThrow('regex can only be used with search')
-    expect(callsFor(harness, 'call')).toHaveLength(0)
-    expect(callsFor(harness, 'search')).toHaveLength(0)
-  })
-
-  it.effect('rejects malformed, scalar, array, and null string args', async () => {
-    const harness = createHarness()
-    await harness.start()
-
-    expect(harness.execute({ args: '{', tool: 'one' })).rejects.toThrow('valid JSON')
-    for (const args of ['null', '[]', '42', '"value"', JSON.parse('null') as unknown, [], 42]) {
-      expect(harness.execute({ args, tool: 'one' })).rejects.toThrow('must be a JSON object')
-    }
-    expect(callsFor(harness, 'call')).toHaveLength(0)
-  })
-
-  it.effect('tags manager failures and preserves their cause', async () => {
-    const cause = new Error('manager exploded')
-    const harness = createHarness({ call: () => Effect.fail(cause) })
-    await harness.start()
-
-    const rejection = await harness.execute({ tool: 'one' }).then(
-      () => undefined,
-      (error: unknown) => error
-    )
-
-    expect(rejection).toMatchObject({ _tag: 'McpOperationError', cause, message: 'manager exploded' })
-  })
-
-  it.effect('session_shutdown awaits in-flight initialization cleanup and clears UI', async () => {
-    const creation = deferred<McpGatewayManager>()
-    const closeStarted = deferred<void>()
-    const permitClose = deferred<void>()
-    const harness = createHarness({
-      close: Effect.promise(async () => {
-        closeStarted.resolve()
-        await permitClose.promise
-      }),
-    })
-    harness.dependencies.createManager = async (_config, managerContext) => {
+      harness.callbacks()?.onStatusChange([
+        { name: 'broken', status: 'invalid-config' },
+        { name: 'one', status: 'connected' },
+        { name: 'two', status: 'needs-auth' },
+      ])
       harness.callbacks()?.onStatusChange(0)
-      void managerContext
-      return creation.promise
-    }
-    // Re-register against the modified dependency object in a fresh fixture.
-    const fixture = createFakePi()
-    createMcpExtension(harness.dependencies, runtime)(fixture.pi)
-    const statuses: { key: string; value: unknown }[] = []
 
-    const starting = fixture.emit('session_start', {}, context(statuses))
-    await Promise.resolve()
-    const shuttingDown = fixture.emit('session_shutdown', {}, context(statuses))
-    creation.resolve(harness.manager)
-    await closeStarted.promise
-
-    let shutdownFinished = false
-    void shuttingDown.then(() => {
-      shutdownFinished = true
+      expect(statuses).toEqual([
+        { key: 'mcp', value: 'MCP alpha: connected\nMCP zeta: disconnected' },
+        { key: 'mcp', value: 'MCP broken: invalid config\nMCP one: connected\nMCP two: auth needed' },
+        { key: 'mcp', value: undefined },
+      ])
     })
-    await Promise.resolve()
-    expect(shutdownFinished).toBeFalse()
+  )
 
-    permitClose.resolve()
-    await Promise.all([starting, shuttingDown])
-    expect(statuses.at(-1)).toEqual({ key: 'mcp', value: undefined })
-  })
+  it.effect('empty input is metadata-only status with sorted servers and config path', () =>
+    Effect.gen(function* () {
+      const harness = createHarness()
+      yield* Effect.promise(() => harness.start())
+
+      const result = yield* Effect.promise(() => harness.execute({}))
+
+      expect(callsFor(harness, 'status')).toHaveLength(2)
+      expect(callsFor(harness, 'connect')).toHaveLength(1)
+      expect(result.content[0]).toEqual({
+        text: expect.stringContaining('MCP config: /test-home/.config/mcp/mcp.json'),
+        type: 'text',
+      })
+      const text = result.content[0]?.type === 'text' ? result.content[0].text : ''
+      expect(text.indexOf('alpha: connected')).toBeLessThan(text.indexOf('zeta: disconnected'))
+    })
+  )
+
+  it.effect('metadata status renders invalid config without an error', () =>
+    Effect.gen(function* () {
+      const harness = createHarness({
+        status: () => [{ name: 'broken', status: 'invalid-config' }],
+      })
+      yield* Effect.promise(() => harness.start())
+
+      const result = yield* Effect.promise(() => harness.execute({}))
+
+      expect(result.content[0]).toEqual({ text: expect.stringContaining('- broken: invalid config'), type: 'text' })
+    })
+  )
+
+  it.effect('tool calls accept object args and preserve manager results', () =>
+    Effect.gen(function* () {
+      const harness = createHarness()
+      yield* Effect.promise(() => harness.start())
+      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
+      const controller = new AbortController()
+
+      const result = yield* Effect.promise(() => harness.execute({ args: { path: 'README.md' }, server: 'fff', tool: 'fff_read' }, controller.signal))
+
+      expect(result).toBe(harness.callResult)
+      expect(callsFor(harness, 'call')[0]?.values).toEqual(['fff_read', { path: 'README.md' }, { server: 'fff', signal: controller.signal }])
+    })
+  )
+
+  it.effect('tool calls parse JSON object args and default omitted args', () =>
+    Effect.gen(function* () {
+      const harness = createHarness()
+      yield* Effect.promise(() => harness.start())
+
+      yield* Effect.promise(() => harness.execute({ args: '{"count":2}', tool: 'one' }))
+      yield* Effect.promise(() => harness.execute({ tool: 'two' }))
+
+      expect(callsFor(harness, 'call').map((call) => call.values[1])).toEqual([{ count: 2 }, {}])
+    })
+  )
+
+  it.effect('connect delegates the requested server and signal', () =>
+    Effect.gen(function* () {
+      const harness = createHarness()
+      yield* Effect.promise(() => harness.start())
+      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
+      const controller = new AbortController()
+
+      const result = yield* Effect.promise(() => harness.execute({ connect: 'linear' }, controller.signal))
+
+      expect(callsFor(harness, 'connect').at(-1)?.values).toEqual(['linear', { signal: controller.signal }])
+      expect(result.content[0]).toEqual({
+        text: expect.stringContaining('mcp({ server: "linear" })'),
+        type: 'text',
+      })
+    })
+  )
+
+  it.effect('describe delegates resolution scope and renders call syntax', () =>
+    Effect.gen(function* () {
+      const harness = createHarness()
+      yield* Effect.promise(() => harness.start())
+      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
+      const controller = new AbortController()
+
+      const result = yield* Effect.promise(() => harness.execute({ describe: 'find_issue', server: 'linear' }, controller.signal))
+
+      expect(callsFor(harness, 'describe')[0]?.values).toEqual(['find_issue', { server: 'linear', signal: controller.signal }])
+      expect(result.content[0]).toEqual({
+        text: expect.stringContaining('mcp({ tool: "find_issue", args: { ... } })'),
+        type: 'text',
+      })
+      expect(result.content[0]).toEqual({
+        text: expect.stringContaining('[read-only, non-destructive]'),
+        type: 'text',
+      })
+      expect(result.details).toEqual(
+        expect.objectContaining({
+          annotations: { destructiveHint: false, readOnlyHint: true },
+        })
+      )
+    })
+  )
+
+  it.effect('search delegates regex, scope, signal, and cap then sorts results', () =>
+    Effect.gen(function* () {
+      const harness = createHarness()
+      yield* Effect.promise(() => harness.start())
+      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
+      const controller = new AbortController()
+
+      const result = yield* Effect.promise(() => harness.execute({ regex: true, search: 'issue.*', server: 'linear' }, controller.signal))
+
+      expect(callsFor(harness, 'search')[0]?.values).toEqual(['issue.*', { limit: 31, regex: true, server: 'linear', signal: controller.signal }])
+      const text = result.content[0]?.type === 'text' ? result.content[0].text : ''
+      expect(text.indexOf('a_tool')).toBeLessThan(text.indexOf('z_tool'))
+    })
+  )
+
+  it.effect('server-only input lists that server and sorts tools', () =>
+    Effect.gen(function* () {
+      const harness = createHarness()
+      yield* Effect.promise(() => harness.start())
+      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
+      const controller = new AbortController()
+
+      const result = yield* Effect.promise(() => harness.execute({ server: 'fff' }, controller.signal))
+
+      expect(callsFor(harness, 'list')[0]?.values).toEqual(['fff', { signal: controller.signal }])
+      const text = result.content[0]?.type === 'text' ? result.content[0].text : ''
+      expect(text.indexOf('fff_a')).toBeLessThan(text.indexOf('fff_z'))
+    })
+  )
+
+  it.effect('mcp-auth authenticates an explicit server and infers the sole OAuth server', () =>
+    Effect.gen(function* () {
+      const harness = createHarness()
+      const notifications: { message: string; level: string }[] = []
+      yield* Effect.promise(() => harness.start())
+
+      yield* Effect.promise(() => harness.invokeCommand(' slack ', authContext(notifications)))
+      yield* Effect.promise(() => harness.invokeCommand('', authContext(notifications)))
+
+      expect(callsFor(harness, 'authenticate').map((call) => call.values)).toEqual([
+        ['slack', undefined],
+        ['slack', undefined],
+      ])
+      expect(notifications).toEqual([
+        { level: 'info', message: 'Authenticated and connected MCP server slack.' },
+        { level: 'info', message: 'Authenticated and connected MCP server slack.' },
+      ])
+    })
+  )
+
+  it.effect('rejects ambiguous selectors with a tagged failure before delegation', () =>
+    Effect.gen(function* () {
+      const harness = createHarness()
+      yield* Effect.promise(() => harness.start())
+
+      const rejection = yield* Effect.promise(() =>
+        harness.execute({ search: 'two', tool: 'one' }).then(
+          () => undefined,
+          (error: unknown) => error
+        )
+      )
+
+      expect(rejection).toMatchObject({ _tag: 'ToolFailure', message: expect.stringContaining('Ambiguous mcp request') })
+      expect(harness.execute({ connect: 'one', server: 'two' })).rejects.toThrow('connect already names the server')
+      expect(harness.execute({ args: {} })).rejects.toThrow('args can only be used with tool')
+      expect(harness.execute({ regex: true })).rejects.toThrow('regex can only be used with search')
+      expect(callsFor(harness, 'call')).toHaveLength(0)
+      expect(callsFor(harness, 'search')).toHaveLength(0)
+    })
+  )
+
+  it.effect('rejects malformed, scalar, array, and null string args', () =>
+    Effect.gen(function* () {
+      const harness = createHarness()
+      yield* Effect.promise(() => harness.start())
+
+      expect(harness.execute({ args: '{', tool: 'one' })).rejects.toThrow('valid JSON')
+      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
+      for (const args of ['null', '[]', '42', '"value"', JSON.parse('null') as unknown, [], 42]) {
+        expect(harness.execute({ args, tool: 'one' })).rejects.toThrow('must be a JSON object')
+      }
+      expect(callsFor(harness, 'call')).toHaveLength(0)
+    })
+  )
+
+  it.effect('tags manager failures and preserves their cause', () =>
+    Effect.gen(function* () {
+      const cause = new Error('manager exploded')
+      const harness = createHarness({ call: () => Effect.fail(cause) })
+      yield* Effect.promise(() => harness.start())
+
+      const rejection = yield* Effect.promise(() =>
+        harness.execute({ tool: 'one' }).then(
+          () => undefined,
+          (error: unknown) => error
+        )
+      )
+
+      expect(rejection).toMatchObject({ _tag: 'McpOperationError', cause, message: 'manager exploded' })
+    })
+  )
+
+  it.effect('session_shutdown awaits in-flight initialization cleanup and clears UI', () =>
+    Effect.gen(function* () {
+      const creation = deferred<McpGatewayManager>()
+      const closeStarted = deferred<void>()
+      const permitClose = deferred<void>()
+      const harness = createHarness({
+        close: Effect.promise(async () => {
+          closeStarted.resolve()
+          await permitClose.promise
+        }),
+      })
+      harness.dependencies.createManager = async (_config, managerContext) => {
+        harness.callbacks()?.onStatusChange(0)
+        void managerContext
+        return creation.promise
+      }
+      // Re-register against the modified dependency object in a fresh fixture.
+      const fixture = createFakePi()
+      createMcpExtension(harness.dependencies, runtime)(fixture.pi)
+      const statuses: { key: string; value: unknown }[] = []
+
+      const starting = fixture.emit('session_start', {}, context(statuses))
+      yield* Effect.promise(() => Promise.resolve())
+      const shuttingDown = fixture.emit('session_shutdown', {}, context(statuses))
+      creation.resolve(harness.manager)
+      yield* Effect.promise(() => closeStarted.promise)
+
+      let shutdownFinished = false
+      void shuttingDown.then(() => {
+        shutdownFinished = true
+      })
+      yield* Effect.promise(() => Promise.resolve())
+      expect(shutdownFinished).toBeFalse()
+
+      permitClose.resolve()
+      yield* Effect.promise(() => Promise.all([starting, shuttingDown]))
+      expect(statuses.at(-1)).toEqual({ key: 'mcp', value: undefined })
+    })
+  )
 })

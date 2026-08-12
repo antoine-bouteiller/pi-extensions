@@ -145,36 +145,51 @@ const createAgentManager = (options: Record<string, unknown> = {}) =>
     })
   )
 
-const processTest = (name: string, run: () => void | Promise<void>): void => {
-  it.effect(name, () => Promise.resolve(run()), 15_000)
+const processTest = (name: string, run: () => Effect.Effect<void, unknown>): void => {
+  it.live(name, run, 15_000)
 }
 
-const withScoutProfile = async <Result>(patch: Partial<{ model: string; isReadonly: boolean }>, run: () => Promise<Result>): Promise<Result> => {
-  const profile = AGENT_CONFIGS.scout
-  const original = { isReadonly: profile.isReadonly, model: profile.model }
-  Object.assign(profile, patch)
-  try {
-    return await run()
-  } finally {
-    Object.assign(profile, original)
-  }
-}
+const withScoutProfile = <Success, Failure, Requirements>(
+  patch: Partial<{ model: string; isReadonly: boolean }>,
+  effect: Effect.Effect<Success, Failure, Requirements>
+): Effect.Effect<Success, Failure, Requirements> =>
+  Effect.sync(() => {
+    const profile = AGENT_CONFIGS.scout
+    const original = { isReadonly: profile.isReadonly, model: profile.model }
+    Object.assign(profile, patch)
+    return { original, profile }
+  }).pipe(
+    Effect.flatMap(({ original, profile }) =>
+      effect.pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            Object.assign(profile, original)
+          })
+        )
+      )
+    )
+  )
 
 describe('RPC framing', () => {
-  it.effect('splits only on LF and preserves Unicode line separators', () => {
-    const decoder = new RpcJsonlDecoder()
-    const payload = JSON.stringify({ text: 'before\u2028after' })
-    expect(decoder.push(Buffer.from(payload.slice(0, 7)))).toEqual([])
-    expect(decoder.push(Buffer.from(`${payload.slice(7)}\n`))).toEqual([payload])
-    expect(decoder.end()).toEqual([])
-  })
+  it.effect('splits only on LF and preserves Unicode line separators', () =>
+    Effect.sync(() => {
+      const decoder = new RpcJsonlDecoder()
+      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
+      const payload = JSON.stringify({ text: 'before\u2028after' })
+      expect(decoder.push(Buffer.from(payload.slice(0, 7)))).toEqual([])
+      expect(decoder.push(Buffer.from(`${payload.slice(7)}\n`))).toEqual([payload])
+      expect(decoder.end()).toEqual([])
+    })
+  )
 })
 
 describe('session-scoped identities', () => {
-  it.effect('separates parent sessions and formerly colliding task names', () => {
-    expect(parentScopeKey('parent-a')).not.toBe(parentScopeKey('parent-b'))
-    expect(taskStorageKey('review/api')).not.toBe(taskStorageKey('review__api'))
-  })
+  it.effect('separates parent sessions and formerly colliding task names', () =>
+    Effect.sync(() => {
+      expect(parentScopeKey('parent-a')).not.toBe(parentScopeKey('parent-b'))
+      expect(taskStorageKey('review/api')).not.toBe(taskStorageKey('review__api'))
+    })
+  )
 })
 
 describe('run storage', () => {
@@ -182,218 +197,243 @@ describe('run storage', () => {
   const configFile = join(packageDir, 'config.json')
   const fixtureDir = join(TEST_AGENT_DIR, 'retention-fixture')
 
-  it.effect('uses persistent package storage by default', () => {
-    rmSync(configFile, { force: true })
-    expect(getRunsDir()).toBe(join(packageDir, 'runs'))
-  })
-
-  it.effect('keeps legacy temporary runs discoverable', () => {
-    rmSync(configFile, { force: true })
-    const parentSessionId = 'legacy-parent'
-    const id = '11111111-1111-4111-8111-111111111111'
-    const legacyRoot = join(TEST_TEMP_DIR, 'pi-codex-subagents', userInfo().username, 'runs')
-    const legacyScope = join(legacyRoot, parentScopeKey(parentSessionId))
-    mkdirSync(legacyScope, { recursive: true })
-    writeFileSync(
-      join(legacyScope, `${id}.info.json`),
-      JSON.stringify({
-        createdAt: nowMs(),
-        finalResponse: 'legacy response',
-        id,
-        status: 'closed',
-        taskName: 'legacy',
-        updatedAt: nowMs(),
-      })
-    )
-
-    expect(getAgent('legacy', parentSessionId)).toMatchObject({
-      finalResponse: 'legacy response',
-      id,
-      status: 'completed',
+  it.effect('uses persistent package storage by default', () =>
+    Effect.sync(() => {
+      rmSync(configFile, { force: true })
+      expect(getRunsDir()).toBe(join(packageDir, 'runs'))
     })
-    rmSync(legacyScope, { force: true, recursive: true })
-  })
+  )
 
-  it.effect('keeps agent lists in creation order when activity changes', async () => {
-    rmSync(configFile, { force: true })
-    const parentSessionId = 'creation-order'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    const now = nowMs()
-    const agents = [
-      {
-        createdAt: now - 2000,
-        id: '11111111-1111-4111-8111-111111111111',
-        lastActivity: now,
-        taskName: 'older',
-      },
-      {
-        createdAt: now - 1000,
-        id: '22222222-2222-4222-8222-222222222222',
-        lastActivity: now - 1000,
-        taskName: 'newer',
-      },
-    ]
-    mkdirSync(scope, { recursive: true })
-    for (const agent of agents) {
+  it.effect('keeps legacy temporary runs discoverable', () =>
+    Effect.sync(() => {
+      rmSync(configFile, { force: true })
+      const parentSessionId = 'legacy-parent'
+      const id = '11111111-1111-4111-8111-111111111111'
+      const legacyRoot = join(TEST_TEMP_DIR, 'pi-codex-subagents', userInfo().username, 'runs')
+      const legacyScope = join(legacyRoot, parentScopeKey(parentSessionId))
+      mkdirSync(legacyScope, { recursive: true })
       writeFileSync(
-        join(scope, `${agent.id}.info.json`),
+        join(legacyScope, `${id}.info.json`),
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
         JSON.stringify({
-          ...agent,
-          canonicalName: `/${agent.taskName}`,
-          parentSessionId,
-          status: 'completed',
-          updatedAt: agent.lastActivity,
+          createdAt: nowMs(),
+          finalResponse: 'legacy response',
+          id,
+          status: 'closed',
+          taskName: 'legacy',
+          updatedAt: nowMs(),
         })
       )
-    }
 
-    const manager = createAgentManager()
-    try {
-      expect(manager.listAgents(undefined, parentSessionId).map((agent) => agent.agent_name)).toEqual(['/newer', '/older'])
-    } finally {
-      await manager.shutdown()
-      rmSync(scope, { force: true, recursive: true })
-    }
-  })
+      expect(getAgent('legacy', parentSessionId)).toMatchObject({
+        finalResponse: 'legacy response',
+        id,
+        status: 'completed',
+      })
+      rmSync(legacyScope, { force: true, recursive: true })
+    })
+  )
 
-  it.effect('removes expired runs and outputs using configurable retention', () => {
-    mkdirSync(packageDir, { recursive: true })
-    rmSync(fixtureDir, { force: true, recursive: true })
-    writeFileSync(configFile, JSON.stringify({ retentionDays: 3, storageDir: fixtureDir }))
-
-    const now = nowMs()
-    const oldTime = dateOf(now - 4 * 24 * 60 * 60 * 1000)
-    const scope = join(fixtureDir, 'a'.repeat(24))
-    const unrelatedScope = join(fixtureDir, 'unrelated')
-    const outputs = join(fixtureDir, '_outputs')
-    const expiredId = '11111111-1111-4111-8111-111111111111'
-    const activeId = '22222222-2222-4222-8222-222222222222'
-    const expiredInfo = join(scope, `${expiredId}.info.json`)
-    const activeInfo = join(scope, `${activeId}.info.json`)
-    const expiredOutput = join(outputs, `${oldTime.getTime()}-33333333-3333-4333-8333-333333333333.txt`)
-    const activeMarker = join(TEST_TEMP_DIR, 'pi-codex-subagents', userInfo().username, 'sockets', `${activeId}.peek.json`)
-    const unrelatedAgentFile = join(scope, `${expiredId}.notes`)
-    const staleLock = join(scope, `.task-${'c'.repeat(24)}.lock`)
-    const liveOwnerLock = join(scope, `.task-${'d'.repeat(24)}.lock`)
-
-    try {
+  it.effect('keeps agent lists in creation order when activity changes', () =>
+    Effect.gen(function* () {
+      rmSync(configFile, { force: true })
+      const parentSessionId = 'creation-order'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      const now = nowMs()
+      const agents = [
+        {
+          createdAt: now - 2000,
+          id: '11111111-1111-4111-8111-111111111111',
+          lastActivity: now,
+          taskName: 'older',
+        },
+        {
+          createdAt: now - 1000,
+          id: '22222222-2222-4222-8222-222222222222',
+          lastActivity: now - 1000,
+          taskName: 'newer',
+        },
+      ]
       mkdirSync(scope, { recursive: true })
-      mkdirSync(unrelatedScope, { recursive: true })
-      mkdirSync(outputs, { recursive: true })
-      mkdirSync(dirname(activeMarker), { recursive: true })
-      for (const [file, id] of [
-        [expiredInfo, expiredId],
-        [activeInfo, activeId],
-      ]) {
+      for (const agent of agents) {
         writeFileSync(
-          file,
+          join(scope, `${agent.id}.info.json`),
+          // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
           JSON.stringify({
-            createdAt: oldTime.getTime(),
-            id,
-            lastActivity: oldTime.getTime(),
-            updatedAt: oldTime.getTime(),
+            ...agent,
+            canonicalName: `/${agent.taskName}`,
+            parentSessionId,
+            status: 'completed',
+            updatedAt: agent.lastActivity,
           })
         )
-        utimesSync(file, oldTime, oldTime)
       }
-      writeFileSync(activeMarker, JSON.stringify({ pid: process.pid, startedAt: now, token: 'test' }))
-      writeFileSync(unrelatedAgentFile, 'keep')
-      writeFileSync(staleLock, '')
-      writeFileSync(liveOwnerLock, JSON.stringify({ pid: process.pid }))
-      utimesSync(staleLock, oldTime, oldTime)
-      utimesSync(liveOwnerLock, oldTime, oldTime)
-      writeFileSync(expiredOutput, 'old')
-      utimesSync(expiredOutput, oldTime, oldTime)
-      writeFileSync(join(outputs, 'unrelated.txt'), 'keep')
-      writeFileSync(join(unrelatedScope, 'unrelated.txt'), 'keep')
 
-      createAgentManager()
-      expect(existsSync(expiredInfo)).toBe(false)
-      expect(existsSync(activeInfo)).toBe(true)
-      expect(existsSync(unrelatedAgentFile)).toBe(true)
-      expect(existsSync(staleLock)).toBe(false)
-      expect(existsSync(liveOwnerLock)).toBe(true)
-      expect(existsSync(expiredOutput)).toBe(false)
-      expect(existsSync(join(outputs, 'unrelated.txt'))).toBe(true)
-      expect(existsSync(join(unrelatedScope, 'unrelated.txt'))).toBe(true)
+      const manager = createAgentManager()
+      try {
+        expect(manager.listAgents(undefined, parentSessionId).map((agent) => agent.agent_name)).toEqual(['/newer', '/older'])
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
+    })
+  )
 
-      writeFileSync(configFile, JSON.stringify({ retentionDays: 0, storageDir: fixtureDir }))
-      writeFileSync(expiredInfo, '{}')
-      utimesSync(expiredInfo, oldTime, oldTime)
-      createAgentManager()
-      expect(existsSync(expiredInfo)).toBe(true)
-    } finally {
+  it.effect('removes expired runs and outputs using configurable retention', () =>
+    Effect.sync(() => {
+      mkdirSync(packageDir, { recursive: true })
       rmSync(fixtureDir, { force: true, recursive: true })
-      rmSync(activeMarker, { force: true })
+      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
+      writeFileSync(configFile, JSON.stringify({ retentionDays: 3, storageDir: fixtureDir }))
+
+      const now = nowMs()
+      const oldTime = dateOf(now - 4 * 24 * 60 * 60 * 1000)
+      const scope = join(fixtureDir, 'a'.repeat(24))
+      const unrelatedScope = join(fixtureDir, 'unrelated')
+      const outputs = join(fixtureDir, '_outputs')
+      const expiredId = '11111111-1111-4111-8111-111111111111'
+      const activeId = '22222222-2222-4222-8222-222222222222'
+      const expiredInfo = join(scope, `${expiredId}.info.json`)
+      const activeInfo = join(scope, `${activeId}.info.json`)
+      const expiredOutput = join(outputs, `${oldTime.getTime()}-33333333-3333-4333-8333-333333333333.txt`)
+      const activeMarker = join(TEST_TEMP_DIR, 'pi-codex-subagents', userInfo().username, 'sockets', `${activeId}.peek.json`)
+      const unrelatedAgentFile = join(scope, `${expiredId}.notes`)
+      const staleLock = join(scope, `.task-${'c'.repeat(24)}.lock`)
+      const liveOwnerLock = join(scope, `.task-${'d'.repeat(24)}.lock`)
+
+      try {
+        mkdirSync(scope, { recursive: true })
+        mkdirSync(unrelatedScope, { recursive: true })
+        mkdirSync(outputs, { recursive: true })
+        mkdirSync(dirname(activeMarker), { recursive: true })
+        for (const [file, id] of [
+          [expiredInfo, expiredId],
+          [activeInfo, activeId],
+        ]) {
+          writeFileSync(
+            file,
+            // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
+            JSON.stringify({
+              createdAt: oldTime.getTime(),
+              id,
+              lastActivity: oldTime.getTime(),
+              updatedAt: oldTime.getTime(),
+            })
+          )
+          utimesSync(file, oldTime, oldTime)
+        }
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
+        writeFileSync(activeMarker, JSON.stringify({ pid: process.pid, startedAt: now, token: 'test' }))
+        writeFileSync(unrelatedAgentFile, 'keep')
+        writeFileSync(staleLock, '')
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
+        writeFileSync(liveOwnerLock, JSON.stringify({ pid: process.pid }))
+        utimesSync(staleLock, oldTime, oldTime)
+        utimesSync(liveOwnerLock, oldTime, oldTime)
+        writeFileSync(expiredOutput, 'old')
+        utimesSync(expiredOutput, oldTime, oldTime)
+        writeFileSync(join(outputs, 'unrelated.txt'), 'keep')
+        writeFileSync(join(unrelatedScope, 'unrelated.txt'), 'keep')
+
+        createAgentManager()
+        expect(existsSync(expiredInfo)).toBe(false)
+        expect(existsSync(activeInfo)).toBe(true)
+        expect(existsSync(unrelatedAgentFile)).toBe(true)
+        expect(existsSync(staleLock)).toBe(false)
+        expect(existsSync(liveOwnerLock)).toBe(true)
+        expect(existsSync(expiredOutput)).toBe(false)
+        expect(existsSync(join(outputs, 'unrelated.txt'))).toBe(true)
+        expect(existsSync(join(unrelatedScope, 'unrelated.txt'))).toBe(true)
+
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
+        writeFileSync(configFile, JSON.stringify({ retentionDays: 0, storageDir: fixtureDir }))
+        writeFileSync(expiredInfo, '{}')
+        utimesSync(expiredInfo, oldTime, oldTime)
+        createAgentManager()
+        expect(existsSync(expiredInfo)).toBe(true)
+      } finally {
+        rmSync(fixtureDir, { force: true, recursive: true })
+        rmSync(activeMarker, { force: true })
+        rmSync(configFile, { force: true })
+      }
+    })
+  )
+
+  it.effect('creates the default run and socket directories with 0700 permissions', () =>
+    Effect.gen(function* () {
+      if (process.platform === 'win32') {
+        return
+      }
       rmSync(configFile, { force: true })
-    }
-  })
+      rmSync(join(packageDir, 'runs'), { force: true, recursive: true })
+      const socketDir = join(TEST_TEMP_DIR, 'pi-codex-subagents', userInfo().username, 'sockets')
+      rmSync(socketDir, { force: true, recursive: true })
+      const manager = createAgentManager()
+      try {
+        expect(statSync(getRunsDir()).mode & 0o777).toBe(0o700)
+        expect(statSync(socketDir).mode & 0o777).toBe(0o700)
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+      }
+    })
+  )
 
-  it.effect('creates the default run and socket directories with 0700 permissions', async () => {
-    if (process.platform === 'win32') {
-      return
-    }
-    rmSync(configFile, { force: true })
-    rmSync(join(packageDir, 'runs'), { force: true, recursive: true })
-    const socketDir = join(TEST_TEMP_DIR, 'pi-codex-subagents', userInfo().username, 'sockets')
-    rmSync(socketDir, { force: true, recursive: true })
-    const manager = createAgentManager()
-    try {
-      expect(statSync(getRunsDir()).mode & 0o777).toBe(0o700)
-      expect(statSync(socketDir).mode & 0o777).toBe(0o700)
-    } finally {
-      await manager.shutdown()
-    }
-  })
-
-  it.effect('creates the _outputs directory with 0700 permissions', () => {
-    if (process.platform === 'win32') {
-      return
-    }
-    rmSync(configFile, { force: true })
-    const outputsDir = join(getRunsDir(), '_outputs')
-    rmSync(outputsDir, { force: true, recursive: true })
-    try {
-      writeFullToolOutput('characterization content')
-      expect(statSync(outputsDir).mode & 0o777).toBe(0o700)
-    } finally {
+  it.effect('creates the _outputs directory with 0700 permissions', () =>
+    Effect.sync(() => {
+      if (process.platform === 'win32') {
+        return
+      }
+      rmSync(configFile, { force: true })
+      const outputsDir = join(getRunsDir(), '_outputs')
       rmSync(outputsDir, { force: true, recursive: true })
-    }
-  })
+      try {
+        writeFullToolOutput('characterization content')
+        expect(statSync(outputsDir).mode & 0o777).toBe(0o700)
+      } finally {
+        rmSync(outputsDir, { force: true, recursive: true })
+      }
+    })
+  )
 
-  it.effect('chmods a freshly created configured storage root to 0700', async () => {
-    if (process.platform === 'win32') {
-      return
-    }
-    rmSync(fixtureDir, { force: true, recursive: true })
-    writeFileSync(configFile, JSON.stringify({ storageDir: fixtureDir }))
-    const manager = createAgentManager()
-    try {
-      expect(statSync(fixtureDir).mode & 0o777).toBe(0o700)
-    } finally {
-      await manager.shutdown()
+  it.effect('chmods a freshly created configured storage root to 0700', () =>
+    Effect.gen(function* () {
+      if (process.platform === 'win32') {
+        return
+      }
       rmSync(fixtureDir, { force: true, recursive: true })
-      rmSync(configFile, { force: true })
-    }
-  })
+      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
+      writeFileSync(configFile, JSON.stringify({ storageDir: fixtureDir }))
+      const manager = createAgentManager()
+      try {
+        expect(statSync(fixtureDir).mode & 0o777).toBe(0o700)
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(fixtureDir, { force: true, recursive: true })
+        rmSync(configFile, { force: true })
+      }
+    })
+  )
 
-  it.effect('does not tighten permissions on a pre-existing configured storage root', async () => {
-    if (process.platform === 'win32') {
-      return
-    }
-    rmSync(fixtureDir, { force: true, recursive: true })
-    mkdirSync(fixtureDir, { recursive: true })
-    chmodSync(fixtureDir, 0o755)
-    writeFileSync(configFile, JSON.stringify({ storageDir: fixtureDir }))
-    const manager = createAgentManager()
-    try {
-      expect(statSync(fixtureDir).mode & 0o777).toBe(0o755)
-    } finally {
-      await manager.shutdown()
+  it.effect('does not tighten permissions on a pre-existing configured storage root', () =>
+    Effect.gen(function* () {
+      if (process.platform === 'win32') {
+        return
+      }
       rmSync(fixtureDir, { force: true, recursive: true })
-      rmSync(configFile, { force: true })
-    }
-  })
+      mkdirSync(fixtureDir, { recursive: true })
+      chmodSync(fixtureDir, 0o755)
+      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
+      writeFileSync(configFile, JSON.stringify({ storageDir: fixtureDir }))
+      const manager = createAgentManager()
+      try {
+        expect(statSync(fixtureDir).mode & 0o777).toBe(0o755)
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(fixtureDir, { force: true, recursive: true })
+        rmSync(configFile, { force: true })
+      }
+    })
+  )
 })
 
 const waitUntil = async (predicate: () => boolean, timeoutMs = 12_000): Promise<void> => {
@@ -469,1297 +509,1458 @@ const writeSessionWithContextUsage = (sessionFile: string, contextTokens: number
 }
 
 describe('child process lifecycle', () => {
-  processTest('resolves profiles before creating task artifacts', async () => {
-    const parentSessionId = 'unavailable-profile-model'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const manager = createAgentManager()
-    try {
-      expect(
-        manager.spawnAgent({
-          ...spawnParams(parentSessionId, 'worker', 'must not start'),
-          availableModels: AVAILABLE_MODELS.filter((model) => model.id !== 'gpt-5.6-luna'),
-        })
-      ).rejects.toThrow('not authenticated or available')
-      expect(existsSync(scope)).toBe(false)
-    } finally {
-      await manager.shutdown()
-    }
-  })
-
-  processTest('allows write-capable Claude profiles', async () => {
-    const parentSessionId = 'claude-write-capable'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const manager = createAgentManager()
-    try {
-      await withScoutProfile({ isReadonly: false, model: 'claude-sonnet-5' }, async () => {
-        await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold write-capable'))
-        expect(manager.getAgentInfo('worker', parentSessionId)).toMatchObject({
-          isReadonly: false,
-          modelId: 'claude-sonnet-5',
-          status: 'running',
-        })
-      })
-    } finally {
-      await manager.shutdown()
+  processTest('resolves profiles before creating task artifacts', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'unavailable-profile-model'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
       rmSync(scope, { force: true, recursive: true })
-    }
-  })
+      const manager = createAgentManager()
+      try {
+        expect(
+          manager.spawnAgent({
+            ...spawnParams(parentSessionId, 'worker', 'must not start'),
+            availableModels: AVAILABLE_MODELS.filter((model) => model.id !== 'gpt-5.6-luna'),
+          })
+        ).rejects.toThrow('not authenticated or available')
+        expect(existsSync(scope)).toBe(false)
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+      }
+    })
+  )
 
-  processTest('limits one manager to three live Claude subagents', async () => {
-    const parentSessionId = 'claude-live-limit'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const manager = createAgentManager()
-    try {
-      await withScoutProfile({ model: 'claude-sonnet-5' }, async () => {
-        for (const task of ['one', 'two', 'three']) {
-          await manager.spawnAgent(spawnParams(parentSessionId, task, `hold ${task}`))
-        }
-        expect(manager.spawnAgent(spawnParams(parentSessionId, 'four', 'hold four'))).rejects.toThrow('At most 3 Claude-backed subagents')
-        expect(() => manager.getAgentInfo('four', parentSessionId)).toThrow('Agent not found')
-      })
-    } finally {
-      await manager.shutdown()
+  processTest('allows write-capable Claude profiles', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'claude-write-capable'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
       rmSync(scope, { force: true, recursive: true })
-    }
-  })
-
-  processTest('allows one follow-up per logical agent and persists the consumed allowance', async () => {
-    const parentSessionId = 'single-follow-up'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const manager = createAgentManager()
-    try {
-      await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold initial'))
-      expect(await manager.sendMessage(parentSessionId, 'worker', 'one correction')).toEqual({ delivery: 'steer' })
-      expect(manager.getAgentInfo('worker', parentSessionId).followUpUsed).toBe(true)
-      expect(manager.sendMessage(parentSessionId, 'worker', 'another correction')).rejects.toThrow('single follow-up')
-    } finally {
-      await manager.shutdown()
-      rmSync(scope, { force: true, recursive: true })
-    }
-  })
-
-  processTest('allows only one concurrent follow-up claim across managers', async () => {
-    const parentSessionId = 'atomic-follow-up'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const firstManager = createAgentManager()
-    const secondManager = createAgentManager()
-    try {
-      await firstManager.spawnAgent(spawnParams(parentSessionId, 'worker', 'first'))
-      await waitUntil(() => {
-        const info = firstManager.getAgentInfo('worker', parentSessionId)
-        return info.status === 'completed' && info.childProcess === undefined
-      })
-      await secondManager.ready()
-
-      const results = await Promise.allSettled([
-        firstManager.sendMessage(parentSessionId, 'worker', 'hold first follow-up'),
-        secondManager.sendMessage(parentSessionId, 'worker', 'hold competing follow-up'),
-      ])
-      expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
-      expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1)
-      expect(firstManager.getAgentInfo('worker', parentSessionId).followUpUsed).toBe(true)
-    } finally {
-      await Promise.all([firstManager.shutdown(), secondManager.shutdown()])
-      rmSync(scope, { force: true, recursive: true })
-    }
-  })
-
-  processTest('starts a fresh Claude agent instead of continuing at 112k context input tokens', async () => {
-    const parentSessionId = 'claude-context-limit'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const manager = createAgentManager()
-    try {
-      await withScoutProfile({ model: 'claude-sonnet-5' }, async () => {
-        await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'first'))
-        await waitUntil(() => {
-          const info = manager.getAgentInfo('worker', parentSessionId)
-          return info.status === 'completed' && info.childProcess === undefined
-        })
-        const info = manager.getAgentInfo('worker', parentSessionId)
-        writeSessionWithContextUsage(info.sessionFile, 112_000)
-        expect(manager.sendMessage(parentSessionId, 'worker', 'too much context')).rejects.toThrow('112000 context input tokens')
-        expect(manager.getAgentInfo('worker', parentSessionId).childProcess).toBeUndefined()
-        expect(manager.getAgentInfo('worker', parentSessionId).followUpUsed).toBe(false)
-
-        writeSessionWithContextUsage(info.sessionFile, 111_999)
-        expect(await manager.sendMessage(parentSessionId, 'worker', 'hold below limit')).toEqual({ delivery: 'prompt' })
-      })
-    } finally {
-      await manager.shutdown()
-      rmSync(scope, { force: true, recursive: true })
-    }
-  })
-
-  processTest('passes read-only profile metadata without changing the task message', async () => {
-    const parentSessionId = 'readonly-profile-metadata'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const manager = createAgentManager()
-    try {
-      await manager.spawnAgent({
-        ...spawnParams(parentSessionId, 'worker', 'inspect exactly this'),
-        agent_type: 'scout',
-      })
-      const info = manager.getAgentInfo('worker', parentSessionId)
-      expect(info).toMatchObject({
-        color: 'accent',
-        isReadonly: true,
-        modelId: 'gpt-5.6-luna',
-        profile: 'scout',
-        provider: 'openai',
-      })
-      await waitUntil(() => manager.getAgentInfo('worker', parentSessionId).status === 'completed')
-      const records = readFileSync(info.sessionFile, 'utf8')
-        .trim()
-        .split('\n')
-        .map((line) => JSON.parse(line))
-      expect(records.find((record) => record.type === 'prompt')?.message).toBe('inspect exactly this')
-      const start = records.find((record) => record.type === 'started')
-      expect(start.env).toMatchObject({
-        PI_SUBAGENT_PROFILE: 'scout',
-        PI_SUBAGENT_READONLY: '1',
-      })
-      expect(start.args[start.args.indexOf('--append-system-prompt') + 1]).toContain('This subagent role is read-only.')
-      expect(start.args[start.args.indexOf('--tools') + 1]).toContain('fff-multi-grep')
-    } finally {
-      await manager.shutdown()
-      rmSync(scope, { force: true, recursive: true })
-    }
-  })
-
-  processTest('forwards Azure quota reported by a subagent response', async () => {
-    const parentSessionId = 'subagent-azure-quota'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    azureQuota.set(undefined)
-    const manager = createAgentManager()
-    try {
-      await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'quota response'))
-      await waitUntil(() => azureQuota.get() === 73)
-      expect(azureQuota.get()).toBe(73)
-    } finally {
-      await manager.shutdown()
-      azureQuota.set(undefined)
-      rmSync(scope, { force: true, recursive: true })
-    }
-  })
-
-  processTest('reclaims a fresh lock whose PID identity no longer owns it, even with retention disabled', async () => {
-    const parentSessionId = 'fresh-dead-lock'
-    const packageDir = join(TEST_AGENT_DIR, 'pi-codex-subagents')
-    const configFile = join(packageDir, 'config.json')
-    const scope = join(packageDir, 'runs', parentScopeKey(parentSessionId))
-    const lockFile = join(scope, `.task-${taskStorageKey('worker')}.lock`)
-    mkdirSync(scope, { recursive: true })
-    writeFileSync(configFile, JSON.stringify({ retentionDays: 0 }))
-    writeFileSync(
-      lockFile,
-      JSON.stringify({
-        createdAt: nowMs(),
-        pid: process.pid,
-        processIdentity: 'identity-from-an-exited-process',
-      })
-    )
-    const manager = createAgentManager()
-    try {
-      await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold lock recovery'))
-      expect(manager.getAgentInfo('worker', parentSessionId).status).toBe('running')
-      expect(existsSync(lockFile)).toBe(false)
-      await manager.interruptAgent(parentSessionId, 'worker')
-    } finally {
-      await manager.shutdown()
-      rmSync(scope, { force: true, recursive: true })
-      rmSync(configFile, { force: true })
-    }
-  })
-
-  processTest('does not unlink a live lock that replaces the inspected dead instance', async () => {
-    const parentSessionId = 'lock-replacement-race'
-    const packageDir = join(TEST_AGENT_DIR, 'pi-codex-subagents')
-    const configFile = join(packageDir, 'config.json')
-    const scope = join(packageDir, 'runs', parentScopeKey(parentSessionId))
-    const lockFile = join(scope, `.task-${taskStorageKey('worker')}.lock`)
-    const displacedLock = `${lockFile}.displaced`
-    mkdirSync(scope, { recursive: true })
-    writeFileSync(configFile, JSON.stringify({ retentionDays: 0 }))
-    writeFileSync(
-      lockFile,
-      JSON.stringify({
-        createdAt: nowMs(),
-        pid: process.pid,
-        processIdentity: 'identity-from-an-exited-process',
-        token: 'dead-instance',
-      })
-    )
-    let replaced = false
-    const manager = createAgentManager({
-      beforeReclaimTaskLockRemoval(file: string) {
-        if (replaced) {
-          return
-        }
-        replaced = true
-        renameSync(file, displacedLock)
-        writeFileSync(
-          file,
-          JSON.stringify({
-            createdAt: nowMs(),
-            pid: process.pid,
-            token: 'live-replacement',
+      const manager = createAgentManager()
+      try {
+        yield* withScoutProfile(
+          { isReadonly: false, model: 'claude-sonnet-5' },
+          Effect.gen(function* () {
+            yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold write-capable')))
+            expect(manager.getAgentInfo('worker', parentSessionId)).toMatchObject({
+              isReadonly: false,
+              modelId: 'claude-sonnet-5',
+              status: 'running',
+            })
           })
         )
-      },
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
     })
-    try {
-      expect(manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'must not start'))).rejects.toThrow('already being created')
-      expect(replaced).toBe(true)
-      expect(JSON.parse(readFileSync(lockFile, 'utf8'))).toMatchObject({
-        pid: process.pid,
-        token: 'live-replacement',
-      })
-    } finally {
-      await manager.shutdown()
-      rmSync(scope, { force: true, recursive: true })
-      rmSync(configFile, { force: true })
-    }
-  })
+  )
 
-  processTest('does not unlink a live lock that replaces the lock this caller is normally releasing', async () => {
-    const parentSessionId = 'lock-release-race'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    const lockFile = join(scope, `.task-${taskStorageKey('worker')}.lock`)
-    rmSync(scope, { force: true, recursive: true })
-    let replaced = false
-    const manager = createAgentManager({
-      beforeReleaseTaskLockRemoval(file: string) {
-        if (replaced || file !== lockFile) {
-          return
-        }
-        replaced = true
-        renameSync(file, `${file}.displaced`)
-        writeFileSync(
-          file,
-          JSON.stringify({
-            createdAt: nowMs(),
-            pid: process.pid,
-            token: 'concurrent-winner',
+  processTest('limits one manager to three live Claude subagents', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'claude-live-limit'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      rmSync(scope, { force: true, recursive: true })
+      const manager = createAgentManager()
+      try {
+        yield* withScoutProfile(
+          { model: 'claude-sonnet-5' },
+          Effect.gen(function* () {
+            for (const task of ['one', 'two', 'three']) {
+              yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, task, `hold ${task}`)))
+            }
+            const failure = yield* Effect.promise(() =>
+              manager.spawnAgent(spawnParams(parentSessionId, 'four', 'hold four')).then(
+                () => undefined,
+                (error: unknown) => error
+              )
+            )
+            expect(asError(failure).message).toContain('At most 3 Claude-backed subagents')
+            expect(() => manager.getAgentInfo('four', parentSessionId)).toThrow('Agent not found')
           })
         )
-      },
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
     })
-    try {
-      await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold release race'))
-      expect(replaced).toBe(true)
-      expect(manager.getAgentInfo('worker', parentSessionId).status).toBe('running')
-      expect(JSON.parse(readFileSync(lockFile, 'utf8'))).toMatchObject({ token: 'concurrent-winner' })
-      await manager.interruptAgent(parentSessionId, 'worker')
-    } finally {
-      await manager.shutdown()
-      rmSync(scope, { force: true, recursive: true })
-    }
-  })
+  )
 
-  processTest('reconciles a persisted starting record left before child ownership', async () => {
-    const parentSessionId = 'starting-without-owner'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    const id = '33333333-3333-4333-8333-333333333333'
-    const infoFile = join(scope, `${id}.info.json`)
-    const now = nowMs()
-    rmSync(scope, { force: true, recursive: true })
-    mkdirSync(scope, { recursive: true })
-    writeFileSync(
-      infoFile,
-      JSON.stringify({
-        canonicalName: '/worker',
-        createdAt: now,
-        cwd: TEST_AGENT_DIR,
-        id,
-        infoFile,
-        lastActivity: now,
-        logFile: join(scope, `${id}.log`),
-        messageCount: 0,
-        model: 'test:fake',
-        modelId: 'fake',
-        parentSessionId,
-        provider: 'test',
-        sessionFile: join(scope, `${id}.jsonl`),
-        startedAt: now,
-        status: 'starting',
-        taskName: 'worker',
-        updatedAt: now,
-      })
-    )
-    const manager = createAgentManager()
-    try {
-      await manager.ready()
-      const reconciled = manager.getAgentInfo('worker', parentSessionId)
-      expect(reconciled.status).toBe('interrupted')
-      expect(reconciled.childProcess).toBeUndefined()
-    } finally {
-      await manager.shutdown()
+  processTest('allows one follow-up per logical agent and persists the consumed allowance', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'single-follow-up'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
       rmSync(scope, { force: true, recursive: true })
-    }
-  })
-
-  processTest('persists provisional ownership before the startup RPC round trip completes', async () => {
-    const parentSessionId = 'startup-crash-window'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const manager = createAgentManager({
-      childEnv: { PI_SUBAGENT_TEST_GET_STATE_DELAY_MS: '300' },
+      const manager = createAgentManager()
+      try {
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold initial')))
+        expect(yield* Effect.promise(() => manager.sendMessage(parentSessionId, 'worker', 'one correction'))).toEqual({ delivery: 'steer' })
+        expect(manager.getAgentInfo('worker', parentSessionId).followUpUsed).toBe(true)
+        expect(manager.sendMessage(parentSessionId, 'worker', 'another correction')).rejects.toThrow('single follow-up')
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
     })
-    let spawnSettled = false
-    try {
-      const spawning = manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold startup')).finally(() => {
-        spawnSettled = true
-      })
-      await waitUntil(() => {
-        try {
-          return Boolean(manager.getAgentInfo('worker', parentSessionId).childProcess)
-        } catch {
-          return false
-        }
-      })
-      const starting = manager.getAgentInfo('worker', parentSessionId)
-      expect(starting.status).toBe('starting')
-      expect(starting.childProcess?.pid).toBeNumber()
-      expect(pidAlive(requireChildProcess(starting.childProcess).pid)).toBe(true)
-      expect(spawnSettled).toBe(false)
-      await spawning
-      await manager.interruptAgent(parentSessionId, 'worker')
-    } finally {
-      await manager.shutdown()
-      rmSync(scope, { force: true, recursive: true })
-    }
-  })
+  )
 
-  processTest('hibernates after settle and lazily restarts the persisted session', async () => {
-    rmSync(join(TEST_AGENT_DIR, 'pi-codex-subagents', 'config.json'), { force: true })
-    const parentSessionId = 'lifecycle-settle'
-    rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
-      force: true,
-      recursive: true,
+  processTest('allows only one concurrent follow-up claim across managers', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'atomic-follow-up'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      rmSync(scope, { force: true, recursive: true })
+      const firstManager = createAgentManager()
+      const secondManager = createAgentManager()
+      try {
+        yield* Effect.promise(() => firstManager.spawnAgent(spawnParams(parentSessionId, 'worker', 'first')))
+        yield* Effect.promise(() =>
+          waitUntil(() => {
+            const info = firstManager.getAgentInfo('worker', parentSessionId)
+            return info.status === 'completed' && info.childProcess === undefined
+          })
+        )
+        yield* Effect.promise(() => secondManager.ready())
+
+        const results = yield* Effect.promise(() =>
+          Promise.allSettled([
+            firstManager.sendMessage(parentSessionId, 'worker', 'hold first follow-up'),
+            secondManager.sendMessage(parentSessionId, 'worker', 'hold competing follow-up'),
+          ])
+        )
+        expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+        expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1)
+        expect(firstManager.getAgentInfo('worker', parentSessionId).followUpUsed).toBe(true)
+      } finally {
+        yield* Effect.promise(() => Promise.all([firstManager.shutdown(), secondManager.shutdown()]))
+        rmSync(scope, { force: true, recursive: true })
+      }
     })
-    const manager = createAgentManager()
-    try {
-      await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'first'))
-      const first = manager.getAgentInfo('worker', parentSessionId)
-      const firstPid = requireChildProcess(first.childProcess).pid
-      await waitUntil(() => {
+  )
+
+  processTest('starts a fresh Claude agent instead of continuing at 112k context input tokens', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'claude-context-limit'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      rmSync(scope, { force: true, recursive: true })
+      const manager = createAgentManager()
+      try {
+        yield* withScoutProfile(
+          { model: 'claude-sonnet-5' },
+          Effect.gen(function* () {
+            yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'first')))
+            yield* Effect.promise(() =>
+              waitUntil(() => {
+                const info = manager.getAgentInfo('worker', parentSessionId)
+                return info.status === 'completed' && info.childProcess === undefined
+              })
+            )
+            const info = manager.getAgentInfo('worker', parentSessionId)
+            writeSessionWithContextUsage(info.sessionFile, 112_000)
+            const failure = yield* Effect.promise(() =>
+              manager.sendMessage(parentSessionId, 'worker', 'too much context').then(
+                () => undefined,
+                (error: unknown) => error
+              )
+            )
+            expect(asError(failure).message).toContain('112000 context input tokens')
+            expect(manager.getAgentInfo('worker', parentSessionId).childProcess).toBeUndefined()
+            expect(manager.getAgentInfo('worker', parentSessionId).followUpUsed).toBe(false)
+
+            writeSessionWithContextUsage(info.sessionFile, 111_999)
+            expect(yield* Effect.promise(() => manager.sendMessage(parentSessionId, 'worker', 'hold below limit'))).toEqual({ delivery: 'prompt' })
+          })
+        )
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
+    })
+  )
+
+  processTest('passes read-only profile metadata without changing the task message', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'readonly-profile-metadata'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      rmSync(scope, { force: true, recursive: true })
+      const manager = createAgentManager()
+      try {
+        yield* Effect.promise(() =>
+          manager.spawnAgent({
+            ...spawnParams(parentSessionId, 'worker', 'inspect exactly this'),
+            agent_type: 'scout',
+          })
+        )
         const info = manager.getAgentInfo('worker', parentSessionId)
-        return info.status === 'completed' && info.childProcess === undefined
-      })
-      expect(pidAlive(firstPid)).toBe(false)
-      expect(manager.readAgentResponse('worker', parentSessionId).finalResponse).toBe('response:first')
-
-      expect(await manager.sendMessage(parentSessionId, 'worker', 'second')).toEqual({
-        delivery: 'prompt',
-      })
-      const secondPid = requireChildProcess(manager.getAgentInfo('worker', parentSessionId).childProcess).pid
-      expect(secondPid).not.toBe(firstPid)
-      await waitUntil(() => {
-        const info = manager.getAgentInfo('worker', parentSessionId)
-        return info.status === 'completed' && info.childProcess === undefined
-      })
-      expect(pidAlive(secondPid)).toBe(false)
-      expect(manager.readAgentResponse('worker', parentSessionId).finalResponse).toBe('response:second')
-      expect(manager.getAgentInfo('worker', parentSessionId).followUpUsed).toBe(true)
-      expect(manager.sendMessage(parentSessionId, 'worker', 'third')).rejects.toThrow('single follow-up')
-      const sessionRecords = readFileSync(first.sessionFile, 'utf8')
-        .trim()
-        .split('\n')
-        .map((line) => JSON.parse(line))
-      const starts = sessionRecords.filter((entry) => entry.type === 'started')
-      expect(new Set(starts.map((entry) => entry.pid)).size).toBe(2)
-      for (const start of starts) {
-        expect(start.args).toContain('--no-context-files')
-        expect(start.args).toContain('--no-skills')
-        expect(start.args).toContain('--no-prompt-templates')
-        expect(start.args).not.toContain('--no-extensions')
-        expect(start.args).not.toContain('--extension')
-        expect(start.args).not.toContain('--system-prompt')
-        expect(start.args[start.args.indexOf('--append-system-prompt') + 1]).toContain('You are a fast codebase scout.')
-        expect(start.args.slice(start.args.indexOf('--provider'), start.args.indexOf('--provider') + 4)).toEqual([
-          '--provider',
-          'openai',
-          '--model',
-          'gpt-5.6-luna',
-        ])
-        expect(start.args[start.args.indexOf('--thinking') + 1]).toBe('low')
-        expect(start.args[start.args.indexOf('--tools') + 1]).toBe('read,bash,grep,find,ls,mcp,fffind,ffgrep,fff-multi-grep')
+        expect(info).toMatchObject({
+          color: 'accent',
+          isReadonly: true,
+          modelId: 'gpt-5.6-luna',
+          profile: 'scout',
+          provider: 'openai',
+        })
+        yield* Effect.promise(() =>
+          waitUntil(() => {
+            const contents = readFileSync(info.sessionFile, 'utf8')
+            return contents.includes('"type":"prompt"') && contents.includes('"type":"started"')
+          })
+        )
+        const records = readFileSync(info.sessionFile, 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line))
+        expect(records.find((record) => record.type === 'prompt')?.message).toBe('inspect exactly this')
+        const start = records.find((record) => record.type === 'started')
         expect(start.env).toMatchObject({
           PI_SUBAGENT_PROFILE: 'scout',
           PI_SUBAGENT_READONLY: '1',
         })
-        expect(start.env.PI_SUBAGENT_OWNER_TOKEN).toBeString()
-        expect(start.env).not.toHaveProperty('PI_SESSION_ID')
-        expect(start.env).not.toHaveProperty('PI_SESSION_FILE')
-        expect(start.env).not.toHaveProperty('PI_PROVIDER')
-        expect(start.env).not.toHaveProperty('PI_MODEL')
-        expect(start.env).not.toHaveProperty('PI_REASONING_LEVEL')
+        expect(start.args[start.args.indexOf('--append-system-prompt') + 1]).toContain('This subagent role is read-only.')
+        expect(start.args[start.args.indexOf('--tools') + 1]).toContain('fff-multi-grep')
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
       }
-    } finally {
-      await manager.shutdown()
-      rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
-        force: true,
-        recursive: true,
-      })
-    }
-  })
+    })
+  )
 
-  processTest('does not restart persisted agents whose profiles were removed', async () => {
-    const parentSessionId = 'removed-profile'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const manager = createAgentManager()
-    try {
-      await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'first'))
-      await waitUntil(() => {
-        const info = manager.getAgentInfo('worker', parentSessionId)
-        return info.status === 'completed' && info.childProcess === undefined
-      })
-      const info = manager.getAgentInfo('worker', parentSessionId)
-      writeFileSync(
-        info.infoFile,
-        JSON.stringify({ ...info, agentType: 'implementer', allowedTools: ['write'], isReadonly: false, profile: 'implementer' }, undefined, 2)
-      )
-
-      expect(manager.sendMessage(parentSessionId, 'worker', 'must not restart')).rejects.toThrow('unavailable profile: implementer')
-      expect(manager.getAgentInfo('worker', parentSessionId).childProcess).toBeUndefined()
-    } finally {
-      await manager.shutdown()
+  processTest('forwards Azure quota reported by a subagent response', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'subagent-azure-quota'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
       rmSync(scope, { force: true, recursive: true })
-    }
-  })
-
-  processTest('hibernates after failure while preserving the error', async () => {
-    const parentSessionId = 'lifecycle-failure'
-    rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
-      force: true,
-      recursive: true,
-    })
-    const manager = createAgentManager()
-    try {
-      await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'fail now'))
-      const started = manager.getAgentInfo('worker', parentSessionId)
-      const { pid } = requireChildProcess(started.childProcess)
-      await waitUntil(() => {
-        const info = manager.getAgentInfo('worker', parentSessionId)
-        return info.status === 'failed' && info.childProcess === undefined
-      })
-      const failed = manager.readAgentResponse('worker', parentSessionId)
-      expect(failed.error).toBe('fake failure')
-      expect(pidAlive(pid)).toBe(false)
-    } finally {
-      await manager.shutdown()
-      rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
-        force: true,
-        recursive: true,
-      })
-    }
-  })
-
-  processTest('accepts Darwin process ownership when ps cannot expose the token', async () => {
-    if (process.platform !== 'darwin') {
-      return
-    }
-    const parentSessionId = 'lifecycle-darwin'
-    rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
-      force: true,
-      recursive: true,
-    })
-    const manager = createAgentManager()
-    try {
-      await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold darwin'))
-      const running = manager.getAgentInfo('worker', parentSessionId)
-      expect(running.childProcess?.pid).toBeNumber()
-      expect(pidAlive(requireChildProcess(running.childProcess).pid)).toBe(true)
-    } finally {
-      await manager.shutdown()
-      rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
-        force: true,
-        recursive: true,
-      })
-    }
-  })
-
-  processTest('interrupt terminates the child and clears runtime artifacts', async () => {
-    const parentSessionId = 'lifecycle-interrupt'
-    rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
-      force: true,
-      recursive: true,
-    })
-    const manager = createAgentManager()
-    try {
-      await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold interrupt'))
-      const running = manager.getAgentInfo('worker', parentSessionId)
-      const { pid } = requireChildProcess(running.childProcess)
-      const interruptResult = await manager.interruptAgent(parentSessionId, 'worker')
-      expect(interruptResult.previous_status).toBe('running')
-      const interrupted = manager.getAgentInfo('worker', parentSessionId)
-      expect(interrupted.status).toBe('interrupted')
-      expect(interrupted.childProcess).toBeUndefined()
-      expect(pidAlive(pid)).toBe(false)
-      const socketDir = join(TEST_TEMP_DIR, 'pi-codex-subagents', userInfo().username, 'sockets')
-      expect(existsSync(join(socketDir, `${running.id}.active.json`))).toBe(false)
-      expect(existsSync(join(socketDir, `${running.id}.peek.json`))).toBe(false)
-      if (process.platform !== 'win32') {
-        expect(existsSync(getSocketPath(running.id))).toBe(false)
+      azureQuota.set(undefined)
+      const manager = createAgentManager()
+      try {
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'quota response')))
+        yield* Effect.promise(() => waitUntil(() => azureQuota.get() === 73))
+        expect(azureQuota.get()).toBe(73)
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        azureQuota.set(undefined)
+        rmSync(scope, { force: true, recursive: true })
       }
-    } finally {
-      await manager.shutdown()
-      rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
-        force: true,
-        recursive: true,
-      })
-    }
-  })
-
-  processTest('reconciles owned children without risking PID-reuse kills', async () => {
-    const parentSessionId = 'lifecycle-reconcile'
-    rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
-      force: true,
-      recursive: true,
     })
-    const owner = createAgentManager()
-    const reconcilers: ReturnType<typeof createAgentManager>[] = []
-    try {
-      await owner.spawnAgent(spawnParams(parentSessionId, 'orphan', 'hold orphan'))
-      const orphanPid = requireChildProcess(owner.getAgentInfo('orphan', parentSessionId).childProcess).pid
-      const reconciler = createAgentManager()
-      reconcilers.push(reconciler)
-      await waitUntil(() => {
-        const info = reconciler.getAgentInfo('orphan', parentSessionId)
-        return info.status === 'interrupted' && info.childProcess === undefined
-      })
-      await waitUntil(() => !pidAlive(orphanPid))
-      expect(pidAlive(orphanPid)).toBe(false)
+  )
 
-      await owner.spawnAgent(spawnParams(parentSessionId, 'pid-reuse', 'hold identity'))
-      const mismatched = owner.getAgentInfo('pid-reuse', parentSessionId)
-      const mismatchedPid = requireChildProcess(mismatched.childProcess).pid
-      requireChildProcess(mismatched.childProcess).processIdentity = 'not-the-owned-process'
-      writeFileSync(mismatched.infoFile, JSON.stringify(mismatched, undefined, 2))
-      const mismatchReconciler = createAgentManager()
-      reconcilers.push(mismatchReconciler)
-      await waitUntil(() => {
-        const info = mismatchReconciler.getAgentInfo('pid-reuse', parentSessionId)
-        return info.status === 'interrupted' && info.childProcess === undefined
+  processTest('reclaims a fresh lock whose PID identity no longer owns it, even with retention disabled', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'fresh-dead-lock'
+      const packageDir = join(TEST_AGENT_DIR, 'pi-codex-subagents')
+      const configFile = join(packageDir, 'config.json')
+      const scope = join(packageDir, 'runs', parentScopeKey(parentSessionId))
+      const lockFile = join(scope, `.task-${taskStorageKey('worker')}.lock`)
+      mkdirSync(scope, { recursive: true })
+      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
+      writeFileSync(configFile, JSON.stringify({ retentionDays: 0 }))
+      writeFileSync(
+        lockFile,
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
+        JSON.stringify({
+          createdAt: nowMs(),
+          pid: process.pid,
+          processIdentity: 'identity-from-an-exited-process',
+        })
+      )
+      const manager = createAgentManager()
+      try {
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold lock recovery')))
+        expect(manager.getAgentInfo('worker', parentSessionId).status).toBe('running')
+        expect(existsSync(lockFile)).toBe(false)
+        yield* Effect.promise(() => manager.interruptAgent(parentSessionId, 'worker'))
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+        rmSync(configFile, { force: true })
+      }
+    })
+  )
+
+  processTest('does not unlink a live lock that replaces the inspected dead instance', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'lock-replacement-race'
+      const packageDir = join(TEST_AGENT_DIR, 'pi-codex-subagents')
+      const configFile = join(packageDir, 'config.json')
+      const scope = join(packageDir, 'runs', parentScopeKey(parentSessionId))
+      const lockFile = join(scope, `.task-${taskStorageKey('worker')}.lock`)
+      const displacedLock = `${lockFile}.displaced`
+      mkdirSync(scope, { recursive: true })
+      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
+      writeFileSync(configFile, JSON.stringify({ retentionDays: 0 }))
+      writeFileSync(
+        lockFile,
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
+        JSON.stringify({
+          createdAt: nowMs(),
+          pid: process.pid,
+          processIdentity: 'identity-from-an-exited-process',
+          token: 'dead-instance',
+        })
+      )
+      let replaced = false
+      const manager = createAgentManager({
+        beforeReclaimTaskLockRemoval(file: string) {
+          if (replaced) {
+            return
+          }
+          replaced = true
+          renameSync(file, displacedLock)
+          writeFileSync(
+            file,
+            JSON.stringify({
+              createdAt: nowMs(),
+              pid: process.pid,
+              token: 'live-replacement',
+            })
+          )
+        },
       })
-      expect(pidAlive(mismatchedPid)).toBe(true)
-      await owner.shutdown()
-      expect(pidAlive(mismatchedPid)).toBe(false)
-    } finally {
-      await Promise.all([owner.shutdown(), ...reconcilers.map((manager) => manager.shutdown())])
+      try {
+        expect(manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'must not start'))).rejects.toThrow('already being created')
+        expect(replaced).toBe(true)
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
+        expect(JSON.parse(readFileSync(lockFile, 'utf8'))).toMatchObject({
+          pid: process.pid,
+          token: 'live-replacement',
+        })
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+        rmSync(configFile, { force: true })
+      }
+    })
+  )
+
+  processTest('does not unlink a live lock that replaces the lock this caller is normally releasing', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'lock-release-race'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      const lockFile = join(scope, `.task-${taskStorageKey('worker')}.lock`)
+      rmSync(scope, { force: true, recursive: true })
+      let replaced = false
+      const manager = createAgentManager({
+        beforeReleaseTaskLockRemoval(file: string) {
+          if (replaced || file !== lockFile) {
+            return
+          }
+          replaced = true
+          renameSync(file, `${file}.displaced`)
+          writeFileSync(
+            file,
+            JSON.stringify({
+              createdAt: nowMs(),
+              pid: process.pid,
+              token: 'concurrent-winner',
+            })
+          )
+        },
+      })
+      try {
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold release race')))
+        expect(replaced).toBe(true)
+        expect(manager.getAgentInfo('worker', parentSessionId).status).toBe('running')
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
+        expect(JSON.parse(readFileSync(lockFile, 'utf8'))).toMatchObject({ token: 'concurrent-winner' })
+        yield* Effect.promise(() => manager.interruptAgent(parentSessionId, 'worker'))
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
+    })
+  )
+
+  processTest('reconciles a persisted starting record left before child ownership', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'starting-without-owner'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      const id = '33333333-3333-4333-8333-333333333333'
+      const infoFile = join(scope, `${id}.info.json`)
+      const now = nowMs()
+      rmSync(scope, { force: true, recursive: true })
+      mkdirSync(scope, { recursive: true })
+      writeFileSync(
+        infoFile,
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
+        JSON.stringify({
+          canonicalName: '/worker',
+          createdAt: now,
+          cwd: TEST_AGENT_DIR,
+          id,
+          infoFile,
+          lastActivity: now,
+          logFile: join(scope, `${id}.log`),
+          messageCount: 0,
+          model: 'test:fake',
+          modelId: 'fake',
+          parentSessionId,
+          provider: 'test',
+          sessionFile: join(scope, `${id}.jsonl`),
+          startedAt: now,
+          status: 'starting',
+          taskName: 'worker',
+          updatedAt: now,
+        })
+      )
+      const manager = createAgentManager()
+      try {
+        yield* Effect.promise(() => manager.ready())
+        const reconciled = manager.getAgentInfo('worker', parentSessionId)
+        expect(reconciled.status).toBe('interrupted')
+        expect(reconciled.childProcess).toBeUndefined()
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
+    })
+  )
+
+  processTest('persists provisional ownership before the startup RPC round trip completes', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'startup-crash-window'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      rmSync(scope, { force: true, recursive: true })
+      const manager = createAgentManager({
+        childEnv: { PI_SUBAGENT_TEST_GET_STATE_DELAY_MS: '300' },
+      })
+      let spawnSettled = false
+      try {
+        const spawning = manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold startup')).finally(() => {
+          spawnSettled = true
+        })
+        yield* Effect.promise(() =>
+          waitUntil(() => {
+            try {
+              return Boolean(manager.getAgentInfo('worker', parentSessionId).childProcess)
+            } catch {
+              return false
+            }
+          })
+        )
+        const starting = manager.getAgentInfo('worker', parentSessionId)
+        expect(starting.status).toBe('starting')
+        expect(starting.childProcess?.pid).toBeNumber()
+        expect(pidAlive(requireChildProcess(starting.childProcess).pid)).toBe(true)
+        expect(spawnSettled).toBe(false)
+        yield* Effect.promise(() => spawning)
+        yield* Effect.promise(() => manager.interruptAgent(parentSessionId, 'worker'))
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
+    })
+  )
+
+  processTest('hibernates after settle and lazily restarts the persisted session', () =>
+    Effect.gen(function* () {
+      rmSync(join(TEST_AGENT_DIR, 'pi-codex-subagents', 'config.json'), { force: true })
+      const parentSessionId = 'lifecycle-settle'
       rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
         force: true,
         recursive: true,
       })
-    }
-  })
+      const manager = createAgentManager()
+      try {
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'first')))
+        const first = manager.getAgentInfo('worker', parentSessionId)
+        const firstPid = requireChildProcess(first.childProcess).pid
+        yield* Effect.promise(() =>
+          waitUntil(() => {
+            const info = manager.getAgentInfo('worker', parentSessionId)
+            return info.status === 'completed' && info.childProcess === undefined
+          })
+        )
+        expect(pidAlive(firstPid)).toBe(false)
+        expect(manager.readAgentResponse('worker', parentSessionId).finalResponse).toBe('response:first')
+
+        expect(yield* Effect.promise(() => manager.sendMessage(parentSessionId, 'worker', 'second'))).toEqual({
+          delivery: 'prompt',
+        })
+        const secondPid = requireChildProcess(manager.getAgentInfo('worker', parentSessionId).childProcess).pid
+        expect(secondPid).not.toBe(firstPid)
+        yield* Effect.promise(() =>
+          waitUntil(() => {
+            const info = manager.getAgentInfo('worker', parentSessionId)
+            return info.status === 'completed' && info.childProcess === undefined
+          })
+        )
+        expect(pidAlive(secondPid)).toBe(false)
+        expect(manager.readAgentResponse('worker', parentSessionId).finalResponse).toBe('response:second')
+        expect(manager.getAgentInfo('worker', parentSessionId).followUpUsed).toBe(true)
+        expect(manager.sendMessage(parentSessionId, 'worker', 'third')).rejects.toThrow('single follow-up')
+        const sessionRecords = readFileSync(first.sessionFile, 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line))
+        const starts = sessionRecords.filter((entry) => entry.type === 'started')
+        expect(new Set(starts.map((entry) => entry.pid)).size).toBe(2)
+        for (const start of starts) {
+          expect(start.args).toContain('--no-context-files')
+          expect(start.args).toContain('--no-skills')
+          expect(start.args).toContain('--no-prompt-templates')
+          expect(start.args).not.toContain('--no-extensions')
+          expect(start.args).not.toContain('--extension')
+          expect(start.args).not.toContain('--system-prompt')
+          expect(start.args[start.args.indexOf('--append-system-prompt') + 1]).toContain('You are a fast codebase scout.')
+          expect(start.args.slice(start.args.indexOf('--provider'), start.args.indexOf('--provider') + 4)).toEqual([
+            '--provider',
+            'openai',
+            '--model',
+            'gpt-5.6-luna',
+          ])
+          expect(start.args[start.args.indexOf('--thinking') + 1]).toBe('low')
+          expect(start.args[start.args.indexOf('--tools') + 1]).toBe('read,bash,grep,find,ls,mcp,fffind,ffgrep,fff-multi-grep')
+          expect(start.env).toMatchObject({
+            PI_SUBAGENT_PROFILE: 'scout',
+            PI_SUBAGENT_READONLY: '1',
+          })
+          expect(start.env.PI_SUBAGENT_OWNER_TOKEN).toBeString()
+          expect(start.env).not.toHaveProperty('PI_SESSION_ID')
+          expect(start.env).not.toHaveProperty('PI_SESSION_FILE')
+          expect(start.env).not.toHaveProperty('PI_PROVIDER')
+          expect(start.env).not.toHaveProperty('PI_MODEL')
+          expect(start.env).not.toHaveProperty('PI_REASONING_LEVEL')
+        }
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
+          force: true,
+          recursive: true,
+        })
+      }
+    })
+  )
+
+  processTest('does not restart persisted agents whose profiles were removed', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'removed-profile'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      rmSync(scope, { force: true, recursive: true })
+      const manager = createAgentManager()
+      try {
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'first')))
+        yield* Effect.promise(() =>
+          waitUntil(() => {
+            const info = manager.getAgentInfo('worker', parentSessionId)
+            return info.status === 'completed' && info.childProcess === undefined
+          })
+        )
+        const info = manager.getAgentInfo('worker', parentSessionId)
+        writeFileSync(
+          info.infoFile,
+          // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
+          JSON.stringify({ ...info, agentType: 'implementer', allowedTools: ['write'], isReadonly: false, profile: 'implementer' }, undefined, 2)
+        )
+
+        expect(manager.sendMessage(parentSessionId, 'worker', 'must not restart')).rejects.toThrow('unavailable profile: implementer')
+        expect(manager.getAgentInfo('worker', parentSessionId).childProcess).toBeUndefined()
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
+    })
+  )
+
+  processTest('hibernates after failure while preserving the error', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'lifecycle-failure'
+      rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
+        force: true,
+        recursive: true,
+      })
+      const manager = createAgentManager()
+      try {
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'fail now')))
+        const started = manager.getAgentInfo('worker', parentSessionId)
+        const { pid } = requireChildProcess(started.childProcess)
+        yield* Effect.promise(() =>
+          waitUntil(() => {
+            const info = manager.getAgentInfo('worker', parentSessionId)
+            return info.status === 'failed' && info.childProcess === undefined
+          })
+        )
+        const failed = manager.readAgentResponse('worker', parentSessionId)
+        expect(failed.error).toBe('fake failure')
+        expect(pidAlive(pid)).toBe(false)
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
+          force: true,
+          recursive: true,
+        })
+      }
+    })
+  )
+
+  processTest('accepts Darwin process ownership when ps cannot expose the token', () =>
+    Effect.gen(function* () {
+      if (process.platform !== 'darwin') {
+        return
+      }
+      const parentSessionId = 'lifecycle-darwin'
+      rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
+        force: true,
+        recursive: true,
+      })
+      const manager = createAgentManager()
+      try {
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold darwin')))
+        const running = manager.getAgentInfo('worker', parentSessionId)
+        expect(running.childProcess?.pid).toBeNumber()
+        expect(pidAlive(requireChildProcess(running.childProcess).pid)).toBe(true)
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
+          force: true,
+          recursive: true,
+        })
+      }
+    })
+  )
+
+  processTest('interrupt terminates the child and clears runtime artifacts', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'lifecycle-interrupt'
+      rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
+        force: true,
+        recursive: true,
+      })
+      const manager = createAgentManager()
+      try {
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold interrupt')))
+        const running = manager.getAgentInfo('worker', parentSessionId)
+        const { pid } = requireChildProcess(running.childProcess)
+        const interruptResult = yield* Effect.promise(() => manager.interruptAgent(parentSessionId, 'worker'))
+        expect(interruptResult.previous_status).toBe('running')
+        const interrupted = manager.getAgentInfo('worker', parentSessionId)
+        expect(interrupted.status).toBe('interrupted')
+        expect(interrupted.childProcess).toBeUndefined()
+        expect(pidAlive(pid)).toBe(false)
+        const socketDir = join(TEST_TEMP_DIR, 'pi-codex-subagents', userInfo().username, 'sockets')
+        expect(existsSync(join(socketDir, `${running.id}.active.json`))).toBe(false)
+        expect(existsSync(join(socketDir, `${running.id}.peek.json`))).toBe(false)
+        if (process.platform !== 'win32') {
+          expect(existsSync(getSocketPath(running.id))).toBe(false)
+        }
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
+          force: true,
+          recursive: true,
+        })
+      }
+    })
+  )
+
+  processTest('reconciles owned children without risking PID-reuse kills', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'lifecycle-reconcile'
+      rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
+        force: true,
+        recursive: true,
+      })
+      const owner = createAgentManager()
+      const reconcilers: ReturnType<typeof createAgentManager>[] = []
+      try {
+        yield* Effect.promise(() => owner.spawnAgent(spawnParams(parentSessionId, 'orphan', 'hold orphan')))
+        const orphanPid = requireChildProcess(owner.getAgentInfo('orphan', parentSessionId).childProcess).pid
+        const reconciler = createAgentManager()
+        reconcilers.push(reconciler)
+        yield* Effect.promise(() =>
+          waitUntil(() => {
+            const info = reconciler.getAgentInfo('orphan', parentSessionId)
+            return info.status === 'interrupted' && info.childProcess === undefined
+          })
+        )
+        yield* Effect.promise(() => waitUntil(() => !pidAlive(orphanPid)))
+        expect(pidAlive(orphanPid)).toBe(false)
+
+        yield* Effect.promise(() => owner.spawnAgent(spawnParams(parentSessionId, 'pid-reuse', 'hold identity')))
+        const mismatched = owner.getAgentInfo('pid-reuse', parentSessionId)
+        const mismatchedPid = requireChildProcess(mismatched.childProcess).pid
+        requireChildProcess(mismatched.childProcess).processIdentity = 'not-the-owned-process'
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
+        writeFileSync(mismatched.infoFile, JSON.stringify(mismatched, undefined, 2))
+        const mismatchReconciler = createAgentManager()
+        reconcilers.push(mismatchReconciler)
+        yield* Effect.promise(() =>
+          waitUntil(() => {
+            const info = mismatchReconciler.getAgentInfo('pid-reuse', parentSessionId)
+            return info.status === 'interrupted' && info.childProcess === undefined
+          })
+        )
+        expect(pidAlive(mismatchedPid)).toBe(true)
+        yield* Effect.promise(() => owner.shutdown())
+        expect(pidAlive(mismatchedPid)).toBe(false)
+      } finally {
+        yield* Effect.promise(() => Promise.all([owner.shutdown(), ...reconcilers.map((manager) => manager.shutdown())]))
+        rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
+          force: true,
+          recursive: true,
+        })
+      }
+    })
+  )
 })
 
 describe('completion delivery', () => {
-  processTest('publishes unclaimed settled and abnormal-exit completions', async () => {
-    const parentSessionId = 'completion-callbacks'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const completions: CompletionEvent[] = []
-    const manager = createAgentManager({
-      onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
+  processTest('publishes unclaimed settled and abnormal-exit completions', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'completion-callbacks'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      rmSync(scope, { force: true, recursive: true })
+      const completions: CompletionEvent[] = []
+      const manager = createAgentManager({
+        onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
+      })
+      try {
+        const background = yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'settled', 'first')))
+        expect(background.execution).toBe('background')
+        yield* Effect.promise(() => waitUntil(() => completions.some((event) => event.agentName === '/settled')))
+        expect(completions.filter((event) => event.agentName === '/settled')).toHaveLength(1)
+        expect(completions.find((event) => event.agentName === '/settled')).toMatchObject({
+          finalResponse: 'response:first',
+          status: 'completed',
+        })
+
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'crashed', 'crash now')))
+        yield* Effect.promise(() => waitUntil(() => completions.some((event) => event.agentName === '/crashed')))
+        expect(completions.filter((event) => event.agentName === '/crashed')).toHaveLength(1)
+        const crashed = completions.find((event) => event.agentName === '/crashed')
+        expect(crashed).toMatchObject({
+          status: 'failed',
+        })
+        expect(crashed?.error).toContain('code=23')
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
     })
-    try {
-      const background = await manager.spawnAgent(spawnParams(parentSessionId, 'settled', 'first'))
-      expect(background.execution).toBe('background')
-      await waitUntil(() => completions.some((event) => event.agentName === '/settled'))
-      expect(completions.filter((event) => event.agentName === '/settled')).toHaveLength(1)
-      expect(completions.find((event) => event.agentName === '/settled')).toMatchObject({
-        finalResponse: 'response:first',
-        status: 'completed',
-      })
+  )
 
-      await manager.spawnAgent(spawnParams(parentSessionId, 'crashed', 'crash now'))
-      await waitUntil(() => completions.some((event) => event.agentName === '/crashed'))
-      expect(completions.filter((event) => event.agentName === '/crashed')).toHaveLength(1)
-      const crashed = completions.find((event) => event.agentName === '/crashed')
-      expect(crashed).toMatchObject({
-        status: 'failed',
-      })
-      expect(crashed?.error).toContain('code=23')
-    } finally {
-      await manager.shutdown()
+  processTest('claims immediate foreground completion before automatic delivery', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'foreground-immediate'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
       rmSync(scope, { force: true, recursive: true })
-    }
-  })
-
-  processTest('claims immediate foreground completion before automatic delivery', async () => {
-    const parentSessionId = 'foreground-immediate'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const completions: CompletionEvent[] = []
-    const manager = createAgentManager({
-      onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
+      const completions: CompletionEvent[] = []
+      const manager = createAgentManager({
+        onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
+      })
+      try {
+        const result = yield* Effect.promise(() =>
+          manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'immediate finish'), {
+            waitForCompletion: true,
+          })
+        )
+        expect(result).toMatchObject({
+          completion: { agentName: '/worker', finalResponse: 'response:immediate finish', status: 'completed' },
+          execution: 'foreground',
+        })
+        expect(completions).toEqual([])
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
     })
-    try {
-      const result = await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'immediate finish'), {
-        waitForCompletion: true,
-      })
-      expect(result).toMatchObject({
-        completion: { agentName: '/worker', finalResponse: 'response:immediate finish', status: 'completed' },
-        execution: 'foreground',
-      })
-      expect(completions).toEqual([])
-    } finally {
-      await manager.shutdown()
+  )
+
+  processTest('prioritizes a foreground claim over an older wait for any agent', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'foreground-priority'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
       rmSync(scope, { force: true, recursive: true })
-    }
-  })
+      const manager = createAgentManager()
+      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
+      const waitController = new AbortController()
+      let olderWaitSettled = false
+      try {
+        const olderWait = manager.waitAgent(parentSessionId, undefined, waitController.signal).finally(() => {
+          olderWaitSettled = true
+        })
+        const foreground = yield* Effect.promise(() =>
+          manager.spawnAgent(spawnParams(parentSessionId, 'foreground', 'immediate foreground'), {
+            waitForCompletion: true,
+          })
+        )
+        expect(foreground.completion).toMatchObject({ agentName: '/foreground', status: 'completed' })
+        expect(olderWaitSettled).toBe(false)
 
-  processTest('prioritizes a foreground claim over an older wait for any agent', async () => {
-    const parentSessionId = 'foreground-priority'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const manager = createAgentManager()
-    const waitController = new AbortController()
-    let olderWaitSettled = false
-    try {
-      const olderWait = manager.waitAgent(parentSessionId, undefined, waitController.signal).finally(() => {
-        olderWaitSettled = true
-      })
-      const foreground = await manager.spawnAgent(spawnParams(parentSessionId, 'foreground', 'immediate foreground'), {
-        waitForCompletion: true,
-      })
-      expect(foreground.completion).toMatchObject({ agentName: '/foreground', status: 'completed' })
-      expect(olderWaitSettled).toBe(false)
-
-      await manager.spawnAgent(spawnParams(parentSessionId, 'background', 'immediate background'))
-      const olderWaitResult = await olderWait
-      expect(olderWaitResult.event).toMatchObject({ agentName: '/background', status: 'completed' })
-    } finally {
-      waitController.abort(new Error('test cleanup'))
-      await manager.shutdown()
-      rmSync(scope, { force: true, recursive: true })
-    }
-  })
-
-  processTest('returns foreground runtime failures without automatic delivery', async () => {
-    const parentSessionId = 'foreground-failure'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const completions: CompletionEvent[] = []
-    const manager = createAgentManager({
-      onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'background', 'immediate background')))
+        const olderWaitResult = yield* Effect.promise(() => olderWait)
+        expect(olderWaitResult.event).toMatchObject({ agentName: '/background', status: 'completed' })
+      } finally {
+        waitController.abort(new Error('test cleanup'))
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
     })
-    try {
-      const result = await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'fail foreground'), {
-        waitForCompletion: true,
-      })
-      expect(result.completion).toMatchObject({ agentName: '/worker', error: 'fake failure', status: 'failed' })
-      expect(completions).toEqual([])
-    } finally {
-      await manager.shutdown()
-      rmSync(scope, { force: true, recursive: true })
-    }
-  })
+  )
 
-  processTest('releases a running foreground claim on abort without interrupting the child', async () => {
-    const parentSessionId = 'foreground-abort-running'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const completions: CompletionEvent[] = []
-    const controller = new AbortController()
-    const manager = createAgentManager({
-      onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
+  processTest('returns foreground runtime failures without automatic delivery', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'foreground-failure'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      rmSync(scope, { force: true, recursive: true })
+      const completions: CompletionEvent[] = []
+      const manager = createAgentManager({
+        onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
+      })
+      try {
+        const result = yield* Effect.promise(() =>
+          manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'fail foreground'), {
+            waitForCompletion: true,
+          })
+        )
+        expect(result.completion).toMatchObject({ agentName: '/worker', error: 'fake failure', status: 'failed' })
+        expect(completions).toEqual([])
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
     })
-    try {
-      const spawn = manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'slow foreground'), {
-        signal: controller.signal,
-        waitForCompletion: true,
-      })
-      await waitUntil(() => manager.listAgents(undefined, parentSessionId).some((agent) => agent.agent_status === 'running'))
-      controller.abort(new Error('stop waiting'))
-      expect(await rejectionOf(spawn)).toHaveProperty('message', 'stop waiting')
-      await waitUntil(() => completions.some((event) => event.agentName === '/worker'))
-      expect(completions.filter((event) => event.agentName === '/worker')).toHaveLength(1)
-      expect(manager.getAgentInfo('worker', parentSessionId).status).toBe('completed')
-    } finally {
-      await manager.shutdown()
-      rmSync(scope, { force: true, recursive: true })
-    }
-  })
+  )
 
-  processTest('rejects an already-aborted foreground spawn before creating artifacts', async () => {
-    const parentSessionId = 'foreground-pre-abort'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const controller = new AbortController()
-    controller.abort(new Error('already stopped'))
-    const manager = createAgentManager()
-    try {
-      const spawn = manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'immediate ignored'), {
-        signal: controller.signal,
-        waitForCompletion: true,
-      })
-      expect(await rejectionOf(spawn)).toHaveProperty('message', 'already stopped')
-      expect(() => manager.getAgentInfo('worker', parentSessionId)).toThrow('Agent not found')
-      expect(existsSync(scope)).toBe(false)
-    } finally {
-      await manager.shutdown()
+  processTest('releases a running foreground claim on abort without interrupting the child', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'foreground-abort-running'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
       rmSync(scope, { force: true, recursive: true })
-    }
-  })
-
-  processTest('releases a foreground claim when aborted during startup', async () => {
-    const parentSessionId = 'foreground-abort-startup'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const completions: CompletionEvent[] = []
-    const controller = new AbortController()
-    const manager = createAgentManager({
-      childEnv: { PI_SUBAGENT_TEST_GET_STATE_DELAY_MS: '200' },
-      onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
+      const completions: CompletionEvent[] = []
+      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
+      const controller = new AbortController()
+      const manager = createAgentManager({
+        onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
+      })
+      try {
+        const spawn = manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'slow foreground'), {
+          signal: controller.signal,
+          waitForCompletion: true,
+        })
+        yield* Effect.promise(() => waitUntil(() => manager.listAgents(undefined, parentSessionId).some((agent) => agent.agent_status === 'running')))
+        controller.abort(new Error('stop waiting'))
+        expect(yield* Effect.promise(() => rejectionOf(spawn))).toHaveProperty('message', 'stop waiting')
+        yield* Effect.promise(() => waitUntil(() => completions.some((event) => event.agentName === '/worker')))
+        expect(completions.filter((event) => event.agentName === '/worker')).toHaveLength(1)
+        expect(manager.getAgentInfo('worker', parentSessionId).status).toBe('completed')
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
     })
-    try {
-      const spawn = manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'immediate after startup'), {
-        signal: controller.signal,
-        waitForCompletion: true,
-      })
-      await waitUntil(() => manager.listAgents(undefined, parentSessionId).some((agent) => agent.agent_status === 'starting'))
-      await waitUntil(() => manager.getAgentInfo('worker', parentSessionId).childProcess !== undefined)
-      controller.abort(new Error('startup wait stopped'))
-      expect(await rejectionOf(spawn)).toHaveProperty('message', 'startup wait stopped')
-      await waitUntil(() => completions.some((event) => event.agentName === '/worker'))
-      expect(completions.filter((event) => event.agentName === '/worker')).toHaveLength(1)
-    } finally {
-      await manager.shutdown()
+  )
+
+  processTest('rejects an already-aborted foreground spawn before creating artifacts', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'foreground-pre-abort'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
       rmSync(scope, { force: true, recursive: true })
-    }
-  })
-
-  processTest('keeps the task lock until an aborted foreground launch settles', async () => {
-    const parentSessionId = 'foreground-abort-before-ownership'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const controller = new AbortController()
-    const manager = createAgentManager()
-    let reconciler: ReturnType<typeof createAgentManager> | undefined
-    // A launch that never settles leaves the abort observable only through the foreground wait.
-    asNarrowed<{ startLiveAgent: () => Effect.Effect<never> }, typeof manager.instance>(manager.instance).startLiveAgent = () => Effect.never
-    try {
-      const spawn = manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'unused'), {
-        signal: controller.signal,
-        waitForCompletion: true,
-      })
-      await waitUntil(() => manager.listAgents(undefined, parentSessionId).some((agent) => agent.agent_status === 'starting'))
-      controller.abort(new Error('stop before ownership'))
-      expect(await rejectionOf(spawn)).toHaveProperty('message', 'stop before ownership')
-
-      reconciler = createAgentManager()
-      await reconciler.ready()
-      expect(reconciler.getAgentInfo('worker', parentSessionId).status).toBe('starting')
-    } finally {
-      await Promise.all([manager.shutdown(), ...(reconciler === undefined ? [] : [reconciler.shutdown()])])
-      rmSync(scope, { force: true, recursive: true })
-    }
-  })
-
-  processTest('removes the foreground claim when launch rejects before an event', async () => {
-    const parentSessionId = 'foreground-launch-rejection'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const completions: CompletionEvent[] = []
-    const manager = createAgentManager({
-      onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
+      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
+      const controller = new AbortController()
+      controller.abort(new Error('already stopped'))
+      const manager = createAgentManager()
+      try {
+        const spawn = manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'immediate ignored'), {
+          signal: controller.signal,
+          waitForCompletion: true,
+        })
+        expect(yield* Effect.promise(() => rejectionOf(spawn))).toHaveProperty('message', 'already stopped')
+        expect(() => manager.getAgentInfo('worker', parentSessionId)).toThrow('Agent not found')
+        expect(existsSync(scope)).toBe(false)
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
     })
-    const internals = asNarrowed<
-      {
-        pushMailbox: (event: Record<string, unknown>) => void
-        startLiveAgent: () => Effect.Effect<never, TestLaunchError>
-        waiters: unknown[]
-      },
-      typeof manager.instance
-    >(manager.instance)
-    internals.startLiveAgent = () => Effect.fail(new TestLaunchError({ message: 'launch rejected' }))
-    try {
-      const spawn = manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'unused'), {
-        waitForCompletion: true,
+  )
+
+  processTest('releases a foreground claim when aborted during startup', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'foreground-abort-startup'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      rmSync(scope, { force: true, recursive: true })
+      const completions: CompletionEvent[] = []
+      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
+      const controller = new AbortController()
+      const manager = createAgentManager({
+        childEnv: { PI_SUBAGENT_TEST_GET_STATE_DELAY_MS: '200' },
+        onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
       })
-      expect(await rejectionOf(spawn)).toHaveProperty('message', 'launch rejected')
-      expect(internals.waiters).toEqual([])
+      try {
+        const spawn = manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'immediate after startup'), {
+          signal: controller.signal,
+          waitForCompletion: true,
+        })
+        yield* Effect.promise(() =>
+          waitUntil(() => manager.listAgents(undefined, parentSessionId).some((agent) => agent.agent_status === 'starting'))
+        )
+        yield* Effect.promise(() => waitUntil(() => manager.getAgentInfo('worker', parentSessionId).childProcess !== undefined))
+        controller.abort(new Error('startup wait stopped'))
+        expect(yield* Effect.promise(() => rejectionOf(spawn))).toHaveProperty('message', 'startup wait stopped')
+        yield* Effect.promise(() => waitUntil(() => completions.some((event) => event.agentName === '/worker')))
+        expect(completions.filter((event) => event.agentName === '/worker')).toHaveLength(1)
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
+    })
+  )
 
-      internals.pushMailbox({
-        agentName: '/worker',
-        color: 'accent',
-        createdAt: nowMs(),
-        finalResponse: 'later result',
-        id: 'later-event',
-        isReadonly: true,
-        parentSessionId,
-        profile: 'scout',
-        status: 'completed',
+  processTest('keeps the task lock until an aborted foreground launch settles', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'foreground-abort-before-ownership'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      rmSync(scope, { force: true, recursive: true })
+      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
+      const controller = new AbortController()
+      const manager = createAgentManager()
+      let reconciler: ReturnType<typeof createAgentManager> | undefined
+      // A launch that never settles leaves the abort observable only through the foreground wait.
+      asNarrowed<{ startLiveAgent: () => Effect.Effect<never> }, typeof manager.instance>(manager.instance).startLiveAgent = () => Effect.never
+      try {
+        const spawn = manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'unused'), {
+          signal: controller.signal,
+          waitForCompletion: true,
+        })
+        yield* Effect.promise(() =>
+          waitUntil(() => manager.listAgents(undefined, parentSessionId).some((agent) => agent.agent_status === 'starting'))
+        )
+        controller.abort(new Error('stop before ownership'))
+        expect(yield* Effect.promise(() => rejectionOf(spawn))).toHaveProperty('message', 'stop before ownership')
+
+        const startedReconciler = createAgentManager()
+        reconciler = startedReconciler
+        yield* Effect.promise(() => startedReconciler.ready())
+        expect(startedReconciler.getAgentInfo('worker', parentSessionId).status).toBe('starting')
+      } finally {
+        yield* Effect.promise(() => Promise.all([manager.shutdown(), ...(reconciler === undefined ? [] : [reconciler.shutdown()])]))
+        rmSync(scope, { force: true, recursive: true })
+      }
+    })
+  )
+
+  processTest('removes the foreground claim when launch rejects before an event', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'foreground-launch-rejection'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      rmSync(scope, { force: true, recursive: true })
+      const completions: CompletionEvent[] = []
+      const manager = createAgentManager({
+        onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
       })
-      expect(completions).toEqual([expect.objectContaining({ agentName: '/worker', finalResponse: 'later result' })])
-    } finally {
-      await manager.shutdown()
-      rmSync(scope, { force: true, recursive: true })
-    }
-  })
+      const internals = asNarrowed<
+        {
+          pushMailbox: (event: Record<string, unknown>) => void
+          startLiveAgent: () => Effect.Effect<never, TestLaunchError>
+          waiters: unknown[]
+        },
+        typeof manager.instance
+      >(manager.instance)
+      internals.startLiveAgent = () => Effect.fail(new TestLaunchError({ message: 'launch rejected' }))
+      try {
+        const spawn = manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'unused'), {
+          waitForCompletion: true,
+        })
+        expect(yield* Effect.promise(() => rejectionOf(spawn))).toHaveProperty('message', 'launch rejected')
+        expect(internals.waiters).toEqual([])
 
-  processTest('suppresses automatic delivery while wait tools claim completions', async () => {
-    const parentSessionId = 'completion-waits'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const completions: CompletionEvent[] = []
-    const manager = createAgentManager({
-      onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
+        internals.pushMailbox({
+          agentName: '/worker',
+          color: 'accent',
+          createdAt: nowMs(),
+          finalResponse: 'later result',
+          id: 'later-event',
+          isReadonly: true,
+          parentSessionId,
+          profile: 'scout',
+          status: 'completed',
+        })
+        expect(completions).toEqual([expect.objectContaining({ agentName: '/worker', finalResponse: 'later result' })])
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
     })
-    try {
-      await manager.spawnAgent(spawnParams(parentSessionId, 'one', 'first'))
-      const waited = await manager.waitAgent(parentSessionId, ['one'])
-      expect(waited.event).toMatchObject({ agentName: '/one', status: 'completed' })
-      expect(completions).toEqual([])
+  )
 
-      await manager.spawnAgent(spawnParams(parentSessionId, 'two', 'second'))
-      const all = await manager.waitAllAgents(parentSessionId, ['two'])
-      expect(all.responses).toEqual([expect.objectContaining({ agent_name: '/two', status: 'completed' })])
-      expect(completions).toEqual([])
-    } finally {
-      await manager.shutdown()
+  processTest('suppresses automatic delivery while wait tools claim completions', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'completion-waits'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
       rmSync(scope, { force: true, recursive: true })
-    }
-  })
-
-  processTest('releases suppressed completions when wait_all_agents is cancelled', async () => {
-    const parentSessionId = 'completion-wait-cancel'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const completions: CompletionEvent[] = []
-    const manager = createAgentManager({
-      onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
-    })
-    const controller = new AbortController()
-    try {
-      await manager.spawnAgent(spawnParams(parentSessionId, 'slow', 'hold slow'))
-      await manager.spawnAgent(spawnParams(parentSessionId, 'fast', 'fast'))
-      const wait = manager.waitAllAgents(parentSessionId, ['slow', 'fast'], controller.signal)
-      await waitUntil(() => manager.getAgentInfo('fast', parentSessionId).status === 'completed')
-      expect(completions).toEqual([])
-      controller.abort(new Error('cancelled'))
-      expect(wait).rejects.toThrow('cancelled')
-      await waitUntil(() => completions.some((event) => event.agentName === '/fast'))
-      expect(completions.filter((event) => event.agentName === '/fast')).toHaveLength(1)
-    } finally {
-      await manager.shutdown()
-      rmSync(scope, { force: true, recursive: true })
-    }
-  })
-
-  processTest('reports active and inactive lifecycle transitions', async () => {
-    const parentSessionId = 'status-transitions'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const activity: boolean[] = []
-    const manager = createAgentManager({
-      onActivityChange: (event: ActivityEvent) => {
-        if (event.parentSessionId === parentSessionId) {
-          activity.push(event.active)
-        }
-      },
-    })
-    try {
-      await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'first'))
-      await waitUntil(() => manager.getAgentInfo('worker', parentSessionId).status === 'completed')
-      expect(activity).toContain(true)
-      expect(activity.at(-1)).toBe(false)
-
-      const settled = manager.getAgentInfo('worker', parentSessionId)
-      const rejectedAt = activity.length
-      expect(manager.sendMessage(parentSessionId, 'worker', 'reject restart')).rejects.toThrow('fake prompt rejection')
-      expect(manager.getAgentInfo('worker', parentSessionId)).toMatchObject({
-        completedAt: settled.completedAt,
-        finalResponse: settled.finalResponse,
-        status: 'completed',
+      const completions: CompletionEvent[] = []
+      const manager = createAgentManager({
+        onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
       })
-      expect(manager.getAgentInfo('worker', parentSessionId).childProcess).toBeUndefined()
-      expect(activity.slice(rejectedAt)).toContain(true)
-      expect(activity.at(-1)).toBe(false)
+      try {
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'one', 'first')))
+        const waited = yield* Effect.promise(() => manager.waitAgent(parentSessionId, ['one']))
+        expect(waited.event).toMatchObject({ agentName: '/one', status: 'completed' })
+        expect(completions).toEqual([])
 
-      const restartAt = activity.length
-      await manager.sendMessage(parentSessionId, 'worker', 'hold restart')
-      expect(activity.slice(restartAt)).toContain(true)
-      await manager.interruptAgent(parentSessionId, 'worker')
-      expect(activity.at(-1)).toBe(false)
-    } finally {
-      await manager.shutdown()
-      rmSync(scope, { force: true, recursive: true })
-    }
-  })
-
-  processTest('reports inactivity once per idle spell without stopping the agent', async () => {
-    const parentSessionId = 'inactivity-monitor'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const inactivity: InactivityEvent[] = []
-    const manager = createAgentManager({
-      inactivityTimeoutMs: 50,
-      onInactivity: (event: InactivityEvent) => inactivity.push(event),
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'two', 'second')))
+        const all = yield* Effect.promise(() => manager.waitAllAgents(parentSessionId, ['two']))
+        expect(all.responses).toEqual([expect.objectContaining({ agent_name: '/two', status: 'completed' })])
+        expect(completions).toEqual([])
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
     })
-    try {
-      await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold inactivity'))
-      await waitUntil(() => inactivity.length === 1)
-      expect(inactivity[0]).toMatchObject({ agentName: '/worker', parentSessionId })
-      expect(inactivity[0].inactiveForMs).toBeGreaterThanOrEqual(50)
-      expect(manager.getAgentInfo('worker', parentSessionId).status).toBe('running')
-      expect(await manager.sendMessage(parentSessionId, 'worker', 'new direction')).toEqual({ delivery: 'steer' })
-      expect(manager.listAgents(undefined, parentSessionId)[0].last_task_message).toBe('new direction')
-      await waitUntil(() => inactivity.length === 2)
-      await sleep(80)
-      expect(inactivity).toHaveLength(2)
-    } finally {
-      await manager.shutdown()
-      rmSync(scope, { force: true, recursive: true })
-    }
-  })
+  )
 
-  processTest('routes one completion to only the first of two waiting callers', async () => {
-    const parentSessionId = 'two-waiters'
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const manager = createAgentManager()
-    const secondController = new AbortController()
-    try {
-      await manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'first'))
-      let secondSettled = false
-      const first = manager.waitAgent(parentSessionId, ['worker'])
-      const second = manager.waitAgent(parentSessionId, ['worker'], secondController.signal).finally(() => {
-        secondSettled = true
-      })
-      const firstResult = await first
-      expect(firstResult.event).toMatchObject({ agentName: '/worker', status: 'completed' })
-      await sleep(20)
-      expect(secondSettled).toBe(false)
-      secondController.abort(new Error('no second completion is coming'))
-      expect(second).rejects.toThrow('no second completion is coming')
-      await waitUntil(() => secondSettled)
-    } finally {
-      await manager.shutdown()
+  processTest('releases suppressed completions when wait_all_agents is cancelled', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'completion-wait-cancel'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
       rmSync(scope, { force: true, recursive: true })
-    }
-  })
+      const completions: CompletionEvent[] = []
+      const manager = createAgentManager({
+        onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
+      })
+      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
+      const controller = new AbortController()
+      try {
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'slow', 'hold slow')))
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'fast', 'fast')))
+        const wait = manager.waitAllAgents(parentSessionId, ['slow', 'fast'], controller.signal)
+        yield* Effect.promise(() => waitUntil(() => manager.getAgentInfo('fast', parentSessionId).status === 'completed'))
+        expect(completions).toEqual([])
+        controller.abort(new Error('cancelled'))
+        expect(wait).rejects.toThrow('cancelled')
+        yield* Effect.promise(() => waitUntil(() => completions.some((event) => event.agentName === '/fast')))
+        expect(completions.filter((event) => event.agentName === '/fast')).toHaveLength(1)
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
+    })
+  )
+
+  processTest('reports active and inactive lifecycle transitions', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'status-transitions'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      rmSync(scope, { force: true, recursive: true })
+      const activity: boolean[] = []
+      const manager = createAgentManager({
+        onActivityChange: (event: ActivityEvent) => {
+          if (event.parentSessionId === parentSessionId) {
+            activity.push(event.active)
+          }
+        },
+      })
+      try {
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'first')))
+        yield* Effect.promise(() => waitUntil(() => manager.getAgentInfo('worker', parentSessionId).status === 'completed'))
+        expect(activity).toContain(true)
+        expect(activity.at(-1)).toBe(false)
+
+        const settled = manager.getAgentInfo('worker', parentSessionId)
+        const rejectedAt = activity.length
+        expect(manager.sendMessage(parentSessionId, 'worker', 'reject restart')).rejects.toThrow('fake prompt rejection')
+        expect(manager.getAgentInfo('worker', parentSessionId)).toMatchObject({
+          completedAt: settled.completedAt,
+          finalResponse: settled.finalResponse,
+          status: 'completed',
+        })
+        expect(manager.getAgentInfo('worker', parentSessionId).childProcess).toBeUndefined()
+        expect(activity.slice(rejectedAt)).toContain(true)
+        expect(activity.at(-1)).toBe(false)
+
+        const restartAt = activity.length
+        yield* Effect.promise(() => manager.sendMessage(parentSessionId, 'worker', 'hold restart'))
+        expect(activity.slice(restartAt)).toContain(true)
+        yield* Effect.promise(() => manager.interruptAgent(parentSessionId, 'worker'))
+        expect(activity.at(-1)).toBe(false)
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
+    })
+  )
+
+  processTest('reports inactivity once per idle spell without stopping the agent', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'inactivity-monitor'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      rmSync(scope, { force: true, recursive: true })
+      const inactivity: InactivityEvent[] = []
+      const manager = createAgentManager({
+        inactivityTimeoutMs: 50,
+        onInactivity: (event: InactivityEvent) => inactivity.push(event),
+      })
+      try {
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold inactivity')))
+        yield* Effect.promise(() => waitUntil(() => inactivity.length === 1))
+        expect(inactivity[0]).toMatchObject({ agentName: '/worker', parentSessionId })
+        expect(inactivity[0].inactiveForMs).toBeGreaterThanOrEqual(50)
+        expect(manager.getAgentInfo('worker', parentSessionId).status).toBe('running')
+        expect(yield* Effect.promise(() => manager.sendMessage(parentSessionId, 'worker', 'new direction'))).toEqual({ delivery: 'steer' })
+        expect(manager.listAgents(undefined, parentSessionId)[0].last_task_message).toBe('new direction')
+        yield* Effect.promise(() => waitUntil(() => inactivity.length === 2))
+        yield* Effect.promise(() => sleep(80))
+        expect(inactivity).toHaveLength(2)
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
+    })
+  )
+
+  processTest('routes one completion to only the first of two waiting callers', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'two-waiters'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      rmSync(scope, { force: true, recursive: true })
+      const manager = createAgentManager()
+      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
+      const secondController = new AbortController()
+      try {
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'first')))
+        let secondSettled = false
+        const first = manager.waitAgent(parentSessionId, ['worker'])
+        const second = manager.waitAgent(parentSessionId, ['worker'], secondController.signal).finally(() => {
+          secondSettled = true
+        })
+        const firstResult = yield* Effect.promise(() => first)
+        expect(firstResult.event).toMatchObject({ agentName: '/worker', status: 'completed' })
+        yield* Effect.promise(() => sleep(20))
+        expect(secondSettled).toBe(false)
+        secondController.abort(new Error('no second completion is coming'))
+        expect(second).rejects.toThrow('no second completion is coming')
+        yield* Effect.promise(() => waitUntil(() => secondSettled))
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
+    })
+  )
 })
 
 describe('extension completion delivery and status activity', () => {
-  processTest('registers commands, publishes status activity, and delivers bounded notifications', async () => {
-    const handlers = new Map<string, FakeHandler[]>()
-    const tools = new Map<string, FakeToolDefinition>()
-    interface FakeCommand {
-      handler: (args: string | undefined, ctx: unknown) => Promise<void>
-    }
-    type FakeTerminalInputHandler = (data: string) => { consume?: boolean; data?: string } | undefined
+  processTest('registers commands, publishes status activity, and delivers bounded notifications', () =>
+    Effect.gen(function* () {
+      const handlers = new Map<string, FakeHandler[]>()
+      const tools = new Map<string, FakeToolDefinition>()
+      interface FakeCommand {
+        handler: (args: string | undefined, ctx: unknown) => Promise<void>
+      }
+      type FakeTerminalInputHandler = (data: string) => { consume?: boolean; data?: string } | undefined
 
-    const commands = new Map<string, FakeCommand>()
-    const renderers = new Map<string, FakeRenderer>()
-    const sentMessages: { message: FakeMessage; options: unknown }[] = []
-    let terminalInputHandler: FakeTerminalInputHandler | undefined
-    let mainIdle = true
-    const requireTool = (name: string): FakeToolDefinition => {
-      const tool = tools.get(name)
-      if (tool === undefined) {
-        throw new Error(`tool ${name} was not registered`)
+      const commands = new Map<string, FakeCommand>()
+      const renderers = new Map<string, FakeRenderer>()
+      const sentMessages: { message: FakeMessage; options: unknown }[] = []
+      let terminalInputHandler: FakeTerminalInputHandler | undefined
+      let mainIdle = true
+      const requireTool = (name: string): FakeToolDefinition => {
+        const tool = tools.get(name)
+        if (tool === undefined) {
+          throw new Error(`tool ${name} was not registered`)
+        }
+        return tool
       }
-      return tool
-    }
-    const requireRenderer = (name: string): FakeRenderer => {
-      const renderer = renderers.get(name)
-      if (renderer === undefined) {
-        throw new Error(`renderer ${name} was not registered`)
+      const requireRenderer = (name: string): FakeRenderer => {
+        const renderer = renderers.get(name)
+        if (renderer === undefined) {
+          throw new Error(`renderer ${name} was not registered`)
+        }
+        return renderer
       }
-      return renderer
-    }
-    const pi = {
-      getActiveTools() {
-        return ['read', 'bash']
-      },
-      getThinkingLevel() {
-        return 'high'
-      },
-      on(name: string, handler: FakeHandler) {
-        const entries = handlers.get(name) ?? []
-        entries.push(handler)
-        handlers.set(name, entries)
-      },
-      registerCommand(name: string, command: FakeCommand) {
-        commands.set(name, command)
-      },
-      registerMessageRenderer(name: string, renderer: FakeRenderer) {
-        renderers.set(name, renderer)
-      },
-      registerTool(tool: FakeToolDefinition) {
-        tools.set(tool.name, tool)
-      },
-      sendMessage(message: FakeMessage, options: unknown) {
-        sentMessages.push({ message, options })
-      },
-    }
-    const parentSessionId = 'index-integration-parent'
-    const ctx = {
-      cwd: TEST_AGENT_DIR,
-      isIdle: () => mainIdle,
-      mode: 'tui',
-      model: { id: 'fake', provider: 'test' },
-      modelRegistry: { getAvailable: () => AVAILABLE_MODELS },
-      sessionManager: {
-        getSessionFile: () => join(TEST_AGENT_DIR, 'parent.jsonl'),
-        getSessionId: () => parentSessionId,
-      },
-      ui: {
-        notify() {
-          /* Interrupt failures are not expected in this integration test. */
+      const pi = {
+        getActiveTools() {
+          return ['read', 'bash']
         },
-        onTerminalInput(handler: FakeTerminalInputHandler) {
-          terminalInputHandler = handler
-          return () => {
-            terminalInputHandler = undefined
-          }
+        getThinkingLevel() {
+          return 'high'
         },
-      },
-    }
-    const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-    rmSync(scope, { force: true, recursive: true })
-    const { register: subagentExtension } = await import('@/features/sub_agents/index.js')
-    subagentExtension(asExtensionApi(pi), runtime, { inactivityTimeoutMs: 300, piCommand: { command: FAKE_RPC_CHILD } })
-    const emit = async (name: string, event: unknown = {}) => {
-      for (const handler of handlers.get(name) ?? []) {
-        await handler(event, ctx)
+        on(name: string, handler: FakeHandler) {
+          const entries = handlers.get(name) ?? []
+          entries.push(handler)
+          handlers.set(name, entries)
+        },
+        registerCommand(name: string, command: FakeCommand) {
+          commands.set(name, command)
+        },
+        registerMessageRenderer(name: string, renderer: FakeRenderer) {
+          renderers.set(name, renderer)
+        },
+        registerTool(tool: FakeToolDefinition) {
+          tools.set(tool.name, tool)
+        },
+        sendMessage(message: FakeMessage, options: unknown) {
+          sentMessages.push({ message, options })
+        },
       }
-    }
-
-    try {
-      await emit('session_start', { reason: 'startup' })
-      expect(commands.has('agents')).toBe(true)
-      expect(commands.has('subagent')).toBe(true)
-      expect(commands.has('subagents')).toBe(true)
-      expect(renderers.has('pi-codex-subagent-completion')).toBe(true)
-      const spawnTool = requireTool('spawn_agent')
-      expect(spawnTool.parameters.required).toContain('agent_type')
-      expect(spawnTool.parameters.required).not.toContain('run_in_background')
-      expect(spawnTool.parameters.properties.skills).toBeUndefined()
-      expect(spawnTool.parameters.properties.agent_type.enum).toEqual(['scout', 'librarian', 'reviewer'])
-      expect(spawnTool.parameters.properties.run_in_background.type).toBe('boolean')
-      expect(spawnTool.description).toContain('Foreground is the default')
-      expect(requireTool('wait_agent').description).toContain('background')
-      expect(requireTool('wait_all_agents').description).toContain('background')
-
-      const beforeAgentStart = handlers.get('before_agent_start')?.[0]
-      if (beforeAgentStart === undefined) {
-        throw new Error('before_agent_start was not registered')
+      const parentSessionId = 'index-integration-parent'
+      const ctx = {
+        cwd: TEST_AGENT_DIR,
+        isIdle: () => mainIdle,
+        mode: 'tui',
+        model: { id: 'fake', provider: 'test' },
+        modelRegistry: { getAvailable: () => AVAILABLE_MODELS },
+        sessionManager: {
+          getSessionFile: () => join(TEST_AGENT_DIR, 'parent.jsonl'),
+          getSessionId: () => parentSessionId,
+        },
+        ui: {
+          notify() {
+            /* Interrupt failures are not expected in this integration test. */
+          },
+          onTerminalInput(handler: FakeTerminalInputHandler) {
+            terminalInputHandler = handler
+            return () => {
+              terminalInputHandler = undefined
+            }
+          },
+        },
       }
-      const previousOwnerToken = process.env.PI_SUBAGENT_OWNER_TOKEN
-      try {
-        delete process.env.PI_SUBAGENT_OWNER_TOKEN
-        const parentPrompt = asResult<{ systemPrompt: string }>(beforeAgentStart({ systemPrompt: 'base' }, ctx))
-        expect(parentPrompt.systemPrompt).toContain('Foreground is the default')
-        expect(parentPrompt.systemPrompt).toContain('Never repeat a pending child')
-        process.env.PI_SUBAGENT_OWNER_TOKEN = 'child'
-        expect(beforeAgentStart({ systemPrompt: 'base' }, ctx)).toBeUndefined()
-      } finally {
-        if (previousOwnerToken === undefined) {
-          delete process.env.PI_SUBAGENT_OWNER_TOKEN
-        } else {
-          process.env.PI_SUBAGENT_OWNER_TOKEN = previousOwnerToken
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      rmSync(scope, { force: true, recursive: true })
+      const { register: subagentExtension } = yield* Effect.promise(() => import('@/features/sub_agents/index.js'))
+      subagentExtension(asExtensionApi(pi), runtime, { inactivityTimeoutMs: 5000, piCommand: { command: FAKE_RPC_CHILD } })
+      const emit = async (name: string, event: unknown = {}) => {
+        for (const handler of handlers.get(name) ?? []) {
+          await handler(event, ctx)
         }
       }
 
-      const backgroundResult = asResult<FakeToolResult>(
-        await spawnTool.execute(
-          'spawn-1',
+      try {
+        yield* Effect.promise(() => emit('session_start', { reason: 'startup' }))
+        expect(commands.has('agents')).toBe(true)
+        expect(commands.has('subagent')).toBe(true)
+        expect(commands.has('subagents')).toBe(true)
+        expect(renderers.has('pi-codex-subagent-completion')).toBe(true)
+        const spawnTool = requireTool('spawn_agent')
+        expect(spawnTool.parameters.required).toContain('agent_type')
+        expect(spawnTool.parameters.required).not.toContain('run_in_background')
+        expect(spawnTool.parameters.properties.skills).toBeUndefined()
+        expect(spawnTool.parameters.properties.agent_type.enum).toEqual(['scout', 'librarian', 'reviewer'])
+        expect(spawnTool.parameters.properties.run_in_background.type).toBe('boolean')
+        expect(spawnTool.description).toContain('Foreground is the default')
+        expect(requireTool('wait_agent').description).toContain('background')
+        expect(requireTool('wait_all_agents').description).toContain('background')
+
+        const beforeAgentStart = handlers.get('before_agent_start')?.[0]
+        if (beforeAgentStart === undefined) {
+          throw new Error('before_agent_start was not registered')
+        }
+        // oxlint-disable-next-line effecttsgo/process-env-in-effect -- This test must use the real process environment observed by the feature.
+        const previousOwnerToken = process.env.PI_SUBAGENT_OWNER_TOKEN
+        try {
+          // oxlint-disable-next-line effecttsgo/process-env-in-effect -- This test must use the real process environment observed by the feature.
+          delete process.env.PI_SUBAGENT_OWNER_TOKEN
+          const parentPrompt = asResult<{ systemPrompt: string }>(beforeAgentStart({ systemPrompt: 'base' }, ctx))
+          expect(parentPrompt.systemPrompt).toContain('Foreground is the default')
+          expect(parentPrompt.systemPrompt).toContain('Never repeat a pending child')
+          // oxlint-disable-next-line effecttsgo/process-env-in-effect -- This test must use the real process environment observed by the feature.
+          process.env.PI_SUBAGENT_OWNER_TOKEN = 'child'
+          expect(beforeAgentStart({ systemPrompt: 'base' }, ctx)).toBeUndefined()
+        } finally {
+          if (previousOwnerToken === undefined) {
+            // oxlint-disable-next-line effecttsgo/process-env-in-effect -- This test must use the real process environment observed by the feature.
+            delete process.env.PI_SUBAGENT_OWNER_TOKEN
+          } else {
+            // oxlint-disable-next-line effecttsgo/process-env-in-effect -- This test must use the real process environment observed by the feature.
+            process.env.PI_SUBAGENT_OWNER_TOKEN = previousOwnerToken
+          }
+        }
+
+        const backgroundResult = asResult<FakeToolResult>(
+          yield* Effect.promise(() =>
+            spawnTool.execute(
+              'spawn-1',
+              {
+                agent_type: 'scout',
+                message: 'slow finish',
+                run_in_background: true,
+                task_name: 'x'.repeat(200),
+              },
+              undefined,
+              undefined,
+              ctx
+            )
+          )
+        )
+        expect(backgroundResult.content[0].text).toContain('in background')
+        expect(backgroundResult.details.execution).toBe('background')
+
+        const colorCalls: string[] = []
+        const theme = {
+          bold: (text: string) => text,
+          fg: (color: string, text: string) => {
+            colorCalls.push(color)
+            return text
+          },
+        }
+        const foregroundCall = spawnTool.renderCall({ agent_type: 'librarian', task_name: 'research' }, theme)
+        expect(foregroundCall.render(100).join('\n')).toContain('[foreground]')
+        const backgroundCall = spawnTool.renderCall({ agent_type: 'librarian', run_in_background: true, task_name: 'research' }, theme)
+        expect(backgroundCall.render(100).join('\n')).toContain('[background]')
+        expect(colorCalls).toContain('mdLink')
+        colorCalls.length = 0
+        spawnTool.renderResult(
           {
-            agent_type: 'scout',
-            message: 'slow finish',
-            run_in_background: true,
-            task_name: 'x'.repeat(200),
+            content: [{ text: 'done', type: 'text' }],
+            details: {
+              color: 'mdLink',
+              completion: { agentName: '/research', color: 'mdLink', profile: 'librarian', status: 'completed' },
+              execution: 'foreground',
+              profile: 'librarian',
+              task_name: '/research',
+            },
           },
-          undefined,
+          {},
+          theme
+        )
+        expect(colorCalls).toContain('mdLink')
+        expect(colorCalls).toContain('success')
+        colorCalls.length = 0
+        spawnTool.renderResult(
+          {
+            content: [{ text: 'failed', type: 'text' }],
+            details: {
+              color: 'mdLink',
+              completion: { agentName: '/research', color: 'mdLink', error: 'failure', profile: 'librarian', status: 'failed' },
+              execution: 'foreground',
+              profile: 'librarian',
+              task_name: '/research',
+            },
+          },
+          {},
+          theme
+        )
+        expect(colorCalls).toContain('mdLink')
+        expect(colorCalls).toContain('error')
+        colorCalls.length = 0
+        requireRenderer('pi-codex-subagent-completion')(
+          {
+            details: {
+              agent_name: '/research',
+              color: 'mdLink',
+              profile: 'librarian',
+              status: 'completed',
+            },
+          },
+          { expanded: false },
+          theme
+        )
+        expect(colorCalls).toContain('mdLink')
+        expect(colorCalls).toContain('success')
+
+        yield* Effect.promise(() => waitUntil(() => sentMessages.length === 1))
+        expect(sentMessages[0].options).toEqual({ deliverAs: 'steer', triggerTurn: true })
+        expect(sentMessages[0].message.content).toContain('response:slow finish')
+
+        const foregroundNotifications = sentMessages.length
+        let foregroundSettled = false
+        const foregroundPromise = spawnTool
+          .execute('spawn-foreground', { agent_type: 'scout', message: 'slow foreground', task_name: 'foreground' }, undefined, undefined, ctx)
+          .finally(() => {
+            foregroundSettled = true
+          })
+        yield* Effect.promise(() => waitUntil(() => runningAgents.list().some((agent) => agent.name === '/foreground')))
+        expect(foregroundSettled).toBe(false)
+        const foregroundResult = asResult<FakeToolResult>(yield* Effect.promise(() => foregroundPromise))
+        expect(foregroundResult.content[0].text).toContain('response:slow foreground')
+        expect(foregroundResult.details.execution).toBe('foreground')
+        expect(sentMessages).toHaveLength(foregroundNotifications)
+
+        const largeForeground = asResult<FakeToolResult>(
+          yield* Effect.promise(() =>
+            spawnTool.execute(
+              'spawn-large-foreground',
+              { agent_type: 'scout', message: 'large foreground', task_name: 'large-foreground' },
+              undefined,
+              undefined,
+              ctx
+            )
+          )
+        )
+        expect(Buffer.byteLength(largeForeground.content[0].text, 'utf8')).toBeLessThanOrEqual(50 * 1024)
+        expect(largeForeground.content[0].text.split('\n').length).toBeLessThanOrEqual(2000)
+        expect(largeForeground.content[0].text).toContain('Output truncated')
+        expect(largeForeground.details.fullOutputPath).toBeString()
+        expect(existsSync(String(largeForeground.details.fullOutputPath))).toBe(true)
+
+        // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
+        const abortController = new AbortController()
+        const abortNotifications = sentMessages.length
+        const abortedForeground = spawnTool.execute(
+          'spawn-aborted-foreground',
+          { agent_type: 'scout', message: 'slow aborted foreground', task_name: 'aborted-foreground' },
+          abortController.signal,
           undefined,
           ctx
         )
-      )
-      expect(backgroundResult.content[0].text).toContain('in background')
-      expect(backgroundResult.details.execution).toBe('background')
-
-      const colorCalls: string[] = []
-      const theme = {
-        bold: (text: string) => text,
-        fg: (color: string, text: string) => {
-          colorCalls.push(color)
-          return text
-        },
-      }
-      const foregroundCall = spawnTool.renderCall({ agent_type: 'librarian', task_name: 'research' }, theme)
-      expect(foregroundCall.render(100).join('\n')).toContain('[foreground]')
-      const backgroundCall = spawnTool.renderCall({ agent_type: 'librarian', run_in_background: true, task_name: 'research' }, theme)
-      expect(backgroundCall.render(100).join('\n')).toContain('[background]')
-      expect(colorCalls).toContain('mdLink')
-      colorCalls.length = 0
-      spawnTool.renderResult(
-        {
-          content: [{ text: 'done', type: 'text' }],
-          details: {
-            color: 'mdLink',
-            completion: { agentName: '/research', color: 'mdLink', profile: 'librarian', status: 'completed' },
-            execution: 'foreground',
-            profile: 'librarian',
-            task_name: '/research',
-          },
-        },
-        {},
-        theme
-      )
-      expect(colorCalls).toContain('mdLink')
-      expect(colorCalls).toContain('success')
-      colorCalls.length = 0
-      spawnTool.renderResult(
-        {
-          content: [{ text: 'failed', type: 'text' }],
-          details: {
-            color: 'mdLink',
-            completion: { agentName: '/research', color: 'mdLink', error: 'failure', profile: 'librarian', status: 'failed' },
-            execution: 'foreground',
-            profile: 'librarian',
-            task_name: '/research',
-          },
-        },
-        {},
-        theme
-      )
-      expect(colorCalls).toContain('mdLink')
-      expect(colorCalls).toContain('error')
-      colorCalls.length = 0
-      requireRenderer('pi-codex-subagent-completion')(
-        {
-          details: {
-            agent_name: '/research',
-            color: 'mdLink',
-            profile: 'librarian',
-            status: 'completed',
-          },
-        },
-        { expanded: false },
-        theme
-      )
-      expect(colorCalls).toContain('mdLink')
-      expect(colorCalls).toContain('success')
-
-      await waitUntil(() => sentMessages.length === 1)
-      expect(sentMessages[0].options).toEqual({ deliverAs: 'steer', triggerTurn: true })
-      expect(sentMessages[0].message.content).toContain('response:slow finish')
-
-      const foregroundNotifications = sentMessages.length
-      let foregroundSettled = false
-      const foregroundPromise = spawnTool
-        .execute('spawn-foreground', { agent_type: 'scout', message: 'slow foreground', task_name: 'foreground' }, undefined, undefined, ctx)
-        .finally(() => {
-          foregroundSettled = true
-        })
-      await waitUntil(() => runningAgents.list().some((agent) => agent.name === '/foreground'))
-      expect(foregroundSettled).toBe(false)
-      const foregroundResult = asResult<FakeToolResult>(await foregroundPromise)
-      expect(foregroundResult.content[0].text).toContain('response:slow foreground')
-      expect(foregroundResult.details.execution).toBe('foreground')
-      expect(sentMessages).toHaveLength(foregroundNotifications)
-
-      const largeForeground = asResult<FakeToolResult>(
-        await spawnTool.execute(
-          'spawn-large-foreground',
-          { agent_type: 'scout', message: 'large foreground', task_name: 'large-foreground' },
-          undefined,
-          undefined,
-          ctx
+        yield* Effect.promise(() => waitUntil(() => runningAgents.list().some((agent) => agent.name === '/aborted-foreground')))
+        abortController.abort('tool wait stopped')
+        const toolAbortReason = yield* Effect.promise(() =>
+          abortedForeground.then(
+            () => 'unexpected success',
+            (error: unknown) => error
+          )
         )
-      )
-      expect(Buffer.byteLength(largeForeground.content[0].text, 'utf8')).toBeLessThanOrEqual(50 * 1024)
-      expect(largeForeground.content[0].text.split('\n').length).toBeLessThanOrEqual(2000)
-      expect(largeForeground.content[0].text).toContain('Output truncated')
-      expect(largeForeground.details.fullOutputPath).toBeString()
-      expect(existsSync(String(largeForeground.details.fullOutputPath))).toBe(true)
+        expect(toolAbortReason).toBe('tool wait stopped')
+        yield* Effect.promise(() => waitUntil(() => sentMessages.some(({ message }) => message.content.includes('/aborted-foreground'))))
+        expect(sentMessages.filter(({ message }) => message.content.includes('/aborted-foreground'))).toHaveLength(1)
+        expect(sentMessages.length).toBe(abortNotifications + 1)
 
-      const abortController = new AbortController()
-      const abortNotifications = sentMessages.length
-      const abortedForeground = spawnTool.execute(
-        'spawn-aborted-foreground',
-        { agent_type: 'scout', message: 'slow aborted foreground', task_name: 'aborted-foreground' },
-        abortController.signal,
-        undefined,
-        ctx
-      )
-      await waitUntil(() => runningAgents.list().some((agent) => agent.name === '/aborted-foreground'))
-      abortController.abort('tool wait stopped')
-      const toolAbortReason = await abortedForeground.then(
-        () => 'unexpected success',
-        (error: unknown) => error
-      )
-      expect(toolAbortReason).toBe('tool wait stopped')
-      await waitUntil(() => sentMessages.some(({ message }) => message.content.includes('/aborted-foreground')))
-      expect(sentMessages.filter(({ message }) => message.content.includes('/aborted-foreground'))).toHaveLength(1)
-      expect(sentMessages.length).toBe(abortNotifications + 1)
+        const largeBackgroundNotifications = sentMessages.length
+        yield* Effect.promise(() =>
+          requireTool('spawn_agent').execute(
+            'spawn-2',
+            {
+              agent_type: 'scout',
+              message: 'large response',
+              run_in_background: true,
+              task_name: 'large-output',
+            },
+            undefined,
+            undefined,
+            ctx
+          )
+        )
+        yield* Effect.promise(() => waitUntil(() => sentMessages.length === largeBackgroundNotifications + 1))
+        const large = sentMessages.at(-1)?.message
+        if (large === undefined) {
+          throw new Error('large background completion was not delivered')
+        }
+        expect(Buffer.byteLength(large.content, 'utf8')).toBeLessThanOrEqual(50 * 1024)
+        expect(large.content).toContain('Output truncated')
+        expect(large.details.fullOutputPath).toBeString()
+        expect(existsSync(large.details.fullOutputPath)).toBe(true)
 
-      const largeBackgroundNotifications = sentMessages.length
-      await requireTool('spawn_agent').execute(
-        'spawn-2',
-        {
-          agent_type: 'scout',
-          message: 'large response',
-          run_in_background: true,
-          task_name: 'large-output',
-        },
-        undefined,
-        undefined,
-        ctx
-      )
-      await waitUntil(() => sentMessages.length === largeBackgroundNotifications + 1)
-      const large = sentMessages.at(-1)?.message
-      if (large === undefined) {
-        throw new Error('large background completion was not delivered')
+        yield* Effect.promise(() =>
+          requireTool('spawn_agent').execute(
+            'spawn-3',
+            { agent_type: 'scout', message: 'hold scout', run_in_background: true, task_name: 'hold-scout' },
+            undefined,
+            undefined,
+            ctx
+          )
+        )
+        yield* Effect.promise(() =>
+          requireTool('spawn_agent').execute(
+            'spawn-4',
+            { agent_type: 'librarian', message: 'hold library', run_in_background: true, task_name: 'hold-library' },
+            undefined,
+            undefined,
+            ctx
+          )
+        )
+        expect(runningAgents.list().map((agent) => agent.name)).toEqual(['/hold-scout', '/hold-library'])
+
+        expect(terminalInputHandler?.('\x1b[27;1:3u')).toBeUndefined()
+        mainIdle = false
+        expect(terminalInputHandler?.('\x1b')).toBeUndefined()
+        expect(runningAgents.list().map((agent) => agent.name)).toEqual(['/hold-scout', '/hold-library'])
+
+        mainIdle = true
+        expect(terminalInputHandler?.('\x1b')).toEqual({ consume: true })
+        yield* Effect.promise(() => waitUntil(() => runningAgents.list().length === 0))
+      } finally {
+        yield* Effect.promise(() => emit('session_shutdown', { reason: 'quit' }))
+        rmSync(scope, { force: true, recursive: true })
       }
-      expect(Buffer.byteLength(large.content, 'utf8')).toBeLessThanOrEqual(50 * 1024)
-      expect(large.content).toContain('Output truncated')
-      expect(large.details.fullOutputPath).toBeString()
-      expect(existsSync(large.details.fullOutputPath)).toBe(true)
-
-      await requireTool('spawn_agent').execute(
-        'spawn-3',
-        { agent_type: 'scout', message: 'hold scout', run_in_background: true, task_name: 'hold-scout' },
-        undefined,
-        undefined,
-        ctx
-      )
-      await requireTool('spawn_agent').execute(
-        'spawn-4',
-        { agent_type: 'librarian', message: 'hold library', run_in_background: true, task_name: 'hold-library' },
-        undefined,
-        undefined,
-        ctx
-      )
-      expect(runningAgents.list().map((agent) => agent.name)).toEqual(['/hold-scout', '/hold-library'])
-
-      expect(terminalInputHandler?.('\x1b[27;1:3u')).toBeUndefined()
-      mainIdle = false
-      expect(terminalInputHandler?.('\x1b')).toBeUndefined()
-      expect(runningAgents.list().map((agent) => agent.name)).toEqual(['/hold-scout', '/hold-library'])
-
-      mainIdle = true
-      expect(terminalInputHandler?.('\x1b')).toEqual({ consume: true })
-      await waitUntil(() => runningAgents.list().length === 0)
-    } finally {
-      await emit('session_shutdown', { reason: 'quit' })
-      rmSync(scope, { force: true, recursive: true })
-    }
-  })
+    })
+  )
 })
 
 interface PeekOverlayInternals {
@@ -1820,91 +2021,105 @@ describe('subagent peek overlay', () => {
     })
   }
 
-  it.effect('initially follows a long transcript at the end', () => {
-    const overlay = createOverlay()
-    try {
-      const internals = asNarrowed<PeekOverlayInternals, typeof overlay>(overlay)
-      internals.cachedLines = Array.from({ length: 30 }, (_value, index) => `line-${index}`)
-      internals.cachedWidth = 38
+  it.effect('initially follows a long transcript at the end', () =>
+    Effect.sync(() => {
+      const overlay = createOverlay()
+      try {
+        const internals = asNarrowed<PeekOverlayInternals, typeof overlay>(overlay)
+        internals.cachedLines = Array.from({ length: 30 }, (_value, index) => `line-${index}`)
+        internals.cachedWidth = 38
 
-      const rendered = overlay.render(40)
-      expect(rendered).toHaveLength(20)
-      expect(internals.scrollOffset).toBe(14)
-      expect(rendered[1]).toContain('line-14')
-      expect(rendered[16]).toContain('line-29')
-    } finally {
-      overlay.dispose()
-    }
-  })
+        const rendered = overlay.render(40)
+        expect(rendered).toHaveLength(20)
+        expect(internals.scrollOffset).toBe(14)
+        expect(rendered[1]).toContain('line-14')
+        expect(rendered[16]).toContain('line-29')
+      } finally {
+        overlay.dispose()
+      }
+    })
+  )
 
-  it.effect('renders profile identity separately from semantic status color', () => {
-    const overlay = createOverlay()
-    try {
-      const colors: string[] = []
-      asNarrowed<PeekOverlayInternals, typeof overlay>(overlay).theme = asTheme({
-        fg(color: string, text: string) {
-          colors.push(color)
-          return text
-        },
-      })
-      overlay.render(40)
-      expect(colors).toContain('warning')
-      expect(colors).toContain('success')
-    } finally {
-      overlay.dispose()
-    }
-  })
+  it.effect('renders profile identity separately from semantic status color', () =>
+    Effect.sync(() => {
+      const overlay = createOverlay()
+      try {
+        const colors: string[] = []
+        asNarrowed<PeekOverlayInternals, typeof overlay>(overlay).theme = asTheme({
+          fg(color: string, text: string) {
+            colors.push(color)
+            return text
+          },
+        })
+        overlay.render(40)
+        expect(colors).toContain('warning')
+        expect(colors).toContain('success')
+      } finally {
+        overlay.dispose()
+      }
+    })
+  )
 
-  it.effect('keeps every frame line within a narrow render width', () => {
-    const overlay = createOverlay(12, 14)
-    try {
-      const internals = asNarrowed<PeekOverlayInternals, typeof overlay>(overlay)
-      internals.cachedLines = ['content that is much wider than the overlay']
-      internals.cachedWidth = 10
+  it.effect('keeps every frame line within a narrow render width', () =>
+    Effect.sync(() => {
+      const overlay = createOverlay(12, 14)
+      try {
+        const internals = asNarrowed<PeekOverlayInternals, typeof overlay>(overlay)
+        internals.cachedLines = ['content that is much wider than the overlay']
+        internals.cachedWidth = 10
 
-      const rendered = overlay.render(12)
-      expect(rendered.length).toBeGreaterThan(0)
-      expect(rendered.every((line: string) => visibleWidth(line) <= 12)).toBe(true)
-    } finally {
-      overlay.dispose()
-    }
-  })
+        const rendered = overlay.render(12)
+        expect(rendered.length).toBeGreaterThan(0)
+        expect(rendered.every((line: string) => visibleWidth(line) <= 12)).toBe(true)
+      } finally {
+        overlay.dispose()
+      }
+    })
+  )
 
-  it.effect('escape cancels the running parent without closing the overlay while q closes it', () => {
-    const navigation: ('previous' | 'next' | undefined)[] = []
-    let escapes = 0
-    const overlay = createOverlay(
-      80,
-      20,
-      (result) => navigation.push(result),
-      () => escapes++
-    )
-    overlay.handleInput('\x1b')
-    expect(escapes).toBe(1)
-    expect(navigation).toEqual([])
-    overlay.handleInput('q')
-    expect(navigation).toEqual([undefined])
-  })
+  it.effect('escape cancels the running parent without closing the overlay while q closes it', () =>
+    Effect.sync(() => {
+      const navigation: ('previous' | 'next' | undefined)[] = []
+      let escapes = 0
+      const overlay = createOverlay(
+        80,
+        20,
+        (result) => navigation.push(result),
+        () => escapes++
+      )
+      overlay.handleInput('\x1b')
+      expect(escapes).toBe(1)
+      expect(navigation).toEqual([])
+      overlay.handleInput('q')
+      expect(navigation).toEqual([undefined])
+    })
+  )
 })
 
 describe('completion mailbox', () => {
-  it.effect('waits until explicitly cancelled when no completion exists', async () => {
-    const manager = createAgentManager()
-    const controller = new AbortController()
-    Effect.runFork(Effect.flatMap(Effect.sleep(10), () => Effect.sync(() => controller.abort(new Error('cancelled')))))
-    expect(manager.waitAgent('empty-parent', undefined, controller.signal)).rejects.toThrow('cancelled')
-    await manager.shutdown()
-  })
+  it.effect('waits until explicitly cancelled when no completion exists', () =>
+    Effect.gen(function* () {
+      const manager = createAgentManager()
+      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
+      const controller = new AbortController()
+      // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- This Promise-shaped fake or managed runtime intentionally runs outside the ambient test Effect.
+      Effect.runFork(Effect.flatMap(Effect.sleep(10), () => Effect.sync(() => controller.abort(new Error('cancelled')))))
+      expect(manager.waitAgent('empty-parent', undefined, controller.signal)).rejects.toThrow('cancelled')
+      yield* Effect.promise(() => manager.shutdown())
+    })
+  )
 
-  it.effect('consumes one matching completion without dropping siblings', () => {
-    const events = [
-      { agentName: '/one', createdAt: 1, id: '1', parentSessionId: 'parent', status: 'completed' },
-      { agentName: '/two', createdAt: 2, id: '2', parentSessionId: 'parent', status: 'completed' },
-      { agentName: '/one', createdAt: 3, id: '3', parentSessionId: 'other', status: 'completed' },
-    ]
-    expect(consumeFirstMatchingMailboxEvent(events, 'parent')?.agentName).toBe('/one')
-    expect(events.map((event) => event.id)).toEqual(['2', '3'])
-    expect(consumeFirstMatchingMailboxEvent(events, 'parent', new Set(['/two']))?.agentName).toBe('/two')
-    expect(events.map((event) => event.id)).toEqual(['3'])
-  })
+  it.effect('consumes one matching completion without dropping siblings', () =>
+    Effect.sync(() => {
+      const events = [
+        { agentName: '/one', createdAt: 1, id: '1', parentSessionId: 'parent', status: 'completed' },
+        { agentName: '/two', createdAt: 2, id: '2', parentSessionId: 'parent', status: 'completed' },
+        { agentName: '/one', createdAt: 3, id: '3', parentSessionId: 'other', status: 'completed' },
+      ]
+      expect(consumeFirstMatchingMailboxEvent(events, 'parent')?.agentName).toBe('/one')
+      expect(events.map((event) => event.id)).toEqual(['2', '3'])
+      expect(consumeFirstMatchingMailboxEvent(events, 'parent', new Set(['/two']))?.agentName).toBe('/two')
+      expect(events.map((event) => event.id)).toEqual(['3'])
+    })
+  )
 })

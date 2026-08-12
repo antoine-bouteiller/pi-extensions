@@ -77,25 +77,29 @@ const readEvent = (path: string): ToolResultEvent => ({
 })
 
 describe('rule parsing', () => {
-  it.effect('parses Claude paths, generic globs, comments, CRLF, and alwaysApply', () => {
-    expect(
-      parseRuleFrontmatter('\uFEFF---\r\npaths: ["src/a,b.ts", src/**] # comment\r\nglobs:\r\n  - "test/**"\r\nalwaysApply: true\r\n---\r\nRule')
-    ).toEqual({
-      alwaysApply: true,
-      body: 'Rule',
-      paths: ['src/a,b.ts', 'src/**', 'test/**'],
+  it.effect('parses Claude paths, generic globs, comments, CRLF, and alwaysApply', () =>
+    Effect.sync(() => {
+      expect(
+        parseRuleFrontmatter('\uFEFF---\r\npaths: ["src/a,b.ts", src/**] # comment\r\nglobs:\r\n  - "test/**"\r\nalwaysApply: true\r\n---\r\nRule')
+      ).toEqual({
+        alwaysApply: true,
+        body: 'Rule',
+        paths: ['src/a,b.ts', 'src/**', 'test/**'],
+      })
     })
-  })
+  )
 
-  it.effect('keeps plain rules and diagnoses malformed frontmatter', () => {
-    expect(parseRuleFrontmatter('Always test changes.')).toEqual({
-      alwaysApply: false,
-      body: 'Always test changes.',
-      paths: [],
+  it.effect('keeps plain rules and diagnoses malformed frontmatter', () =>
+    Effect.sync(() => {
+      expect(parseRuleFrontmatter('Always test changes.')).toEqual({
+        alwaysApply: false,
+        body: 'Always test changes.',
+        paths: [],
+      })
+      expect(parseRuleFrontmatter('---\npaths: [src/**\n---\nRule').diagnostic).toContain('Malformed frontmatter')
+      expect(parseRuleFrontmatter('---\npaths: src/**').diagnostic).toContain('Missing closing frontmatter')
     })
-    expect(parseRuleFrontmatter('---\npaths: [src/**\n---\nRule').diagnostic).toContain('Malformed frontmatter')
-    expect(parseRuleFrontmatter('---\npaths: src/**').diagnostic).toContain('Missing closing frontmatter')
-  })
+  )
 })
 
 describe('rule loading', () => {
@@ -270,39 +274,41 @@ describe('path-scoped injection', () => {
     })
   )
 
-  it.effect('extracts built-in and hashline file paths', () => {
-    expect(extractToolPaths(readEvent('src/main.ts'), '/project')).toEqual(['/project/src/main.ts'])
-    expect(
-      extractToolPaths(
-        {
-          content: [],
-          details: {
-            sections: [{ moveDest: 'src/moved.ts', path: 'src/main.ts' }],
+  it.effect('extracts built-in and hashline file paths', () =>
+    Effect.sync(() => {
+      expect(extractToolPaths(readEvent('src/main.ts'), '/project')).toEqual(['/project/src/main.ts'])
+      expect(
+        extractToolPaths(
+          {
+            content: [],
+            details: {
+              sections: [{ moveDest: 'src/moved.ts', path: 'src/main.ts' }],
+            },
+            input: { patch: '[src/main.ts#ABCD]\nPUT 1.=1:\n+next' },
+            isError: false,
+            toolCallId: 'call-2',
+            toolName: 'hashline_write',
+            type: 'tool_result',
           },
-          input: { patch: '[src/main.ts#ABCD]\nPUT 1.=1:\n+next' },
-          isError: false,
-          toolCallId: 'call-2',
-          toolName: 'hashline_write',
-          type: 'tool_result',
-        },
-        '/project'
-      )
-    ).toEqual(['/project/src/main.ts', '/project/src/moved.ts'])
-    expect(
-      extractToolPaths(
-        {
-          content: [],
-          details: {},
-          input: {
-            patch: '[src/one.ts#ABCD]\nPUT 1.=1:\n+one\n[src/two.ts#EFGH]\nPUT 1.=1:\n+two',
+          '/project'
+        )
+      ).toEqual(['/project/src/main.ts', '/project/src/moved.ts'])
+      expect(
+        extractToolPaths(
+          {
+            content: [],
+            details: {},
+            input: {
+              patch: '[src/one.ts#ABCD]\nPUT 1.=1:\n+one\n[src/two.ts#EFGH]\nPUT 1.=1:\n+two',
+            },
+            isError: false,
+            toolCallId: 'call-3',
+            toolName: 'hashline_write',
+            type: 'tool_result',
           },
-          isError: false,
-          toolCallId: 'call-3',
-          toolName: 'hashline_write',
-          type: 'tool_result',
-        },
-        '/project'
-      )
-    ).toEqual(['/project/src/one.ts', '/project/src/two.ts'])
-  })
+          '/project'
+        )
+      ).toEqual(['/project/src/one.ts', '/project/src/two.ts'])
+    })
+  )
 })

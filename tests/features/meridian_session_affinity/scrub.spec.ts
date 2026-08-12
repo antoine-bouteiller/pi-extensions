@@ -1,4 +1,5 @@
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { Effect } from 'effect'
 
 import { scrubPiFingerprints } from '@/features/meridian_session_affinity/scrub.js'
 
@@ -35,34 +36,40 @@ ${PI_DOCS}
 Current working directory: /repo`
 
 describe('scrubPiFingerprints', () => {
-  it.effect('removes Pi fingerprints while preserving useful prompt content', () => {
-    const scrubbed = scrubPiFingerprints(PROMPT)
+  it.effect('removes Pi fingerprints while preserving useful prompt content', () =>
+    Effect.sync(() => {
+      const scrubbed = scrubPiFingerprints(PROMPT)
 
-    expect(scrubbed).toStartWith('You are an expert coding assistant.')
-    expect(scrubbed).not.toContain('operating inside pi')
-    expect(scrubbed).not.toContain('Pi documentation')
-    expect(scrubbed).not.toContain('/duplicate')
-    expect(scrubbed).toContain('Available tools:')
-    expect(scrubbed).toContain('<project_context>')
-    expect(scrubbed).toContain('Follow the house style.')
-    expect(scrubbed).toContain('Current working directory: /repo')
-  })
+      expect(scrubbed).toStartWith('You are an expert coding assistant.')
+      expect(scrubbed).not.toContain('operating inside pi')
+      expect(scrubbed).not.toContain('Pi documentation')
+      expect(scrubbed).not.toContain('/duplicate')
+      expect(scrubbed).toContain('Available tools:')
+      expect(scrubbed).toContain('<project_context>')
+      expect(scrubbed).toContain('Follow the house style.')
+      expect(scrubbed).toContain('Current working directory: /repo')
+    })
+  )
 
-  it.effect('preserves the working directory when it immediately follows Pi documentation', () => {
-    const scrubbed = scrubPiFingerprints(MINIMAL_PROMPT)
+  it.effect('preserves the working directory when it immediately follows Pi documentation', () =>
+    Effect.sync(() => {
+      const scrubbed = scrubPiFingerprints(MINIMAL_PROMPT)
 
-    expect(scrubbed).not.toContain('Pi documentation')
-    expect(scrubbed).toContain('Current working directory: /repo')
-  })
+      expect(scrubbed).not.toContain('Pi documentation')
+      expect(scrubbed).toContain('Current working directory: /repo')
+    })
+  )
 
-  it.effect('is idempotent and leaves prompts without Pi fingerprints unchanged', () => {
-    const cleanPrompt = "You are Claude Code, Anthropic's official CLI for Claude.\n\nDo things well.\n"
-    const quotedDocs = 'Explain this text:\nPi documentation (read only when quoted)\nKeep it intact.\n'
-    const scrubbed = scrubPiFingerprints(PROMPT)
+  it.effect('is idempotent and leaves prompts without Pi fingerprints unchanged', () =>
+    Effect.sync(() => {
+      const cleanPrompt = "You are Claude Code, Anthropic's official CLI for Claude.\n\nDo things well.\n"
+      const quotedDocs = 'Explain this text:\nPi documentation (read only when quoted)\nKeep it intact.\n'
+      const scrubbed = scrubPiFingerprints(PROMPT)
 
-    expect(scrubPiFingerprints('')).toBe('')
-    expect(scrubPiFingerprints(cleanPrompt)).toBe(cleanPrompt)
-    expect(scrubPiFingerprints(quotedDocs)).toBe(quotedDocs)
-    expect(scrubPiFingerprints(scrubbed)).toBe(scrubbed)
-  })
+      expect(scrubPiFingerprints('')).toBe('')
+      expect(scrubPiFingerprints(cleanPrompt)).toBe(cleanPrompt)
+      expect(scrubPiFingerprints(quotedDocs)).toBe(quotedDocs)
+      expect(scrubPiFingerprints(scrubbed)).toBe(scrubbed)
+    })
+  )
 })

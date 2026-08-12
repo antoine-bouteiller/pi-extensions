@@ -15,26 +15,11 @@ const testEnv: Layer.Layer<TestServices> = Layer.mergeAll(NodeFileSystem.layer, 
 
 const run = <Success, Failure>(eff: Effect.Effect<Success, Failure, TestServices>) => Effect.runPromise(Effect.provide(eff, testEnv))
 
-const mkEffect = (runner: typeof test) => {
-  function effectTest<Success, Failure>(name: string, fn: () => Effect.Effect<Success, Failure, TestServices>, opts?: Options): void
-  function effectTest(name: string, fn: () => PromiseLike<void> | void, opts?: Options): void
-  function effectTest<Success, Failure>(
-    name: string,
-    fn: () => Effect.Effect<Success, Failure, TestServices> | PromiseLike<void> | void,
-    opts?: Options
-  ): void {
+const mkEffect = (runner: typeof test) =>
+  function effectTest<Success, Failure>(name: string, fn: () => Effect.Effect<Success, Failure, TestServices>, opts?: Options): void {
     const timeout = timeoutOf(opts)
-    runner(
-      name,
-      () => {
-        const result = fn()
-        return Effect.isEffect(result) ? run(result) : Promise.resolve(result)
-      },
-      timeout === undefined ? undefined : { timeout }
-    )
+    runner(name, () => run(fn()), timeout === undefined ? undefined : { timeout })
   }
-  return effectTest
-}
 
 const mkScoped =
   (runner: typeof test) =>

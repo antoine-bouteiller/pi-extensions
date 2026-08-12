@@ -85,109 +85,127 @@ const rejectionMessage = async (promise: Promise<unknown>): Promise<string> => {
 }
 
 describe('background poll', () => {
-  it.effect('returns immediately, bounds command time, publishes status, and wakes the agent', async () => {
-    const commandTimeouts: number[] = []
-    const longOutput = `${Array.from({ length: 2100 }, (_unused, index) => `line-${index}`).join('\n')}\nready-at-tail`
-    const fixture = setup(async (_command, _args, options) => {
-      commandTimeouts.push(options.timeout ?? -1)
-      return { code: 0, stderr: '', stdout: longOutput }
-    })
-    await startSession(fixture)
+  it.effect('returns immediately, bounds command time, publishes status, and wakes the agent', () =>
+    Effect.gen(function* () {
+      const commandTimeouts: number[] = []
+      const longOutput = `${Array.from({ length: 2100 }, (_unused, index) => `line-${index}`).join('\n')}\nready-at-tail`
+      const fixture = setup(async (_command, _args, options) => {
+        commandTimeouts.push(options.timeout ?? -1)
+        return { code: 0, stderr: '', stdout: longOutput }
+      })
+      yield* Effect.promise(() => startSession(fixture))
 
-    const result = await fixture.tool.execute(
-      'call-1',
-      { command: 'check-status', interval_seconds: 1, label: 'deployment', timeout_seconds: 10 },
-      undefined,
-      undefined,
-      fixture.ctx
-    )
-
-    expect(result.terminate).toBeTrue()
-    expect(result.content[0].text).toContain('Stop now')
-    expect(fixture.statuses).toContain('⏳ 1 background poll')
-
-    await fixture.sent
-    expect(commandTimeouts).toHaveLength(1)
-    expect(commandTimeouts[0]).toBeGreaterThan(0)
-    expect(commandTimeouts[0]).toBeLessThanOrEqual(10_000)
-    expect(fixture.messages).toHaveLength(1)
-    expect(fixture.messages[0].message.content).toContain('Background poll completed: deployment')
-    expect(fixture.messages[0].message.content).toContain('ready-at-tail')
-    expect(fixture.messages[0].message.content).toContain('showing the last')
-    expect(fixture.messages[0].options).toEqual({ deliverAs: 'followUp', triggerTurn: true })
-    expect(fixture.notifications).toEqual([{ level: 'info', message: 'Background poll completed: deployment' }])
-    expect(fixture.statuses.at(-1)).toBeUndefined()
-  })
-
-  it.effect('reports command failures as error outcomes', async () => {
-    const fixture = setup(async () => {
-      throw new Error('checker exploded')
-    })
-    await startSession(fixture)
-
-    await fixture.tool.execute('error', { command: 'fail' }, undefined, undefined, fixture.ctx)
-    await fixture.sent
-
-    expect(fixture.messages[0].message.content).toContain('Background poll failed: fail')
-    expect(fixture.messages[0].message.content).toContain('checker exploded')
-    expect(fixture.notifications[0]?.level).toBe('warning')
-  })
-
-  it.effect('rejects registration with a tagged failure when no session is active', async () => {
-    const fixture = setup(async () => ({ code: 0, stderr: '', stdout: 'ready' }))
-
-    const rejection = await fixture.tool.execute('inactive', { command: 'check' }, undefined, undefined, fixture.ctx).then(
-      () => undefined,
-      (error: unknown) => error
-    )
-
-    expect(rejection).toMatchObject({
-      _tag: 'ToolFailure',
-      message: 'Cannot register a background poll without an active session',
-    })
-  })
-
-  it.effect('replaces the session scope and accepts registrations in the new session', async () => {
-    const fixture = setup((_command, args, options) => {
-      if (args[1] === 'new-check') {
-        return Promise.resolve({ code: 0, stderr: '', stdout: 'new session ready' })
-      }
-      return Effect.runPromise(
-        Effect.callback<{ stdout: string; stderr: string; code: number }>((resume) => {
-          options.signal?.addEventListener('abort', () => resume(Effect.succeed({ code: 1, stderr: 'stopped', stdout: '' })), { once: true })
-        })
+      const result = yield* Effect.promise(() =>
+        fixture.tool.execute(
+          'call-1',
+          { command: 'check-status', interval_seconds: 1, label: 'deployment', timeout_seconds: 10 },
+          undefined,
+          undefined,
+          fixture.ctx
+        )
       )
+
+      expect(result.terminate).toBeTrue()
+      expect(result.content[0].text).toContain('Stop now')
+      expect(fixture.statuses).toContain('⏳ 1 background poll')
+
+      yield* Effect.promise(() => fixture.sent)
+      expect(commandTimeouts).toHaveLength(1)
+      expect(commandTimeouts[0]).toBeGreaterThan(0)
+      expect(commandTimeouts[0]).toBeLessThanOrEqual(10_000)
+      expect(fixture.messages).toHaveLength(1)
+      expect(fixture.messages[0].message.content).toContain('Background poll completed: deployment')
+      expect(fixture.messages[0].message.content).toContain('ready-at-tail')
+      expect(fixture.messages[0].message.content).toContain('showing the last')
+      expect(fixture.messages[0].options).toEqual({ deliverAs: 'followUp', triggerTurn: true })
+      expect(fixture.notifications).toEqual([{ level: 'info', message: 'Background poll completed: deployment' }])
+      expect(fixture.statuses.at(-1)).toBeUndefined()
     })
-    await startSession(fixture)
-    await fixture.tool.execute('old', { command: 'old-check' }, undefined, undefined, fixture.ctx)
+  )
 
-    await startSession(fixture)
-    await fixture.tool.execute('new', { command: 'new-check' }, undefined, undefined, fixture.ctx)
-    await fixture.sent
+  it.effect('reports command failures as error outcomes', () =>
+    Effect.gen(function* () {
+      const fixture = setup(async () => {
+        throw new Error('checker exploded')
+      })
+      yield* Effect.promise(() => startSession(fixture))
 
-    expect(fixture.messages).toHaveLength(1)
-    expect(fixture.messages[0].message.content).toContain('new session ready')
-  })
+      yield* Effect.promise(() => fixture.tool.execute('error', { command: 'fail' }, undefined, undefined, fixture.ctx))
+      yield* Effect.promise(() => fixture.sent)
 
-  it.effect('suppresses completion and clears status when the session shuts down', async () => {
-    const fixture = setup((_command, _args, options) =>
-      Effect.runPromise(
-        Effect.callback<{ stdout: string; stderr: string; code: number }>((resume) => {
-          options.signal?.addEventListener('abort', () => resume(Effect.succeed({ code: 1, stderr: 'stopped', stdout: '' })), { once: true })
-        })
+      expect(fixture.messages[0].message.content).toContain('Background poll failed: fail')
+      expect(fixture.messages[0].message.content).toContain('checker exploded')
+      expect(fixture.notifications[0]?.level).toBe('warning')
+    })
+  )
+
+  it.effect('rejects registration with a tagged failure when no session is active', () =>
+    Effect.gen(function* () {
+      const fixture = setup(async () => ({ code: 0, stderr: '', stdout: 'ready' }))
+
+      const rejection = yield* Effect.promise(() =>
+        fixture.tool.execute('inactive', { command: 'check' }, undefined, undefined, fixture.ctx).then(
+          () => undefined,
+          (error: unknown) => error
+        )
       )
-    )
-    await startSession(fixture)
 
-    await fixture.tool.execute('call-2', { command: 'check-status', interval_seconds: 60, timeout_seconds: 120 }, undefined, undefined, fixture.ctx)
-    await fixture.handlers.get('session_shutdown')?.({}, fixture.ctx)
+      expect(rejection).toMatchObject({
+        _tag: 'ToolFailure',
+        message: 'Cannot register a background poll without an active session',
+      })
+    })
+  )
 
-    expect(fixture.messages).toHaveLength(0)
-    expect(fixture.statuses.at(-1)).toBeUndefined()
-    expect(await rejectionMessage(fixture.tool.execute('late', { command: 'check-status' }, undefined, undefined, fixture.ctx))).toBe(
-      'Cannot register a background poll during shutdown'
-    )
-  })
+  it.effect('replaces the session scope and accepts registrations in the new session', () =>
+    Effect.gen(function* () {
+      const fixture = setup((_command, args, options) => {
+        if (args[1] === 'new-check') {
+          return Promise.resolve({ code: 0, stderr: '', stdout: 'new session ready' })
+        }
+        // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- This Promise-shaped fake or managed runtime intentionally runs outside the ambient test Effect.
+        return Effect.runPromise(
+          Effect.callback<{ stdout: string; stderr: string; code: number }>((resume) => {
+            options.signal?.addEventListener('abort', () => resume(Effect.succeed({ code: 1, stderr: 'stopped', stdout: '' })), { once: true })
+          })
+        )
+      })
+      yield* Effect.promise(() => startSession(fixture))
+      yield* Effect.promise(() => fixture.tool.execute('old', { command: 'old-check' }, undefined, undefined, fixture.ctx))
+
+      yield* Effect.promise(() => startSession(fixture))
+      yield* Effect.promise(() => fixture.tool.execute('new', { command: 'new-check' }, undefined, undefined, fixture.ctx))
+      yield* Effect.promise(() => fixture.sent)
+
+      expect(fixture.messages).toHaveLength(1)
+      expect(fixture.messages[0].message.content).toContain('new session ready')
+    })
+  )
+
+  it.effect('suppresses completion and clears status when the session shuts down', () =>
+    Effect.gen(function* () {
+      const fixture = setup((_command, _args, options) =>
+        // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- This Promise-shaped fake or managed runtime intentionally runs outside the ambient test Effect.
+        Effect.runPromise(
+          Effect.callback<{ stdout: string; stderr: string; code: number }>((resume) => {
+            options.signal?.addEventListener('abort', () => resume(Effect.succeed({ code: 1, stderr: 'stopped', stdout: '' })), { once: true })
+          })
+        )
+      )
+      yield* Effect.promise(() => startSession(fixture))
+
+      yield* Effect.promise(() =>
+        fixture.tool.execute('call-2', { command: 'check-status', interval_seconds: 60, timeout_seconds: 120 }, undefined, undefined, fixture.ctx)
+      )
+      yield* Effect.promise(() => Promise.resolve(fixture.handlers.get('session_shutdown')?.({}, fixture.ctx)))
+
+      expect(fixture.messages).toHaveLength(0)
+      expect(fixture.statuses.at(-1)).toBeUndefined()
+      expect(
+        yield* Effect.promise(() => rejectionMessage(fixture.tool.execute('late', { command: 'check-status' }, undefined, undefined, fixture.ctx)))
+      ).toBe('Cannot register a background poll during shutdown')
+    })
+  )
 
   it.effect('uses virtual time and stops retrying at the deadline', () =>
     Effect.gen(function* () {
@@ -217,10 +235,12 @@ describe('background poll', () => {
     })
   )
 
-  it.effect('keeps the tail when output is truncated', () => {
-    const output = formatPollOutput(`${'head\n'.repeat(3000)}tail`, '')
+  it.effect('keeps the tail when output is truncated', () =>
+    Effect.sync(() => {
+      const output = formatPollOutput(`${'head\n'.repeat(3000)}tail`, '')
 
-    expect(output).toContain('tail')
-    expect(output).toContain('showing the last')
-  })
+      expect(output).toContain('tail')
+      expect(output).toContain('showing the last')
+    })
+  )
 })

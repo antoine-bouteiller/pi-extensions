@@ -8,16 +8,18 @@ import { boundGatewayOutput as boundGatewayOutputEffect } from '@/features/mcp/o
 const boundGatewayOutput = (content: Parameters<typeof boundGatewayOutputEffect>[0]) => Effect.runPromise(boundGatewayOutputEffect(content))
 
 describe('MCP gateway output', () => {
-  it.effect('keeps small text and images unchanged', async () => {
-    const content = [
-      { text: 'hello', type: 'text' as const },
-      { data: 'AA==', mimeType: 'image/png', type: 'image' as const },
-    ]
-    expect(await boundGatewayOutput(content)).toEqual({
-      content,
-      details: { truncated: false },
+  it.effect('keeps small text and images unchanged', () =>
+    Effect.gen(function* () {
+      const content = [
+        { text: 'hello', type: 'text' as const },
+        { data: 'AA==', mimeType: 'image/png', type: 'image' as const },
+      ]
+      expect(yield* Effect.promise(() => boundGatewayOutput(content))).toEqual({
+        content,
+        details: { truncated: false },
+      })
     })
-  })
+  )
 
   it.effect('spills complete oversized text with mode 0600 without copying it into details', () =>
     Effect.gen(function* () {

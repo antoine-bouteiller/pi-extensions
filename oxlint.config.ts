@@ -34,7 +34,7 @@ export default defineConfig({
     {
       files: ['tests/**/*.ts'],
       rules: {
-        // `bun:test` awaits the callback passed to `test`/`describe`, so specs must stay promise-shaped at that boundary.
+        // Promise-shaped fakes and native Bun lifecycle hooks remain async; Effect test registrations do not.
         'effecttsgo/async-function': 'off',
         // Tests are application entry points: each spec provides its own layer, so scope lifetimes don't apply.
         'effecttsgo/strict-effect-provide': 'off',

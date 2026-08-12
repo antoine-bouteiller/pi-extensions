@@ -95,72 +95,80 @@ describe('Anthropic quota provider', () => {
     })
   )
 
-  it.effect('reads the active profile rather than the first one', async () => {
-    const fakeFetch = asFetch(() =>
-      gatewayResponse({
-        activeProfile: 'work',
-        profiles: [
-          { id: 'other', isActive: false, windows: [{ type: 'five_hour', utilization: 0.1 }] },
-          {
-            id: 'work',
-            isActive: true,
-            windows: [
-              { type: 'five_hour', utilization: 0.5 },
-              { type: 'seven_day', utilization: 0.25 },
-            ],
-          },
-        ],
-      })
-    )
+  it.effect('reads the active profile rather than the first one', () =>
+    Effect.gen(function* () {
+      const fakeFetch = asFetch(() =>
+        gatewayResponse({
+          activeProfile: 'work',
+          profiles: [
+            { id: 'other', isActive: false, windows: [{ type: 'five_hour', utilization: 0.1 }] },
+            {
+              id: 'work',
+              isActive: true,
+              windows: [
+                { type: 'five_hour', utilization: 0.5 },
+                { type: 'seven_day', utilization: 0.25 },
+              ],
+            },
+          ],
+        })
+      )
 
-    const quota = await fetchAnthropicQuota('http://gateway', undefined, fakeFetch)
-    expect(quota?.percent).toBe(50)
-  })
-
-  it.effect('strips trailing slashes from the configured base URL', async () => {
-    let requestedUrl = ''
-    const fakeFetch = asFetch((input) => {
-      requestedUrl = String(input)
-      return gatewayResponse({ profiles: [] })
+      const quota = yield* Effect.promise(() => fetchAnthropicQuota('http://gateway', undefined, fakeFetch))
+      expect(quota?.percent).toBe(50)
     })
+  )
 
-    await fetchAnthropicQuota('http://127.0.0.1:3456/', undefined, fakeFetch)
-    expect(requestedUrl).toBe('http://127.0.0.1:3456/v1/usage/quota/all')
-  })
+  it.effect('strips trailing slashes from the configured base URL', () =>
+    Effect.gen(function* () {
+      let requestedUrl = ''
+      const fakeFetch = asFetch((input) => {
+        requestedUrl = String(input)
+        return gatewayResponse({ profiles: [] })
+      })
 
-  it.effect('returns null without a base URL, and for unsuccessful or malformed responses', async () => {
-    const unusable = asFetch(() => {
-      throw new Error('should not be called')
+      yield* Effect.promise(() => fetchAnthropicQuota('http://127.0.0.1:3456/', undefined, fakeFetch))
+      expect(requestedUrl).toBe('http://127.0.0.1:3456/v1/usage/quota/all')
     })
-    const unsuccessful = asFetch(() => Promise.resolve(new Response(undefined, { status: 404 })))
-    const malformed = asFetch(() =>
-      gatewayResponse({
-        profiles: [{ isActive: true, windows: [{ type: 'five_hour', utilization: 0.1 }] }],
-      })
-    )
-    const empty = asFetch(() => gatewayResponse({ profiles: [] }))
+  )
 
-    expect(await fetchAnthropicQuota('', undefined, unusable)).toBeUndefined()
-    expect(await fetchAnthropicQuota('http://gateway', undefined, unsuccessful)).toBeUndefined()
-    expect(await fetchAnthropicQuota('http://gateway', undefined, malformed)).toBeUndefined()
-    expect(await fetchAnthropicQuota('http://gateway', undefined, empty)).toBeUndefined()
-  })
+  it.effect('returns null without a base URL, and for unsuccessful or malformed responses', () =>
+    Effect.gen(function* () {
+      const unusable = asFetch(() => {
+        throw new Error('should not be called')
+      })
+      const unsuccessful = asFetch(() => Promise.resolve(new Response(undefined, { status: 404 })))
+      const malformed = asFetch(() =>
+        gatewayResponse({
+          profiles: [{ isActive: true, windows: [{ type: 'five_hour', utilization: 0.1 }] }],
+        })
+      )
+      const empty = asFetch(() => gatewayResponse({ profiles: [] }))
 
-  it.effect('derives Azure quota only from valid token headers', () => {
-    expect(
-      quotaFromHeaders('azure-openai', {
-        'x-ratelimit-limit-tokens': '1000',
-        'x-ratelimit-remaining-tokens': '250',
-      })
-    ).toEqual({ label: 'azure', percent: 75 })
-    expect(quotaFromHeaders('anthropic', {})).toBeUndefined()
-    expect(
-      quotaFromHeaders('azure-openai', {
-        'x-ratelimit-limit-tokens': '0',
-        'x-ratelimit-remaining-tokens': '0',
-      })
-    ).toBeUndefined()
-  })
+      expect(yield* Effect.promise(() => fetchAnthropicQuota('', undefined, unusable))).toBeUndefined()
+      expect(yield* Effect.promise(() => fetchAnthropicQuota('http://gateway', undefined, unsuccessful))).toBeUndefined()
+      expect(yield* Effect.promise(() => fetchAnthropicQuota('http://gateway', undefined, malformed))).toBeUndefined()
+      expect(yield* Effect.promise(() => fetchAnthropicQuota('http://gateway', undefined, empty))).toBeUndefined()
+    })
+  )
+
+  it.effect('derives Azure quota only from valid token headers', () =>
+    Effect.sync(() => {
+      expect(
+        quotaFromHeaders('azure-openai', {
+          'x-ratelimit-limit-tokens': '1000',
+          'x-ratelimit-remaining-tokens': '250',
+        })
+      ).toEqual({ label: 'azure', percent: 75 })
+      expect(quotaFromHeaders('anthropic', {})).toBeUndefined()
+      expect(
+        quotaFromHeaders('azure-openai', {
+          'x-ratelimit-limit-tokens': '0',
+          'x-ratelimit-remaining-tokens': '0',
+        })
+      ).toBeUndefined()
+    })
+  )
 })
 
 describe('Anthropic quota polling lifecycle', () => {

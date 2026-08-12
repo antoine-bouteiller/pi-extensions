@@ -45,9 +45,11 @@ describe('bun-effect shim', () => {
     })
   )
 
-  it.effect('released after the scoped test finished', () => {
-    expect(log).toEqual(['acquire', 'release'])
-  })
+  it.effect('released after the scoped test finished', () =>
+    Effect.sync(() => {
+      expect(log).toEqual(['acquire', 'release'])
+    })
+  )
 })
 
 describe('node platform layer', () => {

@@ -1,5 +1,6 @@
 import { visibleWidth } from '@earendil-works/pi-tui'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { Effect } from 'effect'
 
 import { renderFooterLines, type FooterState } from '@/features/status_panel/footer.js'
 
@@ -21,69 +22,79 @@ const state: FooterState = {
 }
 
 describe('renderFooterLines', () => {
-  it.effect('always shows the directory, model and context', () => {
-    const lines = renderFooterLines(state, theme, 80)
+  it.effect('always shows the directory, model and context', () =>
+    Effect.sync(() => {
+      const lines = renderFooterLines(state, theme, 80)
 
-    expect(lines[0]).toContain('pi-extensions')
-    expect(lines[0]).toContain('claude-opus-5 · medium')
-    expect(lines[1]).toContain('34k/272k (13%)')
-  })
+      expect(lines[0]).toContain('pi-extensions')
+      expect(lines[0]).toContain('claude-opus-5 · medium')
+      expect(lines[1]).toContain('34k/272k (13%)')
+    })
+  )
 
-  it.effect('uses a singular file label and omits the branch outside a repository', () => {
-    expect(renderFooterLines(state, theme, 80)[2]).toBe('main · 1 file changed')
-    expect(renderFooterLines({ ...state, git: { ...state.git, changedFiles: 3 } }, theme, 80)[2]).toBe('main · 3 files changed')
+  it.effect('uses a singular file label and omits the branch outside a repository', () =>
+    Effect.sync(() => {
+      expect(renderFooterLines(state, theme, 80)[2]).toBe('main · 1 file changed')
+      expect(renderFooterLines({ ...state, git: { ...state.git, changedFiles: 3 } }, theme, 80)[2]).toBe('main · 3 files changed')
 
-    const detached = renderFooterLines({ ...state, git: { branch: undefined, changedFiles: 0, pullRequest: undefined } }, theme, 80)
-    expect(detached.join('\n')).not.toContain('changed')
-  })
+      const detached = renderFooterLines({ ...state, git: { branch: undefined, changedFiles: 0, pullRequest: undefined } }, theme, 80)
+      expect(detached.join('\n')).not.toContain('changed')
+    })
+  )
 
-  it.effect('renders Claude and Azure quotas together', () => {
-    const lines = renderFooterLines(
-      {
-        ...state,
-        quotas: {
-          anthropic: { detail: '3h 10m  Weekly: 18.0% 31.62/200$', label: 'anthropic', percent: 42 },
-          azure: { label: 'azure', percent: 7 },
+  it.effect('renders Claude and Azure quotas together', () =>
+    Effect.sync(() => {
+      const lines = renderFooterLines(
+        {
+          ...state,
+          quotas: {
+            anthropic: { detail: '3h 10m  Weekly: 18.0% 31.62/200$', label: 'anthropic', percent: 42 },
+            azure: { label: 'azure', percent: 7 },
+          },
         },
-      },
-      theme,
-      80
-    )
+        theme,
+        80
+      )
 
-    expect(lines.at(-2)).toContain('Session:')
-    expect(lines.at(-2)).toContain('31.62/200$')
-    expect(lines.at(-1)).toContain('Azure:')
-  })
+      expect(lines.at(-2)).toContain('Session:')
+      expect(lines.at(-2)).toContain('31.62/200$')
+      expect(lines.at(-1)).toContain('Azure:')
+    })
+  )
 
-  it.effect('renders each status with its icon', () => {
-    const lines = renderFooterLines(
-      {
-        ...state,
-        statuses: [
-          { icon: '🛡️', key: 'safety', text: 'cmd-guard', tone: 'success' },
-          { key: 'mcp', text: 'MCP: 2 connected' },
-        ],
-      },
-      theme,
-      80
-    )
+  it.effect('renders each status with its icon', () =>
+    Effect.sync(() => {
+      const lines = renderFooterLines(
+        {
+          ...state,
+          statuses: [
+            { icon: '🛡️', key: 'safety', text: 'cmd-guard', tone: 'success' },
+            { key: 'mcp', text: 'MCP: 2 connected' },
+          ],
+        },
+        theme,
+        80
+      )
 
-    expect(lines.at(-2)).toBe('🛡️ cmd-guard')
-    expect(lines.at(-1)).toBe('MCP: 2 connected')
-  })
+      expect(lines.at(-2)).toBe('🛡️ cmd-guard')
+      expect(lines.at(-1)).toBe('MCP: 2 connected')
+    })
+  )
 
-  it.effect('keeps every line within the available width', () => {
-    const lines = renderFooterLines(
-      {
-        ...state,
-        cwd: `/Users/example/${'deep-'.repeat(40)}`,
-        quotas: { anthropic: { detail: 'x'.repeat(80), label: 'anthropic', percent: 99 } },
-        statuses: [{ key: 'long', text: 'z'.repeat(200) }],
-      },
-      theme,
-      40
-    )
+  it.effect('keeps every line within the available width', () =>
+    Effect.sync(() => {
+      const lines = renderFooterLines(
+        {
+          ...state,
+          cwd: `/Users/example/${'deep-'.repeat(40)}`,
+          quotas: { anthropic: { detail: 'x'.repeat(80), label: 'anthropic', percent: 99 } },
+          statuses: [{ key: 'long', text: 'z'.repeat(200) }],
+        },
+        theme,
+        40
+      )
 
-    expect(lines.every((line) => visibleWidth(line) <= 40)).toBeTrue()
-  })
+      expect(lines.every((line) => visibleWidth(line) <= 40)).toBeTrue()
+    })
+  )
 })

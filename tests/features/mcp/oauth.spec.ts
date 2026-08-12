@@ -2,6 +2,7 @@
 import { createServer } from 'node:http'
 
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { asError } from '@tests/utils/casts.js'
 import { httpGet } from '@tests/utils/http.js'
 import { Effect } from 'effect'
 
@@ -52,168 +53,192 @@ class MemoryStore implements CredentialStore {
 }
 
 /** The listener is a scoped resource: leaving `use` releases the port. */
-const withCallback = <Value>(options: OAuthCallbackOptions, use: (callback: OAuthCallback) => Promise<Value>): Promise<Value> =>
-  Effect.runPromise(Effect.scoped(startOAuthCallback(options).pipe(Effect.flatMap((callback) => Effect.promise(() => use(callback))))))
-
-const listenerFailure = (options: OAuthCallbackOptions): Promise<OAuthCallback> => Effect.runPromise(Effect.scoped(startOAuthCallback(options)))
+const withCallback = <Value, Failure, Requirements>(
+  options: OAuthCallbackOptions,
+  use: (callback: OAuthCallback) => Effect.Effect<Value, Failure, Requirements>
+) => Effect.scoped(startOAuthCallback(options).pipe(Effect.flatMap(use)))
 
 describe('OAuth callback', () => {
-  it.effect('accepts a matching callback and releases the port', async () => {
-    const port = await freePort()
-    await withCallback({ expectedState: 'right', port }, async (callback) => {
-      const response = await httpGet(`${callback.redirectUrl}?code=code-1&state=right`)
-
-      expect(response.status).toBe(200)
-      expect(await Effect.runPromise(callback.waitForCode)).toBe('code-1')
-    })
-
-    await withCallback({ expectedState: 'next', port }, async () => undefined)
-  })
-
-  it.effect('rejects a wrong state without consuming the legitimate callback', async () => {
-    const port = await freePort()
-    await withCallback({ expectedState: 'right', port }, async (callback) => {
-      const badResponse = await httpGet(`${callback.redirectUrl}?code=bad&state=wrong`)
-      expect(badResponse.status).toBe(400)
-      const goodResponse = await httpGet(`${callback.redirectUrl}?code=good&state=right`)
-      expect(goodResponse.status).toBe(200)
-      expect(await Effect.runPromise(callback.waitForCode)).toBe('good')
-    })
-  })
-
-  it.effect('HTML-escapes reflected OAuth errors and releases scoped listeners', async () => {
-    const port = await freePort()
-    await withCallback({ expectedState: 'state', port }, async (callback) => {
-      const payload = `<script>alert("x")</script>&'`
-      const response = await httpGet(
-        `${callback.redirectUrl}?error=${encodeURIComponent(payload)}&error_description=${encodeURIComponent(payload)}&state=state`
+  it.live('accepts a matching callback and releases the port', () =>
+    Effect.gen(function* () {
+      const port = yield* Effect.promise(() => freePort())
+      yield* withCallback({ expectedState: 'right', port }, (callback) =>
+        Effect.gen(function* () {
+          const response = yield* Effect.promise(() => httpGet(`${callback.redirectUrl}?code=code-1&state=right`))
+          expect(response.status).toBe(200)
+          expect(yield* callback.waitForCode).toBe('code-1')
+        })
       )
-      const html = await response.text()
-      expect(html).not.toContain('<script>')
-      expect(html).toContain('&lt;script&gt;')
-      expect(html).toContain('&amp;')
-      const callbackFailure = await Effect.runPromise(callback.waitForCode).then(
-        () => '',
-        (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+      yield* withCallback({ expectedState: 'next', port }, () => Effect.void)
+    })
+  )
+
+  it.live('rejects a wrong state without consuming the legitimate callback', () =>
+    Effect.gen(function* () {
+      const port = yield* Effect.promise(() => freePort())
+      yield* withCallback({ expectedState: 'right', port }, (callback) =>
+        Effect.gen(function* () {
+          const badResponse = yield* Effect.promise(() => httpGet(`${callback.redirectUrl}?code=bad&state=wrong`))
+          expect(badResponse.status).toBe(400)
+          const goodResponse = yield* Effect.promise(() => httpGet(`${callback.redirectUrl}?code=good&state=right`))
+          expect(goodResponse.status).toBe(200)
+          expect(yield* callback.waitForCode).toBe('good')
+        })
       )
-      expect(callbackFailure).toContain('<script>')
     })
+  )
 
-    await withCallback({ expectedState: 'replacement', port }, async () => undefined)
-  })
+  it.live('HTML-escapes reflected OAuth errors and releases scoped listeners', () =>
+    Effect.gen(function* () {
+      const port = yield* Effect.promise(() => freePort())
+      yield* withCallback({ expectedState: 'state', port }, (callback) =>
+        Effect.gen(function* () {
+          const payload = `<script>alert("x")</script>&'`
+          const response = yield* Effect.promise(() =>
+            httpGet(`${callback.redirectUrl}?error=${encodeURIComponent(payload)}&error_description=${encodeURIComponent(payload)}&state=state`)
+          )
+          const html = yield* Effect.promise(() => response.text())
+          expect(html).not.toContain('<script>')
+          expect(html).toContain('&lt;script&gt;')
+          expect(html).toContain('&amp;')
+          expect(asError(yield* Effect.flip(callback.waitForCode)).message).toContain('<script>')
+        })
+      )
 
-  it.effect('handles OAuth errors, timeout, cancellation, and occupied ports', async () => {
-    await withCallback({ expectedState: 'state', port: await freePort() }, async (callback) => {
-      await httpGet(`${callback.redirectUrl}?error=access_denied&error_description=nope&state=state`)
-      expect(Effect.runPromise(callback.waitForCode)).rejects.toThrow('access_denied')
+      yield* withCallback({ expectedState: 'replacement', port }, () => Effect.void)
     })
+  )
 
-    await withCallback({ expectedState: 'state', port: await freePort(), timeoutMs: 5 }, async (callback) => {
-      expect(Effect.runPromise(callback.waitForCode)).rejects.toThrow('timed out')
+  it.live('handles OAuth errors, timeout, cancellation, and occupied ports', () =>
+    Effect.gen(function* () {
+      yield* withCallback({ expectedState: 'state', port: yield* Effect.promise(() => freePort()) }, (callback) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(() => httpGet(`${callback.redirectUrl}?error=access_denied&error_description=nope&state=state`))
+          expect(asError(yield* Effect.flip(callback.waitForCode)).message).toContain('access_denied')
+        })
+      )
+
+      yield* withCallback({ expectedState: 'state', port: yield* Effect.promise(() => freePort()), timeoutMs: 5 }, (callback) =>
+        Effect.gen(function* () {
+          expect(asError(yield* Effect.flip(callback.waitForCode)).message).toContain('timed out')
+        })
+      )
+
+      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
+      const controller = new AbortController()
+      yield* withCallback({ expectedState: 'state', port: yield* Effect.promise(() => freePort()), signal: controller.signal }, (callback) =>
+        Effect.gen(function* () {
+          controller.abort()
+          expect(asError(yield* Effect.flip(callback.waitForCode)).message).toContain('cancelled')
+        })
+      )
+
+      const occupiedPort = yield* Effect.promise(() => freePort())
+      yield* withCallback({ expectedState: 'one', port: occupiedPort }, () =>
+        Effect.gen(function* () {
+          const error = yield* Effect.flip(Effect.scoped(startOAuthCallback({ expectedState: 'two', port: occupiedPort })))
+          expect(asError(error).message).toContain('already in use')
+        })
+      )
     })
+  )
 
-    const controller = new AbortController()
-    await withCallback({ expectedState: 'state', port: await freePort(), signal: controller.signal }, async (callback) => {
-      controller.abort()
-      expect(Effect.runPromise(callback.waitForCode)).rejects.toThrow('cancelled')
+  it.live('rejects non-loopback or mismatched redirect URIs', () =>
+    Effect.gen(function* () {
+      for (const [redirectUri, message] of [
+        ['https://example.test/callback', 'loopback'],
+        ['http://localhost:5678/callback', 'match callbackPort'],
+      ] as const) {
+        const error = yield* Effect.flip(Effect.scoped(startOAuthCallback({ expectedState: 'state', port: 1234, redirectUri })))
+        expect(asError(error).message).toContain(message)
+      }
     })
-
-    const occupiedPort = await freePort()
-    await withCallback({ expectedState: 'one', port: occupiedPort }, async () => {
-      expect(listenerFailure({ expectedState: 'two', port: occupiedPort })).rejects.toThrow('already in use')
-    })
-  })
-
-  it.effect('rejects non-loopback or mismatched redirect URIs', async () => {
-    expect(
-      listenerFailure({
-        expectedState: 'state',
-        port: 1234,
-        redirectUri: 'https://example.test/callback',
-      })
-    ).rejects.toThrow('loopback')
-    expect(
-      listenerFailure({
-        expectedState: 'state',
-        port: 1234,
-        redirectUri: 'http://localhost:5678/callback',
-      })
-    ).rejects.toThrow('match callbackPort')
-  })
+  )
 })
 
 describe('Keychain OAuth provider', () => {
-  it.effect('does not read credentials during construction and returns static client metadata', async () => {
-    const store = new MemoryStore()
-    const provider = new KeychainOAuthProvider({
-      config: { callbackPort: 3118, clientId: 'static-id', clientName: 'My Custom Client', clientSecret: 'static-secret' },
-      serverName: 'slack',
-      serverUrl: 'https://mcp.slack.test/mcp',
-      store,
-    })
+  it.effect('does not read credentials during construction and returns static client metadata', () =>
+    Effect.gen(function* () {
+      const store = new MemoryStore()
+      const provider = new KeychainOAuthProvider({
+        config: { callbackPort: 3118, clientId: 'static-id', clientName: 'My Custom Client', clientSecret: 'static-secret' },
+        serverName: 'slack',
+        serverUrl: 'https://mcp.slack.test/mcp',
+        store,
+      })
 
-    expect(store.reads).toBe(0)
-    expect(await provider.clientInformation()).toEqual({
-      client_id: 'static-id',
-      client_secret: 'static-secret',
+      expect(store.reads).toBe(0)
+      expect(yield* Effect.promise(() => provider.clientInformation())).toEqual({
+        client_id: 'static-id',
+        client_secret: 'static-secret',
+      })
+      expect(provider.clientMetadata.client_name).toBe('My Custom Client')
+      expect(provider.clientMetadata.redirect_uris).toEqual(['http://localhost:3118/callback'])
     })
-    expect(provider.clientMetadata.client_name).toBe('My Custom Client')
-    expect(provider.clientMetadata.redirect_uris).toEqual(['http://localhost:3118/callback'])
-  })
+  )
 
-  it.effect('persists dynamic registration and refresh token updates without losing either', async () => {
-    const store = new MemoryStore()
-    const provider = new KeychainOAuthProvider({
-      config: { callbackPort: 3119 },
-      serverName: 'remote',
-      serverUrl: 'https://mcp.example.test/mcp',
-      store,
-    })
+  it.effect('persists dynamic registration and refresh token updates without losing either', () =>
+    Effect.gen(function* () {
+      const store = new MemoryStore()
+      const provider = new KeychainOAuthProvider({
+        config: { callbackPort: 3119 },
+        serverName: 'remote',
+        serverUrl: 'https://mcp.example.test/mcp',
+        store,
+      })
 
-    await provider.saveClientInformation({ client_id: 'dynamic-id' })
-    await provider.saveTokens({
-      access_token: 'access',
-      refresh_token: 'refresh',
-      token_type: 'Bearer',
-    })
-    await provider.saveTokens({
-      access_token: 'refreshed',
-      refresh_token: 'refresh-2',
-      token_type: 'Bearer',
-    })
+      yield* Effect.promise(() => provider.saveClientInformation({ client_id: 'dynamic-id' }))
+      yield* Effect.promise(() =>
+        provider.saveTokens({
+          access_token: 'access',
+          refresh_token: 'refresh',
+          token_type: 'Bearer',
+        })
+      )
+      yield* Effect.promise(() =>
+        provider.saveTokens({
+          access_token: 'refreshed',
+          refresh_token: 'refresh-2',
+          token_type: 'Bearer',
+        })
+      )
 
-    expect(await provider.clientInformation()).toEqual({ client_id: 'dynamic-id' })
-    expect(await provider.tokens()).toMatchObject({
-      access_token: 'refreshed',
-      refresh_token: 'refresh-2',
+      expect(yield* Effect.promise(() => provider.clientInformation())).toEqual({ client_id: 'dynamic-id' })
+      expect(yield* Effect.promise(() => provider.tokens())).toMatchObject({
+        access_token: 'refreshed',
+        refresh_token: 'refresh-2',
+      })
+      expect(store.value?.serverUrl).toBe('https://mcp.example.test/mcp')
     })
-    expect(store.value?.serverUrl).toBe('https://mcp.example.test/mcp')
-  })
+  )
 
-  it.effect('opens the browser only in an explicit interactive flow', async () => {
-    const opened: string[] = []
-    const provider = new KeychainOAuthProvider({
-      config: { callbackPort: 3120 },
-      serverName: 'remote',
-      serverUrl: 'https://mcp.example.test/mcp',
-      store: new MemoryStore(),
-    })
-    expect(provider.redirectToAuthorization(new URL('https://auth.test'))).rejects.toThrow('/mcp-auth')
+  it.effect('opens the browser only in an explicit interactive flow', () =>
+    Effect.gen(function* () {
+      const opened: string[] = []
+      const provider = new KeychainOAuthProvider({
+        config: { callbackPort: 3120 },
+        serverName: 'remote',
+        serverUrl: 'https://mcp.example.test/mcp',
+        store: new MemoryStore(),
+      })
+      expect(provider.redirectToAuthorization(new URL('https://auth.test'))).rejects.toThrow('/mcp-auth')
 
-    const state = createOAuthState()
-    const interactive = new KeychainOAuthProvider({
-      config: { callbackPort: 3120 },
-      interactive: true,
-      openUrl: async (url) => {
-        opened.push(url)
-      },
-      serverName: 'remote',
-      serverUrl: 'https://mcp.example.test/mcp',
-      state,
-      store: new MemoryStore(),
+      const state = createOAuthState()
+      const interactive = new KeychainOAuthProvider({
+        config: { callbackPort: 3120 },
+        interactive: true,
+        openUrl: async (url) => {
+          opened.push(url)
+        },
+        serverName: 'remote',
+        serverUrl: 'https://mcp.example.test/mcp',
+        state,
+        store: new MemoryStore(),
+      })
+      expect(interactive.state()).toBe(state)
+      yield* Effect.promise(() => interactive.redirectToAuthorization(new URL('https://auth.test/start')))
+      expect(opened).toEqual(['https://auth.test/start'])
     })
-    expect(interactive.state()).toBe(state)
-    await interactive.redirectToAuthorization(new URL('https://auth.test/start'))
-    expect(opened).toEqual(['https://auth.test/start'])
-  })
+  )
 })

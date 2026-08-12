@@ -120,49 +120,57 @@ const mergedManifest = (features: Record<string, FeatureReport>): Manifest => {
 const registrationCount = (manifest: Manifest): number => MANIFEST_KEYS.reduce((total, key) => total + manifest[key].length, 0)
 
 describe('registration', () => {
-  it.effect('the registry wires every feature directory exactly once', async () => {
-    const { registryNames } = await registrationReport()
-    const directories = await featureDirectories()
+  it.effect('the registry wires every feature directory exactly once', () =>
+    Effect.gen(function* () {
+      const { registryNames } = yield* Effect.promise(() => registrationReport())
+      const directories = yield* Effect.promise(() => featureDirectories())
 
-    expect(registryNames.toSorted()).toEqual(directories.map(toFeatureName).toSorted())
-    expect(new Set(registryNames).size).toBe(registryNames.length)
-  })
+      expect(registryNames.toSorted()).toEqual(directories.map(toFeatureName).toSorted())
+      expect(new Set(registryNames).size).toBe(registryNames.length)
+    })
+  )
 
-  it.effect('every feature exposes only a named register entrypoint that registers something', async () => {
-    const { features } = await registrationReport()
+  it.effect('every feature exposes only a named register entrypoint that registers something', () =>
+    Effect.gen(function* () {
+      const { features } = yield* Effect.promise(() => registrationReport())
 
-    for (const [directory, feature] of Object.entries(features)) {
-      expect(feature.exportsRegister, directory).toBeTrue()
-      expect(feature.exportsDefault, directory).toBeFalse()
-      expect(registrationCount(feature.manifest), directory).toBeGreaterThan(0)
-    }
-  })
+      for (const [directory, feature] of Object.entries(features)) {
+        expect(feature.exportsRegister, directory).toBeTrue()
+        expect(feature.exportsDefault, directory).toBeFalse()
+        expect(registrationCount(feature.manifest), directory).toBeGreaterThan(0)
+      }
+    })
+  )
 
-  it.effect('the packaged entrypoint registers exactly what the features register on their own', async () => {
-    const { aggregate, features } = await registrationReport()
-    const merged = mergedManifest(features)
+  it.effect('the packaged entrypoint registers exactly what the features register on their own', () =>
+    Effect.gen(function* () {
+      const { aggregate, features } = yield* Effect.promise(() => registrationReport())
+      const merged = mergedManifest(features)
 
-    for (const key of MANIFEST_KEYS) {
-      expect(aggregate[key].toSorted(), key).toEqual(merged[key].toSorted())
-    }
-  })
+      for (const key of MANIFEST_KEYS) {
+        expect(aggregate[key].toSorted(), key).toEqual(merged[key].toSorted())
+      }
+    })
+  )
 
   /*
    * Asserted on the merged per-feature manifests rather than the aggregate: Pi keys tools and
    * commands by name, so a collision between two features is silently deduped in the aggregate.
    */
-  it.effect('tool, command, and message renderer names are unique across features and well formed', async () => {
-    const { features } = await registrationReport()
-    const merged = mergedManifest(features)
+  it.effect('tool, command, and message renderer names are unique across features and well formed', () =>
+    Effect.gen(function* () {
+      const { features } = yield* Effect.promise(() => registrationReport())
+      const merged = mergedManifest(features)
 
-    for (const key of ['commands', 'messageRenderers', 'tools'] as const) {
-      expect(merged[key].toSorted(), key).toEqual([...new Set(merged[key])].toSorted())
-    }
-    for (const tool of merged.tools) {
-      expect(tool, tool).toMatch(SNAKE_CASE)
-    }
-    for (const command of merged.commands) {
-      expect(command, command).toMatch(KEBAB_CASE)
-    }
-  })
+      for (const key of ['commands', 'messageRenderers', 'tools'] as const) {
+        expect(merged[key].toSorted(), key).toEqual([...new Set(merged[key])].toSorted())
+      }
+      for (const tool of merged.tools) {
+        expect(tool, tool).toMatch(SNAKE_CASE)
+      }
+      for (const command of merged.commands) {
+        expect(command, command).toMatch(KEBAB_CASE)
+      }
+    })
+  )
 })

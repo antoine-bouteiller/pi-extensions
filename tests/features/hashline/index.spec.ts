@@ -406,9 +406,11 @@ describe('hashline extension', () => {
     })
   )
 
-  it.effect('documents native hashline operations instead of unified diffs', () => {
-    const tools = setup()
-    expect(tools.write.description).toContain('PUT')
-    expect(tools.write.promptGuidelines?.join(' ')).toContain('never use unified-diff')
-  })
+  it.effect('documents native hashline operations instead of unified diffs', () =>
+    Effect.sync(() => {
+      const tools = setup()
+      expect(tools.write.description).toContain('PUT')
+      expect(tools.write.promptGuidelines?.join(' ')).toContain('never use unified-diff')
+    })
+  )
 })

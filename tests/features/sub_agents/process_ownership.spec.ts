@@ -222,18 +222,22 @@ describe('ProcessInspector: liveness and ownership comparison', () => {
 })
 
 describe('plain exported functions delegate to the live probe', () => {
-  it.effect('inspectProcess/ownershipMatches/processOwnerIsActive stay usable without Effect', () => {
-    expect(inspectProcess(-1)).toBeUndefined()
-    expect(ownershipMatches({ pid: -1, processIdentity: 'x', token: 'y' })).toBe(false)
-    expect(processOwnerIsActive({ pid: -1 })).toBe(false)
-  })
+  it.effect('inspectProcess/ownershipMatches/processOwnerIsActive stay usable without Effect', () =>
+    Effect.sync(() => {
+      expect(inspectProcess(-1)).toBeUndefined()
+      expect(ownershipMatches({ pid: -1, processIdentity: 'x', token: 'y' })).toBe(false)
+      expect(processOwnerIsActive({ pid: -1 })).toBe(false)
+    })
+  )
 })
 
 describe('ProcessInspectorLive', () => {
-  it.effect('matches the running Node process to the live probe platform', () => {
-    expect(nodeProcessProbe.platform).toBe(process.platform)
-    expect(nodeProcessProbe.processAlive(process.pid)).toBe(true)
-  })
+  it.effect('matches the running Node process to the live probe platform', () =>
+    Effect.sync(() => {
+      expect(nodeProcessProbe.platform).toBe(process.platform)
+      expect(nodeProcessProbe.processAlive(process.pid)).toBe(true)
+    })
+  )
 
   it.effect('resolves the live ProcessInspector service and reports the current process alive', () =>
     Effect.gen(function* () {
