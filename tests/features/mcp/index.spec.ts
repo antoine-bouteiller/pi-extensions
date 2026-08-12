@@ -3,6 +3,7 @@ import { afterEach } from 'bun:test'
 import { type AgentToolResult } from '@earendil-works/pi-coding-agent'
 import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asCommand, asTool } from '@tests/utils/casts.js'
+import { deferred } from '@tests/utils/deferred.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect } from 'effect'
@@ -20,20 +21,12 @@ import {
 } from '@/features/mcp/gateway.js'
 import { createMcpExtension } from '@/features/mcp/index.js'
 import { publishStatus } from '@/shared/state/status_bar.js'
+import { parseJsonText } from '@/shared/utils/json.js'
 
 afterEach(() => publishStatus('mcp', undefined))
 interface RecordedCall {
   method: string
   values: unknown[]
-}
-
-const deferred = <Value>() => {
-  let resolve!: (value: Value | PromiseLike<Value>) => void
-  // oxlint-disable-next-line effecttsgo/new-promise -- The harness exposes this gate before the Effect under test and the test body owns its resolver.
-  const promise = new Promise<Value>((done) => {
-    resolve = done
-  })
-  return { promise, resolve }
 }
 
 const createHarness = (overrides: Partial<McpGatewayManager> = {}) => {
@@ -187,6 +180,8 @@ const authContext = (notifications: { message: string; level: string }[], select
 })
 
 const callsFor = (harness: ReturnType<typeof createHarness>, method: string): RecordedCall[] => harness.calls.filter((call) => call.method === method)
+
+const signalOf = (value: unknown): unknown => (typeof value === 'object' && value !== null && 'signal' in value ? value.signal : undefined)
 
 describe('MCP gateway policy selection', () => {
   it.effect('enables read-only policy only for PI_SUBAGENT_READONLY=1', () =>
@@ -350,13 +345,13 @@ describe('MCP gateway registration and lifecycle', () => {
     Effect.gen(function* () {
       const harness = createHarness()
       yield* Effect.promise(() => harness.start())
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
-      const controller = new AbortController()
+      const forwardedSignal = AbortSignal.any([])
 
-      const result = yield* Effect.promise(() => harness.execute({ args: { path: 'README.md' }, server: 'fff', tool: 'fff_read' }, controller.signal))
+      const result = yield* Effect.promise(() => harness.execute({ args: { path: 'README.md' }, server: 'fff', tool: 'fff_read' }, forwardedSignal))
 
       expect(result).toBe(harness.callResult)
-      expect(callsFor(harness, 'call')[0]?.values).toEqual(['fff_read', { path: 'README.md' }, { server: 'fff', signal: controller.signal }])
+      expect(callsFor(harness, 'call')[0]?.values).toEqual(['fff_read', { path: 'README.md' }, { server: 'fff', signal: forwardedSignal }])
+      expect(signalOf(callsFor(harness, 'call')[0]?.values[2])).toBe(forwardedSignal)
     })
   )
 
@@ -376,12 +371,12 @@ describe('MCP gateway registration and lifecycle', () => {
     Effect.gen(function* () {
       const harness = createHarness()
       yield* Effect.promise(() => harness.start())
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
-      const controller = new AbortController()
+      const forwardedSignal = AbortSignal.any([])
 
-      const result = yield* Effect.promise(() => harness.execute({ connect: 'linear' }, controller.signal))
+      const result = yield* Effect.promise(() => harness.execute({ connect: 'linear' }, forwardedSignal))
 
-      expect(callsFor(harness, 'connect').at(-1)?.values).toEqual(['linear', { signal: controller.signal }])
+      expect(callsFor(harness, 'connect').at(-1)?.values).toEqual(['linear', { signal: forwardedSignal }])
+      expect(signalOf(callsFor(harness, 'connect').at(-1)?.values[1])).toBe(forwardedSignal)
       expect(result.content[0]).toEqual({
         text: expect.stringContaining('mcp({ server: "linear" })'),
         type: 'text',
@@ -393,12 +388,12 @@ describe('MCP gateway registration and lifecycle', () => {
     Effect.gen(function* () {
       const harness = createHarness()
       yield* Effect.promise(() => harness.start())
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
-      const controller = new AbortController()
+      const forwardedSignal = AbortSignal.any([])
 
-      const result = yield* Effect.promise(() => harness.execute({ describe: 'find_issue', server: 'linear' }, controller.signal))
+      const result = yield* Effect.promise(() => harness.execute({ describe: 'find_issue', server: 'linear' }, forwardedSignal))
 
-      expect(callsFor(harness, 'describe')[0]?.values).toEqual(['find_issue', { server: 'linear', signal: controller.signal }])
+      expect(callsFor(harness, 'describe')[0]?.values).toEqual(['find_issue', { server: 'linear', signal: forwardedSignal }])
+      expect(signalOf(callsFor(harness, 'describe')[0]?.values[1])).toBe(forwardedSignal)
       expect(result.content[0]).toEqual({
         text: expect.stringContaining('mcp({ tool: "find_issue", args: { ... } })'),
         type: 'text',
@@ -419,12 +414,12 @@ describe('MCP gateway registration and lifecycle', () => {
     Effect.gen(function* () {
       const harness = createHarness()
       yield* Effect.promise(() => harness.start())
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
-      const controller = new AbortController()
+      const forwardedSignal = AbortSignal.any([])
 
-      const result = yield* Effect.promise(() => harness.execute({ regex: true, search: 'issue.*', server: 'linear' }, controller.signal))
+      const result = yield* Effect.promise(() => harness.execute({ regex: true, search: 'issue.*', server: 'linear' }, forwardedSignal))
 
-      expect(callsFor(harness, 'search')[0]?.values).toEqual(['issue.*', { limit: 31, regex: true, server: 'linear', signal: controller.signal }])
+      expect(callsFor(harness, 'search')[0]?.values).toEqual(['issue.*', { limit: 31, regex: true, server: 'linear', signal: forwardedSignal }])
+      expect(signalOf(callsFor(harness, 'search')[0]?.values[1])).toBe(forwardedSignal)
       const text = result.content[0]?.type === 'text' ? result.content[0].text : ''
       expect(text.indexOf('a_tool')).toBeLessThan(text.indexOf('z_tool'))
     })
@@ -434,12 +429,12 @@ describe('MCP gateway registration and lifecycle', () => {
     Effect.gen(function* () {
       const harness = createHarness()
       yield* Effect.promise(() => harness.start())
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
-      const controller = new AbortController()
+      const forwardedSignal = AbortSignal.any([])
 
-      const result = yield* Effect.promise(() => harness.execute({ server: 'fff' }, controller.signal))
+      const result = yield* Effect.promise(() => harness.execute({ server: 'fff' }, forwardedSignal))
 
-      expect(callsFor(harness, 'list')[0]?.values).toEqual(['fff', { signal: controller.signal }])
+      expect(callsFor(harness, 'list')[0]?.values).toEqual(['fff', { signal: forwardedSignal }])
+      expect(signalOf(callsFor(harness, 'list')[0]?.values[1])).toBe(forwardedSignal)
       const text = result.content[0]?.type === 'text' ? result.content[0].text : ''
       expect(text.indexOf('fff_a')).toBeLessThan(text.indexOf('fff_z'))
     })
@@ -492,8 +487,7 @@ describe('MCP gateway registration and lifecycle', () => {
       yield* Effect.promise(() => harness.start())
 
       expect(harness.execute({ args: '{', tool: 'one' })).rejects.toThrow('valid JSON')
-      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-      for (const args of ['null', '[]', '42', '"value"', JSON.parse('null') as unknown, [], 42]) {
+      for (const args of ['null', '[]', '42', '"value"', parseJsonText('null'), [], 42]) {
         expect(harness.execute({ args, tool: 'one' })).rejects.toThrow('must be a JSON object')
       }
       expect(callsFor(harness, 'call')).toHaveLength(0)

@@ -3,7 +3,7 @@ import { basename } from 'node:path'
 
 import { type ExtensionContext, type ThemeColor } from '@earendil-works/pi-coding-agent'
 import { getCapabilities, truncateToWidth, visibleWidth, type Component, type OverlayHandle } from '@earendil-works/pi-tui'
-import { Effect, Exit, Ref, Scope } from 'effect'
+import { DateTime, Effect, Exit, Ref, Scope } from 'effect'
 
 import { type RunningAgent } from '@/shared/state/agent_activity.js'
 import { formatStatusText, type StatusEntry, type StatusTone } from '@/shared/state/status_bar.js'
@@ -276,8 +276,13 @@ export interface RenderSidebarLinesOptions {
   now?: number
 }
 
-// oxlint-disable-next-line effecttsgo/global-date -- Default for the blinking jewel inside a synchronous TUI paint callback; callers that need determinism pass `now`.
-export const renderSidebarLines = ({ state, theme, width, height, now = Date.now() }: RenderSidebarLinesOptions) => {
+export const renderSidebarLines = ({
+  state,
+  theme,
+  width,
+  height,
+  now = DateTime.toEpochMillis(DateTime.nowUnsafe()),
+}: RenderSidebarLinesOptions) => {
   const safeWidth = Math.max(0, Math.trunc(width))
   const safeHeight = Math.max(0, Math.trunc(height))
   if (safeWidth === 0 || safeHeight === 0) {

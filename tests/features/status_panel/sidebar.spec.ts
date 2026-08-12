@@ -2,6 +2,7 @@ import { visibleWidth } from '@earendil-works/pi-tui'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asExtensionContext } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
+import { withProcessEnv } from '@tests/utils/process_env.js'
 import { Effect } from 'effect'
 
 import { createSidebarController, renderSidebarLines, type SidebarState } from '@/features/status_panel/sidebar.js'
@@ -78,14 +79,9 @@ describe('sidebar rendering', () => {
   )
 
   it.effect('does not apply palette or theme colors when NO_COLOR is set', () =>
-    Effect.sync(() => {
-      // oxlint-disable-next-line effecttsgo/process-env-in-effect -- This test must use the real process environment observed by the feature.
-      const previousNoColor = process.env.NO_COLOR
-      let colorCalls = 0
-      // oxlint-disable-next-line effecttsgo/process-env-in-effect -- This test must use the real process environment observed by the feature.
-      process.env.NO_COLOR = '1'
-
-      try {
+    withProcessEnv('NO_COLOR', '1', () =>
+      Effect.sync(() => {
+        let colorCalls = 0
         const lines = renderSidebarLines({
           height: 36,
           state: withAgents(1),
@@ -101,16 +97,8 @@ describe('sidebar rendering', () => {
 
         expect(colorCalls).toBe(0)
         expect(lines.join('\n')).not.toContain('\x1b[38;2;')
-      } finally {
-        if (previousNoColor === undefined) {
-          // oxlint-disable-next-line effecttsgo/process-env-in-effect -- This test must use the real process environment observed by the feature.
-          delete process.env.NO_COLOR
-        } else {
-          // oxlint-disable-next-line effecttsgo/process-env-in-effect -- This test must use the real process environment observed by the feature.
-          process.env.NO_COLOR = previousNoColor
-        }
-      }
-    })
+      })
+    )
   )
 
   it.effect('renders session and weekly quota as matching bars with their time left', () =>

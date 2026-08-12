@@ -28,11 +28,12 @@ import { homedir, tmpdir, userInfo } from 'node:os'
 import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path'
 
 import { getAgentDir, SessionManager, type ThemeColor } from '@earendil-works/pi-coding-agent'
-import { Clock, Data, Deferred, Effect, Exit, Fiber, Function, HashMap, Option, Ref, Scope } from 'effect'
+import { Clock, Data, DateTime, Deferred, Effect, Exit, Fiber, Function, HashMap, Option, Ref, Scope } from 'effect'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
 import { azureQuota, consumeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
+import { jsonText } from '@/shared/utils/json.js'
 import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 import { isRecord } from '@/shared/utils/records.js'
 
@@ -358,8 +359,7 @@ const subagentProcessError = (message: string, cause?: unknown): SubagentProcess
  * The single wall-clock read for this module's synchronous layers: atomic persistence, the child-stdout
  * callbacks, and the predicates Pi calls from TUI paint passes. Effect paths read `Clock` instead.
  */
-// oxlint-disable-next-line effecttsgo/global-date -- No fiber carries a `Clock` at those synchronous boundaries.
-const nowMs = (): number => Date.now()
+const nowMs = (): number => DateTime.toEpochMillis(DateTime.nowUnsafe())
 
 const abortError = (signal?: AbortSignal): unknown => signal?.reason ?? new Error('Wait canceled.')
 
@@ -953,8 +953,7 @@ class SessionLogger {
         category,
         level,
         message,
-        // oxlint-disable-next-line effecttsgo/global-date -- Log line stamped from synchronous stream callbacks, which have no fiber to carry a `Clock`.
-        ts: new Date().toISOString(),
+        ts: DateTime.formatIso(DateTime.nowUnsafe()),
         ...(data === undefined ? {} : { data }),
       })}\n`
     )
@@ -1515,8 +1514,7 @@ export class AgentManager {
       let fd: number | undefined
       try {
         fd = openSync(file, 'wx')
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- One-field marker written through an already-open exclusive fd; `parseTaskLockOwner` is its only reader.
-        writeFileSync(fd, JSON.stringify({ token }))
+        writeFileSync(fd, jsonText({ token }))
         this.setFollowUpUsed(info, live, true)
         return Effect.succeed({ fd, file, token })
       } catch (error) {
@@ -2079,8 +2077,7 @@ export class AgentManager {
     return Effect.suspend(() => {
       const id = `req-${++live.reqId}`
       const commandType = typeof command.type === 'string' ? command.type : 'unknown'
-      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- Child Pi's stdin protocol is newline-delimited JSON carrying a caller-supplied command shape.
-      const payload = `${JSON.stringify({ id, ...command })}\n`
+      const payload = `${jsonText({ id, ...command })}\n`
       const wait = Effect.gen(function* () {
         const context = yield* Effect.context()
         const deferred = yield* Deferred.make<unknown, SubagentProcessError>()

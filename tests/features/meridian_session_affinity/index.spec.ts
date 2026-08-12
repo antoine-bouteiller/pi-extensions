@@ -1,21 +1,10 @@
-import { afterEach } from 'bun:test'
-
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
+import { withProcessEnv } from '@tests/utils/process_env.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect } from 'effect'
 
 import { register as registerMeridianSessionAffinity } from '@/features/meridian_session_affinity/index.js'
-
-const originalMeridianBaseUrl = process.env.MERIDIAN_BASE_URL
-
-afterEach(() => {
-  if (originalMeridianBaseUrl === undefined) {
-    delete process.env.MERIDIAN_BASE_URL
-  } else {
-    process.env.MERIDIAN_BASE_URL = originalMeridianBaseUrl
-  }
-})
 
 const createHarness = () => {
   const fixture = createFakePi()
@@ -119,16 +108,16 @@ Current working directory: /repo`,
   )
 
   it.effect('recognizes the configured Meridian base URL without relying on static headers', () =>
-    Effect.gen(function* () {
-      // oxlint-disable-next-line effecttsgo/process-env-in-effect -- This test must use the real process environment observed by the feature.
-      process.env.MERIDIAN_BASE_URL = 'https://meridian.example.test/proxy/'
-      const fixture = createHarness()
-      const event: { headers: Record<string, string> } = { headers: {} }
+    withProcessEnv('MERIDIAN_BASE_URL', 'https://meridian.example.test/proxy/', () =>
+      Effect.gen(function* () {
+        const fixture = createHarness()
+        const event: { headers: Record<string, string> } = { headers: {} }
 
-      yield* Effect.promise(() => fixture.emit('before_provider_headers', event, context('session-b', 'https://meridian.example.test/proxy')))
+        yield* Effect.promise(() => fixture.emit('before_provider_headers', event, context('session-b', 'https://meridian.example.test/proxy')))
 
-      expect(event.headers['x-session-affinity']).toBe('session-b')
-    })
+        expect(event.headers['x-session-affinity']).toBe('session-b')
+      })
+    )
   )
 
   it.effect('does not leak session affinity to non-Meridian providers', () =>

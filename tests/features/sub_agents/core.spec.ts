@@ -9,7 +9,10 @@ import { type Theme } from '@earendil-works/pi-coding-agent'
 import { visibleWidth } from '@earendil-works/pi-tui'
 import { promiseFromEffect, tryPromiseEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asError, asExtensionApi, asNarrowed, asResult, asTheme, asTui } from '@tests/utils/casts.js'
-import { Data, Effect } from 'effect'
+import { withProcessEnv } from '@tests/utils/process_env.js'
+import { Data, DateTime, Effect } from 'effect'
+
+import { jsonText, parseJsonText, prettyJsonText } from '@/shared/utils/json.js'
 
 const TEST_AGENT_DIR = '/tmp/pi-codex-subagents-tests'
 const FAKE_RPC_CHILD = join(import.meta.dir, 'fixtures', 'fake_rpc_child.js')
@@ -44,11 +47,9 @@ const { runningAgents } = await import('@/shared/state/agent_activity.js')
  * Fixtures need concrete epoch values to build on-disk records and mtimes, and the assertions compare
  * them directly. These two are the only clock reads in the file.
  */
-// oxlint-disable-next-line effecttsgo/global-date -- See above.
-const nowMs = (): number => Date.now()
+const nowMs = (): number => DateTime.toEpochMillis(DateTime.nowUnsafe())
 
-// oxlint-disable-next-line effecttsgo/global-date -- Builds a fixed `Date` from an explicit epoch value instead of reading the clock.
-const dateOf = (epochMs: number): Date => new Date(epochMs)
+const dateOf = (epochMs: number): Date => DateTime.toDateUtc(DateTime.makeUnsafe(epochMs))
 
 const sleep = (durationMs: number): Promise<void> => promiseFromEffect(Effect.sleep(durationMs))
 
@@ -175,8 +176,7 @@ describe('RPC framing', () => {
   it.effect('splits only on LF and preserves Unicode line separators', () =>
     Effect.sync(() => {
       const decoder = new RpcJsonlDecoder()
-      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-      const payload = JSON.stringify({ text: 'before\u2028after' })
+      const payload = jsonText({ text: 'before\u2028after' })
       expect(decoder.push(Buffer.from(payload.slice(0, 7)))).toEqual([])
       expect(decoder.push(Buffer.from(`${payload.slice(7)}\n`))).toEqual([payload])
       expect(decoder.end()).toEqual([])
@@ -215,8 +215,7 @@ describe('run storage', () => {
       mkdirSync(legacyScope, { recursive: true })
       writeFileSync(
         join(legacyScope, `${id}.info.json`),
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-        JSON.stringify({
+        jsonText({
           createdAt: nowMs(),
           finalResponse: 'legacy response',
           id,
@@ -259,8 +258,7 @@ describe('run storage', () => {
       for (const agent of agents) {
         writeFileSync(
           join(scope, `${agent.id}.info.json`),
-          // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-          JSON.stringify({
+          jsonText({
             ...agent,
             canonicalName: `/${agent.taskName}`,
             parentSessionId,
@@ -284,8 +282,7 @@ describe('run storage', () => {
     Effect.sync(() => {
       mkdirSync(packageDir, { recursive: true })
       rmSync(fixtureDir, { force: true, recursive: true })
-      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-      writeFileSync(configFile, JSON.stringify({ retentionDays: 3, storageDir: fixtureDir }))
+      writeFileSync(configFile, jsonText({ retentionDays: 3, storageDir: fixtureDir }))
 
       const now = nowMs()
       const oldTime = dateOf(now - 4 * 24 * 60 * 60 * 1000)
@@ -313,8 +310,7 @@ describe('run storage', () => {
         ]) {
           writeFileSync(
             file,
-            // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-            JSON.stringify({
+            jsonText({
               createdAt: oldTime.getTime(),
               id,
               lastActivity: oldTime.getTime(),
@@ -323,12 +319,10 @@ describe('run storage', () => {
           )
           utimesSync(file, oldTime, oldTime)
         }
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-        writeFileSync(activeMarker, JSON.stringify({ pid: process.pid, startedAt: now, token: 'test' }))
+        writeFileSync(activeMarker, jsonText({ pid: process.pid, startedAt: now, token: 'test' }))
         writeFileSync(unrelatedAgentFile, 'keep')
         writeFileSync(staleLock, '')
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-        writeFileSync(liveOwnerLock, JSON.stringify({ pid: process.pid }))
+        writeFileSync(liveOwnerLock, jsonText({ pid: process.pid }))
         utimesSync(staleLock, oldTime, oldTime)
         utimesSync(liveOwnerLock, oldTime, oldTime)
         writeFileSync(expiredOutput, 'old')
@@ -346,8 +340,7 @@ describe('run storage', () => {
         expect(existsSync(join(outputs, 'unrelated.txt'))).toBe(true)
         expect(existsSync(join(unrelatedScope, 'unrelated.txt'))).toBe(true)
 
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-        writeFileSync(configFile, JSON.stringify({ retentionDays: 0, storageDir: fixtureDir }))
+        writeFileSync(configFile, jsonText({ retentionDays: 0, storageDir: fixtureDir }))
         writeFileSync(expiredInfo, '{}')
         utimesSync(expiredInfo, oldTime, oldTime)
         createAgentManager()
@@ -402,8 +395,7 @@ describe('run storage', () => {
         return
       }
       rmSync(fixtureDir, { force: true, recursive: true })
-      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-      writeFileSync(configFile, JSON.stringify({ storageDir: fixtureDir }))
+      writeFileSync(configFile, jsonText({ storageDir: fixtureDir }))
       const manager = createAgentManager()
       try {
         expect(statSync(fixtureDir).mode & 0o777).toBe(0o700)
@@ -423,8 +415,7 @@ describe('run storage', () => {
       rmSync(fixtureDir, { force: true, recursive: true })
       mkdirSync(fixtureDir, { recursive: true })
       chmodSync(fixtureDir, 0o755)
-      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-      writeFileSync(configFile, JSON.stringify({ storageDir: fixtureDir }))
+      writeFileSync(configFile, jsonText({ storageDir: fixtureDir }))
       const manager = createAgentManager()
       try {
         expect(statSync(fixtureDir).mode & 0o777).toBe(0o755)
@@ -752,12 +743,10 @@ describe('child process lifecycle', () => {
       const scope = join(packageDir, 'runs', parentScopeKey(parentSessionId))
       const lockFile = join(scope, `.task-${taskStorageKey('worker')}.lock`)
       mkdirSync(scope, { recursive: true })
-      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-      writeFileSync(configFile, JSON.stringify({ retentionDays: 0 }))
+      writeFileSync(configFile, jsonText({ retentionDays: 0 }))
       writeFileSync(
         lockFile,
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-        JSON.stringify({
+        jsonText({
           createdAt: nowMs(),
           pid: process.pid,
           processIdentity: 'identity-from-an-exited-process',
@@ -786,12 +775,10 @@ describe('child process lifecycle', () => {
       const lockFile = join(scope, `.task-${taskStorageKey('worker')}.lock`)
       const displacedLock = `${lockFile}.displaced`
       mkdirSync(scope, { recursive: true })
-      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-      writeFileSync(configFile, JSON.stringify({ retentionDays: 0 }))
+      writeFileSync(configFile, jsonText({ retentionDays: 0 }))
       writeFileSync(
         lockFile,
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-        JSON.stringify({
+        jsonText({
           createdAt: nowMs(),
           pid: process.pid,
           processIdentity: 'identity-from-an-exited-process',
@@ -819,8 +806,7 @@ describe('child process lifecycle', () => {
       try {
         expect(manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'must not start'))).rejects.toThrow('already being created')
         expect(replaced).toBe(true)
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-        expect(JSON.parse(readFileSync(lockFile, 'utf8'))).toMatchObject({
+        expect(parseJsonText(readFileSync(lockFile, 'utf8'))).toMatchObject({
           pid: process.pid,
           token: 'live-replacement',
         })
@@ -860,8 +846,7 @@ describe('child process lifecycle', () => {
         yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold release race')))
         expect(replaced).toBe(true)
         expect(manager.getAgentInfo('worker', parentSessionId).status).toBe('running')
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-        expect(JSON.parse(readFileSync(lockFile, 'utf8'))).toMatchObject({ token: 'concurrent-winner' })
+        expect(parseJsonText(readFileSync(lockFile, 'utf8'))).toMatchObject({ token: 'concurrent-winner' })
         yield* Effect.promise(() => manager.interruptAgent(parentSessionId, 'worker'))
       } finally {
         yield* Effect.promise(() => manager.shutdown())
@@ -881,8 +866,7 @@ describe('child process lifecycle', () => {
       mkdirSync(scope, { recursive: true })
       writeFileSync(
         infoFile,
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-        JSON.stringify({
+        jsonText({
           canonicalName: '/worker',
           createdAt: now,
           cwd: TEST_AGENT_DIR,
@@ -1048,8 +1032,7 @@ describe('child process lifecycle', () => {
         const info = manager.getAgentInfo('worker', parentSessionId)
         writeFileSync(
           info.infoFile,
-          // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-          JSON.stringify({ ...info, agentType: 'implementer', allowedTools: ['write'], isReadonly: false, profile: 'implementer' }, undefined, 2)
+          prettyJsonText({ ...info, agentType: 'implementer', allowedTools: ['write'], isReadonly: false, profile: 'implementer' })
         )
 
         expect(manager.sendMessage(parentSessionId, 'worker', 'must not restart')).rejects.toThrow('unavailable profile: implementer')
@@ -1179,8 +1162,7 @@ describe('child process lifecycle', () => {
         const mismatched = owner.getAgentInfo('pid-reuse', parentSessionId)
         const mismatchedPid = requireChildProcess(mismatched.childProcess).pid
         requireChildProcess(mismatched.childProcess).processIdentity = 'not-the-owned-process'
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-        writeFileSync(mismatched.infoFile, JSON.stringify(mismatched, undefined, 2))
+        writeFileSync(mismatched.infoFile, prettyJsonText(mismatched))
         const mismatchReconciler = createAgentManager()
         reconcilers.push(mismatchReconciler)
         yield* Effect.promise(() =>
@@ -1355,16 +1337,17 @@ describe('completion delivery', () => {
       const parentSessionId = 'foreground-pre-abort'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
       rmSync(scope, { force: true, recursive: true })
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
-      const controller = new AbortController()
-      controller.abort(new Error('already stopped'))
+      const reason = new Error('already stopped')
+      const signal = AbortSignal.abort(reason)
       const manager = createAgentManager()
       try {
         const spawn = manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'immediate ignored'), {
-          signal: controller.signal,
+          signal,
           waitForCompletion: true,
         })
-        expect(yield* Effect.promise(() => rejectionOf(spawn))).toHaveProperty('message', 'already stopped')
+        const rejection = yield* Effect.promise(() => rejectionOf(spawn))
+        expect(rejection.message).toBe('already stopped')
+        expect(rejection.cause).toBe(reason)
         expect(() => manager.getAgentInfo('worker', parentSessionId)).toThrow('Agent not found')
         expect(existsSync(scope)).toBe(false)
       } finally {
@@ -1747,26 +1730,18 @@ describe('extension completion delivery and status activity', () => {
         if (beforeAgentStart === undefined) {
           throw new Error('before_agent_start was not registered')
         }
-        // oxlint-disable-next-line effecttsgo/process-env-in-effect -- This test must use the real process environment observed by the feature.
-        const previousOwnerToken = process.env.PI_SUBAGENT_OWNER_TOKEN
-        try {
-          // oxlint-disable-next-line effecttsgo/process-env-in-effect -- This test must use the real process environment observed by the feature.
-          delete process.env.PI_SUBAGENT_OWNER_TOKEN
-          const parentPrompt = asResult<{ systemPrompt: string }>(beforeAgentStart({ systemPrompt: 'base' }, ctx))
-          expect(parentPrompt.systemPrompt).toContain('Foreground is the default')
-          expect(parentPrompt.systemPrompt).toContain('Never repeat a pending child')
-          // oxlint-disable-next-line effecttsgo/process-env-in-effect -- This test must use the real process environment observed by the feature.
-          process.env.PI_SUBAGENT_OWNER_TOKEN = 'child'
-          expect(beforeAgentStart({ systemPrompt: 'base' }, ctx)).toBeUndefined()
-        } finally {
-          if (previousOwnerToken === undefined) {
-            // oxlint-disable-next-line effecttsgo/process-env-in-effect -- This test must use the real process environment observed by the feature.
-            delete process.env.PI_SUBAGENT_OWNER_TOKEN
-          } else {
-            // oxlint-disable-next-line effecttsgo/process-env-in-effect -- This test must use the real process environment observed by the feature.
-            process.env.PI_SUBAGENT_OWNER_TOKEN = previousOwnerToken
-          }
-        }
+        yield* withProcessEnv('PI_SUBAGENT_OWNER_TOKEN', undefined, () =>
+          Effect.sync(() => {
+            const parentPrompt = asResult<{ systemPrompt: string }>(beforeAgentStart({ systemPrompt: 'base' }, ctx))
+            expect(parentPrompt.systemPrompt).toContain('Foreground is the default')
+            expect(parentPrompt.systemPrompt).toContain('Never repeat a pending child')
+          })
+        )
+        yield* withProcessEnv('PI_SUBAGENT_OWNER_TOKEN', 'child', () =>
+          Effect.sync(() => {
+            expect(beforeAgentStart({ systemPrompt: 'base' }, ctx)).toBeUndefined()
+          })
+        )
 
         const backgroundResult = asResult<FakeToolResult>(
           yield* Effect.promise(() =>
@@ -2108,9 +2083,10 @@ describe('completion mailbox', () => {
       const manager = createAgentManager()
       // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
       const controller = new AbortController()
-      // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- This Promise-shaped fake or managed runtime intentionally runs outside the ambient test Effect.
-      Effect.runFork(Effect.flatMap(Effect.sleep(10), () => Effect.sync(() => controller.abort(new Error('cancelled')))))
-      expect(manager.waitAgent('empty-parent', undefined, controller.signal)).rejects.toThrow('cancelled')
+      const pending = manager.waitAgent('empty-parent', undefined, controller.signal)
+      yield* Effect.yieldNow
+      controller.abort(new Error('cancelled'))
+      expect(yield* Effect.promise(() => rejectionOf(pending))).toHaveProperty('message', 'cancelled')
       yield* Effect.promise(() => manager.shutdown())
     })
   )

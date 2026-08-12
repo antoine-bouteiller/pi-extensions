@@ -115,9 +115,7 @@ describe('tool executor boundary', () => {
   it.scoped('never runs the body when the signal is already aborted', () =>
     Effect.gen(function* () {
       const runtime = yield* scopedEmptyRuntime
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
-      const controller = new AbortController()
-      controller.abort()
+      const signal = AbortSignal.abort()
       let bodyRan = false
 
       const execute = makeToolExecutor(runtime)(() => {
@@ -126,7 +124,7 @@ describe('tool executor boundary', () => {
       })
 
       const outcome = yield* Effect.promise(() =>
-        execute('call-pre-abort', {}, controller.signal, undefined, fakeContext().ctx).then(
+        execute('call-pre-abort', {}, signal, undefined, fakeContext().ctx).then(
           () => 'resolved',
           () => 'rejected'
         )
@@ -242,17 +240,16 @@ describe('ui service', () => {
     Effect.gen(function* () {
       const { calls, ctx } = fakeContext()
 
-      // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- This Promise-shaped fake or managed runtime intentionally runs outside the ambient test Effect.
-      const fiber = Effect.runFork(
+      const fiber = yield* Effect.forkChild(
         Effect.gen(function* () {
           const ui = yield* Ui
           return yield* ui.confirm('Delete?', 'This cannot be undone')
         }).pipe(Effect.provide(perInvocation(ctx)))
       )
-      yield* Effect.promise(() => promiseFromEffect(Effect.sleep('10 millis')))
-      yield* Effect.promise(() => promiseFromEffect(Fiber.interrupt(fiber)))
+      yield* Effect.yieldNow
 
-      expect(calls.confirms).toHaveLength(1)
+      expect(calls.confirms).toEqual([{ aborted: false, message: 'This cannot be undone', title: 'Delete?' }])
+      yield* Fiber.interrupt(fiber)
       expect(calls.confirms[0]?.aborted).toBe(true)
     })
   )

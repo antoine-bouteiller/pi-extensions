@@ -17,6 +17,7 @@ import { readonlyMcpPolicy, type McpOperationOptions, type McpSearchOptions } fr
 import { KeychainCredentialError, type CredentialStore } from '@/features/mcp/keychain.js'
 import { McpManager, McpManagerService, mcpManagerLayer } from '@/features/mcp/manager.js'
 import { type McpGatewayPolicy, type McpServerMap } from '@/features/mcp/types.js'
+import { jsonText } from '@/shared/utils/json.js'
 
 class FakeTransport {
   onclose?: () => void
@@ -829,8 +830,7 @@ describe('MCP manager', () => {
           expect(asError(error).message).not.toContain('secret-token')
         })
       )
-      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-      expect(JSON.stringify(transport.manager.status())).not.toContain('secret-token')
+      expect(jsonText(transport.manager.status())).not.toContain('secret-token')
 
       const request = harness({
         call: () =>

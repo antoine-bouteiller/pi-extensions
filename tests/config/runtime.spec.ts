@@ -3,12 +3,14 @@ import { fileURLToPath } from 'node:url'
 import { NodeFileSystem, NodePath } from '@effect/platform-node'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
+import { withProcessEnv } from '@tests/utils/process_env.js'
 import { Effect, Layer, ManagedRuntime } from 'effect'
 import { FetchHttpClient } from 'effect/unstable/http'
 
 import { getOrCreateProcessRuntime } from '@/config/runtime.js'
 import { register as registerStatusPanel } from '@/features/status_panel/index.js'
 import { AgentActivity, type AgentActivityShape, type AppRuntime, StatusBarLive } from '@/shared/effect/app_services.js'
+import { parseJsonText } from '@/shared/utils/json.js'
 
 const sharedActivityScript = (paths: { aggregate: string; activity: string; runtime: string; statusPanel: string }): string => `
   const { Effect } = await import('effect');
@@ -85,23 +87,12 @@ describe('process-wide runtime', () => {
       const runtime: AppRuntime = ManagedRuntime.make(
         Layer.mergeAll(NodeFileSystem.layer, NodePath.layer, FetchHttpClient.layer, StatusBarLive, Layer.succeed(AgentActivity)(sentinelActivity))
       )
-      // oxlint-disable-next-line effecttsgo/process-env-in-effect -- This test must use the real process environment observed by the feature.
-      const originalOwnerToken = process.env.PI_SUBAGENT_OWNER_TOKEN
-      // oxlint-disable-next-line effecttsgo/process-env-in-effect -- This test must use the real process environment observed by the feature.
-      delete process.env.PI_SUBAGENT_OWNER_TOKEN
-      try {
-        registerStatusPanel(createFakePi().pi, runtime)
-        expect(subscriptions).toBe(1)
-      } finally {
-        if (originalOwnerToken === undefined) {
-          // oxlint-disable-next-line effecttsgo/process-env-in-effect -- This test must use the real process environment observed by the feature.
-          delete process.env.PI_SUBAGENT_OWNER_TOKEN
-        } else {
-          // oxlint-disable-next-line effecttsgo/process-env-in-effect -- This test must use the real process environment observed by the feature.
-          process.env.PI_SUBAGENT_OWNER_TOKEN = originalOwnerToken
-        }
-        yield* Effect.promise(() => runtime.dispose())
-      }
+      yield* withProcessEnv('PI_SUBAGENT_OWNER_TOKEN', undefined, () =>
+        Effect.sync(() => {
+          registerStatusPanel(createFakePi().pi, runtime)
+          expect(subscriptions).toBe(1)
+        })
+      ).pipe(Effect.ensuring(Effect.promise(() => runtime.dispose())))
     })
   )
 
@@ -120,8 +111,7 @@ describe('process-wide runtime', () => {
       )
 
       expect(exitCode, stderr).toBe(0)
-      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-      const result: unknown = JSON.parse(stdout.trim())
+      const result = parseJsonText(stdout.trim())
       expect(result).toEqual({
         aggregate: expect.stringContaining('shared-agent'),
         explicit: expect.stringContaining('shared-agent'),

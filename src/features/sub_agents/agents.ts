@@ -12,7 +12,7 @@ import {
   type ToolRenderResultOptions,
 } from '@earendil-works/pi-coding-agent'
 import { Text, isKeyRelease, isKeyRepeat, matchesKey, truncateToWidth } from '@earendil-works/pi-tui'
-import { Data, Effect } from 'effect'
+import { Data, DateTime, Effect } from 'effect'
 import { type Static, Type } from 'typebox'
 import { Check } from 'typebox/value'
 
@@ -140,8 +140,7 @@ const formatDuration = (ms: number): string => {
 const runtimeLabel = (info: AgentInfo): string => {
   const start = info.startedAt === undefined || info.startedAt === 0 ? info.createdAt : info.startedAt
   const final = ['completed', 'failed', 'interrupted'].includes(info.status)
-  // oxlint-disable-next-line effecttsgo/global-date -- Elapsed-time label for a synchronous TUI list row.
-  let end = Date.now()
+  let end = DateTime.toEpochMillis(DateTime.nowUnsafe())
   if (final) {
     if (info.completedAt !== undefined && info.completedAt !== 0) {
       end = info.completedAt
@@ -253,8 +252,7 @@ export const makeSubagentFeature = ({ managerOptions = {}, pi, runtime }: Subage
       {
         agent_name: event.agentName,
         inactive_for_ms: event.inactiveForMs,
-        // oxlint-disable-next-line effecttsgo/global-date -- Formats the timestamp carried by the event; it does not read the current time.
-        last_activity: new Date(event.lastActivity).toISOString(),
+        last_activity: DateTime.formatIso(DateTime.makeUnsafe(event.lastActivity)),
         message: `${event.agentName} has produced no activity for ${formatDuration(event.inactiveForMs)}. Check its progress and steer or interrupt it if needed.`,
         status: 'inactive',
       },
@@ -1077,8 +1075,7 @@ ${getAgentProfilesDescription()}`
 
   const browseAgentsCommand = {
     description: 'Browse subagents',
-    // oxlint-disable-next-line effecttsgo/async-function -- Pi awaits this through the registered command handler, so it must stay a promise.
-    handler: async (_args: string, ctx: ExtensionCommandContext) => browseAgents(ctx),
+    handler: (_args: string, ctx: ExtensionCommandContext) => browseAgents(ctx),
   }
 
   return {

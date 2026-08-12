@@ -1,4 +1,4 @@
-import { Data, Duration, Effect, Fiber, Function, Ref } from 'effect'
+import { Data, DateTime, Duration, Effect, Fiber, Function, Ref } from 'effect'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
@@ -123,8 +123,7 @@ const formatReset = (resetsAt: number | null | undefined): string => {
   if (typeof resetsAt !== 'number') {
     return ''
   }
-  // oxlint-disable-next-line effecttsgo/global-date -- Reset labels are formatted inside the promise-shaped fetcher and the synchronous panel formatter, neither of which has a Clock.
-  const minutes = Math.max(0, Math.round((resetsAt - Date.now()) / 60_000))
+  const minutes = Math.max(0, Math.round((resetsAt - DateTime.toEpochMillis(DateTime.nowUnsafe())) / 60_000))
   if (minutes < 60) {
     return `${minutes}m`
   }

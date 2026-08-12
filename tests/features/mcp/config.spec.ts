@@ -2,6 +2,7 @@ import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Effect, FileSystem, Path } from 'effect'
 
 import { loadMcpConfigFile, parseMcpConfig, parseMcpConfigEffect, parseMcpConfigText } from '@/features/mcp/config.js'
+import { parseJsonText } from '@/shared/utils/json.js'
 
 const temporaryPath = (name: string) =>
   Effect.gen(function* () {
@@ -19,8 +20,7 @@ describe('global MCP config parsing', () => {
        * pins that parsing preserves file order instead of sorting server names.
        */
       const servers = parseMcpConfig(
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-        JSON.parse(`{
+        parseJsonText(`{
         "mcpServers": {
           "fff": { "command": "/nix/store/example/bin/fff-mcp" },
           "linear": { "type": "http", "url": "https://mcp.linear.app/mcp" },
@@ -166,8 +166,7 @@ describe('global MCP config parsing', () => {
   it.effect('requires root and mcpServers objects', () =>
     Effect.sync(() => {
       // A parsed JSON null, so the rejection of real null config values stays covered.
-      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-      const jsonNull = JSON.parse('null') as unknown
+      const jsonNull = parseJsonText('null')
       for (const input of [jsonNull, [], {}, { mcpServers: [] }, { mcpServers: jsonNull }]) {
         expect(() => parseMcpConfig(input)).toThrow('mcpServers')
       }

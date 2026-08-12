@@ -374,12 +374,10 @@ describe('webfetch', () => {
           })
         )
       )
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
-      const controller = new AbortController()
-      controller.abort()
+      const signal = AbortSignal.abort()
 
       const rejection = yield* Effect.promise(() =>
-        harness.execute({ url: 'https://example.com/cancelled' }, controller.signal).then(
+        harness.execute({ url: 'https://example.com/cancelled' }, signal).then(
           () => undefined,
           (error: unknown) => error
         )

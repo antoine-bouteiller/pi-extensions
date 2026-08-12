@@ -10,6 +10,7 @@ import {
   keychainAccount,
   type OAuthCredentialPayload,
 } from '@/features/mcp/keychain.js'
+import { jsonText, parseJsonText } from '@/shared/utils/json.js'
 
 type FailureMode = 'get' | 'set' | 'delete' | undefined
 
@@ -125,15 +126,13 @@ describe('Keychain OAuth credential store', () => {
       if (serialized === undefined) {
         throw new Error('expected a serialized credential')
       }
-      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-      expect(JSON.parse(serialized)).toEqual(credential)
+      expect(parseJsonText(serialized)).toEqual(credential)
     })
   )
 
   it.effect('awaits async keyring operations and forwards cancellation', () =>
     Effect.gen(function* () {
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
-      const controller = new AbortController()
+      const forwardedSignal = AbortSignal.any([])
       const signals: (AbortSignal | undefined)[] = []
       let serialized: string | undefined
       const store = new KeychainCredentialStore({
@@ -169,12 +168,15 @@ describe('Keychain OAuth credential store', () => {
         }),
       })
 
-      yield* Effect.promise(() => store.set('slack', credential, controller.signal))
-      expect(yield* Effect.promise(() => store.get('slack', credential.serverUrl, controller.signal))).toEqual(credential)
-      yield* Effect.promise(() => store.delete('slack', controller.signal))
+      yield* Effect.promise(() => store.set('slack', credential, forwardedSignal))
+      expect(yield* Effect.promise(() => store.get('slack', credential.serverUrl, forwardedSignal))).toEqual(credential)
+      yield* Effect.promise(() => store.delete('slack', forwardedSignal))
 
       expect(serialized).toBeUndefined()
-      expect(signals).toEqual([controller.signal, controller.signal, controller.signal])
+      expect(signals).toHaveLength(3)
+      for (const signal of signals) {
+        expect(signal).toBe(forwardedSignal)
+      }
     })
   )
 
@@ -215,20 +217,16 @@ describe('Keychain OAuth credential store', () => {
     Effect.gen(function* () {
       for (const serialized of [
         '{ nope',
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-        JSON.stringify({ serverUrl: credential.serverUrl }),
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-        JSON.stringify({
+        jsonText({ serverUrl: credential.serverUrl }),
+        jsonText({
           serverUrl: credential.serverUrl,
           tokens: { access_token: 'secret', token_type: 3 },
         }),
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-        JSON.stringify({
+        jsonText({
           clientInformation: { client_id: '' },
           serverUrl: credential.serverUrl,
         }),
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- This test exercises native JSON fixture or process behavior; schema decoding would change the boundary under test.
-        JSON.stringify({
+        jsonText({
           plaintextFallback: true,
           serverUrl: credential.serverUrl,
           tokens: { access_token: 'secret', token_type: 'Bearer' },
