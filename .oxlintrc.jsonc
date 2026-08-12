@@ -59,6 +59,7 @@
     "group-exports": "off",
     "consistent-type-specifier-style": ["error", "prefer-inline"],
     "exports-last": "off",
+    "throw-new-error": "off",
 
     // Off by design — default-on in standalone oxlint but not pertinent here:
     // zod schemas nest calls inherently; fs.ts exposes deliberate safe*Sync wrappers.

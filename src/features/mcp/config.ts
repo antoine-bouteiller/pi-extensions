@@ -31,7 +31,7 @@ const OAUTH_FIELDS = new Set([
   'redirect_uri',
 ])
 
-class McpConfigError extends Schema.TaggedErrorClass<McpConfigError>()('McpConfigError', {
+class McpConfigError extends Schema.TaggedError<McpConfigError>()('McpConfigError', {
   message: Schema.String,
   path: Schema.String,
 }) {
