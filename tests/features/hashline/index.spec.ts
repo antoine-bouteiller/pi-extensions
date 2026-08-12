@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type Theme, withFileMutationQueue } from '@earendil-works/pi-coding-agent'
 import { type Component } from '@earendil-works/pi-tui'
+import { makeAbortController } from '@tests/utils/abort_controller.js'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asTheme, asTool } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
@@ -378,8 +379,7 @@ describe('hashline extension', () => {
       const holding = withFileMutationQueue(path, () => gate.promise)
       yield* Effect.promise(() => Bun.sleep(0))
 
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must abort the exact external signal after the mutation lock is queued.
-      const controller = new AbortController()
+      const controller = makeAbortController()
       const pending = write.execute('cancelled', { patch: put(currentHeader, 1, 'after') }, controller.signal, undefined, { cwd: directory })
       controller.abort()
       gate.resolve(undefined)

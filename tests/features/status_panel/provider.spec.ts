@@ -1,3 +1,4 @@
+import { makeAbortController } from '@tests/utils/abort_controller.js'
 import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asFetch } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
@@ -16,7 +17,6 @@ const flushPromises = (): Promise<void> =>
   )
 
 const gatewayResponse = (profiles: unknown) => Promise.resolve(Response.json(profiles, { status: 200 }))
-const makeAbortController = () => new AbortController()
 
 describe('Anthropic quota provider', () => {
   it.live('passes the abort signal and converts gateway fractions to percentages', () =>

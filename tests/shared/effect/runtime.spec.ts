@@ -1,3 +1,4 @@
+import { makeAbortController } from '@tests/utils/abort_controller.js'
 import { promiseFromEffect, tryEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asError, asExtensionContext } from '@tests/utils/casts.js'
 import { Context, Effect, Fiber, Layer, ManagedRuntime } from 'effect'
@@ -138,8 +139,7 @@ describe('tool executor boundary', () => {
   it.scoped('interrupts the fiber when the inbound AbortSignal fires', () =>
     Effect.gen(function* () {
       const runtime = yield* scopedEmptyRuntime
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
-      const controller = new AbortController()
+      const controller = makeAbortController()
       const execute = makeToolExecutor(runtime)(() => Effect.sleep('30 seconds').pipe(Effect.map(() => 'never')))
 
       const pending = execute('call-3', {}, controller.signal, undefined, fakeContext().ctx).then(

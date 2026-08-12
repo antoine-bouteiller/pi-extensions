@@ -1,6 +1,7 @@
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- The spec asserts real loopback listener binding and cleanup; an HTTP client cannot create the server under test.
 import { createServer } from 'node:http'
 
+import { makeAbortController } from '@tests/utils/abort_controller.js'
 import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asError } from '@tests/utils/casts.js'
 import { httpGet } from '@tests/utils/http.js'
@@ -134,8 +135,7 @@ describe('OAuth callback', () => {
         })
       )
 
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
-      const controller = new AbortController()
+      const controller = makeAbortController()
       yield* withCallback({ expectedState: 'state', port: yield* freePort(), signal: controller.signal }, (callback) =>
         Effect.gen(function* () {
           controller.abort()

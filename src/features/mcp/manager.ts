@@ -252,11 +252,13 @@ const inheritedEnvironment = (configured: Record<string, string> | undefined): R
   return { ...inherited, ...configured }
 }
 
+const makeAbortController = (): AbortController => new AbortController()
+
 const combineSignals = (...signals: (AbortSignal | undefined)[]): AbortSignal => {
   const present = signals.filter((signal): signal is AbortSignal => signal !== undefined)
   const [only] = present
   if (present.length === 0) {
-    return new AbortController().signal
+    return makeAbortController().signal
   }
   if (present.length === 1 && only !== undefined) {
     return only
@@ -334,7 +336,7 @@ const convertToolResult = (result: unknown): { content: GatewayContent[]; isErro
 
 export class McpManager {
   private readonly runtimes = new Map<string, ServerRuntime>()
-  private readonly lifecycle = new AbortController()
+  private readonly lifecycle = makeAbortController()
   private readonly credentialStore: CredentialStore
   private readonly createClient: (serverName: string) => ClientLike
   private readonly createTransport: NonNullable<McpManagerOptions['createTransport']>
@@ -389,8 +391,7 @@ export class McpManager {
         runtime.status = 'connecting'
         runtime.error = undefined
         this.notify()
-        // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- The SDK needs a real signal, and this one belongs to the shared attempt: `Effect.abortSignal` would cancel it as soon as the first waiter detaches.
-        const controller = new AbortController()
+        const controller = makeAbortController()
         runtime.connectingController = controller
         attempt = yield* Effect.forkDetach(this.attemptConnection(runtime, controller), { startImmediately: true })
         if (runtime.connectingController === controller) {
@@ -545,8 +546,7 @@ export class McpManager {
       let authentication = existing
       let fiber = existing?.fiber
       if (authentication === undefined || fiber === undefined) {
-        // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- Owned by the shared authentication, not by the requesting fiber; it is also handed to the SDK provider as an AbortSignal.
-        const controller = new AbortController()
+        const controller = makeAbortController()
         const record: AuthenticationRuntime = { controller, waiters: 0 }
         this.authentications.add(record)
         this.authenticationByServer.set(server, record)
@@ -594,8 +594,7 @@ export class McpManager {
         return undefined
       }
 
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- Composed with the lifecycle and caller signals into the single AbortSignal the MCP SDK and OAuth provider accept.
-      const operation = new AbortController()
+      const operation = makeAbortController()
       const signal = combineSignals(this.lifecycle.signal, operation.signal, options.signal)
       const state = createOAuthState()
       const serverUrl = runtime.config.url

@@ -1,4 +1,5 @@
 import { CURSOR_MARKER, visibleWidth, type Component, type Focusable } from '@earendil-works/pi-tui'
+import { makeAbortController } from '@tests/utils/abort_controller.js'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asTool } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
@@ -123,8 +124,7 @@ describe('ask_user tool behavior', () => {
   it.effect('reports cancellation when aborted while the prompt is open', () =>
     Effect.gen(function* () {
       const fixture = setup()
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
-      const controller = new AbortController()
+      const controller = makeAbortController()
       const pending = fixture.tool.execute('call-3', params, controller.signal, undefined, fixture.tuiContext)
 
       controller.abort()

@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path'
 
 import { type Theme } from '@earendil-works/pi-coding-agent'
 import { visibleWidth } from '@earendil-works/pi-tui'
+import { makeAbortController } from '@tests/utils/abort_controller.js'
 import { promiseFromEffect, tryPromiseEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asError, asExtensionApi, asNarrowed, asResult, asTheme, asTui } from '@tests/utils/casts.js'
 import { withProcessEnv } from '@tests/utils/process_env.js'
@@ -1253,8 +1254,7 @@ describe('completion delivery', () => {
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
       rmSync(scope, { force: true, recursive: true })
       const manager = createAgentManager()
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
-      const waitController = new AbortController()
+      const waitController = makeAbortController()
       let olderWaitSettled = false
       try {
         const olderWait = manager.waitAgent(parentSessionId, undefined, waitController.signal).finally(() => {
@@ -1309,8 +1309,7 @@ describe('completion delivery', () => {
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
       rmSync(scope, { force: true, recursive: true })
       const completions: CompletionEvent[] = []
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
-      const controller = new AbortController()
+      const controller = makeAbortController()
       const manager = createAgentManager({
         onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
       })
@@ -1363,8 +1362,7 @@ describe('completion delivery', () => {
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
       rmSync(scope, { force: true, recursive: true })
       const completions: CompletionEvent[] = []
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
-      const controller = new AbortController()
+      const controller = makeAbortController()
       const manager = createAgentManager({
         childEnv: { PI_SUBAGENT_TEST_GET_STATE_DELAY_MS: '200' },
         onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
@@ -1394,8 +1392,7 @@ describe('completion delivery', () => {
       const parentSessionId = 'foreground-abort-before-ownership'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
       rmSync(scope, { force: true, recursive: true })
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
-      const controller = new AbortController()
+      const controller = makeAbortController()
       const manager = createAgentManager()
       let reconciler: ReturnType<typeof createAgentManager> | undefined
       // A launch that never settles leaves the abort observable only through the foreground wait.
@@ -1501,8 +1498,7 @@ describe('completion delivery', () => {
       const manager = createAgentManager({
         onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
       })
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
-      const controller = new AbortController()
+      const controller = makeAbortController()
       try {
         yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'slow', 'hold slow')))
         yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'fast', 'fast')))
@@ -1597,8 +1593,7 @@ describe('completion delivery', () => {
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
       rmSync(scope, { force: true, recursive: true })
       const manager = createAgentManager()
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
-      const secondController = new AbortController()
+      const secondController = makeAbortController()
       try {
         yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'first')))
         let secondSettled = false
@@ -1860,8 +1855,7 @@ describe('extension completion delivery and status activity', () => {
         expect(largeForeground.details.fullOutputPath).toBeString()
         expect(existsSync(String(largeForeground.details.fullOutputPath))).toBe(true)
 
-        // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
-        const abortController = new AbortController()
+        const abortController = makeAbortController()
         const abortNotifications = sentMessages.length
         const abortedForeground = spawnTool.execute(
           'spawn-aborted-foreground',
@@ -2081,8 +2075,7 @@ describe('completion mailbox', () => {
   it.effect('waits until explicitly cancelled when no completion exists', () =>
     Effect.gen(function* () {
       const manager = createAgentManager()
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
-      const controller = new AbortController()
+      const controller = makeAbortController()
       const pending = manager.waitAgent('empty-parent', undefined, controller.signal)
       yield* Effect.yieldNow
       controller.abort(new Error('cancelled'))

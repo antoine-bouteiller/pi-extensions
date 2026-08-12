@@ -7,6 +7,7 @@ import { UnauthorizedError, type OAuthClientProvider } from '@modelcontextprotoc
 import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { type Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { type JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
+import { makeAbortController } from '@tests/utils/abort_controller.js'
 import { promiseFromEffect, tryEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asError, asNarrowed } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
@@ -740,8 +741,7 @@ describe('MCP manager', () => {
           ),
       })
 
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
-      const firstController = new AbortController()
+      const firstController = makeAbortController()
       const first = fixture.manager.authenticate('slack', { signal: firstController.signal }).then(
         () => undefined,
         (error: unknown) => error
@@ -881,8 +881,7 @@ describe('MCP manager', () => {
   it.effect('cancelling the sole connection waiter aborts and closes the shared attempt', () =>
     Effect.gen(function* () {
       const fixture = harness({ connect: () => promiseFromEffect(Effect.never) })
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
-      const controller = new AbortController()
+      const controller = makeAbortController()
       const connecting = fixture.manager.connect('local', { signal: controller.signal })
       yield* Effect.promise(() => Promise.resolve())
       controller.abort()

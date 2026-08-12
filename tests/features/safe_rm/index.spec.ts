@@ -2,6 +2,7 @@ import { afterEach } from 'bun:test'
 import { tmpdir } from 'node:os'
 
 import { withFileMutationQueue } from '@earendil-works/pi-coding-agent'
+import { makeAbortController } from '@tests/utils/abort_controller.js'
 import { describe, expect, it, promiseFromEffect, tryPromiseEffect } from '@tests/utils/bun_effect.js'
 import { asNarrowed, asTool } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
@@ -220,8 +221,7 @@ describe('safe rm', () => {
       })
       yield* Effect.promise(() => lockStarted.promise)
 
-      // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must abort the exact external signal only after deletion enters the mutation queue.
-      const controller = new AbortController()
+      const controller = makeAbortController()
       let cancellationChecks = 0
       const queued = deferred<void>()
       const signal = asNarrowed<AbortSignal, { readonly aborted: boolean }>({
