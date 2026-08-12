@@ -15,22 +15,22 @@ src/
 │   ├── features.ts                  # explicit ordered feature registry and registerFeatures
 │   └── runtime.ts                   # process-wide AppRuntime composition
 ├── features/
-│   ├── ask_user/{feature,prompt}.ts
-│   ├── background_poll/feature.ts
-│   ├── caffeinate/feature.ts
-│   ├── claude_code/feature.ts
-│   ├── comment_checker/feature.ts
-│   ├── hashline/feature.ts
-│   ├── mcp/{feature,config,keychain,manager,oauth,output,types}.ts
-│   ├── meridian_session_affinity/feature.ts
-│   ├── prompt_rewind/feature.ts
-│   ├── rules/feature.ts
-│   ├── safe_rm/{feature,errors}.ts
-│   ├── safety_guard/{feature,constants}.ts
-│   ├── status_panel/{feature,footer,git,provider,render,sidebar,split_pane,state,statuses}.ts
-│   ├── sub_agents/{feature,core,peek,process_ownership,profiles,rpc}.ts
+│   ├── ask_user/{index,tool,render,prompt}.ts
+│   ├── background_poll/{index,poll}.ts
+│   ├── caffeinate/{index,keep_awake}.ts
+│   ├── claude_code/{index,discovery}.ts
+│   ├── comment_checker/{index,checker}.ts
+│   ├── hashline/{index,tools}.ts
+│   ├── mcp/{index,gateway,config,keychain,manager,oauth,output,types}.ts
+│   ├── meridian_session_affinity/{index,affinity,scrub}.ts
+│   ├── prompt_rewind/{index,rewind}.ts
+│   ├── rules/{index,rules}.ts
+│   ├── safe_rm/{index,remove,errors}.ts
+│   ├── safety_guard/{index,guard,constants}.ts
+│   ├── status_panel/{index,panel,footer,git,provider,render,sidebar,split_pane,state,statuses}.ts
+│   ├── sub_agents/{index,agents,core,peek,process_ownership,profiles,rpc}.ts
 │   ├── sub_agents/README.md
-│   └── webfetch/feature.ts
+│   └── webfetch/{index,fetch}.ts
 └── shared/
     ├── effect/{app_services,errors,pi_services,runtime}.ts
     ├── state/{agent_activity,status_bar,store}.ts
@@ -61,9 +61,14 @@ src/index.ts
   and `runtime.ts` holds the process-wide `AppRuntime` composition. It is not a place to put
   feature-specific configuration; MCP server parsing, for example, stays inside
   `src/features/mcp/`.
-- `src/features/<snake_case_name>/feature.ts` owns exactly one capability and exports a named
-  `register(pi, runtime, ...)` function. No feature module has a default export, and no feature
-  imports a sibling feature.
+- `src/features/<snake_case_name>/index.ts` is the feature's only Pi boundary: it exports a named
+  `register(pi, runtime, ...)` function and contains nothing but registration and the bridge onto
+  Effect (`pi.registerTool`, `pi.registerCommand`, `pi.on`, `runtime.runPromise`). Behaviour lives
+  in sibling modules named after what they do (`poll.ts`, `guard.ts`, `gateway.ts`, ...), which
+  `index.ts` wires together. Because the Pi boundary is confined to that one file per feature, the
+  lint rules that Pi's own signatures conflict with (`effecttsgo/async-function`,
+  `unicorn/no-null`) are relaxed for `src/features/*/index.ts` alone in `oxlint.config.ts`.
+- No feature module has a default export, and no feature imports a sibling feature.
 - Reusable code that more than one feature needs is promoted to `src/shared/effect/`,
   `src/shared/state/`, or `src/shared/utils/`. Shared code never imports from `src/config/` or
   `src/features/`.
@@ -71,11 +76,12 @@ src/index.ts
 ## No barrels
 
 There is no `src/config/index.ts`, `src/features/index.ts`, or `src/shared/index.ts`, and no
-barrel file anywhere below `src/`. Because the repository's `src/` directory is linked as Pi's
-local-development extension directory, a direct-child `<folder>/index.ts` would become an
-additional auto-discovered Pi extension; deeper barrels are not auto-discovered, but they are
-banned as well so that every import names the file that actually owns the code. `src/index.ts`
-is the only discovered entrypoint.
+re-export-only barrel anywhere below `src/`. Because the repository's `src/` directory is linked
+as Pi's local-development extension directory, a direct-child `<folder>/index.ts` would become an
+additional auto-discovered Pi extension. `src/features/<name>/index.ts` sits one level deeper, so
+it is not auto-discovered, and it is an entrypoint rather than a barrel: it owns the feature's Pi
+registration instead of re-exporting siblings. Every other import names the file that actually
+owns the code, and `src/index.ts` remains the only discovered extension entrypoint.
 
 ## Tests
 
@@ -100,8 +106,9 @@ mirroring rule.
 
 ## Adding a feature
 
-1. Create `src/features/<snake_case_name>/feature.ts` exporting a named `register(pi, runtime)`
-   function, plus any other implementation modules the feature needs in the same folder.
+1. Create `src/features/<snake_case_name>/index.ts` exporting a named `register(pi, runtime)`
+   function that only wires Pi to Effect, plus the implementation modules it delegates to in the
+   same folder.
 2. Create the mirrored `tests/features/<snake_case_name>/` test folder.
 3. Add one ordered entry to the registry in `src/config/features.ts` so `registerFeatures` calls
    the new feature's `register` once, in the position where it should run relative to the

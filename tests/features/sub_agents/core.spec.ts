@@ -1499,7 +1499,7 @@ describe('extension completion delivery and status activity', () => {
     }
     const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
     rmSync(scope, { force: true, recursive: true })
-    const { register: subagentExtension } = await import('@/features/sub_agents/feature.js')
+    const { register: subagentExtension } = await import('@/features/sub_agents/index.js')
     subagentExtension(asExtensionApi(pi), runtime, { inactivityTimeoutMs: 300, piCommand: { command: FAKE_RPC_CHILD } })
     const emit = async (name: string, event: unknown = {}) => {
       for (const handler of handlers.get(name) ?? []) {

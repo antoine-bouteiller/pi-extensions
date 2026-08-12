@@ -13,7 +13,7 @@ import { type JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
 import { asError, asNarrowed } from '@tests/utils/casts.js'
 import { Effect } from 'effect'
 
-import { readonlyMcpPolicy } from '@/features/mcp/feature.js'
+import { readonlyMcpPolicy } from '@/features/mcp/gateway.js'
 import { KeychainCredentialError, type CredentialStore } from '@/features/mcp/keychain.js'
 import { McpManager, McpManagerService, mcpManagerLayer } from '@/features/mcp/manager.js'
 import { type McpGatewayPolicy, type McpServerMap } from '@/features/mcp/types.js'

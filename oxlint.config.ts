@@ -20,12 +20,14 @@ export default defineConfig({
   },
   overrides: [
     {
-      files: ['src/features/mcp/feature.ts'],
+      /*
+       * Each feature's `index.ts` is the only Pi boundary: it registers tools, commands, and hooks
+       * and bridges them onto Effect. Pi awaits those callbacks and types some of them as nullable,
+       * so both rules are relaxed for that file alone.
+       */
+      files: ['src/features/*/index.ts'],
       rules: {
-        /*
-         * `getArgumentCompletions` is typed by Pi as `AutocompleteItem[] | Promise<AutocompleteItem[] | null> | null`,
-         * so returning undefined instead fails typecheck. Every other null in the repo was migrated.
-         */
+        'effecttsgo/async-function': 'off',
         'unicorn/no-null': 'off',
       },
     },

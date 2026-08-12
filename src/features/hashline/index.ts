@@ -1,0 +1,55 @@
+import { type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
+import { Effect, Function } from 'effect'
+
+import { type AppRuntime } from '@/shared/effect/app_services.js'
+import { perInvocation, type HandlerServices } from '@/shared/effect/runtime.js'
+
+import { makeHashlineTools, pruneSupersededReads, readSchema, renderHashlineRead, writeSchema, type HashlineToolError } from './tools.js'
+
+const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime): void => {
+  const tools = makeHashlineTools()
+
+  /*
+   * `makeToolExecutor` doesn't hand the raw AbortSignal to the body, but hashline needs it for
+   * CwdFilesystem and the post-lock TOCTOU re-check, so this bridge threads the signal instead.
+   *
+   * `{ signal }` is deliberately not passed to runPromise: that makes Effect interrupt the fiber the
+   * instant the signal fires, discarding the in-flight mutation-queue wait and replacing hashline's
+   * cooperative `throwIfAborted` message with Effect's generic interrupted-fiber one.
+   */
+  const runTool =
+    <Params, Result>(body: (params: Params, signal: AbortSignal | undefined) => Effect.Effect<Result, HashlineToolError, HandlerServices>) =>
+    async (_toolCallId: string, params: Params, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext): Promise<Result> =>
+      runtime.runPromise(body(params, signal).pipe(Effect.provide(perInvocation(ctx))))
+
+  pi.registerTool({
+    description:
+      'Read a file with stable line anchors and a content hash for hashline_write. Output is bounded; use offset and limit for large files. Protected credential paths are refused by this tool itself.',
+    execute: runTool(tools.read),
+    label: 'Hashline Read',
+    name: 'hashline_read',
+    parameters: readSchema,
+    renderResult: renderHashlineRead,
+  })
+
+  pi.registerTool({
+    description:
+      'Apply a hashline patch produced from hashline_read. Use hashline operations (PUT, CUT, MV, or REM), not unified-diff @@ hunks. Patches are content-hash anchored, reject stale edits, and refuse protected credential paths.',
+    execute: runTool(tools.write),
+    label: 'Hashline Write',
+    name: 'hashline_write',
+    parameters: writeSchema,
+    promptGuidelines: [
+      'Use hashline_read before hashline_write so every section has a current [path#TAG] anchor.',
+      'In hashline_write, replace lines with `PUT N.=M:` followed by `+` body rows; never use unified-diff `@@` headers.',
+      'Use hashline_write for targeted edits; use the built-in write tool when creating a new file from scratch.',
+    ],
+  })
+
+  pi.on('context', (event) => ({ messages: pruneSupersededReads(event.messages) }))
+}
+
+export const register: {
+  (runtime: AppRuntime): (pi: ExtensionAPI) => void
+  (pi: ExtensionAPI, runtime: AppRuntime): void
+} = Function.dual((args) => typeof args[0].on === 'function', registerImpl)

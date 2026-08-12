@@ -66,7 +66,7 @@ const reportScript = (directories: string[]): string => `
   const { getOrCreateProcessRuntime } = await import(${JSON.stringify(PATHS.runtime)});
   const runtime = getOrCreateProcessRuntime();
   for (const directory of ${JSON.stringify(directories)}) {
-    const module = await import(${JSON.stringify(PATHS.featuresDir)} + '/' + directory + '/feature.js');
+    const module = await import(${JSON.stringify(PATHS.featuresDir)} + '/' + directory + '/index.js');
     const fixture = createFakePi();
     const exportsRegister = typeof module.register === 'function';
     if (exportsRegister) {

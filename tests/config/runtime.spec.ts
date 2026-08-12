@@ -7,7 +7,7 @@ import { Effect, Layer, ManagedRuntime } from 'effect'
 import { FetchHttpClient } from 'effect/unstable/http'
 
 import { getOrCreateProcessRuntime } from '@/config/runtime.js'
-import { register as registerStatusPanel } from '@/features/status_panel/feature.js'
+import { register as registerStatusPanel } from '@/features/status_panel/index.js'
 import { AgentActivity, type AgentActivityShape, type AppRuntime, StatusBarLive } from '@/shared/effect/app_services.js'
 
 const sharedActivityScript = (paths: { aggregate: string; activity: string; runtime: string; statusPanel: string }): string => `
@@ -102,7 +102,7 @@ describe('process-wide runtime', () => {
       activity: fileURLToPath(new URL('../../src/shared/effect/app_services.ts', import.meta.url)),
       aggregate: fileURLToPath(new URL('../../src/index.ts', import.meta.url)),
       runtime: fileURLToPath(new URL('../../src/config/runtime.ts', import.meta.url)),
-      statusPanel: fileURLToPath(new URL('../../src/features/status_panel/feature.ts', import.meta.url)),
+      statusPanel: fileURLToPath(new URL('../../src/features/status_panel/index.ts', import.meta.url)),
     })
     const { PI_SUBAGENT_OWNER_TOKEN: _ownerToken, ...env } = process.env
     const child = Bun.spawn([process.execPath, '--eval', script], { env, stderr: 'pipe', stdout: 'pipe' })

@@ -46,8 +46,8 @@ describe('project structure', () => {
     for (const feature of features) {
       expect(feature).toMatch(/^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/)
       const sourceFiles = await readdir(join(SRC, 'features', feature))
-      expect(sourceFiles, feature).toContain('feature.ts')
-      expect(sourceFiles, feature).not.toContain('index.ts')
+      expect(sourceFiles, feature).toContain('index.ts')
+      expect(sourceFiles, feature).not.toContain('feature.ts')
       const testFiles = await readdir(join(TESTS, 'features', feature))
       expect(
         testFiles.some((name) => name.endsWith('.spec.ts')),
@@ -56,10 +56,17 @@ describe('project structure', () => {
     }
   })
 
-  test('tests stay outside source and barrels stay out of every layer', async () => {
+  test('tests stay outside source and index.ts exists only as an entrypoint per layer', async () => {
     const sourcePaths = await descendants(SRC)
+    const featureEntries = await namesByKind(join(SRC, 'features'))
+    const featureDirectories = featureEntries.directories
     expect(sourcePaths.filter((path) => path.endsWith('.test.ts') || path.endsWith('.spec.ts') || path.split(sep).includes('test'))).toEqual([])
-    expect(sourcePaths.filter((path) => path.endsWith(`${sep}index.ts`)).map((path) => relative(SRC, path))).toEqual(['index.ts'])
+    expect(
+      sourcePaths
+        .filter((path) => path.endsWith(`${sep}index.ts`))
+        .map((path) => relative(SRC, path))
+        .toSorted()
+    ).toEqual(['index.ts', ...featureDirectories.map((feature) => join('features', feature, 'index.ts'))].toSorted())
   })
 
   test('root specs are only package contracts', async () => {
