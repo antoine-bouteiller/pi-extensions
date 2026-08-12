@@ -1,7 +1,7 @@
 import { afterEach } from 'bun:test'
 import { tmpdir } from 'node:os'
 
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asResult } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
@@ -62,10 +62,8 @@ const createFixture = Effect.gen(function* () {
     cwd: projectDirectory,
     isProjectTrusted: () => trusted,
   })
-  const invoke = async <Result>(name: string, event: unknown, eventContext: unknown) => {
-    const results = await fakePi.emit(name, event, eventContext)
-    return asResult<Result>(results[0])
-  }
+  const invoke = <Result>(name: string, event: unknown, eventContext: unknown): Promise<Result> =>
+    promiseFromEffect(Effect.promise(() => fakePi.emit(name, event, eventContext)).pipe(Effect.map((results) => asResult<Result>(results[0]))))
 
   return { context, homeDirectory, invoke, projectDirectory, temporaryDirectory }
 })

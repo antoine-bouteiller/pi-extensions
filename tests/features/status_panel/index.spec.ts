@@ -1,6 +1,6 @@
 import { afterEach, beforeEach } from 'bun:test'
 
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect } from 'effect'
@@ -39,7 +39,7 @@ describe('status panel registration', () => {
       const dependencies = {
         get fetchAnthropicQuota() {
           dependencyReads += 1
-          return async () => undefined
+          return () => promiseFromEffect(Effect.void.pipe(Effect.as(undefined)))
         },
       }
 
@@ -129,8 +129,7 @@ describe('status panel formatting', () => {
           factory: (...args: unknown[]) => { render: (width: number) => string[] },
           options: { onHandle?: (handle: { hide: () => void }) => void }
         ) {
-          // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- This Promise-shaped fake or managed runtime intentionally runs outside the ambient test Effect.
-          return Effect.runPromise(
+          return promiseFromEffect(
             Effect.callback<void>((resume) => {
               const component = factory(tui, theme, {}, () => resume(Effect.void))
               renderSidebar = (width) => component.render(width)
@@ -225,8 +224,7 @@ describe('status panel quota lifecycle', () => {
       statusPanel(pi, runtime, {
         fetchAnthropicQuota: (_baseUrl, signal) => {
           signals.push(signal)
-          // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- This Promise-shaped fake or managed runtime intentionally runs outside the ambient test Effect.
-          return Effect.runPromise(Effect.never)
+          return promiseFromEffect(Effect.never)
         },
       })
       const ctx = quotaLifecycleContext('rpc')
@@ -247,8 +245,7 @@ describe('status panel quota lifecycle', () => {
         fetchAnthropicQuota: (baseUrl, signal) => {
           baseUrls.push(baseUrl)
           signals.push(signal)
-          // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- This Promise-shaped fake or managed runtime intentionally runs outside the ambient test Effect.
-          return Effect.runPromise(Effect.never)
+          return promiseFromEffect(Effect.never)
         },
       })
       const ctx = quotaLifecycleContext('tui', 'azure-openai-responses')
@@ -295,8 +292,7 @@ describe('status panel cross-feature sharing', () => {
           factory: (...args: unknown[]) => { render: (width: number) => string[] },
           options: { onHandle?: (handle: { hide: () => void }) => void }
         ) {
-          // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- This Promise-shaped fake or managed runtime intentionally runs outside the ambient test Effect.
-          return Effect.runPromise(
+          return promiseFromEffect(
             Effect.callback<void>((resume) => {
               const component = factory(tui, theme, {}, () => resume(Effect.void))
               renderSidebar = (width) => component.render(width)

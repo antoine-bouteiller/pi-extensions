@@ -1,7 +1,7 @@
 import { test } from 'bun:test'
 
 import { NodeFileSystem, NodePath } from '@effect/platform-node'
-import { Effect, Layer, type FileSystem, type Path, type Scope } from 'effect'
+import { Data, Effect, Layer, type FileSystem, type Path, type Scope } from 'effect'
 import { TestClock } from 'effect/testing'
 
 export { describe, expect } from 'bun:test'
@@ -14,6 +14,17 @@ type TestServices = FileSystem.FileSystem | Path.Path | TestClock.TestClock
 const testEnv: Layer.Layer<TestServices> = Layer.mergeAll(NodeFileSystem.layer, NodePath.layer, TestClock.layer())
 
 const run = <Success, Failure>(eff: Effect.Effect<Success, Failure, TestServices>) => Effect.runPromise(Effect.provide(eff, testEnv))
+
+export class PromiseEffectError extends Data.TaggedError('PromiseEffectError')<{ readonly cause: unknown }> {}
+
+export const tryEffect = <Success>(evaluate: () => Success): Effect.Effect<Success, PromiseEffectError> =>
+  Effect.try({ catch: (cause) => new PromiseEffectError({ cause }), try: evaluate })
+
+export const tryPromiseEffect = <Success>(evaluate: () => PromiseLike<Success>): Effect.Effect<Success, PromiseEffectError> =>
+  Effect.tryPromise({ catch: (cause) => new PromiseEffectError({ cause }), try: evaluate })
+
+export const promiseFromEffect = <Success, Failure>(effect: Effect.Effect<Success, Failure>): Promise<Success> =>
+  Effect.runPromise(effect).catch((error: unknown) => Promise.reject(error instanceof PromiseEffectError ? error.cause : error))
 
 const mkEffect = (runner: typeof test) =>
   function effectTest<Success, Failure>(name: string, fn: () => Effect.Effect<Success, Failure, TestServices>, opts?: Options): void {

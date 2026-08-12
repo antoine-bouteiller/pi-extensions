@@ -1,5 +1,5 @@
 import { type AgentToolResult, type Theme } from '@earendil-works/pi-coding-agent'
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { promiseFromEffect, tryPromiseEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asError, asNarrowed, asTheme, asTool } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
@@ -18,7 +18,7 @@ const stubHttpClient = (fetchImpl: WebfetchFetch): Layer.Layer<HttpClient.HttpCl
 class StubFetchError extends Data.TaggedError('StubFetchError')<{ readonly cause: unknown }> {}
 
 const pendingFetch = (signal: AbortSignal | null | undefined, onStart?: () => void): Promise<Response> =>
-  Effect.runPromise(
+  promiseFromEffect(
     Effect.callback<Response, StubFetchError>((resume) => {
       onStart?.()
       signal?.addEventListener('abort', () => resume(Effect.fail(new StubFetchError({ cause: signal.reason }))), { once: true })
@@ -30,7 +30,7 @@ const createHarness = (fetchImpl: WebfetchFetch, saveFullOutput?: (content: stri
   createWebfetchExtension({ clock, httpClient: stubHttpClient(fetchImpl), saveFullOutput }, runtime)(fixture.pi)
   const tool = fixture.state.tools.get('webfetch')
 
-  const execute = async (
+  const execute = (
     params: WebfetchInput,
     signal?: AbortSignal,
     onUpdate?: (result: AgentToolResult<unknown>) => void
@@ -44,7 +44,7 @@ const createHarness = (fetchImpl: WebfetchFetch, saveFullOutput?: (content: stri
         onUpdate?: (result: AgentToolResult<unknown>) => void
       ) => Promise<AgentToolResult<WebfetchDetails>>
     }>(tool)
-    return await run.execute('call-1', params, signal, onUpdate)
+    return promiseFromEffect(Effect.promise(() => run.execute('call-1', params, signal, onUpdate)))
   }
 
   return { execute, fixture, tool }
@@ -55,14 +55,15 @@ const text = (result: AgentToolResult<unknown>): string => {
   return content?.type === 'text' ? content.text : ''
 }
 
-const rejectionMessage = async (promise: Promise<unknown>): Promise<string> => {
-  try {
-    await promise
-    throw new Error('Expected promise to reject')
-  } catch (error) {
-    return error instanceof Error ? error.message : String(error)
-  }
-}
+const rejectionMessage = (promise: Promise<unknown>): Promise<string> =>
+  promiseFromEffect(
+    tryPromiseEffect(() => promise).pipe(
+      Effect.matchEffect({
+        onFailure: (error) => Effect.succeed(error.cause instanceof Error ? error.cause.message : String(error.cause)),
+        onSuccess: () => Effect.die(new Error('Expected promise to reject')),
+      })
+    )
+  )
 
 /** A `ReadableStream` body has no `Content-Length`, unlike the string-body doubles above. */
 const streamedResponse = (chunkBytes: number, chunkCount: number, init: ResponseInit = {}): Response => {
@@ -83,7 +84,7 @@ const streamedResponse = (chunkBytes: number, chunkCount: number, init: Response
 describe('webfetch', () => {
   it.effect('registers the tool with static-web guidance', () =>
     Effect.sync(() => {
-      const harness = createHarness(async () => new Response('ok'))
+      const harness = createHarness(() => promiseFromEffect(Effect.sync(() => new Response('ok'))))
 
       expect([...harness.fixture.state.tools.keys()]).toEqual(['webfetch'])
       expect(harness.tool?.label).toBe('Web Fetch')
@@ -94,7 +95,7 @@ describe('webfetch', () => {
   it.effect('shows a short preview until tool output is expanded', () =>
     Effect.gen(function* () {
       const complete = Array.from({ length: 25 }, (_value, index) => `line ${index + 1}`).join('\n')
-      const harness = createHarness(async () => new Response(complete, { headers: { 'content-type': 'text/plain' } }))
+      const harness = createHarness(() => promiseFromEffect(Effect.sync(() => new Response(complete, { headers: { 'content-type': 'text/plain' } }))))
       const result = yield* Effect.promise(() => harness.execute({ url: 'https://example.com/preview.txt' }))
       const tool = asTool<{
         renderResult: (
@@ -126,12 +127,16 @@ describe('webfetch', () => {
           <article><h2>Story</h2><p>Hello <a href="https://example.com/more">world</a>.</p><script>bad()</script></article>
         </body>
       </html>`
-      const harness = createHarness(
-        async () =>
-          new Response(html, {
-            headers: { 'content-type': 'text/html; charset=utf-8' },
-            status: 200,
-          })
+      const harness = createHarness(() =>
+        promiseFromEffect(
+          Effect.sync(
+            () =>
+              new Response(html, {
+                headers: { 'content-type': 'text/html; charset=utf-8' },
+                status: 200,
+              })
+          )
+        )
       )
 
       const result = yield* Effect.promise(() =>
@@ -177,7 +182,7 @@ describe('webfetch', () => {
     Effect.gen(function* () {
       const html =
         "<html><head><title>Title</title></head><body><main><h1>Heading</h1><p>A <strong>bold</strong> link to <a href='https://example.com'>home</a>.</p></main></body></html>"
-      const harness = createHarness(async () => new Response(html, { headers: { 'content-type': 'text/html' } }))
+      const harness = createHarness(() => promiseFromEffect(Effect.sync(() => new Response(html, { headers: { 'content-type': 'text/html' } }))))
 
       const plain = yield* Effect.promise(() =>
         harness.execute({
@@ -198,13 +203,17 @@ describe('webfetch', () => {
 
   it.effect('returns non-HTML responses unchanged and preserves non-success status metadata', () =>
     Effect.gen(function* () {
-      const harness = createHarness(
-        async () =>
-          new Response('{"error":"missing"}', {
-            headers: { 'content-type': 'application/json' },
-            status: 404,
-            statusText: 'Not Found',
-          })
+      const harness = createHarness(() =>
+        promiseFromEffect(
+          Effect.sync(
+            () =>
+              new Response('{"error":"missing"}', {
+                headers: { 'content-type': 'application/json' },
+                status: 404,
+                statusText: 'Not Found',
+              })
+          )
+        )
       )
 
       const result = yield* Effect.promise(() =>
@@ -229,10 +238,14 @@ describe('webfetch', () => {
   it.effect('rejects unsupported protocols before making a request', () =>
     Effect.gen(function* () {
       let calls = 0
-      const harness = createHarness(async () => {
-        calls += 1
-        return new Response('unexpected')
-      })
+      const harness = createHarness(() =>
+        promiseFromEffect(
+          Effect.sync(() => {
+            calls += 1
+            return new Response('unexpected')
+          })
+        )
+      )
 
       expect(yield* Effect.promise(() => rejectionMessage(harness.execute({ url: 'file:///etc/passwd' })))).toContain('only supports HTTP and HTTPS')
       expect(yield* Effect.promise(() => rejectionMessage(harness.execute({ url: 'not a url' })))).toContain('Invalid URL')
@@ -242,11 +255,15 @@ describe('webfetch', () => {
 
   it.effect('rejects responses larger than the download limit declared up front', () =>
     Effect.gen(function* () {
-      const harness = createHarness(
-        async () =>
-          new Response('ignored', {
-            headers: { 'content-length': String(5 * 1024 * 1024 + 1) },
-          })
+      const harness = createHarness(() =>
+        promiseFromEffect(
+          Effect.sync(
+            () =>
+              new Response('ignored', {
+                headers: { 'content-length': String(5 * 1024 * 1024 + 1) },
+              })
+          )
+        )
       )
 
       expect(yield* Effect.promise(() => rejectionMessage(harness.execute({ url: 'https://example.com/large' })))).toContain('download limit')
@@ -257,28 +274,32 @@ describe('webfetch', () => {
     Effect.gen(function* () {
       let cancelledAfterChunks = -1
       let fetchAborted = false
-      const harness = createHarness(async (_url, init) => {
-        init?.signal?.addEventListener('abort', () => {
-          fetchAborted = true
-        })
-        let sent = 0
-        const total = 100
-        const chunkBytes = 100 * 1024
-        const stream = new ReadableStream<Uint8Array>({
-          cancel() {
-            cancelledAfterChunks = sent
-          },
-          pull(controller) {
-            if (sent >= total || isTrue(init?.signal?.aborted)) {
-              controller.close()
-              return
-            }
-            sent += 1
-            controller.enqueue(new Uint8Array(chunkBytes))
-          },
-        })
-        return new Response(stream)
-      })
+      const harness = createHarness((_url, init) =>
+        promiseFromEffect(
+          Effect.sync(() => {
+            init?.signal?.addEventListener('abort', () => {
+              fetchAborted = true
+            })
+            let sent = 0
+            const total = 100
+            const chunkBytes = 100 * 1024
+            const stream = new ReadableStream<Uint8Array>({
+              cancel() {
+                cancelledAfterChunks = sent
+              },
+              pull(controller) {
+                if (sent >= total || isTrue(init?.signal?.aborted)) {
+                  controller.close()
+                  return
+                }
+                sent += 1
+                controller.enqueue(new Uint8Array(chunkBytes))
+              },
+            })
+            return new Response(stream)
+          })
+        )
+      )
 
       const rejection = yield* Effect.promise(() =>
         harness.execute({ url: 'https://example.com/huge' }).then(
@@ -322,7 +343,7 @@ describe('webfetch', () => {
       const complete = `${'a'.repeat(60 * 1024)}\nlast line`
       let saved = ''
       const harness = createHarness(
-        async () => new Response(complete, { headers: { 'content-type': 'text/plain' } }),
+        () => promiseFromEffect(Effect.sync(() => new Response(complete, { headers: { 'content-type': 'text/plain' } }))),
         (content) =>
           Effect.sync(() => {
             saved = content
@@ -345,10 +366,14 @@ describe('webfetch', () => {
   it.effect('does not issue a request when cancellation happened before dispatch', () =>
     Effect.gen(function* () {
       let requests = 0
-      const harness = createHarness(async () => {
-        requests += 1
-        return new Response('unexpected')
-      })
+      const harness = createHarness(() =>
+        promiseFromEffect(
+          Effect.sync(() => {
+            requests += 1
+            return new Response('unexpected')
+          })
+        )
+      )
       // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
       const controller = new AbortController()
       controller.abort()
@@ -389,7 +414,9 @@ describe('webfetch', () => {
 describe('webfetch streaming (unbounded)', () => {
   it.effect('accepts a no-Content-Length stream that stays under the download limit', () =>
     Effect.gen(function* () {
-      const harness = createHarness(async () => streamedResponse(1024, 10, { headers: { 'content-type': 'text/plain' } }))
+      const harness = createHarness(() =>
+        promiseFromEffect(Effect.sync(() => streamedResponse(1024, 10, { headers: { 'content-type': 'text/plain' } })))
+      )
 
       const result = yield* Effect.promise(() => harness.execute({ url: 'https://example.com/ok' }))
 

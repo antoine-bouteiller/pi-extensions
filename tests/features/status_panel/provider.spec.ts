@@ -1,4 +1,4 @@
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asFetch } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { Clock, Effect } from 'effect'
@@ -7,10 +7,13 @@ import { TestClock } from 'effect/testing'
 import { fetchAnthropicQuota, makeQuotaPoller, quotaFromHeaders } from '@/features/status_panel/provider.js'
 import { type ProviderQuota } from '@/features/status_panel/state.js'
 
-const flushPromises = async () => {
-  await Promise.resolve()
-  await Promise.resolve()
-}
+const flushPromises = (): Promise<void> =>
+  promiseFromEffect(
+    Effect.gen(function* () {
+      yield* Effect.promise(() => Promise.resolve())
+      yield* Effect.promise(() => Promise.resolve())
+    })
+  )
 
 const gatewayResponse = (profiles: unknown) => Promise.resolve(Response.json(profiles, { status: 200 }))
 const makeAbortController = () => new AbortController()
@@ -217,10 +220,13 @@ describe('Anthropic quota polling lifecycle', () => {
           }
         },
         {
-          fetchQuota: async () => {
-            fetches += 1
-            return { label: 'anthropic', percent: 10 }
-          },
+          fetchQuota: () =>
+            promiseFromEffect(
+              Effect.sync(() => {
+                fetches += 1
+                return { label: 'anthropic', percent: 10 }
+              })
+            ),
           refreshMs: 10,
         }
       )

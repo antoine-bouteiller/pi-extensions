@@ -99,14 +99,25 @@ const reportScript = (directories: string[]): string => `
  * Registering sub_agents touches the real agent directory and pollutes Bun's shared module cache
  * for the specs that mock it, so the whole report is collected in a throwaway child process.
  */
-const collectReport = async (): Promise<RegistrationReport> => {
-  const { PI_SUBAGENT_OWNER_TOKEN: _ownerToken, ...env } = process.env
-  const script = reportScript(await featureDirectories())
-  const child = Bun.spawn([process.execPath, '--eval', script], { env, stderr: 'pipe', stdout: 'pipe' })
-  const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
-  expect(exitCode, stderr).toBe(0)
-  return asResult<RegistrationReport>(JSON.parse(stdout.trim()))
-}
+const collectReport = (): Promise<RegistrationReport> =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const { PI_SUBAGENT_OWNER_TOKEN: _ownerToken, ...env } = process.env
+      const script = reportScript(yield* Effect.promise(featureDirectories))
+      const child = Bun.spawn([process.execPath, '--eval', script], { env, stderr: 'pipe', stdout: 'pipe' })
+      return yield* Effect.all(
+        [
+          Effect.promise(() => new Response(child.stdout).text()),
+          Effect.promise(() => new Response(child.stderr).text()),
+          Effect.promise(() => child.exited),
+        ],
+        { concurrency: 'unbounded' }
+      )
+    })
+  ).then(([stdout, stderr, exitCode]) => {
+    expect(exitCode, stderr).toBe(0)
+    return asResult<RegistrationReport>(JSON.parse(stdout.trim()))
+  })
 
 let pending: Promise<RegistrationReport> | undefined
 const registrationReport = (): Promise<RegistrationReport> => (pending ??= collectReport())

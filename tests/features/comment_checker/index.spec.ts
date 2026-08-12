@@ -1,4 +1,4 @@
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect } from 'effect'
@@ -16,10 +16,14 @@ describe('comment checker', () => {
     Effect.gen(function* () {
       const inputs: Parameters<CheckerRunner>[0][] = []
       const fixture = createFakePi()
-      commentChecker(fixture.pi, runtime, async (input) => {
-        inputs.push(input)
-        return { exitCode: 2, stderr: 'remove this comment', stdout: '' }
-      })
+      commentChecker(fixture.pi, runtime, (input) =>
+        promiseFromEffect(
+          Effect.sync(() => {
+            inputs.push(input)
+            return { exitCode: 2, stderr: 'remove this comment', stdout: '' }
+          })
+        )
+      )
 
       const [result] = yield* Effect.promise(() =>
         fixture.emit(
@@ -60,10 +64,14 @@ describe('comment checker', () => {
     Effect.gen(function* () {
       const inputs: Parameters<CheckerRunner>[0][] = []
       const fixture = createFakePi()
-      commentChecker(fixture.pi, runtime, async (input) => {
-        inputs.push(input)
-        return { exitCode: 0, stderr: '', stdout: '' }
-      })
+      commentChecker(fixture.pi, runtime, (input) =>
+        promiseFromEffect(
+          Effect.sync(() => {
+            inputs.push(input)
+            return { exitCode: 0, stderr: '', stdout: '' }
+          })
+        )
+      )
 
       const [result] = yield* Effect.promise(() =>
         fixture.emit(
@@ -98,7 +106,7 @@ describe('comment checker', () => {
   it.effect('silently ignores a missing comment-checker binary', () =>
     Effect.gen(function* () {
       const fixture = createFakePi()
-      commentChecker(fixture.pi, runtime, async () => ({ exitCode: undefined, stderr: '', stdout: '' }))
+      commentChecker(fixture.pi, runtime, () => promiseFromEffect(Effect.succeed({ exitCode: undefined, stderr: '', stdout: '' })))
 
       const [result] = yield* Effect.promise(() =>
         fixture.emit(
@@ -121,10 +129,14 @@ describe('comment checker', () => {
     Effect.gen(function* () {
       let calls = 0
       const fixture = createFakePi()
-      commentChecker(fixture.pi, runtime, async () => {
-        calls += 1
-        return { exitCode: 0, stderr: '', stdout: '' }
-      })
+      commentChecker(fixture.pi, runtime, () =>
+        promiseFromEffect(
+          Effect.sync(() => {
+            calls += 1
+            return { exitCode: 0, stderr: '', stdout: '' }
+          })
+        )
+      )
 
       yield* Effect.promise(() =>
         fixture.emit(

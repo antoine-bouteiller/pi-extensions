@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path'
 
 import { type Theme } from '@earendil-works/pi-coding-agent'
 import { visibleWidth } from '@earendil-works/pi-tui'
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { promiseFromEffect, tryPromiseEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asError, asExtensionApi, asNarrowed, asResult, asTheme, asTui } from '@tests/utils/casts.js'
 import { Data, Effect } from 'effect'
 
@@ -50,7 +50,7 @@ const nowMs = (): number => Date.now()
 // oxlint-disable-next-line effecttsgo/global-date -- Builds a fixed `Date` from an explicit epoch value instead of reading the clock.
 const dateOf = (epochMs: number): Date => new Date(epochMs)
 
-const sleep = (durationMs: number): Promise<void> => Effect.runPromise(Effect.sleep(durationMs))
+const sleep = (durationMs: number): Promise<void> => promiseFromEffect(Effect.sleep(durationMs))
 
 class TestLaunchError extends Data.TaggedError('TestLaunchError')<{ readonly message: string }> {}
 
@@ -61,14 +61,15 @@ const requireChildProcess = <ChildProcess>(childProcess: ChildProcess | undefine
   return childProcess
 }
 
-const rejectionOf = async (promise: Promise<unknown>): Promise<Error> => {
-  try {
-    await promise
-  } catch (error) {
-    return asError(error)
-  }
-  throw new Error('expected promise to reject')
-}
+const rejectionOf = (promise: Promise<unknown>): Promise<Error> =>
+  promiseFromEffect(
+    tryPromiseEffect(() => promise).pipe(
+      Effect.matchEffect({
+        onFailure: (error) => Effect.succeed(asError(error.cause)),
+        onSuccess: () => Effect.die(new Error('expected promise to reject')),
+      })
+    )
+  )
 
 interface CompletionEvent {
   agentName: string
@@ -126,15 +127,15 @@ interface FakeMessage {
 const promising = (manager: InstanceType<typeof AgentManager>) => ({
   getAgentInfo: manager.getAgentInfo.bind(manager),
   instance: manager,
-  interruptAgent: (...args: Parameters<typeof manager.interruptAgent>) => Effect.runPromise(manager.interruptAgent(...args)),
+  interruptAgent: (...args: Parameters<typeof manager.interruptAgent>) => promiseFromEffect(manager.interruptAgent(...args)),
   listAgents: manager.listAgents.bind(manager),
   readAgentResponse: manager.readAgentResponse.bind(manager),
-  ready: () => Effect.runPromise(manager.ready()),
-  sendMessage: (...args: Parameters<typeof manager.sendMessage>) => Effect.runPromise(manager.sendMessage(...args)),
-  shutdown: () => Effect.runPromise(manager.shutdown()),
-  spawnAgent: (...args: Parameters<typeof manager.spawnAgent>) => Effect.runPromise(manager.spawnAgent(...args)),
-  waitAgent: (...args: Parameters<typeof manager.waitAgent>) => Effect.runPromise(manager.waitAgent(...args)),
-  waitAllAgents: (...args: Parameters<typeof manager.waitAllAgents>) => Effect.runPromise(manager.waitAllAgents(...args)),
+  ready: () => promiseFromEffect(manager.ready()),
+  sendMessage: (...args: Parameters<typeof manager.sendMessage>) => promiseFromEffect(manager.sendMessage(...args)),
+  shutdown: () => promiseFromEffect(manager.shutdown()),
+  spawnAgent: (...args: Parameters<typeof manager.spawnAgent>) => promiseFromEffect(manager.spawnAgent(...args)),
+  waitAgent: (...args: Parameters<typeof manager.waitAgent>) => promiseFromEffect(manager.waitAgent(...args)),
+  waitAllAgents: (...args: Parameters<typeof manager.waitAllAgents>) => promiseFromEffect(manager.waitAllAgents(...args)),
 })
 
 const createAgentManager = (options: Record<string, unknown> = {}) =>
@@ -436,16 +437,19 @@ describe('run storage', () => {
   )
 })
 
-const waitUntil = async (predicate: () => boolean, timeoutMs = 12_000): Promise<void> => {
-  const deadline = nowMs() + timeoutMs
-  while (nowMs() < deadline) {
-    if (predicate()) {
-      return
-    }
-    await sleep(20)
-  }
-  throw new Error('Timed out waiting for condition.')
-}
+const waitUntil = (predicate: () => boolean, timeoutMs = 12_000): Promise<void> =>
+  promiseFromEffect(
+    Effect.gen(function* () {
+      const deadline = nowMs() + timeoutMs
+      while (nowMs() < deadline) {
+        if (predicate()) {
+          return undefined
+        }
+        yield* Effect.sleep(20)
+      }
+      return yield* Effect.die(new Error('Timed out waiting for condition.'))
+    })
+  )
 
 const pidAlive = (pid: number): boolean => {
   try {
@@ -1715,11 +1719,13 @@ describe('extension completion delivery and status activity', () => {
       rmSync(scope, { force: true, recursive: true })
       const { register: subagentExtension } = yield* Effect.promise(() => import('@/features/sub_agents/index.js'))
       subagentExtension(asExtensionApi(pi), runtime, { inactivityTimeoutMs: 5000, piCommand: { command: FAKE_RPC_CHILD } })
-      const emit = async (name: string, event: unknown = {}) => {
-        for (const handler of handlers.get(name) ?? []) {
-          await handler(event, ctx)
-        }
-      }
+      const emit = (name: string, event: unknown = {}): Promise<void> =>
+        promiseFromEffect(
+          Effect.forEach(handlers.get(name) ?? [], (handler) => Effect.promise(() => Promise.resolve(handler(event, ctx))), {
+            concurrency: 1,
+            discard: true,
+          })
+        )
 
       try {
         yield* Effect.promise(() => emit('session_start', { reason: 'startup' }))

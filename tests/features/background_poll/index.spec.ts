@@ -1,4 +1,4 @@
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { promiseFromEffect, tryEffect, tryPromiseEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asExtensionApi } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { runtime } from '@tests/utils/runtime.js'
@@ -71,28 +71,32 @@ const setup = (exec: Exec) => {
   return { ctx, handlers, messages, notifications, sent: messageSent.promise, statuses, tool }
 }
 
-const startSession = async (fixture: ReturnType<typeof setup>): Promise<void> => {
-  await fixture.handlers.get('session_start')?.({}, fixture.ctx)
-}
+const startSession = (fixture: ReturnType<typeof setup>): Promise<void> =>
+  promiseFromEffect(Effect.promise(() => Promise.resolve(fixture.handlers.get('session_start')?.({}, fixture.ctx))).pipe(Effect.asVoid))
 
-const rejectionMessage = async (promise: Promise<unknown>): Promise<string> => {
-  try {
-    await promise
-    throw new Error('Expected promise to reject')
-  } catch (error) {
-    return error instanceof Error ? error.message : String(error)
-  }
-}
+const rejectionMessage = (promise: Promise<unknown>): Promise<string> =>
+  promiseFromEffect(
+    tryPromiseEffect(() => promise).pipe(
+      Effect.matchEffect({
+        onFailure: (error) => Effect.succeed(error.cause instanceof Error ? error.cause.message : String(error.cause)),
+        onSuccess: () => Effect.die(new Error('Expected promise to reject')),
+      })
+    )
+  )
 
 describe('background poll', () => {
   it.effect('returns immediately, bounds command time, publishes status, and wakes the agent', () =>
     Effect.gen(function* () {
       const commandTimeouts: number[] = []
       const longOutput = `${Array.from({ length: 2100 }, (_unused, index) => `line-${index}`).join('\n')}\nready-at-tail`
-      const fixture = setup(async (_command, _args, options) => {
-        commandTimeouts.push(options.timeout ?? -1)
-        return { code: 0, stderr: '', stdout: longOutput }
-      })
+      const fixture = setup((_command, _args, options) =>
+        promiseFromEffect(
+          Effect.sync(() => {
+            commandTimeouts.push(options.timeout ?? -1)
+            return { code: 0, stderr: '', stdout: longOutput }
+          })
+        )
+      )
       yield* Effect.promise(() => startSession(fixture))
 
       const result = yield* Effect.promise(() =>
@@ -125,9 +129,13 @@ describe('background poll', () => {
 
   it.effect('reports command failures as error outcomes', () =>
     Effect.gen(function* () {
-      const fixture = setup(async () => {
-        throw new Error('checker exploded')
-      })
+      const fixture = setup(() =>
+        promiseFromEffect(
+          tryEffect(() => {
+            throw new Error('checker exploded')
+          })
+        )
+      )
       yield* Effect.promise(() => startSession(fixture))
 
       yield* Effect.promise(() => fixture.tool.execute('error', { command: 'fail' }, undefined, undefined, fixture.ctx))
@@ -141,7 +149,7 @@ describe('background poll', () => {
 
   it.effect('rejects registration with a tagged failure when no session is active', () =>
     Effect.gen(function* () {
-      const fixture = setup(async () => ({ code: 0, stderr: '', stdout: 'ready' }))
+      const fixture = setup(() => promiseFromEffect(Effect.succeed({ code: 0, stderr: '', stdout: 'ready' })))
 
       const rejection = yield* Effect.promise(() =>
         fixture.tool.execute('inactive', { command: 'check' }, undefined, undefined, fixture.ctx).then(
@@ -163,8 +171,7 @@ describe('background poll', () => {
         if (args[1] === 'new-check') {
           return Promise.resolve({ code: 0, stderr: '', stdout: 'new session ready' })
         }
-        // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- This Promise-shaped fake or managed runtime intentionally runs outside the ambient test Effect.
-        return Effect.runPromise(
+        return promiseFromEffect(
           Effect.callback<{ stdout: string; stderr: string; code: number }>((resume) => {
             options.signal?.addEventListener('abort', () => resume(Effect.succeed({ code: 1, stderr: 'stopped', stdout: '' })), { once: true })
           })
@@ -185,8 +192,7 @@ describe('background poll', () => {
   it.effect('suppresses completion and clears status when the session shuts down', () =>
     Effect.gen(function* () {
       const fixture = setup((_command, _args, options) =>
-        // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- This Promise-shaped fake or managed runtime intentionally runs outside the ambient test Effect.
-        Effect.runPromise(
+        promiseFromEffect(
           Effect.callback<{ stdout: string; stderr: string; code: number }>((resume) => {
             options.signal?.addEventListener('abort', () => resume(Effect.succeed({ code: 1, stderr: 'stopped', stdout: '' })), { once: true })
           })

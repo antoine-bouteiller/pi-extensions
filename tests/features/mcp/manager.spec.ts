@@ -7,7 +7,7 @@ import { UnauthorizedError, type OAuthClientProvider } from '@modelcontextprotoc
 import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { type Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { type JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { promiseFromEffect, tryEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asError, asNarrowed } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { httpGet } from '@tests/utils/http.js'
@@ -32,17 +32,25 @@ class FakeTransport {
     this.provider = provider
     this.finish = finish
   }
-  async start() {
-    /* Empty */
+  start() {
+    return promiseFromEffect(Effect.void)
   }
-  async send(_message: JSONRPCMessage) {
-    /* Empty */
+  send(_message: JSONRPCMessage) {
+    return promiseFromEffect(Effect.void)
   }
-  async close() {
-    this.closed += 1
+  close() {
+    return promiseFromEffect(
+      Effect.sync(() => {
+        this.closed += 1
+      })
+    )
   }
-  async finishAuth(code: string) {
-    this.finish?.(code)
+  finishAuth(code: string) {
+    return promiseFromEffect(
+      Effect.sync(() => {
+        this.finish?.(code)
+      })
+    )
   }
 }
 
@@ -99,31 +107,51 @@ const harness = (
     createClient() {
       calls.clients += 1
       return {
-        async callTool(params: { name: string; arguments: Record<string, unknown> }) {
-          calls.toolCalls.push(params)
-          if (options.call !== undefined) {
-            return options.call(params)
-          }
-          return options.callResult ?? { content: [{ text: 'ok', type: 'text' }] }
+        callTool(params: { name: string; arguments: Record<string, unknown> }) {
+          return promiseFromEffect(
+            Effect.gen(function* () {
+              calls.toolCalls.push(params)
+              const { call } = options
+              if (call !== undefined) {
+                return yield* Effect.promise(() => call(params))
+              }
+              return options.callResult ?? { content: [{ text: 'ok', type: 'text' }] }
+            })
+          )
         },
-        async close() {
-          calls.closes += 1
+        close() {
+          return promiseFromEffect(
+            Effect.sync(() => {
+              calls.closes += 1
+            })
+          )
         },
-        async connect(transport: Transport) {
-          const fake = asNarrowed<FakeTransport, Transport>(transport)
-          calls.connects.push(fake.kind)
-          await options.connect?.(fake, fake.provider)
+        connect(transport: Transport) {
+          return promiseFromEffect(
+            Effect.gen(function* () {
+              const fake = asNarrowed<FakeTransport, Transport>(transport)
+              calls.connects.push(fake.kind)
+              const { connect } = options
+              if (connect !== undefined) {
+                yield* Effect.promise(() => connect(fake, fake.provider))
+              }
+            })
+          )
         },
         getInstructions() {
           return 'fixture instructions'
         },
-        async listTools(params?: { cursor?: string }) {
-          calls.lists.push(params?.cursor)
-          const page = pages[params?.cursor ?? 'root']
-          if (page === undefined) {
-            throw new Error('missing fixture page')
-          }
-          return page
+        listTools(params?: { cursor?: string }) {
+          return promiseFromEffect(
+            tryEffect(() => {
+              calls.lists.push(params?.cursor)
+              const page = pages[params?.cursor ?? 'root']
+              if (page === undefined) {
+                throw new Error('missing fixture page')
+              }
+              return page
+            })
+          )
         },
       }
     },
@@ -133,18 +161,17 @@ const harness = (
       return transport
     },
     credentialStore: options.credentialStore ?? {
-      async delete() {
-        /* Empty: never invoked when tests provide credentials explicitly. */
-      },
-      async get() {
-        calls.keychainReads += 1
-        return undefined
-      },
-      async set() {
-        /* Empty: writes are only asserted through calls.keychainReads. */
-      },
+      delete: () => promiseFromEffect(Effect.void),
+      get: () =>
+        promiseFromEffect(
+          Effect.sync(() => {
+            calls.keychainReads += 1
+            return undefined
+          })
+        ),
+      set: () => promiseFromEffect(Effect.void),
     },
-    openUrl: options.openUrl ?? (async () => undefined),
+    openUrl: options.openUrl ?? (() => promiseFromEffect(Effect.void)),
     policy: options.policy,
   })
   return { calls, manager: promised(manager) }
@@ -152,21 +179,21 @@ const harness = (
 
 /** The manager is Effect-native; these behavioural tests drive it through one promise facade. */
 const promised = (manager: McpManager) => ({
-  authenticate: (server: string, options?: McpOperationOptions) => Effect.runPromise(manager.authenticate(server, options)),
-  call: (tool: string, args: Record<string, unknown>, options?: McpOperationOptions) => Effect.runPromise(manager.call(tool, args, options)),
-  close: () => Effect.runPromise(manager.close),
-  connect: (server: string, options?: McpOperationOptions) => Effect.runPromise(manager.connect(server, options)),
-  describe: (tool: string, options?: McpOperationOptions) => Effect.runPromise(manager.describe(tool, options)),
-  list: (server: string, options?: McpOperationOptions) => Effect.runPromise(manager.list(server, options)),
+  authenticate: (server: string, options?: McpOperationOptions) => promiseFromEffect(manager.authenticate(server, options)),
+  call: (tool: string, args: Record<string, unknown>, options?: McpOperationOptions) => promiseFromEffect(manager.call(tool, args, options)),
+  close: () => promiseFromEffect(manager.close),
+  connect: (server: string, options?: McpOperationOptions) => promiseFromEffect(manager.connect(server, options)),
+  describe: (tool: string, options?: McpOperationOptions) => promiseFromEffect(manager.describe(tool, options)),
+  list: (server: string, options?: McpOperationOptions) => promiseFromEffect(manager.list(server, options)),
   oauthServers: () => manager.oauthServers(),
-  search: (query: string, options?: McpSearchOptions) => Effect.runPromise(manager.search(query, options)),
+  search: (query: string, options?: McpSearchOptions) => promiseFromEffect(manager.search(query, options)),
   status: () => manager.status(),
 })
 
-const freePort = async (): Promise<number> => {
-  const server = createServer()
-  await Effect.runPromise(
-    Effect.callback<void>((resume) => {
+const freePort = (): Effect.Effect<number> =>
+  Effect.gen(function* () {
+    const server = createServer()
+    yield* Effect.callback<void>((resume) => {
       const onError = (error: Error) => resume(Effect.die(error))
       server.once('error', onError)
       server.listen(0, '127.0.0.1', () => {
@@ -177,19 +204,16 @@ const freePort = async (): Promise<number> => {
         server.close()
       })
     })
-  )
-  const address = server.address()
-  if (address === null || typeof address === 'string') {
-    throw new Error('missing address')
-  }
-  const { port } = address
-  await Effect.runPromise(
-    Effect.callback<void>((resume) => {
+    const address = server.address()
+    if (address === null || typeof address === 'string') {
+      return yield* Effect.die(new Error('missing address'))
+    }
+    const { port } = address
+    yield* Effect.callback<void>((resume) => {
       server.close((error) => resume(error === undefined ? Effect.void : Effect.die(error)))
     })
-  )
-  return port
-}
+    return port
+  })
 
 describe('MCP manager', () => {
   it.effect('construction and status are metadata-only', () =>
@@ -244,7 +268,7 @@ describe('MCP manager', () => {
   it.effect('the first concurrent list shares one lazy stdio connection', () =>
     Effect.gen(function* () {
       const gate = deferred<void>()
-      const fixture = harness({ connect: async () => gate.promise })
+      const fixture = harness({ connect: () => promiseFromEffect(Effect.promise(() => gate.promise)) })
 
       const first = fixture.manager.list('local')
       const second = fixture.manager.list('local')
@@ -267,11 +291,14 @@ describe('MCP manager', () => {
       ]) {
         const fixture = harness({
           config: { remote: { type: 'http', url: 'https://example.test/mcp' } },
-          connect: async (transport) => {
-            if (transport.kind === 'streamable-http') {
-              throw fallbackError
-            }
-          },
+          connect: (transport) =>
+            promiseFromEffect(
+              transport.kind === 'streamable-http'
+                ? tryEffect(() => {
+                    throw fallbackError
+                  })
+                : Effect.void
+            ),
         })
         yield* Effect.promise(() => fixture.manager.list('remote'))
         expect(fixture.calls.connects).toEqual(['streamable-http', 'sse'])
@@ -279,18 +306,19 @@ describe('MCP manager', () => {
 
       const unauthorized = harness({
         config: { remote: { type: 'http', url: 'https://example.test/mcp' } },
-        connect: async () => {
-          throw new UnauthorizedError()
-        },
+        connect: () =>
+          promiseFromEffect(
+            tryEffect(() => {
+              throw new UnauthorizedError()
+            })
+          ),
       })
       expect(unauthorized.manager.list('remote')).rejects.toThrow()
       expect(unauthorized.calls.connects).toEqual(['streamable-http', 'streamable-http'])
 
       const broken = harness({
         config: { remote: { type: 'http', url: 'https://example.test/mcp' } },
-        connect: async () => {
-          throw new StreamableHTTPError(500, 'broken')
-        },
+        connect: () => promiseFromEffect(Effect.fail(new StreamableHTTPError(500, 'broken'))),
       })
       expect(broken.manager.list('remote')).rejects.toThrow()
       expect(broken.calls.connects).toEqual(['streamable-http'])
@@ -302,17 +330,23 @@ describe('MCP manager', () => {
       let attempts = 0
       const fixture = harness({
         config: { linear: { type: 'http', url: 'https://mcp.linear.app/mcp' } },
-        connect: async (_transport, provider) => {
-          attempts += 1
-          if (attempts === 1) {
-            expect(provider).toBeUndefined()
-            expect(fixture.calls.keychainReads).toBe(0)
-            throw new StreamableHTTPError(401, 'OAuth required')
-          }
-          expect(provider).toBeDefined()
-          expect(fixture.calls.keychainReads).toBe(0)
-          await provider?.tokens()
-        },
+        connect: (_transport, provider) =>
+          promiseFromEffect(
+            Effect.gen(function* () {
+              attempts += 1
+              if (attempts === 1) {
+                expect(provider).toBeUndefined()
+                expect(fixture.calls.keychainReads).toBe(0)
+                return yield* Effect.fail(new StreamableHTTPError(401, 'OAuth required'))
+              }
+              if (provider === undefined) {
+                return yield* Effect.die(new Error('provider missing'))
+              }
+              expect(fixture.calls.keychainReads).toBe(0)
+              yield* Effect.promise(() => Promise.resolve(provider.tokens()))
+              return undefined
+            })
+          ),
       })
 
       yield* Effect.promise(() => fixture.manager.list('linear'))
@@ -343,9 +377,7 @@ describe('MCP manager', () => {
             url: 'https://example.test/mcp',
           },
         },
-        connect: async () => {
-          throw new StreamableHTTPError(401, 'invalid token')
-        },
+        connect: () => promiseFromEffect(Effect.fail(new StreamableHTTPError(401, 'invalid token'))),
       })
 
       expect(fixture.manager.oauthServers()).toEqual([])
@@ -613,7 +645,7 @@ describe('MCP manager', () => {
 
   it.effect('completes an explicit callback-driven OAuth flow and reconnects', () =>
     Effect.gen(function* () {
-      const port = yield* Effect.promise(() => freePort())
+      const port = yield* freePort()
       let authorized = false
       const opened: string[] = []
       const fixture = harness({
@@ -624,27 +656,37 @@ describe('MCP manager', () => {
             url: 'https://mcp.slack.test/mcp',
           },
         },
-        connect: async (transport, provider) => {
-          if (authorized) {
-            return
-          }
-          if (provider === undefined) {
-            throw new Error('provider missing')
-          }
-          await provider.saveCodeVerifier('verifier')
-          const state = await provider.state?.()
-          await provider.redirectToAuthorization(new URL(`https://auth.test/start?state=${encodeURIComponent(state ?? '')}`))
-          transport.finish = (code: string) => {
-            expect(code).toBe('oauth-code')
-            authorized = true
-          }
-          throw new UnauthorizedError()
-        },
-        openUrl: async (authorizationUrl) => {
-          opened.push(authorizationUrl)
-          const state = new URL(authorizationUrl).searchParams.get('state')
-          void httpGet(`http://localhost:${port}/callback?code=oauth-code&state=${state}`)
-        },
+        connect: (transport, provider) =>
+          promiseFromEffect(
+            Effect.gen(function* () {
+              if (authorized) {
+                return yield* Effect.void
+              }
+              if (provider === undefined) {
+                return yield* Effect.die(new Error('provider missing'))
+              }
+              yield* Effect.promise(() => Promise.resolve(provider.saveCodeVerifier('verifier')))
+              const state = yield* Effect.promise(() => Promise.resolve(provider.state?.()))
+              yield* Effect.promise(() =>
+                Promise.resolve(provider.redirectToAuthorization(new URL(`https://auth.test/start?state=${encodeURIComponent(state ?? '')}`)))
+              )
+              transport.finish = (code: string) => {
+                expect(code).toBe('oauth-code')
+                authorized = true
+              }
+              return yield* tryEffect(() => {
+                throw new UnauthorizedError()
+              })
+            })
+          ),
+        openUrl: (authorizationUrl) =>
+          promiseFromEffect(
+            Effect.sync(() => {
+              opened.push(authorizationUrl)
+              const state = new URL(authorizationUrl).searchParams.get('state')
+              void httpGet(`http://localhost:${port}/callback?code=oauth-code&state=${state}`)
+            })
+          ),
       })
 
       yield* Effect.promise(() => fixture.manager.authenticate('slack'))
@@ -656,7 +698,7 @@ describe('MCP manager', () => {
 
   it.effect('keeps shared OAuth alive while another authentication waiter remains', () =>
     Effect.gen(function* () {
-      const port = yield* Effect.promise(() => freePort())
+      const port = yield* freePort()
       let authorized = false
       let openedUrl = ''
       const browserOpened = deferred<void>()
@@ -668,21 +710,33 @@ describe('MCP manager', () => {
             url: 'https://mcp.slack.test/mcp',
           },
         },
-        connect: async (transport, provider) => {
-          if (authorized) {
-            return
-          }
-          const state = await provider?.state?.()
-          await provider?.redirectToAuthorization(new URL(`https://auth.test/start?state=${encodeURIComponent(state ?? '')}`))
-          transport.finish = () => {
-            authorized = true
-          }
-          throw new UnauthorizedError()
-        },
-        openUrl: async (authorizationUrl) => {
-          openedUrl = authorizationUrl
-          browserOpened.resolve(undefined)
-        },
+        connect: (transport, provider) =>
+          promiseFromEffect(
+            Effect.gen(function* () {
+              if (authorized) {
+                return yield* Effect.void
+              }
+              const state = yield* Effect.promise(() => Promise.resolve(provider?.state?.()))
+              if (provider !== undefined) {
+                yield* Effect.promise(() =>
+                  Promise.resolve(provider.redirectToAuthorization(new URL(`https://auth.test/start?state=${encodeURIComponent(state ?? '')}`)))
+                )
+              }
+              transport.finish = () => {
+                authorized = true
+              }
+              return yield* tryEffect(() => {
+                throw new UnauthorizedError()
+              })
+            })
+          ),
+        openUrl: (authorizationUrl) =>
+          promiseFromEffect(
+            Effect.sync(() => {
+              openedUrl = authorizationUrl
+              browserOpened.resolve(undefined)
+            })
+          ),
       })
 
       // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
@@ -706,7 +760,7 @@ describe('MCP manager', () => {
 
   it.effect('closes a directly authenticated connection when exposed names collide', () =>
     Effect.gen(function* () {
-      const port = yield* Effect.promise(() => freePort())
+      const port = yield* freePort()
       const fixture = harness({
         config: {
           'same.name': { command: 'fixture', type: 'stdio' },
@@ -744,7 +798,7 @@ describe('MCP manager', () => {
                     type: 'stdio',
                   },
                 },
-                { openUrl: async () => undefined }
+                { openUrl: () => promiseFromEffect(Effect.void) }
               )
             )
           ),
@@ -768,9 +822,7 @@ describe('MCP manager', () => {
     Effect.gen(function* () {
       const transport = harness({
         config: { remote: { type: 'http', url: 'https://example.test/mcp' } },
-        connect: async () => {
-          throw new StreamableHTTPError(500, 'response leaked bearer secret-token')
-        },
+        connect: () => promiseFromEffect(Effect.fail(new StreamableHTTPError(500, 'response leaked bearer secret-token'))),
       })
       yield* Effect.promise(() =>
         transport.manager.connect('remote').then(undefined, (error: unknown) => {
@@ -781,9 +833,12 @@ describe('MCP manager', () => {
       expect(JSON.stringify(transport.manager.status())).not.toContain('secret-token')
 
       const request = harness({
-        call: async () => {
-          throw new Error('SDK failure leaked client_secret=secret-token')
-        },
+        call: () =>
+          promiseFromEffect(
+            tryEffect(() => {
+              throw new Error('SDK failure leaked client_secret=secret-token')
+            })
+          ),
       })
       yield* Effect.promise(() =>
         request.manager.call('local_echo', {}).then(undefined, (error: unknown) => {
@@ -795,19 +850,19 @@ describe('MCP manager', () => {
         config: {
           remote: { oauth: {}, type: 'http', url: 'https://example.test/mcp' },
         },
-        connect: async (_transport, provider) => {
-          await provider?.tokens()
-        },
+        connect: (_transport, provider) =>
+          promiseFromEffect(provider === undefined ? Effect.void : Effect.promise(() => Promise.resolve(provider.tokens())).pipe(Effect.asVoid)),
         credentialStore: {
-          async delete() {
-            /* Empty: this failure test never deletes a credential. */
-          },
-          async get() {
-            throw KeychainCredentialError.make({ message: 'macOS Keychain lookup failed. Ensure Keychain is available and unlocked, then retry.' })
-          },
-          async set() {
-            /* Empty: this failure test never writes a credential. */
-          },
+          delete: () => promiseFromEffect(Effect.void),
+          get: () =>
+            promiseFromEffect(
+              Effect.fail(
+                KeychainCredentialError.make({
+                  message: 'macOS Keychain lookup failed. Ensure Keychain is available and unlocked, then retry.',
+                })
+              )
+            ),
+          set: () => promiseFromEffect(Effect.void),
         },
       })
       yield* Effect.promise(() =>
@@ -825,8 +880,7 @@ describe('MCP manager', () => {
 
   it.effect('cancelling the sole connection waiter aborts and closes the shared attempt', () =>
     Effect.gen(function* () {
-      // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- This Promise-shaped fake or managed runtime intentionally runs outside the ambient test Effect.
-      const fixture = harness({ connect: () => Effect.runPromise(Effect.never) })
+      const fixture = harness({ connect: () => promiseFromEffect(Effect.never) })
       // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
       const controller = new AbortController()
       const connecting = fixture.manager.connect('local', { signal: controller.signal })
@@ -840,8 +894,7 @@ describe('MCP manager', () => {
 
   it.effect('close aborts and awaits an in-flight connection', () =>
     Effect.gen(function* () {
-      // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- This Promise-shaped fake or managed runtime intentionally runs outside the ambient test Effect.
-      const fixture = harness({ connect: () => Effect.runPromise(Effect.never) })
+      const fixture = harness({ connect: () => promiseFromEffect(Effect.never) })
       const connecting = fixture.manager.connect('local')
       yield* Effect.promise(() => Promise.resolve())
       yield* Effect.promise(() => fixture.manager.close())
@@ -856,7 +909,7 @@ describe('MCP manager', () => {
         Effect.gen(function* () {
           const manager = yield* McpManagerService
           return manager.status()
-        }).pipe(Effect.provide(mcpManagerLayer({}, { openUrl: async () => undefined })))
+        }).pipe(Effect.provide(mcpManagerLayer({}, { openUrl: () => promiseFromEffect(Effect.void) })))
       )
       expect(statuses).toEqual([])
     })

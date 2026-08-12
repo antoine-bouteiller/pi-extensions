@@ -307,10 +307,13 @@ const fakeTui = (onRender: () => void = () => undefined) => {
 
 const controllerTheme = { bold: (text: string) => text, fg: (_color: string, text: string) => text }
 
-const flushMicrotasks = async () => {
-  await Promise.resolve()
-  await Promise.resolve()
-}
+const flushMicrotasks = (): Promise<void> =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      yield* Effect.promise(() => Promise.resolve())
+      yield* Effect.promise(() => Promise.resolve())
+    })
+  )
 
 describe('sidebar controller overlay race', () => {
   it.effect('does not let a stale generation clobber a newer overlay once it is active', () =>

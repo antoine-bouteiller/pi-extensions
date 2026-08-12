@@ -12,7 +12,7 @@ server.registerTool(
     description: 'Echo a fixture value',
     inputSchema: { value: z.string() },
   },
-  async ({ value }) => ({
+  ({ value }) => ({
     content: [{ text: `fixture:${value}`, type: 'text' }],
     structuredContent: { echoed: value },
   })

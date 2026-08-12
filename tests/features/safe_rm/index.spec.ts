@@ -2,7 +2,7 @@ import { afterEach } from 'bun:test'
 import { tmpdir } from 'node:os'
 
 import { withFileMutationQueue } from '@earendil-works/pi-coding-agent'
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { describe, expect, it, promiseFromEffect, tryPromiseEffect } from '@tests/utils/bun_effect.js'
 import { asNarrowed, asTool } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
@@ -58,14 +58,15 @@ const workspace = Effect.gen(function* () {
   return { cwd, root }
 })
 
-const rejectionMessage = async (promise: Promise<unknown>): Promise<string> => {
-  try {
-    await promise
-    throw new Error('Expected promise to reject')
-  } catch (error) {
-    return error instanceof Error ? error.message : String(error)
-  }
-}
+const rejectionMessage = (promise: Promise<unknown>): Promise<string> =>
+  promiseFromEffect(
+    tryPromiseEffect(() => promise).pipe(
+      Effect.matchEffect({
+        onFailure: (error) => Effect.succeed(error.cause instanceof Error ? error.cause.message : String(error.cause)),
+        onSuccess: () => Effect.die(new Error('Expected promise to reject')),
+      })
+    )
+  )
 
 describe('safe rm', () => {
   it.effect('removes literal files and explicitly recursive directories', () =>

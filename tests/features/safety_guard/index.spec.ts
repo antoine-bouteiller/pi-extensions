@@ -1,7 +1,7 @@
 import { afterEach } from 'bun:test'
 import { tmpdir } from 'node:os'
 
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asExtensionApi, asResult } from '@tests/utils/casts.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect, FileSystem, Path } from 'effect'
@@ -105,15 +105,18 @@ const setup = (activeTools: string[] = ['safe_rm']) => {
   if (sessionStart === undefined) {
     throw new Error('session_start handler was not registered')
   }
-  const handler: Handler = async (event, ctx) => {
-    for (const registeredHandler of toolCallHandlers) {
-      const result = await registeredHandler(event, ctx)
-      if (isTrue(result?.block)) {
-        return result
-      }
-    }
-    return undefined
-  }
+  const handler: Handler = (event, ctx) =>
+    promiseFromEffect(
+      Effect.gen(function* () {
+        for (const registeredHandler of toolCallHandlers) {
+          const result = yield* Effect.promise(() => Promise.resolve(registeredHandler(event, ctx)))
+          if (isTrue(result?.block)) {
+            return result
+          }
+        }
+        return undefined
+      })
+    )
   return { emitted, handler, resultHandler, sessionStart }
 }
 
@@ -283,10 +286,13 @@ describe('safety guard', () => {
           cwd: '/work/project',
           hasUI: true,
           ui: {
-            confirm: async () => {
-              confirmed = true
-              return true
-            },
+            confirm: () =>
+              promiseFromEffect(
+                Effect.sync(() => {
+                  confirmed = true
+                  return true
+                })
+              ),
             notify: () => undefined,
           },
         })
@@ -319,7 +325,7 @@ describe('safety guard', () => {
       const ctx = {
         cwd: '/work/project',
         hasUI: true,
-        ui: { confirm: async () => true, notify: () => undefined },
+        ui: { confirm: () => promiseFromEffect(Effect.succeed(true)), notify: () => undefined },
       }
 
       for (const command of [
@@ -430,10 +436,13 @@ ce origin main`,
         cwd,
         hasUI: true,
         ui: {
-          confirm: async () => {
-            confirmed = true
-            return true
-          },
+          confirm: () =>
+            promiseFromEffect(
+              Effect.sync(() => {
+                confirmed = true
+                return true
+              })
+            ),
           notify: () => undefined,
         },
       }
@@ -455,7 +464,7 @@ ce origin main`,
         handler(event('sudo echo ok'), {
           cwd: '/work/project',
           hasUI: true,
-          ui: { confirm: async () => false, notify: () => undefined },
+          ui: { confirm: () => promiseFromEffect(Effect.succeed(false)), notify: () => undefined },
         })
       )
       expect(result?.block).toBeTrue()

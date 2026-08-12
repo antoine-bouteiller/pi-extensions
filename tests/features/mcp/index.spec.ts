@@ -1,7 +1,7 @@
 import { afterEach } from 'bun:test'
 
 import { type AgentToolResult } from '@earendil-works/pi-coding-agent'
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asCommand, asTool } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
@@ -134,24 +134,22 @@ const createHarness = (overrides: Partial<McpGatewayManager> = {}) => {
   const fixture = createFakePi()
   createMcpExtension(dependencies, runtime)(fixture.pi)
 
-  const start = async () => {
-    await fixture.emit('session_start', {}, context())
-  }
+  const start = (): Promise<void> => promiseFromEffect(Effect.promise(() => fixture.emit('session_start', {}, context())).pipe(Effect.asVoid))
 
-  const execute = async (params: Record<string, unknown>, signal?: AbortSignal) => {
+  const execute = (params: Record<string, unknown>, signal?: AbortSignal): Promise<AgentToolResult<unknown>> => {
     const tool = fixture.state.tools.get('mcp')
     expect(tool).toBeDefined()
     const executeTool = asTool<{
       execute: (id: string, input: Record<string, unknown>, signal?: AbortSignal) => Promise<AgentToolResult<unknown>>
     }>(tool)
-    return executeTool.execute('call-1', params, signal)
+    return promiseFromEffect(Effect.promise(() => executeTool.execute('call-1', params, signal)))
   }
 
-  const invokeCommand = async (args = '', commandContext: unknown = context()) => {
+  const invokeCommand = (args = '', commandContext: unknown = context()): Promise<void> => {
     const command = fixture.state.commands.get('mcp-auth')
     expect(command).toBeDefined()
     const authCommand = asCommand<{ handler: (args: string, ctx: unknown) => Promise<void> }>(command)
-    return authCommand.handler(args, commandContext)
+    return promiseFromEffect(Effect.promise(() => authCommand.handler(args, commandContext)))
   }
 
   return {
@@ -184,9 +182,7 @@ const authContext = (notifications: { message: string; level: string }[], select
     notify(message: string, level: string) {
       notifications.push({ level, message })
     },
-    async select() {
-      return selected
-    },
+    select: () => promiseFromEffect(Effect.succeed(selected)),
   },
 })
 
@@ -527,15 +523,15 @@ describe('MCP gateway registration and lifecycle', () => {
       const closeStarted = deferred<void>()
       const permitClose = deferred<void>()
       const harness = createHarness({
-        close: Effect.promise(async () => {
+        close: Effect.gen(function* () {
           closeStarted.resolve()
-          await permitClose.promise
+          yield* Effect.promise(() => permitClose.promise)
         }),
       })
-      harness.dependencies.createManager = async (_config, managerContext) => {
+      harness.dependencies.createManager = (_config, managerContext) => {
         harness.callbacks()?.onStatusChange(0)
         void managerContext
-        return creation.promise
+        return promiseFromEffect(Effect.promise(() => creation.promise))
       }
       // Re-register against the modified dependency object in a fresh fixture.
       const fixture = createFakePi()

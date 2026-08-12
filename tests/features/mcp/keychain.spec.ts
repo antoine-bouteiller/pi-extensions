@@ -1,4 +1,4 @@
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { promiseFromEffect, tryEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asError, asOAuthCredentialPayload } from '@tests/utils/casts.js'
 import { Effect, Option } from 'effect'
 
@@ -26,38 +26,50 @@ const inMemoryKeyring = (initial: Record<string, string> = {}, failure?: Failure
       this.account = account
     }
 
-    async getPassword(): Promise<string> {
-      calls.push({ account: this.account, operation: 'get', service: this.service })
-      if (failure === 'get') {
-        throw new Error('native failure containing secret-token')
-      }
-      if (!values.has(this.account)) {
-        throw Object.assign(new Error('No matching entry found'), { code: 'NoEntry' })
-      }
-      const stored = values.get(this.account)
-      if (stored === undefined) {
-        throw new Error('missing password')
-      }
-      return stored
+    getPassword(): Promise<string> {
+      return promiseFromEffect(
+        tryEffect(() => {
+          calls.push({ account: this.account, operation: 'get', service: this.service })
+          if (failure === 'get') {
+            throw new Error('native failure containing secret-token')
+          }
+          if (!values.has(this.account)) {
+            throw Object.assign(new Error('No matching entry found'), { code: 'NoEntry' })
+          }
+          const stored = values.get(this.account)
+          if (stored === undefined) {
+            throw new Error('missing password')
+          }
+          return stored
+        })
+      )
     }
 
-    async setPassword(password: string): Promise<void> {
-      calls.push({ account: this.account, operation: 'set', service: this.service })
-      if (failure === 'set') {
-        throw new Error(`could not save ${password}`)
-      }
-      values.set(this.account, password)
+    setPassword(password: string): Promise<void> {
+      return promiseFromEffect(
+        tryEffect(() => {
+          calls.push({ account: this.account, operation: 'set', service: this.service })
+          if (failure === 'set') {
+            throw new Error(`could not save ${password}`)
+          }
+          values.set(this.account, password)
+        })
+      )
     }
 
-    async deletePassword(): Promise<boolean> {
-      calls.push({ account: this.account, operation: 'delete', service: this.service })
-      if (failure === 'delete') {
-        throw new Error('native delete failure containing secret-token')
-      }
-      if (!values.delete(this.account)) {
-        throw Object.assign(new Error('item not found'), { code: 'NoEntry' })
-      }
-      return true
+    deletePassword(): Promise<boolean> {
+      return promiseFromEffect(
+        tryEffect(() => {
+          calls.push({ account: this.account, operation: 'delete', service: this.service })
+          if (failure === 'delete') {
+            throw new Error('native delete failure containing secret-token')
+          }
+          if (!values.delete(this.account)) {
+            throw Object.assign(new Error('item not found'), { code: 'NoEntry' })
+          }
+          return true
+        })
+      )
     }
   }
 
@@ -126,21 +138,33 @@ describe('Keychain OAuth credential store', () => {
       let serialized: string | undefined
       const store = new KeychainCredentialStore({
         createEntry: () => ({
-          async deletePassword(signal) {
-            await Promise.resolve()
-            signals.push(signal ?? undefined)
-            serialized = undefined
-            return true
+          deletePassword(signal) {
+            return promiseFromEffect(
+              Effect.gen(function* () {
+                yield* Effect.promise(() => Promise.resolve())
+                signals.push(signal ?? undefined)
+                serialized = undefined
+                return true
+              })
+            )
           },
-          async getPassword(signal) {
-            await Promise.resolve()
-            signals.push(signal ?? undefined)
-            return serialized
+          getPassword(signal) {
+            return promiseFromEffect(
+              Effect.gen(function* () {
+                yield* Effect.promise(() => Promise.resolve())
+                signals.push(signal ?? undefined)
+                return serialized
+              })
+            )
           },
-          async setPassword(password, signal) {
-            await Promise.resolve()
-            signals.push(signal ?? undefined)
-            serialized = password
+          setPassword(password, signal) {
+            return promiseFromEffect(
+              Effect.gen(function* () {
+                yield* Effect.promise(() => Promise.resolve())
+                signals.push(signal ?? undefined)
+                serialized = password
+              })
+            )
           },
         }),
       })

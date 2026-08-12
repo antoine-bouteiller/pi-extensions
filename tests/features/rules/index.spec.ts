@@ -2,7 +2,7 @@ import { afterEach } from 'bun:test'
 import { tmpdir } from 'node:os'
 
 import { type ToolResultEvent } from '@earendil-works/pi-coding-agent'
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asResult } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
@@ -58,10 +58,10 @@ const createFixture = Effect.gen(function* () {
     cwd: projectDirectory,
     isProjectTrusted: () => trusted,
   })
-  const invoke = async <Result>(name: string, event: unknown, trusted = true) => {
-    const results = await fakePi.emit(name, event, context(trusted))
-    return asResult<Result | undefined>(results[0])
-  }
+  const invoke = <Result>(name: string, event: unknown, trusted = true): Promise<Result | undefined> =>
+    promiseFromEffect(
+      Effect.promise(() => fakePi.emit(name, event, context(trusted))).pipe(Effect.map((results) => asResult<Result | undefined>(results[0])))
+    )
 
   return { fakePi, homeDirectory, invoke, projectDirectory }
 })

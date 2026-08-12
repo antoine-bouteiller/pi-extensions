@@ -21,7 +21,7 @@ const sharedActivityScript = (paths: { aggregate: string; activity: string; runt
     const handlers = new Map();
     const pi = {
       events: { emit() {}, on() {} },
-      async exec() { return { code: 0, killed: false, stderr: '', stdout: '' }; },
+      exec() { return Effect.runPromise(Effect.succeed({ code: 0, killed: false, stderr: '', stdout: '' })); },
       getActiveTools: () => [], getAllTools: () => [], getThinkingLevel: () => 'off',
       on(name, handler) { const list = handlers.get(name) || []; list.push(handler); handlers.set(name, list); },
       registerCommand() {}, registerEntryRenderer() {}, registerFlag() {}, registerMessageRenderer() {},

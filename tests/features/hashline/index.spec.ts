@@ -64,10 +64,12 @@ const workspace = Effect.gen(function* () {
   return directory
 })
 
-const header = async (tool: Tool, cwd: string, path: string): Promise<string> => {
-  const output = await tool.execute('read', { path }, undefined, undefined, { cwd })
-  return output.content[0].text.split('\n', 1)[0]
-}
+const header = (tool: Tool, cwd: string, path: string): Promise<string> =>
+  Effect.runPromise(
+    Effect.promise(() => tool.execute('read', { path }, undefined, undefined, { cwd })).pipe(
+      Effect.map((output) => output.content[0].text.split('\n', 1)[0])
+    )
+  )
 
 const put = (headerLine: string, line: number, replacement: string): string => `${headerLine}\nPUT ${line}.=${line}:\n+${replacement}`
 

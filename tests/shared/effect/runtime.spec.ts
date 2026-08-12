@@ -1,4 +1,4 @@
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { promiseFromEffect, tryEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asError, asExtensionContext } from '@tests/utils/casts.js'
 import { Context, Effect, Fiber, Layer, ManagedRuntime } from 'effect'
 
@@ -18,24 +18,25 @@ const fakeContext = (overrides: { cwd?: string; hasUI?: boolean; confirm?: boole
     cwd: overrides.cwd ?? '/repo',
     hasUI: overrides.hasUI ?? true,
     ui: {
-      confirm: async (title: string, message: string, opts?: { signal?: AbortSignal }) => {
-        const entry = { aborted: false, message, title }
-        calls.confirms.push(entry)
-        if (opts?.signal !== undefined) {
-          await Effect.runPromise(
-            Effect.callback<void>((resume) => {
-              opts.signal?.addEventListener('abort', () => {
-                entry.aborted = true
-                resume(Effect.void)
+      confirm: (title: string, message: string, opts?: { signal?: AbortSignal }) =>
+        promiseFromEffect(
+          Effect.gen(function* () {
+            const entry = { aborted: false, message, title }
+            calls.confirms.push(entry)
+            if (opts?.signal !== undefined) {
+              yield* Effect.callback<void>((resume) => {
+                opts.signal?.addEventListener('abort', () => {
+                  entry.aborted = true
+                  resume(Effect.void)
+                })
+                if (overrides.confirm !== undefined) {
+                  resume(Effect.void)
+                }
               })
-              if (overrides.confirm !== undefined) {
-                resume(Effect.void)
-              }
-            })
-          )
-        }
-        return overrides.confirm ?? false
-      },
+            }
+            return overrides.confirm ?? false
+          })
+        ),
       notify: (message: string, level: string) => {
         calls.notifications.push({ level, message })
       },
@@ -71,9 +72,13 @@ describe('tool executor boundary', () => {
 
   it.effect('keeps a promise rejection recoverable rather than turning it into a defect', () =>
     Effect.gen(function* () {
-      const recovered = yield* withAbortSignal(async () => {
-        throw new Error('network exploded')
-      }).pipe(Effect.catch((error) => Effect.succeed(asError(error.cause).message)))
+      const recovered = yield* withAbortSignal(() =>
+        promiseFromEffect(
+          tryEffect(() => {
+            throw new Error('network exploded')
+          })
+        )
+      ).pipe(Effect.catch((error) => Effect.succeed(asError(error.cause).message)))
 
       expect(recovered).toBe('network exploded')
     })
@@ -83,9 +88,13 @@ describe('tool executor boundary', () => {
     Effect.gen(function* () {
       const runtime = yield* scopedEmptyRuntime
       const execute = makeToolExecutor(runtime)(() =>
-        withAbortSignal(async () => {
-          throw new Error('network exploded')
-        }).pipe(
+        withAbortSignal(() =>
+          promiseFromEffect(
+            tryEffect(() => {
+              throw new Error('network exploded')
+            })
+          )
+        ).pipe(
           Effect.map(() => 'unreachable'),
           Effect.mapError((error) => ToolFailure.make({ message: `fetch failed: ${asError(error.cause).message}` }))
         )
@@ -200,7 +209,7 @@ describe('event handler boundary', () => {
 })
 
 const runUi = <Value>(ctx: ReturnType<typeof fakeContext>['ctx'], body: Effect.Effect<Value, never, Ui>) =>
-  Effect.runPromise(body.pipe(Effect.provide(perInvocation(ctx))))
+  promiseFromEffect(body.pipe(Effect.provide(perInvocation(ctx))))
 
 describe('ui service', () => {
   it.effect('forwards notify and setStatus, and reports hasUI', () =>
@@ -240,10 +249,8 @@ describe('ui service', () => {
           return yield* ui.confirm('Delete?', 'This cannot be undone')
         }).pipe(Effect.provide(perInvocation(ctx)))
       )
-      // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- This Promise-shaped fake or managed runtime intentionally runs outside the ambient test Effect.
-      yield* Effect.promise(() => Effect.runPromise(Effect.sleep('10 millis')))
-      // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- This Promise-shaped fake or managed runtime intentionally runs outside the ambient test Effect.
-      yield* Effect.promise(() => Effect.runPromise(Fiber.interrupt(fiber)))
+      yield* Effect.promise(() => promiseFromEffect(Effect.sleep('10 millis')))
+      yield* Effect.promise(() => promiseFromEffect(Fiber.interrupt(fiber)))
 
       expect(calls.confirms).toHaveLength(1)
       expect(calls.confirms[0]?.aborted).toBe(true)

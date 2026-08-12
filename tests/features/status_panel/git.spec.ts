@@ -1,4 +1,4 @@
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { promiseFromEffect, tryEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { Effect } from 'effect'
 
@@ -12,10 +12,13 @@ describe('status panel git state', () => {
       const calls: string[][] = []
       const outputs = [success('true\n'), success('feature/footer\n'), success(' M one\n?? two\n')]
       const { pi } = createFakePi({
-        exec: async (command, args) => {
-          calls.push([command, ...args])
-          return outputs.shift() ?? success('')
-        },
+        exec: (command, args) =>
+          promiseFromEffect(
+            Effect.sync(() => {
+              calls.push([command, ...args])
+              return outputs.shift() ?? success('')
+            })
+          ),
       })
 
       expect(yield* fetchGitInfo(pi)).toEqual({
@@ -34,12 +37,16 @@ describe('status panel git state', () => {
   it.effect('returns empty state outside a repository or when git fails', () =>
     Effect.gen(function* () {
       const outside = createFakePi({
-        exec: async (_command, args) => (args[0] === 'rev-parse' ? { ...success('false\n'), code: 128 } : success('ignored')),
+        exec: (_command, args) =>
+          promiseFromEffect(Effect.succeed(args[0] === 'rev-parse' ? { ...success('false\n'), code: 128 } : success('ignored'))),
       })
       const failing = createFakePi({
-        exec: async () => {
-          throw new Error('git unavailable')
-        },
+        exec: () =>
+          promiseFromEffect(
+            tryEffect(() => {
+              throw new Error('git unavailable')
+            })
+          ),
       })
 
       const empty = { branch: undefined, changedFiles: 0, pullRequest: undefined }
@@ -56,7 +63,7 @@ describe('status panel git state', () => {
           throw new TypeError('malformed git result')
         },
       }
-      const { pi } = createFakePi({ exec: async () => malformed })
+      const { pi } = createFakePi({ exec: () => promiseFromEffect(Effect.succeed(malformed)) })
 
       expect(yield* fetchGitInfo(pi)).toEqual({
         branch: undefined,
@@ -70,7 +77,7 @@ describe('status panel git state', () => {
     Effect.gen(function* () {
       const outputs = [success('true\n'), { ...success('stale-branch\n'), code: 1 }, { ...success(' M stale\n'), code: 1 }]
       const { pi } = createFakePi({
-        exec: async () => outputs.shift() ?? success(''),
+        exec: () => promiseFromEffect(Effect.sync(() => outputs.shift() ?? success(''))),
       })
 
       expect(yield* fetchGitInfo(pi)).toEqual({

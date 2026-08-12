@@ -69,15 +69,18 @@ const createHarness = (dispatchSubmittedCommands = false) => {
     },
     hasPendingMessages: () => pendingMessages,
     mode: 'tui',
-    navigateTree: async (targetId: string) => {
-      navigateTreeCalls.push(targetId)
-      if (targetId === leafId || navigateTreeResult.cancelled) {
-        return navigateTreeResult
-      }
-      const target = entries.get(targetId)
-      leafId = target?.message.role === 'user' ? target.parentId : targetId
-      return navigateTreeResult
-    },
+    navigateTree: (targetId: string) =>
+      Effect.runPromise(
+        Effect.sync(() => {
+          navigateTreeCalls.push(targetId)
+          if (targetId === leafId || navigateTreeResult.cancelled) {
+            return navigateTreeResult
+          }
+          const target = entries.get(targetId)
+          leafId = target?.message.role === 'user' ? target.parentId : targetId
+          return navigateTreeResult
+        })
+      ),
     sessionManager: {
       getBranch: () => {
         const path: FakeEntry[] = []
@@ -111,23 +114,28 @@ const createHarness = (dispatchSubmittedCommands = false) => {
         editorText = text
       },
     },
-    waitForIdle: async () => {
-      waitForIdleCalls.push(waitForIdleCalls.length)
-      if (editorTextAfterWait !== undefined) {
-        editorText = editorTextAfterWait
-      }
-    },
+    waitForIdle: () =>
+      Effect.runPromise(
+        Effect.sync(() => {
+          waitForIdleCalls.push(waitForIdleCalls.length)
+          if (editorTextAfterWait !== undefined) {
+            editorText = editorTextAfterWait
+          }
+        })
+      ),
   })
 
-  const startSession = async (mode: 'tui' | 'rpc' = 'tui'): Promise<void> => {
-    await fixture.emit('session_start', {}, { ...ctx, mode })
-  }
+  const startSession = (mode: 'tui' | 'rpc' = 'tui'): Promise<void> =>
+    Effect.runPromise(Effect.promise(() => fixture.emit('session_start', {}, { ...ctx, mode })).pipe(Effect.asVoid))
 
-  const submit = async (input: InputSubmission): Promise<void> => {
-    await fixture.emit('input', input, ctx)
-    await fixture.emit('before_agent_start', {}, ctx)
-    await fixture.emit('agent_start', {}, ctx)
-  }
+  const submit = (input: InputSubmission): Promise<void> =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        yield* Effect.promise(() => fixture.emit('input', input, ctx))
+        yield* Effect.promise(() => fixture.emit('before_agent_start', {}, ctx))
+        yield* Effect.promise(() => fixture.emit('agent_start', {}, ctx))
+      })
+    )
 
   const submitAndArm = (text = 'hello'): Promise<void> => submit({ source: 'interactive', text })
 
@@ -151,9 +159,7 @@ const createHarness = (dispatchSubmittedCommands = false) => {
     editorText: () => editorText,
     escape,
     fixture,
-    flushSubmittedCommands: async () => {
-      await Promise.all(submittedCommandTasks)
-    },
+    flushSubmittedCommands: () => Effect.runPromise(Effect.promise(() => Promise.all(submittedCommandTasks)).pipe(Effect.asVoid)),
     hasTerminalHandler: () => terminalHandler !== undefined,
     navigateTreeCalls,
     notifications,

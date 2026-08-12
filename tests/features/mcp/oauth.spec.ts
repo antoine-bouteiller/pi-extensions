@@ -1,7 +1,7 @@
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- The spec asserts real loopback listener binding and cleanup; an HTTP client cannot create the server under test.
 import { createServer } from 'node:http'
 
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asError } from '@tests/utils/casts.js'
 import { httpGet } from '@tests/utils/http.js'
 import { Effect } from 'effect'
@@ -9,10 +9,10 @@ import { Effect } from 'effect'
 import { type CredentialStore, type OAuthCredentialPayload } from '@/features/mcp/keychain.js'
 import { KeychainOAuthProvider, createOAuthState, startOAuthCallback, type OAuthCallback, type OAuthCallbackOptions } from '@/features/mcp/oauth.js'
 
-const freePort = async (): Promise<number> => {
-  const server = createServer()
-  await Effect.runPromise(
-    Effect.callback<void>((resume) => {
+const freePort = (): Effect.Effect<number> =>
+  Effect.gen(function* () {
+    const server = createServer()
+    yield* Effect.callback<void>((resume) => {
       const onError = (error: Error) => resume(Effect.die(error))
       server.once('error', onError)
       server.listen(0, '127.0.0.1', () => {
@@ -23,32 +23,41 @@ const freePort = async (): Promise<number> => {
         server.close()
       })
     })
-  )
-  const address = server.address()
-  if (address === null || typeof address === 'string') {
-    throw new Error('missing address')
-  }
-  const { port } = address
-  await Effect.runPromise(
-    Effect.callback<void>((resume) => {
+    const address = server.address()
+    if (address === null || typeof address === 'string') {
+      return yield* Effect.die(new Error('missing address'))
+    }
+    const { port } = address
+    yield* Effect.callback<void>((resume) => {
       server.close((error) => resume(error === undefined ? Effect.void : Effect.die(error)))
     })
-  )
-  return port
-}
+    return port
+  })
 
 class MemoryStore implements CredentialStore {
   value?: OAuthCredentialPayload
   reads = 0
-  async get(_name: string, url: string) {
-    this.reads += 1
-    return this.value?.serverUrl === url ? structuredClone(this.value) : undefined
+  get(_name: string, url: string) {
+    return promiseFromEffect(
+      Effect.sync(() => {
+        this.reads += 1
+        return this.value?.serverUrl === url ? structuredClone(this.value) : undefined
+      })
+    )
   }
-  async set(_name: string, value: OAuthCredentialPayload) {
-    this.value = structuredClone(value)
+  set(_name: string, value: OAuthCredentialPayload) {
+    return promiseFromEffect(
+      Effect.sync(() => {
+        this.value = structuredClone(value)
+      })
+    )
   }
-  async delete() {
-    this.value = undefined
+  delete() {
+    return promiseFromEffect(
+      Effect.sync(() => {
+        this.value = undefined
+      })
+    )
   }
 }
 
@@ -61,7 +70,7 @@ const withCallback = <Value, Failure, Requirements>(
 describe('OAuth callback', () => {
   it.live('accepts a matching callback and releases the port', () =>
     Effect.gen(function* () {
-      const port = yield* Effect.promise(() => freePort())
+      const port = yield* freePort()
       yield* withCallback({ expectedState: 'right', port }, (callback) =>
         Effect.gen(function* () {
           const response = yield* Effect.promise(() => httpGet(`${callback.redirectUrl}?code=code-1&state=right`))
@@ -76,7 +85,7 @@ describe('OAuth callback', () => {
 
   it.live('rejects a wrong state without consuming the legitimate callback', () =>
     Effect.gen(function* () {
-      const port = yield* Effect.promise(() => freePort())
+      const port = yield* freePort()
       yield* withCallback({ expectedState: 'right', port }, (callback) =>
         Effect.gen(function* () {
           const badResponse = yield* Effect.promise(() => httpGet(`${callback.redirectUrl}?code=bad&state=wrong`))
@@ -91,7 +100,7 @@ describe('OAuth callback', () => {
 
   it.live('HTML-escapes reflected OAuth errors and releases scoped listeners', () =>
     Effect.gen(function* () {
-      const port = yield* Effect.promise(() => freePort())
+      const port = yield* freePort()
       yield* withCallback({ expectedState: 'state', port }, (callback) =>
         Effect.gen(function* () {
           const payload = `<script>alert("x")</script>&'`
@@ -112,14 +121,14 @@ describe('OAuth callback', () => {
 
   it.live('handles OAuth errors, timeout, cancellation, and occupied ports', () =>
     Effect.gen(function* () {
-      yield* withCallback({ expectedState: 'state', port: yield* Effect.promise(() => freePort()) }, (callback) =>
+      yield* withCallback({ expectedState: 'state', port: yield* freePort() }, (callback) =>
         Effect.gen(function* () {
           yield* Effect.promise(() => httpGet(`${callback.redirectUrl}?error=access_denied&error_description=nope&state=state`))
           expect(asError(yield* Effect.flip(callback.waitForCode)).message).toContain('access_denied')
         })
       )
 
-      yield* withCallback({ expectedState: 'state', port: yield* Effect.promise(() => freePort()), timeoutMs: 5 }, (callback) =>
+      yield* withCallback({ expectedState: 'state', port: yield* freePort(), timeoutMs: 5 }, (callback) =>
         Effect.gen(function* () {
           expect(asError(yield* Effect.flip(callback.waitForCode)).message).toContain('timed out')
         })
@@ -127,14 +136,14 @@ describe('OAuth callback', () => {
 
       // oxlint-disable-next-line effecttsgo/abort-controller-in-effect -- This test must control the exact external AbortSignal and its timing.
       const controller = new AbortController()
-      yield* withCallback({ expectedState: 'state', port: yield* Effect.promise(() => freePort()), signal: controller.signal }, (callback) =>
+      yield* withCallback({ expectedState: 'state', port: yield* freePort(), signal: controller.signal }, (callback) =>
         Effect.gen(function* () {
           controller.abort()
           expect(asError(yield* Effect.flip(callback.waitForCode)).message).toContain('cancelled')
         })
       )
 
-      const occupiedPort = yield* Effect.promise(() => freePort())
+      const occupiedPort = yield* freePort()
       yield* withCallback({ expectedState: 'one', port: occupiedPort }, () =>
         Effect.gen(function* () {
           const error = yield* Effect.flip(Effect.scoped(startOAuthCallback({ expectedState: 'two', port: occupiedPort })))
@@ -228,9 +237,12 @@ describe('Keychain OAuth provider', () => {
       const interactive = new KeychainOAuthProvider({
         config: { callbackPort: 3120 },
         interactive: true,
-        openUrl: async (url) => {
-          opened.push(url)
-        },
+        openUrl: (url) =>
+          promiseFromEffect(
+            Effect.sync(() => {
+              opened.push(url)
+            })
+          ),
         serverName: 'remote',
         serverUrl: 'https://mcp.example.test/mcp',
         state,
