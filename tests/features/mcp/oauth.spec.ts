@@ -4,7 +4,7 @@ import { createServer } from 'node:http'
 import { Effect } from 'effect'
 
 import { type CredentialStore, type OAuthCredentialPayload } from '@/features/mcp/keychain.js'
-import { KeychainOAuthProvider, createOAuthState, startOAuthCallback, startOAuthCallbackScoped } from '@/features/mcp/oauth.js'
+import { KeychainOAuthProvider, createOAuthState, startOAuthCallback, type OAuthCallback, type OAuthCallbackOptions } from '@/features/mcp/oauth.js'
 
 const freePort = async (): Promise<number> => {
   const server = createServer()
@@ -33,93 +33,89 @@ class MemoryStore implements CredentialStore {
   }
 }
 
+/** The listener is a scoped resource: leaving `use` releases the port. */
+const withCallback = <Value>(options: OAuthCallbackOptions, use: (callback: OAuthCallback) => Promise<Value>): Promise<Value> =>
+  Effect.runPromise(Effect.scoped(startOAuthCallback(options).pipe(Effect.flatMap((callback) => Effect.promise(() => use(callback))))))
+
+const listenerFailure = (options: OAuthCallbackOptions): Promise<OAuthCallback> => Effect.runPromise(Effect.scoped(startOAuthCallback(options)))
+
 describe('OAuth callback', () => {
   test('accepts a matching callback and releases the port', async () => {
     const port = await freePort()
-    const callback = await startOAuthCallback({ expectedState: 'right', port })
-    const response = await fetch(`${callback.redirectUrl}?code=code-1&state=right`)
+    await withCallback({ expectedState: 'right', port }, async (callback) => {
+      const response = await fetch(`${callback.redirectUrl}?code=code-1&state=right`)
 
-    expect(response.status).toBe(200)
-    expect(await callback.waitForCode()).toBe('code-1')
-    await callback.close()
+      expect(response.status).toBe(200)
+      expect(await Effect.runPromise(callback.waitForCode)).toBe('code-1')
+    })
 
-    const replacement = await startOAuthCallback({ expectedState: 'next', port })
-    await replacement.close()
+    await withCallback({ expectedState: 'next', port }, async () => undefined)
   })
 
   test('rejects a wrong state without consuming the legitimate callback', async () => {
     const port = await freePort()
-    const callback = await startOAuthCallback({ expectedState: 'right', port })
-    const badResponse = await fetch(`${callback.redirectUrl}?code=bad&state=wrong`)
-    expect(badResponse.status).toBe(400)
-    const goodResponse = await fetch(`${callback.redirectUrl}?code=good&state=right`)
-    expect(goodResponse.status).toBe(200)
-    expect(await callback.waitForCode()).toBe('good')
+    await withCallback({ expectedState: 'right', port }, async (callback) => {
+      const badResponse = await fetch(`${callback.redirectUrl}?code=bad&state=wrong`)
+      expect(badResponse.status).toBe(400)
+      const goodResponse = await fetch(`${callback.redirectUrl}?code=good&state=right`)
+      expect(goodResponse.status).toBe(200)
+      expect(await Effect.runPromise(callback.waitForCode)).toBe('good')
+    })
   })
 
   test('HTML-escapes reflected OAuth errors and releases scoped listeners', async () => {
     const port = await freePort()
-    const callback = await startOAuthCallback({ expectedState: 'state', port })
-    const payload = `<script>alert("x")</script>&'`
-    const response = await fetch(
-      `${callback.redirectUrl}?error=${encodeURIComponent(payload)}&error_description=${encodeURIComponent(payload)}&state=state`
-    )
-    const html = await response.text()
-    expect(html).not.toContain('<script>')
-    expect(html).toContain('&lt;script&gt;')
-    expect(html).toContain('&amp;')
-    const callbackFailure = await callback.waitForCode().then(
-      () => '',
-      (error: unknown) => (error instanceof Error ? error.message : String(error))
-    )
-    expect(callbackFailure).toContain('<script>')
+    await withCallback({ expectedState: 'state', port }, async (callback) => {
+      const payload = `<script>alert("x")</script>&'`
+      const response = await fetch(
+        `${callback.redirectUrl}?error=${encodeURIComponent(payload)}&error_description=${encodeURIComponent(payload)}&state=state`
+      )
+      const html = await response.text()
+      expect(html).not.toContain('<script>')
+      expect(html).toContain('&lt;script&gt;')
+      expect(html).toContain('&amp;')
+      const callbackFailure = await Effect.runPromise(callback.waitForCode).then(
+        () => '',
+        (error: unknown) => (error instanceof Error ? error.message : String(error))
+      )
+      expect(callbackFailure).toContain('<script>')
+    })
 
-    const scopedPort = await freePort()
-    await Effect.runPromise(Effect.scoped(startOAuthCallbackScoped({ expectedState: 'scoped', port: scopedPort })))
-    const replacement = await startOAuthCallback({ expectedState: 'replacement', port: scopedPort })
-    await replacement.close()
+    await withCallback({ expectedState: 'replacement', port }, async () => undefined)
   })
 
   test('handles OAuth errors, timeout, cancellation, and occupied ports', async () => {
-    const errorCallback = await startOAuthCallback({
-      expectedState: 'state',
-      port: await freePort(),
+    await withCallback({ expectedState: 'state', port: await freePort() }, async (callback) => {
+      await fetch(`${callback.redirectUrl}?error=access_denied&error_description=nope&state=state`)
+      expect(Effect.runPromise(callback.waitForCode)).rejects.toThrow('access_denied')
     })
-    await fetch(`${errorCallback.redirectUrl}?error=access_denied&error_description=nope&state=state`)
-    expect(errorCallback.waitForCode()).rejects.toThrow('access_denied')
 
-    const timeoutCallback = await startOAuthCallback({
-      expectedState: 'state',
-      port: await freePort(),
-      timeoutMs: 5,
+    await withCallback({ expectedState: 'state', port: await freePort(), timeoutMs: 5 }, async (callback) => {
+      expect(Effect.runPromise(callback.waitForCode)).rejects.toThrow('timed out')
     })
-    expect(timeoutCallback.waitForCode()).rejects.toThrow('timed out')
 
     const controller = new AbortController()
-    const cancelled = await startOAuthCallback({
-      expectedState: 'state',
-      port: await freePort(),
-      signal: controller.signal,
+    await withCallback({ expectedState: 'state', port: await freePort(), signal: controller.signal }, async (callback) => {
+      controller.abort()
+      expect(Effect.runPromise(callback.waitForCode)).rejects.toThrow('cancelled')
     })
-    controller.abort()
-    expect(cancelled.waitForCode()).rejects.toThrow('cancelled')
 
     const occupiedPort = await freePort()
-    const first = await startOAuthCallback({ expectedState: 'one', port: occupiedPort })
-    expect(startOAuthCallback({ expectedState: 'two', port: occupiedPort })).rejects.toThrow('already in use')
-    await first.close()
+    await withCallback({ expectedState: 'one', port: occupiedPort }, async () => {
+      expect(listenerFailure({ expectedState: 'two', port: occupiedPort })).rejects.toThrow('already in use')
+    })
   })
 
   test('rejects non-loopback or mismatched redirect URIs', async () => {
     expect(
-      startOAuthCallback({
+      listenerFailure({
         expectedState: 'state',
         port: 1234,
         redirectUri: 'https://example.test/callback',
       })
     ).rejects.toThrow('loopback')
     expect(
-      startOAuthCallback({
+      listenerFailure({
         expectedState: 'state',
         port: 1234,
         redirectUri: 'http://localhost:5678/callback',

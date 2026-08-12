@@ -136,6 +136,7 @@ const formatDuration = (ms: number): string => {
 const runtimeLabel = (info: AgentInfo): string => {
   const start = info.startedAt === undefined || info.startedAt === 0 ? info.createdAt : info.startedAt
   const final = ['completed', 'failed', 'interrupted'].includes(info.status)
+  // oxlint-disable-next-line effecttsgo/global-date -- Elapsed-time label for a synchronous TUI list row.
   let end = Date.now()
   if (final) {
     if (info.completedAt !== undefined && info.completedAt !== 0) {
@@ -248,6 +249,7 @@ export const makeSubagentFeature = ({ managerOptions = {}, pi, runtime }: Subage
       {
         agent_name: event.agentName,
         inactive_for_ms: event.inactiveForMs,
+        // oxlint-disable-next-line effecttsgo/global-date -- Formats the timestamp carried by the event; it does not read the current time.
         last_activity: new Date(event.lastActivity).toISOString(),
         message: `${event.agentName} has produced no activity for ${formatDuration(event.inactiveForMs)}. Check its progress and steer or interrupt it if needed.`,
         status: 'inactive',
@@ -544,14 +546,15 @@ ${getAgentProfilesDescription()}`
         runtime.runPromise(
           Effect.tryPromise({
             catch: (cause) => waitError('wait_agent', isTrue(signal?.aborted), cause),
-            try: async () => {
-              const result = await manager.waitAgent(parentSessionId(ctx), parseTargets(params.targets), signal)
-              return boundedTextResult(prettyJsonText(result), {
+            try: () => manager.waitAgent(parentSessionId(ctx), parseTargets(params.targets), signal),
+          }).pipe(
+            Effect.map((result) =>
+              boundedTextResult(prettyJsonText(result), {
                 event: result.event,
                 message: result.message,
               })
-            },
-          })
+            )
+          )
         )
       )
     },
@@ -609,14 +612,15 @@ ${getAgentProfilesDescription()}`
         runtime.runPromise(
           Effect.tryPromise({
             catch: (cause) => waitError('wait_all_agents', isTrue(signal?.aborted), cause),
-            try: async () => {
-              const result = await manager.waitAllAgents(parentSessionId(ctx), parseTargets(params.targets), signal)
-              return boundedTextResult(prettyJsonText(result), {
+            try: () => manager.waitAllAgents(parentSessionId(ctx), parseTargets(params.targets), signal),
+          }).pipe(
+            Effect.map((result) =>
+              boundedTextResult(prettyJsonText(result), {
                 message: result.message,
                 responses: result.responses,
               })
-            },
-          })
+            )
+          )
         )
       )
     },
@@ -744,8 +748,9 @@ ${getAgentProfilesDescription()}`
       return runtime.runPromise(
         Effect.tryPromise({
           catch: (cause) => featureError(`send_message failed: ${cause instanceof Error ? cause.message : String(cause)}`, cause),
-          try: async () => {
-            const result = await manager.sendMessage(parentSessionId(ctx), cleanTarget(params.target), params.message)
+          try: () => manager.sendMessage(parentSessionId(ctx), cleanTarget(params.target), params.message),
+        }).pipe(
+          Effect.map((result) => {
             const info = manager.getAgentInfo(cleanTarget(params.target), parentSessionId(ctx))
             return textResult(result.delivery === 'steer' ? 'Message steered into the running agent.' : 'Message started a new agent turn.', {
               ...result,
@@ -754,8 +759,8 @@ ${getAgentProfilesDescription()}`
               profile: info.profile,
               target: params.target,
             })
-          },
-        })
+          })
+        )
       )
     },
     label: 'Send Message',
@@ -799,13 +804,14 @@ ${getAgentProfilesDescription()}`
       _onUpdate: unknown,
       ctx: ExtensionContext
     ) {
+      const sessionId = parentSessionId(ctx)
+      const target = cleanTarget(params.target)
       return runtime.runPromise(
         Effect.tryPromise({
           catch: (cause) => featureError(`interrupt_agent failed: ${cause instanceof Error ? cause.message : String(cause)}`, cause),
-          try: async () => {
-            const sessionId = parentSessionId(ctx)
-            const target = cleanTarget(params.target)
-            const result = await manager.interruptAgent(sessionId, target)
+          try: () => manager.interruptAgent(sessionId, target),
+        }).pipe(
+          Effect.map((result) => {
             const info = manager.getAgentInfo(target, sessionId)
             return textResult('Interrupt request handled.', {
               ...result,
@@ -814,8 +820,8 @@ ${getAgentProfilesDescription()}`
               profile: info.profile,
               target: params.target,
             })
-          },
-        })
+          })
+        )
       )
     },
     label: 'Interrupt Agent',
@@ -854,6 +860,7 @@ ${getAgentProfilesDescription()}`
     includeAll?: boolean
   }
 
+  // oxlint-disable-next-line effecttsgo/async-function -- Drives Pi's promise-based `ctx.ui.custom` overlay; its render and input callbacks are synchronous TUI APIs.
   const openAgentOverlay = async (options: OpenAgentOverlayOptions): Promise<void> => {
     const { ctx, task } = options
     const scopeId = options.scopeId ?? parentSessionId(ctx)
@@ -920,6 +927,7 @@ ${getAgentProfilesDescription()}`
     includeAll: boolean
   }
 
+  // oxlint-disable-next-line effecttsgo/async-function -- Awaits Pi's promise-based `ctx.ui.custom` selection overlay.
   const pickAgent = async (ctx: PiExtensionContext): Promise<PickedAgent | undefined> => {
     const currentSessionId = parentSessionId(ctx)
     return await ctx.ui.custom<PickedAgent | undefined>((tui, theme, _keybindings, done) => {
@@ -1053,6 +1061,7 @@ ${getAgentProfilesDescription()}`
     },
   }
 
+  // oxlint-disable-next-line effecttsgo/async-function -- Sequences the two promise-based TUI overlays above.
   const browseAgents = async (ctx: PiExtensionContext): Promise<void> => {
     const selected = await pickAgent(ctx)
     if (selected !== undefined) {

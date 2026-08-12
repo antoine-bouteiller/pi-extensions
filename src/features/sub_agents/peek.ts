@@ -1,3 +1,4 @@
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- Synchronous session-file polling from TUI callbacks, which cannot await.
 import { existsSync, statSync } from 'node:fs'
 import { connect, type Socket } from 'node:net'
 
@@ -427,6 +428,7 @@ export class SubagentPeekOverlay {
   }
 
   private connectSocket(): void {
+    // oxlint-disable-next-line effecttsgo/global-date -- Reconnect throttling inside a synchronous TUI overlay method; there is no Clock at this callback boundary.
     this.lastConnectAttemptAt = Date.now()
     const scope = Scope.makeUnsafe()
     let socket: Socket
@@ -660,6 +662,7 @@ export class SubagentPeekOverlay {
       provider: 'openai-codex',
       role: 'assistant',
       stopReason: 'stop',
+      // oxlint-disable-next-line effecttsgo/global-date -- Stamps a synthetic streaming message built during a synchronous render pass.
       timestamp: Date.now(),
       usage: {
         cacheRead: 0,
@@ -688,6 +691,7 @@ export class SubagentPeekOverlay {
     if (this.disposed) {
       return
     }
+    // oxlint-disable-next-line effecttsgo/global-date -- Paired with the throttle stamp above; `poll` is driven by the TUI, not by a fiber.
     if (this.socket === undefined && isPeekActive(this.info.id) && Date.now() - this.lastConnectAttemptAt >= 2000) {
       this.connectSocket()
     }

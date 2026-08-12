@@ -1,4 +1,5 @@
 import { homedir } from 'node:os'
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- Lexical path math inside a synchronous TUI formatter.
 import { relative } from 'node:path'
 
 import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui'

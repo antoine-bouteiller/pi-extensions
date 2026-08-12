@@ -2,8 +2,11 @@ import { describe, expect, test } from 'bun:test'
 import { stat } from 'node:fs/promises'
 
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from '@earendil-works/pi-coding-agent'
+import { Effect } from 'effect'
 
-import { boundGatewayOutput } from '@/features/mcp/output.js'
+import { boundGatewayOutput as boundGatewayOutputEffect } from '@/features/mcp/output.js'
+
+const boundGatewayOutput = (content: Parameters<typeof boundGatewayOutputEffect>[0]) => Effect.runPromise(boundGatewayOutputEffect(content))
 
 describe('MCP gateway output', () => {
   test('keeps small text and images unchanged', async () => {

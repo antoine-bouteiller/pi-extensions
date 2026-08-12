@@ -1,4 +1,5 @@
 import { homedir, tmpdir } from 'node:os'
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- Lexical path math for the synchronous skill-name resolution below.
 import { extname, join, relative, sep } from 'node:path'
 
 import { type ExtensionContext, type SessionShutdownEvent } from '@earendil-works/pi-coding-agent'

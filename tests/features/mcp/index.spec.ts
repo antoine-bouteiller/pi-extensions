@@ -4,6 +4,7 @@ import { type AgentToolResult } from '@earendil-works/pi-coding-agent'
 import { asCommand, asTool } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
+import { Effect } from 'effect'
 
 import {
   mcpPolicyFromEnvironment,
@@ -43,63 +44,69 @@ const createHarness = (overrides: Partial<McpGatewayManager> = {}) => {
   }
 
   const manager: McpGatewayManager = {
-    async authenticate(server: string, options?: McpOperationOptions) {
-      calls.push({ method: 'authenticate', values: [server, options] })
-    },
-    async call(tool: string, args: Record<string, unknown>, options?: McpOperationOptions) {
-      calls.push({ method: 'call', values: [tool, args, options] })
-      return callResult
-    },
-    async close() {
+    authenticate: (server: string, options?: McpOperationOptions) =>
+      Effect.sync(() => {
+        calls.push({ method: 'authenticate', values: [server, options] })
+      }),
+    call: (tool: string, args: Record<string, unknown>, options?: McpOperationOptions) =>
+      Effect.sync(() => {
+        calls.push({ method: 'call', values: [tool, args, options] })
+        return callResult
+      }),
+    close: Effect.sync(() => {
       calls.push({ method: 'close', values: [] })
-    },
-    async connect(server: string, options?: McpOperationOptions) {
-      calls.push({ method: 'connect', values: [server, options] })
-    },
-    async describe(tool: string, options?: McpOperationOptions): Promise<McpToolDescription> {
-      calls.push({ method: 'describe', values: [tool, options] })
-      return {
-        annotations: { destructiveHint: false, readOnlyHint: true },
-        description: 'A useful tool',
-        inputSchema: { type: 'object' },
-        name: tool,
-        server: options?.server ?? 'resolved',
-      }
-    },
-    async list(server: string, options?: McpOperationOptions) {
-      calls.push({ method: 'list', values: [server, options] })
-      return [
-        {
-          annotations: { destructiveHint: true, readOnlyHint: false },
-          description: 'Last',
-          name: `${server}_z`,
-        },
-        {
+    }),
+    connect: (server: string, options?: McpOperationOptions) =>
+      Effect.sync(() => {
+        calls.push({ method: 'connect', values: [server, options] })
+      }),
+    describe: (tool: string, options?: McpOperationOptions): Effect.Effect<McpToolDescription, Error> =>
+      Effect.sync(() => {
+        calls.push({ method: 'describe', values: [tool, options] })
+        return {
           annotations: { destructiveHint: false, readOnlyHint: true },
-          description: 'First',
-          name: `${server}_a`,
-        },
-      ]
-    },
+          description: 'A useful tool',
+          inputSchema: { type: 'object' },
+          name: tool,
+          server: options?.server ?? 'resolved',
+        }
+      }),
+    list: (server: string, options?: McpOperationOptions) =>
+      Effect.sync(() => {
+        calls.push({ method: 'list', values: [server, options] })
+        return [
+          {
+            annotations: { destructiveHint: true, readOnlyHint: false },
+            description: 'Last',
+            name: `${server}_z`,
+          },
+          {
+            annotations: { destructiveHint: false, readOnlyHint: true },
+            description: 'First',
+            name: `${server}_a`,
+          },
+        ]
+      }),
     oauthServers() {
       calls.push({ method: 'oauthServers', values: [] })
       return ['slack']
     },
-    async search(query: string, options?: McpSearchOptions) {
-      calls.push({ method: 'search', values: [query, options] })
-      return [
-        {
-          annotations: { destructiveHint: true, readOnlyHint: false },
-          description: 'Last',
-          name: 'z_tool',
-        },
-        {
-          annotations: { destructiveHint: false, readOnlyHint: true },
-          description: 'First',
-          name: 'a_tool',
-        },
-      ]
-    },
+    search: (query: string, options?: McpSearchOptions) =>
+      Effect.sync(() => {
+        calls.push({ method: 'search', values: [query, options] })
+        return [
+          {
+            annotations: { destructiveHint: true, readOnlyHint: false },
+            description: 'Last',
+            name: 'z_tool',
+          },
+          {
+            annotations: { destructiveHint: false, readOnlyHint: true },
+            description: 'First',
+            name: 'a_tool',
+          },
+        ]
+      }),
     status() {
       calls.push({ method: 'status', values: [] })
       return [
@@ -117,10 +124,10 @@ const createHarness = (overrides: Partial<McpGatewayManager> = {}) => {
       callbacks = managerCallbacks
       return manager
     },
-    async loadConfig() {
+    loadConfig: Effect.sync(() => {
       loadCount += 1
       return 'config'
-    },
+    }),
   }
   const fixture = createFakePi()
   createMcpExtension(dependencies, runtime)(fixture.pi)
@@ -453,9 +460,9 @@ describe('MCP gateway registration and lifecycle', () => {
     expect(callsFor(harness, 'call')).toHaveLength(0)
   })
 
-  test('tags manager promise failures and preserves their cause', async () => {
+  test('tags manager failures and preserves their cause', async () => {
     const cause = new Error('manager exploded')
-    const harness = createHarness({ call: () => Promise.reject(cause) })
+    const harness = createHarness({ call: () => Effect.fail(cause) })
     await harness.start()
 
     const rejection = await harness.execute({ tool: 'one' }).then(
@@ -471,10 +478,10 @@ describe('MCP gateway registration and lifecycle', () => {
     const closeStarted = deferred<void>()
     const permitClose = deferred<void>()
     const harness = createHarness({
-      async close() {
+      close: Effect.promise(async () => {
         closeStarted.resolve()
         await permitClose.promise
-      },
+      }),
     })
     harness.dependencies.createManager = async (_config, managerContext) => {
       harness.callbacks()?.onStatusChange(0)

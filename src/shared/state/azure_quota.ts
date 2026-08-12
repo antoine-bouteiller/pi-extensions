@@ -1,5 +1,7 @@
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- Synchronous atomic handoff (temp write, chmod, rename) read from a store whose API is synchronous by contract.
 import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir, userInfo } from 'node:os'
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- Lexical path math for the handoff location.
 import { join } from 'node:path'
 
 import { Function } from 'effect'

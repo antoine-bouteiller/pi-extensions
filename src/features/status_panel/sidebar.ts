@@ -1,3 +1,4 @@
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- Lexical path math inside a synchronous TUI renderer.
 import { basename } from 'node:path'
 
 import { type ExtensionContext, type ThemeColor } from '@earendil-works/pi-coding-agent'
@@ -275,6 +276,7 @@ export interface RenderSidebarLinesOptions {
   now?: number
 }
 
+// oxlint-disable-next-line effecttsgo/global-date -- Default for the blinking jewel inside a synchronous TUI paint callback; callers that need determinism pass `now`.
 export const renderSidebarLines = ({ state, theme, width, height, now = Date.now() }: RenderSidebarLinesOptions) => {
   const safeWidth = Math.max(0, Math.trunc(width))
   const safeHeight = Math.max(0, Math.trunc(height))

@@ -1,3 +1,11 @@
+import { Data } from 'effect'
+
+/** Every manager failure the gateway can observe, keeping the SDK's own error in `cause`. */
+export class McpError extends Data.TaggedError('McpError')<{
+  readonly cause?: unknown
+  readonly message: string
+}> {}
+
 export interface McpToolAnnotations {
   title?: string
   readOnlyHint?: boolean

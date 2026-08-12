@@ -1,5 +1,7 @@
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- Synchronous `ps`/PowerShell ownership probes with captured stdio and a timeout; the Effect service wraps them, it cannot replace them.
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- Byte-exact synchronous `/proc` reads used by the same ownership probes.
 import { readFileSync } from 'node:fs'
 
 import { Context, Effect, Function, Layer } from 'effect'

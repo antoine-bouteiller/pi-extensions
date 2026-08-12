@@ -1,13 +1,13 @@
 import { type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { Effect, Function } from 'effect'
 
-import { type AppRuntime } from '@/shared/effect/app_services.js'
+import { type AppServices, type AppRuntime } from '@/shared/effect/app_services.js'
 import { perInvocation, type HandlerServices } from '@/shared/effect/runtime.js'
 
 import { makeHashlineTools, pruneSupersededReads, readSchema, renderHashlineRead, writeSchema, type HashlineToolError } from './tools.js'
 
 const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime): void => {
-  const tools = makeHashlineTools()
+  const tools = makeHashlineTools(runtime)
 
   /*
    * `makeToolExecutor` doesn't hand the raw AbortSignal to the body, but hashline needs it for
@@ -18,7 +18,9 @@ const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime): void => {
    * cooperative `throwIfAborted` message with Effect's generic interrupted-fiber one.
    */
   const runTool =
-    <Params, Result>(body: (params: Params, signal: AbortSignal | undefined) => Effect.Effect<Result, HashlineToolError, HandlerServices>) =>
+    <Params, Result>(
+      body: (params: Params, signal: AbortSignal | undefined) => Effect.Effect<Result, HashlineToolError, HandlerServices | AppServices>
+    ) =>
     async (_toolCallId: string, params: Params, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext): Promise<Result> =>
       runtime.runPromise(body(params, signal).pipe(Effect.provide(perInvocation(ctx))))
 

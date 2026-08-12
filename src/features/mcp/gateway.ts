@@ -1,10 +1,12 @@
 import { homedir } from 'node:os'
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- Lexical path math for the module-level config path, evaluated at import time and outside any Effect.
 import { join } from 'node:path'
 
 import { type AgentToolResult, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { Data, Deferred, Effect, Match, Option, Ref, Schema } from 'effect'
 import { Type, type Static } from 'typebox'
 
+import { type AppServices } from '@/shared/effect/app_services.js'
 import { ToolFailure } from '@/shared/effect/errors.js'
 import { createStatusChannel } from '@/shared/state/status_bar.js'
 import { jsonText } from '@/shared/utils/json.js'
@@ -13,7 +15,13 @@ import { isRecord } from '@/shared/utils/records.js'
 
 import { loadGlobalMcpConfig } from './config.js'
 import { boundGatewayOutput } from './output.js'
-import { type McpGatewayPolicy, type McpPolicyRequest, type McpServerStatus as McpServerStatusValue, type McpToolAnnotations } from './types.js'
+import {
+  type McpGatewayPolicy,
+  type McpPolicyRequest,
+  type McpServerMap,
+  type McpServerStatus as McpServerStatusValue,
+  type McpToolAnnotations,
+} from './types.js'
 
 const SEARCH_RESULT_LIMIT = 30
 const SEARCH_FETCH_LIMIT = SEARCH_RESULT_LIMIT + 1
@@ -81,15 +89,15 @@ export interface McpSearchOptions extends McpOperationOptions {
 
 /** The deliberately small manager surface consumed by the gateway. */
 export interface McpGatewayManager {
-  status: () => readonly McpServerStatus[] | Promise<readonly McpServerStatus[]>
+  status: () => readonly McpServerStatus[]
   oauthServers: () => readonly string[]
-  connect: (server: string, options?: McpOperationOptions) => Promise<unknown>
-  list: (server: string, options?: McpOperationOptions) => Promise<readonly McpToolSummary[]>
-  search: (query: string, options?: McpSearchOptions) => Promise<readonly McpToolSummary[]>
-  describe: (tool: string, options?: McpOperationOptions) => Promise<McpToolDescription>
-  call: (tool: string, args: Record<string, unknown>, options?: McpOperationOptions) => Promise<AgentToolResult<unknown>>
-  authenticate: (server: string, options?: McpOperationOptions) => Promise<unknown>
-  close: () => Promise<void>
+  connect: (server: string, options?: McpOperationOptions) => Effect.Effect<unknown, Error>
+  list: (server: string, options?: McpOperationOptions) => Effect.Effect<readonly McpToolSummary[], Error>
+  search: (query: string, options?: McpSearchOptions) => Effect.Effect<readonly McpToolSummary[], Error>
+  describe: (tool: string, options?: McpOperationOptions) => Effect.Effect<McpToolDescription, Error>
+  call: (tool: string, args: Record<string, unknown>, options?: McpOperationOptions) => Effect.Effect<AgentToolResult<unknown>, Error>
+  authenticate: (server: string, options?: McpOperationOptions) => Effect.Effect<unknown, Error>
+  close: Effect.Effect<void>
 }
 
 type McpStatusUpdate = number | readonly McpServerStatus[]
@@ -106,25 +114,26 @@ interface McpManagerContext {
 
 export interface McpGatewayDependencies<TConfig = unknown> {
   configPath: string
-  loadConfig: () => Promise<TConfig>
+  loadConfig: Effect.Effect<TConfig, Error, AppServices>
   createManager: (config: TConfig, context: McpManagerContext) => McpGatewayManager | Promise<McpGatewayManager>
   /** Defaults to unrestricted. Production selects this from PI_SUBAGENT_READONLY. */
   policy?: McpGatewayPolicy
 }
 
-const textResult = async (text: string, details?: unknown): Promise<AgentToolResult<unknown>> => {
-  const bounded = await boundGatewayOutput([{ text, type: 'text' }])
-  return {
-    content: bounded.content,
-    details: {
-      ...(details !== undefined && typeof details === 'object' ? details : {}),
-      outputTruncated: bounded.details.truncated,
-      ...(isNotNullOrUndefined(bounded.details.fullOutputPath) && isNotEmptyString(bounded.details.fullOutputPath)
-        ? { fullOutputPath: bounded.details.fullOutputPath }
-        : {}),
-    },
-  }
-}
+const textResult = (text: string, details?: unknown): Effect.Effect<AgentToolResult<unknown>, McpOperationError> =>
+  boundGatewayOutput([{ text, type: 'text' }]).pipe(
+    Effect.mapError(mcpOperationError),
+    Effect.map((bounded) => ({
+      content: bounded.content,
+      details: {
+        ...(details !== undefined && typeof details === 'object' ? details : {}),
+        outputTruncated: bounded.details.truncated,
+        ...(isNotNullOrUndefined(bounded.details.fullOutputPath) && isNotEmptyString(bounded.details.fullOutputPath)
+          ? { fullOutputPath: bounded.details.fullOutputPath }
+          : {}),
+      },
+    }))
+  )
 
 const parseArgs = (args: unknown): Effect.Effect<Record<string, unknown>, ToolFailure> =>
   Effect.gen(function* () {
@@ -251,10 +260,16 @@ class McpOperationError extends Data.TaggedError('McpOperationError')<{
   readonly message: string
 }> {}
 
-/** Wraps manager and gateway Promise calls in a tagged failure while preserving their cause. */
+const mcpOperationError = (cause: unknown): McpOperationError => new McpOperationError({ cause, message: errorMessage(cause) })
+
+/** Retags a manager failure so the gateway's own error channel stays closed over `McpOperationError`. */
+const fromManager = <Value, Services = never>(effect: Effect.Effect<Value, Error, Services>): Effect.Effect<Value, McpOperationError, Services> =>
+  effect.pipe(Effect.mapError(mcpOperationError))
+
+/** Wraps the remaining Promise-shaped Pi and dependency calls in the same tagged failure. */
 const callManager = <Value>(run: () => Promise<Value>): Effect.Effect<Value, McpOperationError> =>
   Effect.tryPromise({
-    catch: (cause) => new McpOperationError({ cause, message: errorMessage(cause) }),
+    catch: mcpOperationError,
     try: run,
   })
 
@@ -330,20 +345,20 @@ const dispatchGateway = (
       Call: (op) =>
         Effect.gen(function* () {
           const args = yield* parseArgs(op.rawArgs)
-          return yield* callManager(() => manager.call(op.tool, args, { server: op.server, signal }))
+          return yield* fromManager(manager.call(op.tool, args, { server: op.server, signal }))
         }),
 
       Connect: (op) =>
         Effect.gen(function* () {
-          yield* callManager(() => manager.connect(op.server, { signal }))
-          return yield* callManager(() =>
-            textResult(`Connected MCP server ${op.server}.\nList tools with: mcp({ server: ${jsonText(op.server)} })`, { server: op.server })
-          )
+          yield* fromManager(manager.connect(op.server, { signal }))
+          return yield* textResult(`Connected MCP server ${op.server}.\nList tools with: mcp({ server: ${jsonText(op.server)} })`, {
+            server: op.server,
+          })
         }),
 
       Describe: (op) =>
         Effect.gen(function* () {
-          const description = yield* callManager(() => manager.describe(op.tool, { server: op.server, signal }))
+          const description = yield* fromManager(manager.describe(op.tool, { server: op.server, signal }))
           const summary = compactDescription(description.description)
           const lines = [
             `${description.name}${formatAnnotations(description.annotations)}`,
@@ -352,49 +367,41 @@ const dispatchGateway = (
             `Input schema: ${jsonText(description.inputSchema ?? {})}`,
             `Call with: mcp({ tool: ${jsonText(description.name)}, args: { ... } })`,
           ]
-          return yield* callManager(() =>
-            textResult(lines.join('\n'), {
-              annotations: description.annotations,
-              server: description.server,
-              tool: description.name,
-            })
-          )
+          return yield* textResult(lines.join('\n'), {
+            annotations: description.annotations,
+            server: description.server,
+            tool: description.name,
+          })
         }),
 
       List: (op) =>
         Effect.gen(function* () {
-          const tools = yield* callManager(() => manager.list(op.server, { signal }))
+          const tools = yield* fromManager(manager.list(op.server, { signal }))
           const sorted = [...tools].toSorted(compareNames)
           const capped = sorted.slice(0, LIST_RESULT_LIMIT)
-          return yield* callManager(() =>
-            textResult(formatTools(capped, `MCP tools on ${op.server} (${capped.length} of ${sorted.length}):`), {
-              resultsTruncated: sorted.length > capped.length,
-              server: op.server,
-              tools: capped.map((tool) => ({ annotations: tool.annotations, name: tool.name, server: tool.server })),
-            })
-          )
+          return yield* textResult(formatTools(capped, `MCP tools on ${op.server} (${capped.length} of ${sorted.length}):`), {
+            resultsTruncated: sorted.length > capped.length,
+            server: op.server,
+            tools: capped.map((tool) => ({ annotations: tool.annotations, name: tool.name, server: tool.server })),
+          })
         }),
 
       Search: (op) =>
         Effect.gen(function* () {
-          const matches = yield* callManager(() =>
-            manager.search(op.query, { limit: SEARCH_FETCH_LIMIT, regex: op.regex, server: op.server, signal })
-          )
+          const matches = yield* fromManager(manager.search(op.query, { limit: SEARCH_FETCH_LIMIT, regex: op.regex, server: op.server, signal }))
           const capped = [...matches].toSorted(compareNames).slice(0, SEARCH_RESULT_LIMIT)
-          return yield* callManager(() =>
-            textResult(formatTools(capped, `MCP search results (${capped.length}):`), {
-              query: op.query,
-              regex: op.regex,
-              resultsTruncated: matches.length > capped.length,
-              server: op.server,
-              tools: capped.map((tool) => ({ annotations: tool.annotations, name: tool.name, server: tool.server })),
-            })
-          )
+          return yield* textResult(formatTools(capped, `MCP search results (${capped.length}):`), {
+            query: op.query,
+            regex: op.regex,
+            resultsTruncated: matches.length > capped.length,
+            server: op.server,
+            tools: capped.map((tool) => ({ annotations: tool.annotations, name: tool.name, server: tool.server })),
+          })
         }),
 
       Status: () =>
         Effect.gen(function* () {
-          const servers = yield* callManager(() => Promise.resolve(manager.status()))
+          const servers = yield* Effect.sync(() => manager.status())
           const sorted = [...servers].toSorted(compareNames)
           const lines = [
             `MCP config: ${configPath}`,
@@ -407,14 +414,12 @@ const dispatchGateway = (
             '',
             'List one server with: mcp({ server: "<server-name>" })',
           ]
-          return yield* callManager(() =>
-            textResult(lines.join('\n'), {
-              configPath,
-              resultsTruncated: sorted.length > 30,
-              serverCount: sorted.length,
-              servers: sorted.slice(0, 30).map((server) => ({ name: server.name.slice(0, 128), status: server.status })),
-            })
-          )
+          return yield* textResult(lines.join('\n'), {
+            configPath,
+            resultsTruncated: sorted.length > 30,
+            serverCount: sorted.length,
+            servers: sorted.slice(0, 30).map((server) => ({ name: server.name.slice(0, 128), status: server.status })),
+          })
         }),
     })
   })
@@ -431,7 +436,7 @@ export interface GatewaySession {
     signal: AbortSignal | undefined
   ) => Effect.Effect<AgentToolResult<unknown>, McpOperationError | ToolFailure>
   readonly oauthCompletions: (prefix: string) => { label: string; value: string }[]
-  readonly start: (ctx: ExtensionContext) => Effect.Effect<void, McpOperationError>
+  readonly start: (ctx: ExtensionContext) => Effect.Effect<void, McpOperationError, AppServices>
   readonly stop: (ctx: ExtensionContext) => Effect.Effect<void, McpOperationError>
 }
 
@@ -439,7 +444,7 @@ export interface GatewaySession {
 export const makeGatewaySession = <TConfig>({ dependencies, pi }: GatewaySessionOptions<TConfig>): GatewaySession => {
   const state = Effect.runSync(makeState)
 
-  const startSession = (ctx: ExtensionContext): Effect.Effect<void, McpOperationError> =>
+  const startSession = (ctx: ExtensionContext): Effect.Effect<void, McpOperationError, AppServices> =>
     Effect.gen(function* () {
       const generation = yield* Ref.updateAndGet(state.generation, (value) => value + 1)
       const previousManager = yield* Ref.getAndSet(state.manager, Option.none())
@@ -449,9 +454,9 @@ export const makeGatewaySession = <TConfig>({ dependencies, pi }: GatewaySession
       yield* Effect.gen(function* () {
         const context = yield* Effect.context()
         if (Option.isSome(previousManager)) {
-          yield* callManager(() => previousManager.value.close())
+          yield* previousManager.value.close
         }
-        const config = yield* callManager(() => dependencies.loadConfig())
+        const config = yield* fromManager(dependencies.loadConfig)
         const candidate = yield* callManager(() =>
           Promise.resolve(
             dependencies.createManager(config, {
@@ -469,13 +474,17 @@ export const makeGatewaySession = <TConfig>({ dependencies, pi }: GatewaySession
         )
 
         if ((yield* Ref.get(state.generation)) !== generation) {
-          yield* callManager(() => candidate.close())
+          yield* candidate.close
           return
         }
         yield* Ref.set(state.manager, Option.some(candidate))
-        const servers = yield* callManager(() => Promise.resolve(candidate.status()))
+        const servers = yield* Effect.sync(() => candidate.status())
         updateUiStatus(ctx, servers)
-        void Promise.allSettled(servers.filter((server) => server.status === 'disconnected').map((server) => candidate.connect(server.name)))
+        yield* Effect.forEach(
+          servers.filter((server) => server.status === 'disconnected'),
+          (server) => candidate.connect(server.name).pipe(Effect.ignore),
+          { concurrency: 'unbounded', discard: true }
+        ).pipe((connectAll) => Effect.forkDetach(connectAll, { startImmediately: true }))
       }).pipe(Effect.onExit((exit) => Deferred.done(deferred, exit)))
     })
 
@@ -488,7 +497,7 @@ export const makeGatewaySession = <TConfig>({ dependencies, pi }: GatewaySession
       }
       const current = yield* Ref.getAndSet(state.manager, Option.none())
       yield* Effect.ensuring(
-        Option.isSome(current) ? callManager(() => current.value.close()) : Effect.void,
+        Option.isSome(current) ? current.value.close : Effect.void,
         Effect.gen(function* () {
           yield* Ref.set(state.initialization, Option.none())
           yield* Effect.sync(() => status.clear(ctx))
@@ -530,7 +539,7 @@ export const makeGatewaySession = <TConfig>({ dependencies, pi }: GatewaySession
         }
       }
 
-      yield* callManager(() => manager.authenticate(server))
+      yield* fromManager(manager.authenticate(server))
       ctx.ui.notify(`Authenticated and connected MCP server ${server}.`, 'info')
     }).pipe(
       Effect.catch((error) => {
@@ -550,25 +559,27 @@ export const makeGatewaySession = <TConfig>({ dependencies, pi }: GatewaySession
 
 const globalConfigPath = join(homedir(), '.config', 'mcp', 'mcp.json')
 
-export const productionDependencies: McpGatewayDependencies<Awaited<ReturnType<typeof loadGlobalMcpConfig>>> = {
+export const productionDependencies: McpGatewayDependencies<McpServerMap> = {
   configPath: globalConfigPath,
-  async createManager(config, { callbacks, pi, policy }) {
-    /*
-     * Keep the manager behind the session lifecycle boundary: importing this entrypoint and
-     * registering the gateway must not initialize MCP SDK transports or native OAuth storage.
-     */
-    const { McpManager: Manager } = await import('./manager.js')
-    return new Manager(config, {
-      onStatusChange: callbacks.onStatusChange,
-      async openUrl(url: string, signal?: AbortSignal) {
-        const result = await pi.exec('/usr/bin/open', [url], { signal })
-        if (result.code !== 0) {
-          throw new Error(`Could not open the OAuth authorization page: ${result.stderr.trim()}`)
-        }
-      },
-      policy,
-    })
-  },
+  /*
+   * Keep the manager behind the session lifecycle boundary: importing this entrypoint and
+   * registering the gateway must not initialize MCP SDK transports or native OAuth storage.
+   */
+  createManager: (config, { callbacks, pi, policy }) =>
+    import('./manager.js').then(
+      ({ McpManager: Manager }) =>
+        new Manager(config, {
+          onStatusChange: callbacks.onStatusChange,
+          // oxlint-disable-next-line effecttsgo/async-function -- `openUrl` is handed to the MCP SDK's OAuth provider, which awaits it.
+          async openUrl(url: string, signal?: AbortSignal) {
+            const result = await pi.exec('/usr/bin/open', [url], { signal })
+            if (result.code !== 0) {
+              throw new Error(`Could not open the OAuth authorization page: ${result.stderr.trim()}`)
+            }
+          },
+          policy,
+        })
+    ),
   loadConfig: loadGlobalMcpConfig,
   policy: mcpPolicyFromEnvironment(),
 }

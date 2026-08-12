@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- Lexical path math for the synchronous rule-matching predicates.
 import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import {

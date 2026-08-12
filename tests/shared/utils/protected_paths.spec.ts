@@ -8,7 +8,7 @@ import { Effect } from 'effect'
 import { type FileSystem, layerNoop } from 'effect/FileSystem'
 import { systemError } from 'effect/PlatformError'
 
-import { assertUnprotectedPathEffect, isProtectedPath, ProtectedPathError, resolveProtectedPathEffect } from '@/shared/utils/protected_paths.js'
+import { assertUnprotectedPathEffect, ProtectedPathError, resolveProtectedPathEffect } from '@/shared/utils/protected_paths.js'
 import { isRecord } from '@/shared/utils/records.js'
 
 const roots: string[] = []
@@ -33,13 +33,19 @@ const run = <Success, Failure>(effect: Effect.Effect<Success, Failure, FileSyste
 const errnoCode = (failure: { readonly cause?: unknown }): unknown => (isRecord(failure.cause) ? failure.cause.code : undefined)
 
 describe('protected path resolution over FileSystem', () => {
-  it('matches the callback implementation on plain paths', async () => {
+  it('applies the protected-file policy to plain paths', async () => {
     const root = await makeRoot()
-    const cases = ['.env', '.env.example', 'src/index.ts', '.ssh/id_rsa', 'secrets.pem']
+    const cases: [string, boolean][] = [
+      ['.env', true],
+      ['.env.example', false],
+      ['src/index.ts', false],
+      ['.ssh/id_rsa', true],
+      ['secrets.pem', true],
+    ]
 
-    for (const path of cases) {
+    for (const [path, expected] of cases) {
       const viaEffect = await run(resolveProtectedPathEffect(path, root))
-      expect([path, viaEffect.protected]).toEqual([path, await isProtectedPath(path, root)])
+      expect([path, viaEffect.protected]).toEqual([path, expected])
     }
   })
 

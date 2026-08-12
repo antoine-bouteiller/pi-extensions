@@ -3,9 +3,12 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { NodeFileSystem } from '@effect/platform-node'
 import { Effect } from 'effect'
 
-import { loadMcpConfigFile, loadMcpConfigFileEffect, parseMcpConfig, parseMcpConfigEffect, parseMcpConfigText } from '@/features/mcp/config.js'
+import { loadMcpConfigFile as loadMcpConfigFileEffect, parseMcpConfig, parseMcpConfigEffect, parseMcpConfigText } from '@/features/mcp/config.js'
+
+const loadMcpConfigFile = (path: string) => Effect.runPromise(Effect.provide(loadMcpConfigFileEffect(path), NodeFileSystem.layer))
 
 const temporaryDirectories: string[] = []
 afterEach(async () => {
@@ -217,9 +220,6 @@ describe('global MCP config parsing', () => {
     const path = await temporaryPath('mcp.json')
     await writeFile(path, JSON.stringify({ mcpServers: { local: { command: 'server' } } }))
     expect(await loadMcpConfigFile(path)).toEqual({
-      local: { command: 'server', type: 'stdio' },
-    })
-    expect(await Effect.runPromise(loadMcpConfigFileEffect(path))).toEqual({
       local: { command: 'server', type: 'stdio' },
     })
   })

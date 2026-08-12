@@ -1,8 +1,9 @@
-import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
 
-import { type Cause, Effect, Function, Schema } from 'effect'
+import { Effect, Function, Schema } from 'effect'
+import { FileSystem } from 'effect/FileSystem'
+import { Path } from 'effect/Path'
+import { type PlatformError } from 'effect/PlatformError'
 
 import { isEmptyString, isTrue } from '@/shared/utils/predicates.js'
 
@@ -349,22 +350,34 @@ export const parseMcpConfigText: {
   return parseMcpConfig(value)
 })
 
+const missingConfig: McpServerMap = {}
+
+/*
+ * An absent config file is an empty config, and only that: Effect reports ENOENT as `NotFound`, so
+ * matching the reason keeps a permission or I/O failure loud instead of silently disabling MCP.
+ */
+const isMissingFile = (error: PlatformError): boolean => error.reason._tag === 'NotFound'
+
 /** Load an MCP file. This helper exists so tests never need to access the real home directory. */
-export const loadMcpConfigFile = async (path: string): Promise<McpServerMap> => {
-  try {
-    return parseMcpConfigText(await readFile(path, 'utf8'), path)
-  } catch (error) {
-    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') {
-      return {}
+export const loadMcpConfigFile = (path: string): Effect.Effect<McpServerMap, McpConfigError | PlatformError, FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem
+    const text = yield* fs.readFileString(path).pipe(
+      Effect.map((content): string | undefined => content),
+      Effect.catchIf(isMissingFile, () => Effect.void)
+    )
+    if (text === undefined) {
+      return missingConfig
     }
-    throw error
-  }
-}
-
-export const loadMcpConfigFileEffect = (path: string): Effect.Effect<McpServerMap, Cause.UnknownError> =>
-  Effect.tryPromise(() => loadMcpConfigFile(path))
-
-const globalMcpConfigPath = (): string => join(homedir(), '.config', 'mcp', 'mcp.json')
+    return yield* Effect.try({
+      catch: (cause) =>
+        Schema.is(McpConfigError)(cause) ? cause : McpConfigError.from(path, cause instanceof Error ? cause.message : String(cause)),
+      try: () => parseMcpConfigText(text, path),
+    })
+  })
 
 /** Load only the standard user-global MCP configuration. */
-export const loadGlobalMcpConfig = (): Promise<McpServerMap> => loadMcpConfigFile(globalMcpConfigPath())
+export const loadGlobalMcpConfig: Effect.Effect<McpServerMap, McpConfigError | PlatformError, FileSystem | Path> = Effect.gen(function* () {
+  const path = yield* Path
+  return yield* loadMcpConfigFile(path.join(homedir(), '.config', 'mcp', 'mcp.json'))
+})

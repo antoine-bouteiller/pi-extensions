@@ -14,6 +14,7 @@ import { asError, asNarrowed } from '@tests/utils/casts.js'
 import { Effect } from 'effect'
 
 import { readonlyMcpPolicy } from '@/features/mcp/gateway.js'
+import { type McpOperationOptions, type McpSearchOptions } from '@/features/mcp/gateway.js'
 import { KeychainCredentialError, type CredentialStore } from '@/features/mcp/keychain.js'
 import { McpManager, McpManagerService, mcpManagerLayer } from '@/features/mcp/manager.js'
 import { type McpGatewayPolicy, type McpServerMap } from '@/features/mcp/types.js'
@@ -147,8 +148,21 @@ const harness = (
     openUrl: options.openUrl ?? (async () => undefined),
     policy: options.policy,
   })
-  return { calls, manager }
+  return { calls, manager: promised(manager) }
 }
+
+/** The manager is Effect-native; these behavioural tests drive it through one promise facade. */
+const promised = (manager: McpManager) => ({
+  authenticate: (server: string, options?: McpOperationOptions) => Effect.runPromise(manager.authenticate(server, options)),
+  call: (tool: string, args: Record<string, unknown>, options?: McpOperationOptions) => Effect.runPromise(manager.call(tool, args, options)),
+  close: () => Effect.runPromise(manager.close),
+  connect: (server: string, options?: McpOperationOptions) => Effect.runPromise(manager.connect(server, options)),
+  describe: (tool: string, options?: McpOperationOptions) => Effect.runPromise(manager.describe(tool, options)),
+  list: (server: string, options?: McpOperationOptions) => Effect.runPromise(manager.list(server, options)),
+  oauthServers: () => manager.oauthServers(),
+  search: (query: string, options?: McpSearchOptions) => Effect.runPromise(manager.search(query, options)),
+  status: () => manager.status(),
+})
 
 const freePort = async (): Promise<number> => {
   const server = createServer()
@@ -667,16 +681,18 @@ describe('MCP manager', () => {
     const directory = await mkdtemp(join(tmpdir(), 'pi-mcp-manager-test-'))
     const marker = join(directory, 'pid')
     const fixturePath = fileURLToPath(new URL('fixtures/stdio_fixture.ts', import.meta.url))
-    const manager = new McpManager(
-      {
-        fixture: {
-          args: [fixturePath],
-          command: process.execPath,
-          env: { PI_MCP_FIXTURE_PID: marker },
-          type: 'stdio',
+    const manager = promised(
+      new McpManager(
+        {
+          fixture: {
+            args: [fixturePath],
+            command: process.execPath,
+            env: { PI_MCP_FIXTURE_PID: marker },
+            type: 'stdio',
+          },
         },
-      },
-      { openUrl: async () => undefined }
+        { openUrl: async () => undefined }
+      )
     )
 
     const tools = await manager.list('fixture')

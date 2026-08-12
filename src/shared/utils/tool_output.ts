@@ -1,5 +1,12 @@
+/*
+ * Node's `fs` and `path` on purpose: the spill is a leaf utility used by tool bodies whose Effect
+ * signatures declare no requirements, so taking `FileSystem` here would push that service through
+ * every caller's public type for no behavioural gain.
+ */
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- Private-directory spill, see above.
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- Lexical path math for the spill location.
 import { join } from 'node:path'
 
 import { formatSize, truncateHead, truncateTail } from '@earendil-works/pi-coding-agent'
@@ -48,17 +55,6 @@ export const truncationNotice: {
   }
 )
 
-/** Writes to a fresh private directory so tool output is never world-readable. */
-export const writePrivateTempFile: {
-  (options: { prefix: string; filename?: string }): (content: string) => Promise<string>
-  (content: string, options: { prefix: string; filename?: string }): Promise<string>
-} = dual(2, async (content: string, { prefix, filename = 'output.txt' }: { prefix: string; filename?: string }): Promise<string> => {
-  const directory = await mkdtemp(join(tmpdir(), prefix))
-  const path = join(directory, filename)
-  await writeFile(path, content, { encoding: 'utf8', mode: 0o600 })
-  return path
-})
-
 export interface BoundedText {
   text: string
   truncated: boolean
@@ -66,8 +62,23 @@ export interface BoundedText {
   truncation: Truncation
 }
 
-export interface BoundToolTextOptions extends TruncateOptions {
-  saveFullOutput: (content: string) => Promise<string>
+/** Writes to a fresh private directory so tool output is never world-readable. */
+export const writePrivateTempFileEffect: {
+  (options: { prefix: string; filename?: string }): (content: string) => Effect.Effect<string, Cause.UnknownError>
+  (content: string, options: { prefix: string; filename?: string }): Effect.Effect<string, Cause.UnknownError>
+} = dual(
+  2,
+  (content: string, { prefix, filename = 'output.txt' }: { prefix: string; filename?: string }): Effect.Effect<string, Cause.UnknownError> =>
+    Effect.gen(function* () {
+      const directory = yield* Effect.tryPromise(() => mkdtemp(join(tmpdir(), prefix)))
+      const path = join(directory, filename)
+      yield* Effect.tryPromise(() => writeFile(path, content, { encoding: 'utf8', mode: 0o600 }))
+      return path
+    })
+)
+
+interface BoundToolTextEffectOptions<Failure> extends TruncateOptions {
+  saveFullOutput: (content: string) => Effect.Effect<string, Failure>
   /** Room reserved for the notice so the final text still fits the caller's budget. */
   noticeBytes?: number
   noticeLines?: number
@@ -76,50 +87,8 @@ export interface BoundToolTextOptions extends TruncateOptions {
 /**
  * Truncates model-visible text and spills the complete text to a file, re-truncating
  * against a smaller budget so that appending the notice cannot push the result back
- * over the caller's limits.
+ * over the caller's limits. A failed spill stays in the error channel.
  */
-export const boundToolText: {
-  (options: BoundToolTextOptions): (text: string) => Promise<BoundedText>
-  (text: string, options: BoundToolTextOptions): Promise<BoundedText>
-} = dual(
-  2,
-  async (
-    text: string,
-    { maxBytes, maxLines, from = 'head', saveFullOutput, noticeBytes = 2048, noticeLines = 4 }: BoundToolTextOptions
-  ): Promise<BoundedText> => {
-    const initial = truncateOutput(text, { from, maxBytes, maxLines })
-    if (!initial.truncated) {
-      return { text, truncated: false, truncation: initial }
-    }
-
-    const fullOutputPath = await saveFullOutput(text)
-    const truncation = truncateOutput(text, {
-      from,
-      maxBytes: maxBytes - noticeBytes,
-      maxLines: maxLines - noticeLines,
-    })
-    return {
-      fullOutputPath,
-      text: truncation.content + truncationNotice(truncation, { from, fullOutputPath }),
-      truncated: true,
-      truncation,
-    }
-  }
-)
-
-/** A failed spill stays in the error channel so callers can map it onto their own tool error. */
-export const writePrivateTempFileEffect: {
-  (options: { prefix: string; filename?: string }): (content: string) => Effect.Effect<string, Cause.UnknownError>
-  (content: string, options: { prefix: string; filename?: string }): Effect.Effect<string, Cause.UnknownError>
-} = dual(2, (content: string, options: { prefix: string; filename?: string }): Effect.Effect<string, Cause.UnknownError> =>
-  Effect.tryPromise(() => writePrivateTempFile(content, options))
-)
-
-interface BoundToolTextEffectOptions<Failure> extends TruncateOptions {
-  saveFullOutput: (content: string) => Effect.Effect<string, Failure>
-  noticeBytes?: number
-  noticeLines?: number
-}
 
 export const boundToolTextEffect: {
   <Failure = never>(options: BoundToolTextEffectOptions<Failure>): (text: string) => Effect.Effect<BoundedText, Failure>

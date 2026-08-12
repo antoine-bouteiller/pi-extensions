@@ -34,29 +34,28 @@ export const makeQuotaPoller: {
   Effect.gen(function* () {
     const fetchQuota = options.fetchQuota ?? ((baseUrl, signal) => fetchAnthropicQuota(baseUrl, signal))
     const generationRef = yield* Ref.make(0)
-    const requestRef = yield* Ref.make<AbortController | undefined>(undefined)
+    const inFlightRef = yield* Ref.make(false)
     const fiberRef = yield* Ref.make<Fiber.Fiber<void> | undefined>(undefined)
 
     const refresh = (generation: number, baseUrl: string): Effect.Effect<void> =>
       Effect.gen(function* () {
         const currentGeneration = yield* Ref.get(generationRef)
-        const inFlight = yield* Ref.get(requestRef)
-        if (generation !== currentGeneration || inFlight !== undefined) {
+        if (generation !== currentGeneration || (yield* Ref.get(inFlightRef))) {
           return
         }
-        const request = new AbortController()
-        yield* Ref.set(requestRef, request)
+        yield* Ref.set(inFlightRef, true)
         yield* Effect.gen(function* () {
+          /*
+           * The signal comes from this fiber, so `stop` interrupting the poll loop is what cancels
+           * the request the gateway is still holding open.
+           */
           const outcome = yield* Effect.result(
-            Effect.tryPromise({ catch: (cause) => new FetchQuotaError({ cause }), try: () => fetchQuota(baseUrl, request.signal) })
+            Effect.tryPromise({ catch: (cause) => new FetchQuotaError({ cause }), try: (signal) => fetchQuota(baseUrl, signal) })
           )
-          if (outcome._tag === 'Success') {
-            const stillCurrent = (yield* Ref.get(generationRef)) === generation && !request.signal.aborted
-            if (stillCurrent) {
-              yield* Effect.sync(() => onQuota(outcome.success)).pipe(Effect.ignoreCause)
-            }
+          if (outcome._tag === 'Success' && (yield* Ref.get(generationRef)) === generation) {
+            yield* Effect.sync(() => onQuota(outcome.success)).pipe(Effect.ignoreCause)
           }
-        }).pipe(Effect.ensuring(Ref.update(requestRef, (current) => (current === request ? undefined : current))))
+        }).pipe(Effect.ensuring(Ref.set(inFlightRef, false)))
       })
 
     const pollLoop = (generation: number, baseUrl: string): Effect.Effect<void> =>
@@ -69,8 +68,6 @@ export const makeQuotaPoller: {
 
     const stop: Effect.Effect<void> = Effect.gen(function* () {
       yield* Ref.update(generationRef, (value) => value + 1)
-      const request = yield* Ref.getAndSet(requestRef, undefined)
-      request?.abort()
       const fiber = yield* Ref.getAndSet(fiberRef, undefined)
       if (fiber !== undefined) {
         yield* Fiber.interrupt(fiber)
@@ -126,6 +123,7 @@ const formatReset = (resetsAt: number | null | undefined): string => {
   if (typeof resetsAt !== 'number') {
     return ''
   }
+  // oxlint-disable-next-line effecttsgo/global-date -- Reset labels are formatted inside the promise-shaped fetcher and the synchronous panel formatter, neither of which has a Clock.
   const minutes = Math.max(0, Math.round((resetsAt - Date.now()) / 60_000))
   if (minutes < 60) {
     return `${minutes}m`
@@ -161,6 +159,7 @@ export const fetchAnthropicQuota: {
   (baseUrl: string, signal?: AbortSignal, fetchImpl?: typeof fetch): Promise<ProviderQuota | undefined>
 } = Function.dual(
   (args) => typeof args[0] === 'string',
+  // oxlint-disable-next-line effecttsgo/async-function -- This is the `QuotaFetcher` seam callers inject: it must stay assignable to the promise-returning fetch contract used by `panel` and the tests.
   async (baseUrl: string, signal?: AbortSignal, fetchImpl: typeof fetch = globalThis.fetch): Promise<ProviderQuota | undefined> => {
     if (isEmptyString(baseUrl)) {
       return undefined

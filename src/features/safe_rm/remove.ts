@@ -1,5 +1,15 @@
+/*
+ * Deliberately Node's `fs`: deletion policy is decided from `lstat` (a symlink must never be
+ * mistaken for the directory it points at) and from dirent entry types while walking a tree.
+ * Effect's `FileSystem.stat` follows symlinks and its `readDirectory` returns plain names, so
+ * neither check survives the translation. `node:path` stays for the same reason `Path` cannot be
+ * used here: the root predicates below are synchronous.
+ */
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- lstat/dirent semantics, see above.
 import { type Dirent, type Stats } from 'node:fs'
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- lstat/dirent semantics, see above.
 import { lstat, readdir, realpath, rm as remove } from 'node:fs/promises'
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- Lexical path math used by synchronous predicates.
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import {
@@ -12,11 +22,13 @@ import {
   type ToolResultEvent,
 } from '@earendil-works/pi-coding-agent'
 import { Cause, Effect, Result, Schema } from 'effect'
+import { type FileSystem } from 'effect/FileSystem'
+import { type PlatformError } from 'effect/PlatformError'
 import { Type } from 'typebox'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { isEmptyString, isNotEmptyString } from '@/shared/utils/predicates.js'
-import { assertUnprotectedPath } from '@/shared/utils/protected_paths.js'
+import { assertUnprotectedPathEffect, ProtectedPathError } from '@/shared/utils/protected_paths.js'
 
 import {
   CancelledError,
@@ -162,9 +174,6 @@ const readdirEffect = (path: string): Effect.Effect<Dirent[], Cause.UnknownError
 const removeEffect = (path: string, options: { force: boolean; recursive: boolean }): Effect.Effect<void, Cause.UnknownError> =>
   Effect.tryPromise({ catch: unknownError, try: () => remove(path, options) })
 
-const assertUnprotectedEffect = (path: string, cwd: string, operation: string): Effect.Effect<void, Cause.UnknownError> =>
-  Effect.tryPromise({ catch: unknownError, try: () => assertUnprotectedPath(path, cwd, operation) })
-
 /**
  * Recursive removal must not turn a harmless-looking parent directory into
  * a way to erase credentials or a nested Git repository. Symlink entries are
@@ -174,7 +183,11 @@ const inspectDirectoryTree = (
   directory: string,
   cwd: string,
   signal: AbortSignal | undefined
-): Effect.Effect<void, CancelledError | Cause.UnknownError | GitRepositoryError | GitMetadataError> =>
+): Effect.Effect<
+  void,
+  CancelledError | Cause.UnknownError | GitRepositoryError | GitMetadataError | PlatformError | ProtectedPathError,
+  FileSystem
+> =>
   Effect.gen(function* () {
     yield* checkCancelled(signal)
     const entries = yield* readdirEffect(directory)
@@ -185,7 +198,7 @@ const inspectDirectoryTree = (
         return yield* GitRepositoryError.make({ message: `Refusing to remove a Git repository: ${directory}` })
       }
       yield* rejectMetadataPath(child)
-      yield* assertUnprotectedEffect(child, cwd, 'remove')
+      yield* assertUnprotectedPathEffect(child, cwd, 'remove')
       if (entry.isDirectory() && !entry.isSymbolicLink()) {
         yield* inspectDirectoryTree(child, cwd, signal)
       }
@@ -210,13 +223,21 @@ type ValidateTargetError =
   | SymlinkEscapeError
   | RecursiveRequiredError
   | GitRepositoryError
+  | PlatformError
+  | ProtectedPathError
 
-const validateTargetEffect = ({ input, cwd, roots, recursive, signal }: ValidateTargetOptions): Effect.Effect<ValidatedTarget, ValidateTargetError> =>
+const validateTargetEffect = ({
+  input,
+  cwd,
+  roots,
+  recursive,
+  signal,
+}: ValidateTargetOptions): Effect.Effect<ValidatedTarget, ValidateTargetError, FileSystem> =>
   Effect.gen(function* () {
     yield* checkCancelled(signal)
     const normalizedInput = yield* normalizeInput(input)
     const absolute = resolve(cwd, normalizedInput)
-    yield* assertUnprotectedEffect(input, cwd, 'remove')
+    yield* assertUnprotectedPathEffect(input, cwd, 'remove')
     const lexicalRoot = roots.find((root) => isDescendant(root.lexical, absolute))
     if (lexicalRoot === undefined) {
       return yield* OutsideAllowedRootError.make({ message: `Deletion target must be below the working directory or /tmp: ${input}` })
@@ -256,7 +277,15 @@ interface RevalidateTargetOptions {
   signal: AbortSignal | undefined
 }
 
-type RevalidateTargetError = CancelledError | Cause.UnknownError | SymlinkEscapeError | TargetChangedError | GitRepositoryError | GitMetadataError
+type RevalidateTargetError =
+  | CancelledError
+  | Cause.UnknownError
+  | SymlinkEscapeError
+  | TargetChangedError
+  | GitRepositoryError
+  | GitMetadataError
+  | PlatformError
+  | ProtectedPathError
 
 const mutationQueueError = (cause: unknown): RevalidateTargetError => {
   if (
@@ -265,17 +294,18 @@ const mutationQueueError = (cause: unknown): RevalidateTargetError => {
     Schema.is(SymlinkEscapeError)(cause) ||
     Schema.is(TargetChangedError)(cause) ||
     Schema.is(GitRepositoryError)(cause) ||
-    Schema.is(GitMetadataError)(cause)
+    Schema.is(GitMetadataError)(cause) ||
+    Schema.is(ProtectedPathError)(cause)
   ) {
     return cause
   }
   return unknownError(cause)
 }
 
-const revalidateTargetEffect = ({ target, roots, cwd, signal }: RevalidateTargetOptions): Effect.Effect<void, RevalidateTargetError> =>
+const revalidateTargetEffect = ({ target, roots, cwd, signal }: RevalidateTargetOptions): Effect.Effect<void, RevalidateTargetError, FileSystem> =>
   Effect.gen(function* () {
     yield* checkCancelled(signal)
-    yield* assertUnprotectedEffect(target.absolute, cwd, 'remove')
+    yield* assertUnprotectedPathEffect(target.absolute, cwd, 'remove')
     const canonicalParent = yield* realpathEffect(dirname(target.absolute))
     if (!roots.some((root) => isWithinOrEqual(root.canonical, canonicalParent))) {
       return yield* SymlinkEscapeError.make({ message: `Deletion target escapes an allowed root through a symlink: ${target.input}` })
@@ -322,7 +352,7 @@ export type SafeRmRun = (
   params: SafeRmToolParams,
   signal: AbortSignal | undefined,
   ctx: ExtensionContext
-) => Effect.Effect<ToolOutput, SafeRmToolError>
+) => Effect.Effect<ToolOutput, SafeRmToolError, FileSystem>
 
 // Cancellation stays cooperative so an interrupted fiber cannot replace the tagged validation failure.
 export const makeSafeRmRunner =

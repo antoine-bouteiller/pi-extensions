@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- Lexical path math for display paths; `Path` is unreachable from the synchronous renderer below.
 import { relative } from 'node:path'
 
 import {
@@ -21,12 +22,14 @@ import {
   Patcher,
 } from '@oh-my-pi/hashline'
 import { Context, Data, Effect, Function } from 'effect'
+import { type FileSystem } from 'effect/FileSystem'
 import { Type, type Static } from 'typebox'
 
+import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { PiCtx } from '@/shared/effect/pi_services.js'
 import { type HandlerServices } from '@/shared/effect/runtime.js'
 import { isTrue } from '@/shared/utils/predicates.js'
-import { assertUnprotectedPath, resolveToolPath, stripToolPathPrefix } from '@/shared/utils/protected_paths.js'
+import { assertUnprotectedPathEffect, resolveToolPath, stripToolPathPrefix } from '@/shared/utils/protected_paths.js'
 import { isRecord } from '@/shared/utils/records.js'
 import { truncateOutput } from '@/shared/utils/tool_output.js'
 
@@ -128,7 +131,7 @@ class CwdFilesystem extends NodeFilesystem {
 }
 /* oxlint-enable effecttsgo/async-function */
 
-const withMutationQueues = async <Result>(paths: readonly string[], callback: () => Promise<Result>): Promise<Result> => {
+const withMutationQueues = <Result>(paths: readonly string[], callback: () => Promise<Result>): Promise<Result> => {
   const ordered = [...new Set(paths)].toSorted((left, right) => left.localeCompare(right))
   const acquire = (index: number): Promise<Result> => {
     const path = ordered[index]
@@ -269,113 +272,137 @@ interface ReadHashlineFileOptions {
   snapshots: InMemorySnapshotStore
 }
 
-const readHashlineFile = async ({ cwd, limit, offset, path, signal, snapshots }: ReadHashlineFileOptions): Promise<ToolOutput> => {
-  throwIfAborted(signal)
-  const resolution = await assertUnprotectedPath(path, cwd, 'read')
-  const fs = new CwdFilesystem(cwd, signal)
-  const text = await fs.readText(resolution.absolutePath)
-  const normalized = normalizeToLF(text)
-  const tag = computeFileHash(normalized)
-  const version = fingerprint(normalized)
-  const displayPath = relative(cwd, resolution.absolutePath) || '.'
-  const lines = normalized.split('\n')
-  const startLine = offset ?? 1
-  if (startLine > lines.length) {
-    throw new Error(`Offset ${startLine} exceeds file length (${lines.length} lines)`)
-  }
-  const requestedEndLine = Math.min(lines.length, limit === undefined ? lines.length : startLine + limit - 1)
-  const requestedLines = lines.slice(startLine - 1, requestedEndLine)
-  const fullOutput = `${formatHashlineHeader(displayPath, tag)}\n${formatNumberedLines(requestedLines.join('\n'), startLine)}`
-  const initial = truncateOutput(fullOutput, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES })
-  let output = fullOutput
-  let visibleLineCount = requestedLines.length
-
-  if (initial.truncated) {
-    const bounded = truncateOutput(fullOutput, { maxBytes: DEFAULT_MAX_BYTES - 1024, maxLines: DEFAULT_MAX_LINES - 3 })
-    visibleLineCount = Math.max(0, bounded.outputLines - 1)
-    const nextOffset = startLine + visibleLineCount
-    output = `${bounded.content}\n\n[Output truncated: showing ${visibleLineCount} of ${requestedLines.length} requested lines. Continue with offset=${nextOffset}.]`
-  }
-  if (visibleLineCount === 0) {
-    throw new Error(`Line ${startLine} exceeds the hashline output limit; use another editing tool for this file`)
-  }
-  const seenLines = Array.from({ length: visibleLineCount }, (_value, index) => startLine + index)
-  snapshots.record(resolution.absolutePath, normalized, seenLines)
-  const endLine = startLine + visibleLineCount - 1
-  return result(output, {
-    endLine,
-    hash: tag,
-    path: displayPath,
-    startLine,
-    totalLines: lines.length,
-    truncated: initial.truncated,
-    version,
-  })
-}
-
-const writeHashlinePatch = async (
-  patchText: string,
-  cwd: string,
-  signal: AbortSignal | undefined,
-  snapshots: InMemorySnapshotStore
-): Promise<ToolOutput> => {
-  throwIfAborted(signal)
-  const parsed = Patch.parse(patchText, { cwd })
-  const affectedPaths: string[] = []
-  for (const section of parsed.sections) {
-    affectedPaths.push(stripToolPathPrefix(section.path))
-    const { fileOp } = section
-    if (fileOp?.kind === 'move') {
-      affectedPaths.push(stripToolPathPrefix(fileOp.dest))
-    }
-  }
-  if (affectedPaths.length === 0) {
-    throw new Error('Hashline patch contains no file sections')
-  }
-
-  /*
-   * Resolve policy and lock keys before acquiring anything. Canonical keys
-   * make aliases take the same lock; sorting prevents multi-file deadlocks.
-   */
-  const lockPaths: string[] = []
-  for (const path of affectedPaths) {
-    const checked = await assertUnprotectedPath(path, cwd, 'write')
-    lockPaths.push(checked.canonicalPath)
-  }
-
-  return withMutationQueues(lockPaths, async () => {
-    throwIfAborted(signal)
-    /*
-     * Re-evaluate after waiting: a parent may have been replaced by a
-     * symlink while this operation was queued.
-     */
-    for (const path of affectedPaths) {
-      await assertUnprotectedPath(path, cwd, 'write')
-    }
-    throwIfAborted(signal)
-
+const readHashlineFile = ({
+  cwd,
+  limit,
+  offset,
+  path,
+  signal,
+  snapshots,
+}: ReadHashlineFileOptions): Effect.Effect<ToolOutput, HashlineToolError, FileSystem> =>
+  Effect.gen(function* () {
+    yield* abortCheck(signal)
+    const resolution = yield* assertUnprotectedPathEffect(path, cwd, 'read').pipe(Effect.mapError(hashlineToolError))
     const fs = new CwdFilesystem(cwd, signal)
-    const patcher = new Patcher({ fs, snapshots })
-    const applied = await patcher.apply(parsed)
-    throwIfAborted(signal)
-    const sections = applied.sections.map((section, index) => {
-      const path = relative(cwd, section.canonicalPath) || section.canonicalPath
-      const parsedSection = parsed.sections[index]
-      const sourceAbsolute = resolveToolPath(stripToolPathPrefix(parsedSection?.path ?? section.path), cwd)
-      const sourcePath = relative(cwd, sourceAbsolute) || sourceAbsolute
-      return {
-        hash: section.fileHash,
-        ...(section.moveDest === undefined ? {} : { moveDest: path, sourcePath }),
-        op: section.op,
-        path,
-        version: fingerprint(normalizeToLF(section.written)),
-      }
-    })
-    const summary = sections.map((section) => `${section.op} ${section.path} [${section.hash}]`)
+    const text = yield* Effect.tryPromise({ catch: hashlineToolError, try: () => fs.readText(resolution.absolutePath) })
+    const normalized = normalizeToLF(text)
+    const tag = computeFileHash(normalized)
+    const version = fingerprint(normalized)
+    const displayPath = relative(cwd, resolution.absolutePath) || '.'
+    const lines = normalized.split('\n')
+    const startLine = offset ?? 1
+    if (startLine > lines.length) {
+      return yield* hashlineFailure(`Offset ${startLine} exceeds file length (${lines.length} lines)`)
+    }
+    const requestedEndLine = Math.min(lines.length, limit === undefined ? lines.length : startLine + limit - 1)
+    const requestedLines = lines.slice(startLine - 1, requestedEndLine)
+    const fullOutput = `${formatHashlineHeader(displayPath, tag)}\n${formatNumberedLines(requestedLines.join('\n'), startLine)}`
+    const initial = truncateOutput(fullOutput, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES })
+    let output = fullOutput
+    let visibleLineCount = requestedLines.length
 
-    return result(summary.join('\n'), { sections })
+    if (initial.truncated) {
+      const bounded = truncateOutput(fullOutput, { maxBytes: DEFAULT_MAX_BYTES - 1024, maxLines: DEFAULT_MAX_LINES - 3 })
+      visibleLineCount = Math.max(0, bounded.outputLines - 1)
+      const nextOffset = startLine + visibleLineCount
+      output = `${bounded.content}\n\n[Output truncated: showing ${visibleLineCount} of ${requestedLines.length} requested lines. Continue with offset=${nextOffset}.]`
+    }
+    if (visibleLineCount === 0) {
+      return yield* hashlineFailure(`Line ${startLine} exceeds the hashline output limit; use another editing tool for this file`)
+    }
+    const seenLines = Array.from({ length: visibleLineCount }, (_value, index) => startLine + index)
+    snapshots.record(resolution.absolutePath, normalized, seenLines)
+    const endLine = startLine + visibleLineCount - 1
+    return result(output, {
+      endLine,
+      hash: tag,
+      path: displayPath,
+      startLine,
+      totalLines: lines.length,
+      truncated: initial.truncated,
+      version,
+    })
   })
+
+interface WriteHashlinePatchOptions {
+  cwd: string
+  patchText: string
+  runtime: AppRuntime
+  signal: AbortSignal | undefined
+  snapshots: InMemorySnapshotStore
 }
+
+const writeHashlinePatch = ({
+  cwd,
+  patchText,
+  runtime,
+  signal,
+  snapshots,
+}: WriteHashlinePatchOptions): Effect.Effect<ToolOutput, HashlineToolError, FileSystem> =>
+  Effect.gen(function* () {
+    yield* abortCheck(signal)
+    const parsed = yield* Effect.try({ catch: hashlineToolError, try: () => Patch.parse(patchText, { cwd }) })
+    const affectedPaths: string[] = []
+    for (const section of parsed.sections) {
+      affectedPaths.push(stripToolPathPrefix(section.path))
+      const { fileOp } = section
+      if (fileOp?.kind === 'move') {
+        affectedPaths.push(stripToolPathPrefix(fileOp.dest))
+      }
+    }
+    if (affectedPaths.length === 0) {
+      return yield* hashlineFailure('Hashline patch contains no file sections')
+    }
+
+    /*
+     * Resolve policy and lock keys before acquiring anything. Canonical keys
+     * make aliases take the same lock; sorting prevents multi-file deadlocks.
+     */
+    const lockPaths: string[] = []
+    for (const path of affectedPaths) {
+      const checked = yield* assertUnprotectedPathEffect(path, cwd, 'write').pipe(Effect.mapError(hashlineToolError))
+      lockPaths.push(checked.canonicalPath)
+    }
+
+    const applyPatch = Effect.gen(function* () {
+      yield* abortCheck(signal)
+      /*
+       * Re-evaluate after waiting: a parent may have been replaced by a
+       * symlink while this operation was queued.
+       */
+      for (const path of affectedPaths) {
+        yield* assertUnprotectedPathEffect(path, cwd, 'write').pipe(Effect.mapError(hashlineToolError))
+      }
+      yield* abortCheck(signal)
+
+      const fs = new CwdFilesystem(cwd, signal)
+      const patcher = new Patcher({ fs, snapshots })
+      const applied = yield* Effect.tryPromise({ catch: hashlineToolError, try: () => patcher.apply(parsed) })
+      yield* abortCheck(signal)
+      const sections = applied.sections.map((section, index) => {
+        const path = relative(cwd, section.canonicalPath) || section.canonicalPath
+        const parsedSection = parsed.sections[index]
+        const sourceAbsolute = resolveToolPath(stripToolPathPrefix(parsedSection?.path ?? section.path), cwd)
+        const sourcePath = relative(cwd, sourceAbsolute) || sourceAbsolute
+        return {
+          hash: section.fileHash,
+          ...(section.moveDest === undefined ? {} : { moveDest: path, sourcePath }),
+          op: section.op,
+          path,
+          version: fingerprint(normalizeToLF(section.written)),
+        }
+      })
+      const summary = sections.map((section) => `${section.op} ${section.path} [${section.hash}]`)
+
+      return result(summary.join('\n'), { sections })
+    })
+
+    // Pi's mutation queue is a promise API, so the revalidate-and-apply effect is run through the runtime it owns.
+    return yield* Effect.tryPromise({
+      catch: (cause) => (cause instanceof HashlineToolError ? cause : hashlineToolError(cause)),
+      try: () => withMutationQueues(lockPaths, () => runtime.runPromise(applyPatch)),
+    })
+  })
 
 class Snapshots extends Context.Service<Snapshots, InMemorySnapshotStore>()('pi-extensions/features/hashline/tools/Snapshots') {}
 
@@ -386,6 +413,12 @@ export class HashlineToolError extends Data.TaggedError('HashlineToolError')<{
 
 const hashlineToolError = (cause: unknown): HashlineToolError =>
   new HashlineToolError({ cause, message: cause instanceof Error ? cause.message : String(cause) })
+
+const hashlineFailure = (message: string): Effect.Effect<never, HashlineToolError> =>
+  Effect.fail(new HashlineToolError({ cause: undefined, message }))
+
+const abortCheck = (signal: AbortSignal | undefined): Effect.Effect<void, HashlineToolError> =>
+  isTrue(signal?.aborted) ? hashlineFailure('Hashline operation aborted') : Effect.void
 
 export const renderHashlineRead: {
   (options: unknown, theme: Theme): (readResult: RenderableToolOutput) => Component
@@ -399,19 +432,18 @@ export const renderHashlineRead: {
   return new Text(theme.fg(isTrue(readResult.isError) ? 'error' : 'toolOutput', text), 0, 0)
 })
 
+type HashlineToolEffect = Effect.Effect<ToolOutput, HashlineToolError, HandlerServices | FileSystem>
+
 export interface HashlineTools {
-  readonly read: (params: Static<typeof readSchema>, signal: AbortSignal | undefined) => Effect.Effect<ToolOutput, HashlineToolError, HandlerServices>
-  readonly write: (
-    params: Static<typeof writeSchema>,
-    signal: AbortSignal | undefined
-  ) => Effect.Effect<ToolOutput, HashlineToolError, HandlerServices>
+  readonly read: (params: Static<typeof readSchema>, signal: AbortSignal | undefined) => HashlineToolEffect
+  readonly write: (params: Static<typeof writeSchema>, signal: AbortSignal | undefined) => HashlineToolEffect
 }
 
-export const makeHashlineTools = (): HashlineTools => {
+export const makeHashlineTools = (runtime: AppRuntime): HashlineTools => {
   const snapshotsStore = new InMemorySnapshotStore()
-  const withSnapshots = <Success, Failure>(
-    effect: Effect.Effect<Success, Failure, HandlerServices | Snapshots>
-  ): Effect.Effect<Success, Failure, HandlerServices> => effect.pipe(Effect.provideService(Snapshots, snapshotsStore))
+  const withSnapshots = <Success, Failure, Services>(
+    effect: Effect.Effect<Success, Failure, Services | Snapshots>
+  ): Effect.Effect<Success, Failure, Services> => effect.pipe(Effect.provideService(Snapshots, snapshotsStore))
 
   return {
     read: ({ limit, offset, path }, signal) =>
@@ -419,10 +451,7 @@ export const makeHashlineTools = (): HashlineTools => {
         Effect.gen(function* () {
           const ctx = yield* PiCtx
           const snapshots = yield* Snapshots
-          return yield* Effect.tryPromise({
-            catch: hashlineToolError,
-            try: () => readHashlineFile({ cwd: ctx.cwd, limit, offset, path, signal, snapshots }),
-          })
+          return yield* readHashlineFile({ cwd: ctx.cwd, limit, offset, path, signal, snapshots })
         })
       ),
     write: ({ patch }, signal) =>
@@ -430,10 +459,7 @@ export const makeHashlineTools = (): HashlineTools => {
         Effect.gen(function* () {
           const ctx = yield* PiCtx
           const snapshots = yield* Snapshots
-          return yield* Effect.tryPromise({
-            catch: hashlineToolError,
-            try: () => writeHashlinePatch(patch, ctx.cwd, signal, snapshots),
-          })
+          return yield* writeHashlinePatch({ cwd: ctx.cwd, patchText: patch, runtime, signal, snapshots })
         })
       ),
   }

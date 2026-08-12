@@ -1,3 +1,4 @@
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- Needs stdin hand-off plus `maxBuffer`/`timeout`; it is already bridged through `Effect.callback`, which kills the child on interrupt.
 import { execFile } from 'node:child_process'
 
 import { type ExtensionContext, type ToolResultEvent } from '@earendil-works/pi-coding-agent'
