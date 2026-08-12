@@ -10,7 +10,7 @@ import { isEmptyString } from '@/shared/utils/predicates.js'
 export const MCP_OAUTH_KEYCHAIN_SERVICE = 'pi-mcp.oauth'
 
 /** A bounded, redacted message that is safe to surface to the user/model. */
-export class KeychainCredentialError extends Schema.TaggedErrorClass<KeychainCredentialError>()('KeychainCredentialError', {
+export class KeychainCredentialError extends Schema.TaggedError<KeychainCredentialError>()('KeychainCredentialError', {
   message: Schema.String,
 }) {}
 

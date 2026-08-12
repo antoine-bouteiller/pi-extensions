@@ -112,7 +112,7 @@ export const assertUnprotectedPath: {
 
 const protectedPathMessage = (path: string, operation: string): string => `Refusing to ${operation} protected path: ${path}`
 
-export class ProtectedPathError extends Schema.TaggedErrorClass<ProtectedPathError>()('ProtectedPathError', {
+export class ProtectedPathError extends Schema.TaggedError<ProtectedPathError>()('ProtectedPathError', {
   message: Schema.String,
   path: Schema.String,
 }) {}
