@@ -1,7 +1,7 @@
-import { describe, expect, test } from 'bun:test'
 import { fileURLToPath } from 'node:url'
 
 import { NodeFileSystem, NodePath } from '@effect/platform-node'
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asResult } from '@tests/utils/casts.js'
 import { Effect, FileSystem, Layer, Path } from 'effect'
 
@@ -120,7 +120,7 @@ const mergedManifest = (features: Record<string, FeatureReport>): Manifest => {
 const registrationCount = (manifest: Manifest): number => MANIFEST_KEYS.reduce((total, key) => total + manifest[key].length, 0)
 
 describe('registration', () => {
-  test('the registry wires every feature directory exactly once', async () => {
+  it.effect('the registry wires every feature directory exactly once', async () => {
     const { registryNames } = await registrationReport()
     const directories = await featureDirectories()
 
@@ -128,7 +128,7 @@ describe('registration', () => {
     expect(new Set(registryNames).size).toBe(registryNames.length)
   })
 
-  test('every feature exposes only a named register entrypoint that registers something', async () => {
+  it.effect('every feature exposes only a named register entrypoint that registers something', async () => {
     const { features } = await registrationReport()
 
     for (const [directory, feature] of Object.entries(features)) {
@@ -138,7 +138,7 @@ describe('registration', () => {
     }
   })
 
-  test('the packaged entrypoint registers exactly what the features register on their own', async () => {
+  it.effect('the packaged entrypoint registers exactly what the features register on their own', async () => {
     const { aggregate, features } = await registrationReport()
     const merged = mergedManifest(features)
 
@@ -151,7 +151,7 @@ describe('registration', () => {
    * Asserted on the merged per-feature manifests rather than the aggregate: Pi keys tools and
    * commands by name, so a collision between two features is silently deduped in the aggregate.
    */
-  test('tool, command, and message renderer names are unique across features and well formed', async () => {
+  it.effect('tool, command, and message renderer names are unique across features and well formed', async () => {
     const { features } = await registrationReport()
     const merged = mergedManifest(features)
 

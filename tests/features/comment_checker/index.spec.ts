@@ -1,5 +1,4 @@
-import { describe, expect, test } from 'bun:test'
-
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 
@@ -12,7 +11,7 @@ const context = {
 }
 
 describe('comment checker', () => {
-  test('appends checker warnings after writes', async () => {
+  it.effect('appends checker warnings after writes', async () => {
     const inputs: Parameters<CheckerRunner>[0][] = []
     const fixture = createFakePi()
     commentChecker(fixture.pi, runtime, async (input) => {
@@ -52,7 +51,7 @@ describe('comment checker', () => {
     })
   })
 
-  test('converts Pi edit batches to MultiEdit input', async () => {
+  it.effect('converts Pi edit batches to MultiEdit input', async () => {
     const inputs: Parameters<CheckerRunner>[0][] = []
     const fixture = createFakePi()
     commentChecker(fixture.pi, runtime, async (input) => {
@@ -87,7 +86,7 @@ describe('comment checker', () => {
     expect(result).toBeUndefined()
   })
 
-  test('silently ignores a missing comment-checker binary', async () => {
+  it.effect('silently ignores a missing comment-checker binary', async () => {
     const fixture = createFakePi()
     commentChecker(fixture.pi, runtime, async () => ({ exitCode: undefined, stderr: '', stdout: '' }))
 
@@ -105,7 +104,7 @@ describe('comment checker', () => {
     expect(result).toBeUndefined()
   })
 
-  test('ignores failed and unrelated tool results', async () => {
+  it.effect('ignores failed and unrelated tool results', async () => {
     let calls = 0
     const fixture = createFakePi()
     commentChecker(fixture.pi, runtime, async () => {

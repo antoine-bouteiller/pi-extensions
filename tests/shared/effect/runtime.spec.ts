@@ -1,5 +1,4 @@
-import { describe, expect, it } from 'bun:test'
-
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asError, asExtensionContext } from '@tests/utils/casts.js'
 import { Context, Effect, Fiber, Layer, ManagedRuntime } from 'effect'
 
@@ -51,7 +50,7 @@ const fakeContext = (overrides: { cwd?: string; hasUI?: boolean; confirm?: boole
 const emptyRuntime = () => ManagedRuntime.make(Layer.empty)
 
 describe('tool executor boundary', () => {
-  it('rejects with the tagged ToolFailure and its exact message', async () => {
+  it.effect('rejects with the tagged ToolFailure and its exact message', async () => {
     const runtime = emptyRuntime()
     const execute = makeToolExecutor(runtime)(() => Effect.fail(ToolFailure.make({ message: 'path is outside the workspace' })))
 
@@ -65,7 +64,7 @@ describe('tool executor boundary', () => {
     await runtime.dispose()
   })
 
-  it('keeps a promise rejection recoverable rather than turning it into a defect', async () => {
+  it.effect('keeps a promise rejection recoverable rather than turning it into a defect', async () => {
     const recovered = await Effect.runPromise(
       withAbortSignal(async () => {
         throw new Error('network exploded')
@@ -75,7 +74,7 @@ describe('tool executor boundary', () => {
     expect(recovered).toBe('network exploded')
   })
 
-  it('lets a tool map a rejected promise onto its own failure message', async () => {
+  it.effect('lets a tool map a rejected promise onto its own failure message', async () => {
     const runtime = emptyRuntime()
     const execute = makeToolExecutor(runtime)(() =>
       withAbortSignal(async () => {
@@ -95,7 +94,7 @@ describe('tool executor boundary', () => {
     await runtime.dispose()
   })
 
-  it('never runs the body when the signal is already aborted', async () => {
+  it.effect('never runs the body when the signal is already aborted', async () => {
     const runtime = emptyRuntime()
     const controller = new AbortController()
     controller.abort()
@@ -115,7 +114,7 @@ describe('tool executor boundary', () => {
     await runtime.dispose()
   })
 
-  it('interrupts the fiber when the inbound AbortSignal fires', async () => {
+  it.effect('interrupts the fiber when the inbound AbortSignal fires', async () => {
     const runtime = emptyRuntime()
     const controller = new AbortController()
     const execute = makeToolExecutor(runtime)(() => Effect.sleep('30 seconds').pipe(Effect.map(() => 'never')))
@@ -130,7 +129,7 @@ describe('tool executor boundary', () => {
     await runtime.dispose()
   })
 
-  it('gives concurrent invocations their own context', async () => {
+  it.effect('gives concurrent invocations their own context', async () => {
     const runtime = emptyRuntime()
     const execute = makeToolExecutor(runtime)(() =>
       Effect.gen(function* () {
@@ -151,7 +150,7 @@ describe('tool executor boundary', () => {
 })
 
 describe('event handler boundary', () => {
-  it('keeps the error channel intact so a failing handler rejects', async () => {
+  it.effect('keeps the error channel intact so a failing handler rejects', async () => {
     const runtime = emptyRuntime()
     const handler = makeEventHandler(runtime)(() => Effect.fail(ToolFailure.make({ message: 'discovery failed' })))
 
@@ -164,7 +163,7 @@ describe('event handler boundary', () => {
     await runtime.dispose()
   })
 
-  it('passes the live event and context through', async () => {
+  it.effect('passes the live event and context through', async () => {
     const runtime = emptyRuntime()
     const handler = makeEventHandler(runtime)((event: { id: string }, ctx) => Effect.succeed(`${event.id}@${ctx.cwd}`))
 
@@ -177,7 +176,7 @@ const runUi = <Value>(ctx: ReturnType<typeof fakeContext>['ctx'], body: Effect.E
   Effect.runPromise(body.pipe(Effect.provide(perInvocation(ctx))))
 
 describe('ui service', () => {
-  it('forwards notify and setStatus, and reports hasUI', async () => {
+  it.effect('forwards notify and setStatus, and reports hasUI', async () => {
     const { calls, ctx } = fakeContext({ hasUI: false })
 
     const visible = await runUi(
@@ -199,7 +198,7 @@ describe('ui service', () => {
     ])
   })
 
-  it('dismisses the confirm dialog when the fiber is interrupted', async () => {
+  it.effect('dismisses the confirm dialog when the fiber is interrupted', async () => {
     const { calls, ctx } = fakeContext()
 
     const fiber = Effect.runFork(
@@ -217,7 +216,7 @@ describe('ui service', () => {
 })
 
 describe('runtime disposal', () => {
-  it('runs layer finalizers exactly once', async () => {
+  it.effect('runs layer finalizers exactly once', async () => {
     class Tracked extends Context.Service<Tracked, { readonly id: string }>()('pi-extensions/tests/shared/effect/runtime.spec/Tracked') {}
     let acquired = 0
     let released = 0
@@ -245,7 +244,7 @@ describe('runtime disposal', () => {
     expect([acquired, released]).toEqual([1, 1])
   })
 
-  it('interrupts an in-flight fiber on disposal, and a replacement runtime still works', async () => {
+  it.effect('interrupts an in-flight fiber on disposal, and a replacement runtime still works', async () => {
     class Counter extends Context.Service<Counter, { readonly id: string }>()('pi-extensions/tests/shared/effect/runtime.spec/Counter') {}
     let released = 0
     const layer = Layer.effect(Counter)(

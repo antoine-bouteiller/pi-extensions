@@ -1,5 +1,4 @@
-import { describe, expect, test } from 'bun:test'
-
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asExtensionContext } from '@tests/utils/casts.js'
 
 import { createStatusChannel, formatStatusText, statusBar } from '@/shared/state/status_bar.js'
@@ -18,7 +17,7 @@ const createContext = (hasUI = true) => {
 }
 
 describe('status bar channel', () => {
-  test('publishes structured entries and mirrors plain text into pi', () => {
+  it.effect('publishes structured entries and mirrors plain text into pi', () => {
     const channel = createStatusChannel('demo-set', { icon: '⏳', tone: 'warning' })
     const { ctx, written } = createContext()
 
@@ -37,7 +36,7 @@ describe('status bar channel', () => {
     expect(written.at(-1)).toEqual({ key: 'demo-set', value: undefined })
   })
 
-  test('lets a call override channel defaults', () => {
+  it.effect('lets a call override channel defaults', () => {
     const channel = createStatusChannel('demo-override', { tone: 'muted' })
     const { ctx } = createContext()
 
@@ -47,7 +46,7 @@ describe('status bar channel', () => {
     channel.clear(ctx)
   })
 
-  test('still tracks state when the session has no UI', () => {
+  it.effect('still tracks state when the session has no UI', () => {
     const channel = createStatusChannel('demo-headless')
     const { ctx, written } = createContext(false)
 
@@ -58,7 +57,7 @@ describe('status bar channel', () => {
     channel.clear(ctx)
   })
 
-  test('orders entries by priority then key', () => {
+  it.effect('orders entries by priority then key', () => {
     const { ctx } = createContext()
     const late = createStatusChannel('demo-b', { priority: 50 })
     const early = createStatusChannel('demo-a', { priority: 10 })
@@ -75,7 +74,7 @@ describe('status bar channel', () => {
     }
   })
 
-  test('notifies subscribers on publish and clear', () => {
+  it.effect('notifies subscribers on publish and clear', () => {
     const channel = createStatusChannel('demo-events')
     const { ctx } = createContext()
     let notifications = 0
@@ -93,7 +92,7 @@ describe('status bar channel', () => {
 })
 
 describe('formatStatusText', () => {
-  test('prefixes the icon only when one is set', () => {
+  it.effect('prefixes the icon only when one is set', () => {
     expect(formatStatusText({ text: 'ready' })).toBe('ready')
     expect(formatStatusText({ icon: '🛡️', text: 'cmd-guard' })).toBe('🛡️ cmd-guard')
   })

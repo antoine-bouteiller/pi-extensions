@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 
 import { scrubPiFingerprints } from '@/features/meridian_session_affinity/scrub.js'
 
@@ -35,7 +35,7 @@ ${PI_DOCS}
 Current working directory: /repo`
 
 describe('scrubPiFingerprints', () => {
-  test('removes Pi fingerprints while preserving useful prompt content', () => {
+  it.effect('removes Pi fingerprints while preserving useful prompt content', () => {
     const scrubbed = scrubPiFingerprints(PROMPT)
 
     expect(scrubbed).toStartWith('You are an expert coding assistant.')
@@ -48,14 +48,14 @@ describe('scrubPiFingerprints', () => {
     expect(scrubbed).toContain('Current working directory: /repo')
   })
 
-  test('preserves the working directory when it immediately follows Pi documentation', () => {
+  it.effect('preserves the working directory when it immediately follows Pi documentation', () => {
     const scrubbed = scrubPiFingerprints(MINIMAL_PROMPT)
 
     expect(scrubbed).not.toContain('Pi documentation')
     expect(scrubbed).toContain('Current working directory: /repo')
   })
 
-  test('is idempotent and leaves prompts without Pi fingerprints unchanged', () => {
+  it.effect('is idempotent and leaves prompts without Pi fingerprints unchanged', () => {
     const cleanPrompt = "You are Claude Code, Anthropic's official CLI for Claude.\n\nDo things well.\n"
     const quotedDocs = 'Explain this text:\nPi documentation (read only when quoted)\nKeep it intact.\n'
     const scrubbed = scrubPiFingerprints(PROMPT)

@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach } from 'bun:test'
 
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 
@@ -29,14 +30,14 @@ const context = (sessionId: string, baseUrl = 'https://api.anthropic.com', heade
 })
 
 describe('meridian session affinity', () => {
-  test('registers only request-scoped lifecycle behavior', () => {
+  it.effect('registers only request-scoped lifecycle behavior', () => {
     const fixture = createHarness()
 
     expect([...fixture.state.handlers.keys()]).toEqual(['before_agent_start', 'before_provider_headers'])
     expect(fixture.state.commands.size).toBe(0)
   })
 
-  test('scrubs Pi fingerprints from the system prompt before an agent starts', async () => {
+  it.effect('scrubs Pi fingerprints from the system prompt before an agent starts', async () => {
     const fixture = createHarness()
     const systemPrompt = `You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
 
@@ -62,7 +63,7 @@ Current working directory: /repo`,
     ])
   })
 
-  test('recognizes a Meridian header configured on the model when scrubbing', async () => {
+  it.effect('recognizes a Meridian header configured on the model when scrubbing', async () => {
     const fixture = createHarness()
     const systemPrompt =
       'You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.\n'
@@ -80,7 +81,7 @@ Current working directory: /repo`,
     ])
   })
 
-  test('does not scrub system prompts sent directly to non-Meridian providers', async () => {
+  it.effect('does not scrub system prompts sent directly to non-Meridian providers', async () => {
     const fixture = createHarness()
     const systemPrompt = 'You are an expert coding assistant operating inside pi, a coding agent harness. Keep this direct-provider prompt.\n'
 
@@ -89,7 +90,7 @@ Current working directory: /repo`,
     expect(results).toEqual([undefined])
   })
 
-  test('adds the Pi session id to requests identified by the Meridian agent header', async () => {
+  it.effect('adds the Pi session id to requests identified by the Meridian agent header', async () => {
     const fixture = createHarness()
     const event: { headers: Record<string, string> } = {
       headers: {
@@ -107,7 +108,7 @@ Current working directory: /repo`,
     })
   })
 
-  test('recognizes the configured Meridian base URL without relying on static headers', async () => {
+  it.effect('recognizes the configured Meridian base URL without relying on static headers', async () => {
     process.env.MERIDIAN_BASE_URL = 'https://meridian.example.test/proxy/'
     const fixture = createHarness()
     const event: { headers: Record<string, string> } = { headers: {} }
@@ -117,7 +118,7 @@ Current working directory: /repo`,
     expect(event.headers['x-session-affinity']).toBe('session-b')
   })
 
-  test('does not leak session affinity to non-Meridian providers', async () => {
+  it.effect('does not leak session affinity to non-Meridian providers', async () => {
     const fixture = createHarness()
     const event: { headers: Record<string, string> } = {
       headers: { authorization: 'Bearer direct-anthropic-key' },
@@ -128,7 +129,7 @@ Current working directory: /repo`,
     expect(event.headers['x-session-affinity']).toBeUndefined()
   })
 
-  test('uses stable, distinct affinity ids for subagent sessions', async () => {
+  it.effect('uses stable, distinct affinity ids for subagent sessions', async () => {
     const fixture = createHarness()
     const firstEvent: { headers: Record<string, string> } = {
       headers: {

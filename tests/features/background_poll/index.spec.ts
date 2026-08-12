@@ -1,6 +1,4 @@
-import { expect } from 'bun:test'
-
-import { describe, it } from '@tests/utils/bun_effect.js'
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asExtensionApi } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { runtime } from '@tests/utils/runtime.js'
@@ -87,7 +85,7 @@ const rejectionMessage = async (promise: Promise<unknown>): Promise<string> => {
 }
 
 describe('background poll', () => {
-  it('returns immediately, bounds command time, publishes status, and wakes the agent', async () => {
+  it.effect('returns immediately, bounds command time, publishes status, and wakes the agent', async () => {
     const commandTimeouts: number[] = []
     const longOutput = `${Array.from({ length: 2100 }, (_unused, index) => `line-${index}`).join('\n')}\nready-at-tail`
     const fixture = setup(async (_command, _args, options) => {
@@ -121,7 +119,7 @@ describe('background poll', () => {
     expect(fixture.statuses.at(-1)).toBeUndefined()
   })
 
-  it('reports command failures as error outcomes', async () => {
+  it.effect('reports command failures as error outcomes', async () => {
     const fixture = setup(async () => {
       throw new Error('checker exploded')
     })
@@ -135,7 +133,7 @@ describe('background poll', () => {
     expect(fixture.notifications[0]?.level).toBe('warning')
   })
 
-  it('rejects registration with a tagged failure when no session is active', async () => {
+  it.effect('rejects registration with a tagged failure when no session is active', async () => {
     const fixture = setup(async () => ({ code: 0, stderr: '', stdout: 'ready' }))
 
     const rejection = await fixture.tool.execute('inactive', { command: 'check' }, undefined, undefined, fixture.ctx).then(
@@ -149,7 +147,7 @@ describe('background poll', () => {
     })
   })
 
-  it('replaces the session scope and accepts registrations in the new session', async () => {
+  it.effect('replaces the session scope and accepts registrations in the new session', async () => {
     const fixture = setup((_command, args, options) => {
       if (args[1] === 'new-check') {
         return Promise.resolve({ code: 0, stderr: '', stdout: 'new session ready' })
@@ -171,7 +169,7 @@ describe('background poll', () => {
     expect(fixture.messages[0].message.content).toContain('new session ready')
   })
 
-  it('suppresses completion and clears status when the session shuts down', async () => {
+  it.effect('suppresses completion and clears status when the session shuts down', async () => {
     const fixture = setup((_command, _args, options) =>
       Effect.runPromise(
         Effect.callback<{ stdout: string; stderr: string; code: number }>((resume) => {
@@ -219,7 +217,7 @@ describe('background poll', () => {
     })
   )
 
-  it('keeps the tail when output is truncated', () => {
+  it.effect('keeps the tail when output is truncated', () => {
     const output = formatPollOutput(`${'head\n'.repeat(3000)}tail`, '')
 
     expect(output).toContain('tail')

@@ -1,5 +1,4 @@
-import { describe, expect, it } from 'bun:test'
-
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asExtensionContext } from '@tests/utils/casts.js'
 import { Effect, Layer, ManagedRuntime } from 'effect'
 
@@ -32,7 +31,7 @@ const headlessContext = () =>
   })
 
 describe('cross-runtime sharing', () => {
-  it('gives two independent extension runtimes the same store instances', async () => {
+  it.effect('gives two independent extension runtimes the same store instances', async () => {
     const subAgentsRuntime = ManagedRuntime.make(Layer.mergeAll(StatusBarLive, AgentActivityLive))
     const statusPanelRuntime = ManagedRuntime.make(Layer.mergeAll(StatusBarLive, AgentActivityLive))
 
@@ -52,7 +51,7 @@ describe('cross-runtime sharing', () => {
     runningAgents.publish([])
   })
 
-  it('lets one runtime observe a status published by another', async () => {
+  it.effect('lets one runtime observe a status published by another', async () => {
     const producer = ManagedRuntime.make(StatusBarLive)
     const consumer = ManagedRuntime.make(StatusBarLive)
     const { ctx } = uiContext()
@@ -81,7 +80,7 @@ describe('cross-runtime sharing', () => {
 })
 
 describe('status channel service', () => {
-  it('mirrors into Pi and applies channel defaults', async () => {
+  it.effect('mirrors into Pi and applies channel defaults', async () => {
     const runtime = ManagedRuntime.make(StatusBarLive)
     const { ctx, statuses } = uiContext()
 
@@ -101,7 +100,7 @@ describe('status channel service', () => {
     await runtime.dispose()
   })
 
-  it('still records the status when there is no UI to mirror into', async () => {
+  it.effect('still records the status when there is no UI to mirror into', async () => {
     const runtime = ManagedRuntime.make(StatusBarLive)
 
     await runtime.runPromise(
@@ -122,7 +121,7 @@ describe('status channel service', () => {
     await runtime.dispose()
   })
 
-  it('notifies subscribers of both stores', async () => {
+  it.effect('notifies subscribers of both stores', async () => {
     const runtime = ManagedRuntime.make(Layer.mergeAll(StatusBarLive, AgentActivityLive))
     let statusNotifications = 0
     let agentNotifications = 0

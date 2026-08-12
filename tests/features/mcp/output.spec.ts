@@ -1,5 +1,3 @@
-import { test } from 'bun:test'
-
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from '@earendil-works/pi-coding-agent'
 import { NodeFileSystem } from '@effect/platform-node'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
@@ -10,7 +8,7 @@ import { boundGatewayOutput as boundGatewayOutputEffect } from '@/features/mcp/o
 const boundGatewayOutput = (content: Parameters<typeof boundGatewayOutputEffect>[0]) => Effect.runPromise(boundGatewayOutputEffect(content))
 
 describe('MCP gateway output', () => {
-  test('keeps small text and images unchanged', async () => {
+  it.effect('keeps small text and images unchanged', async () => {
     const content = [
       { text: 'hello', type: 'text' as const },
       { data: 'AA==', mimeType: 'image/png', type: 'image' as const },

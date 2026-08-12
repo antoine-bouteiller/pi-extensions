@@ -1,25 +1,18 @@
-import { afterEach, describe, expect, test } from 'bun:test'
-import { tmpdir } from 'node:os'
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { Effect, FileSystem, Path } from 'effect'
 
-import { NodeFileSystem } from '@effect/platform-node'
-import { fileSystem, pathService, runPlatform } from '@tests/utils/platform.js'
-import { Effect } from 'effect'
+import { loadMcpConfigFile, parseMcpConfig, parseMcpConfigEffect, parseMcpConfigText } from '@/features/mcp/config.js'
 
-import { loadMcpConfigFile as loadMcpConfigFileEffect, parseMcpConfig, parseMcpConfigEffect, parseMcpConfigText } from '@/features/mcp/config.js'
-
-const loadMcpConfigFile = (path: string) => Effect.runPromise(Effect.provide(loadMcpConfigFileEffect(path), NodeFileSystem.layer))
-
-const temporaryDirectories: string[] = []
-afterEach(() => Promise.all(temporaryDirectories.splice(0).map((path) => runPlatform(fileSystem.remove(path, { recursive: true })))))
-
-const temporaryPath = async (name: string): Promise<string> => {
-  const directory = await runPlatform(fileSystem.makeTempDirectory({ directory: tmpdir(), prefix: 'pi-mcp-config-test-' }))
-  temporaryDirectories.push(directory)
-  return pathService.join(directory, name)
-}
+const temporaryPath = (name: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'pi-mcp-config-test-' })
+    return path.join(directory, name)
+  })
 
 describe('global MCP config parsing', () => {
-  test('parses the five configured server shapes without changing their names', () => {
+  it.effect('parses the five configured server shapes without changing their names', () => {
     /*
      * Parsed from JSON text so declaration order survives: the assertion below
      * pins that parsing preserves file order instead of sorting server names.
@@ -54,7 +47,7 @@ describe('global MCP config parsing', () => {
     })
   })
 
-  test('validates and copies stdio arguments, environment, and working directory', () => {
+  it.effect('validates and copies stdio arguments, environment, and working directory', () => {
     const input = {
       mcpServers: {
         local: {
@@ -78,7 +71,7 @@ describe('global MCP config parsing', () => {
     expect(parsed.local).not.toBe(input.mcpServers.local)
   })
 
-  test('accepts unauthenticated HTTP and validates string headers', () => {
+  it.effect('accepts unauthenticated HTTP and validates string headers', () => {
     expect(
       parseMcpConfig({
         mcpServers: {
@@ -97,7 +90,7 @@ describe('global MCP config parsing', () => {
     })
   })
 
-  test('normalizes Slack OAuth snake_case aliases', () => {
+  it.effect('normalizes Slack OAuth snake_case aliases', () => {
     expect(
       parseMcpConfig({
         mcpServers: {
@@ -128,7 +121,7 @@ describe('global MCP config parsing', () => {
     })
   })
 
-  test('marks duplicate OAuth aliases as invalid config', () => {
+  it.effect('marks duplicate OAuth aliases as invalid config', () => {
     expect(
       parseMcpConfig({
         mcpServers: {
@@ -141,7 +134,7 @@ describe('global MCP config parsing', () => {
     ).toEqual({ slack: { invalid: true } })
   })
 
-  test('accepts disabled transports and disabled placeholders', () => {
+  it.effect('accepts disabled transports and disabled placeholders', () => {
     expect(
       parseMcpConfig({
         mcpServers: {
@@ -157,7 +150,7 @@ describe('global MCP config parsing', () => {
     })
   })
 
-  test('requires root and mcpServers objects', () => {
+  it.effect('requires root and mcpServers objects', () => {
     // A parsed JSON null, so the rejection of real null config values stays covered.
     const jsonNull = JSON.parse('null') as unknown
     for (const input of [jsonNull, [], {}, { mcpServers: [] }, { mcpServers: jsonNull }]) {
@@ -165,7 +158,7 @@ describe('global MCP config parsing', () => {
     }
   })
 
-  test('keeps valid siblings when transports, discriminators, arrays, or maps are invalid', () => {
+  it.effect('keeps valid siblings when transports, discriminators, arrays, or maps are invalid', () => {
     expect(
       parseMcpConfig({
         mcpServers: {
@@ -187,7 +180,7 @@ describe('global MCP config parsing', () => {
     })
   })
 
-  test('tolerates unknown root fields and marks unsupported nested fields invalid', async () => {
+  it.effect('tolerates unknown root fields and marks unsupported nested fields invalid', async () => {
     expect(
       await Effect.runPromise(parseMcpConfigEffect({ futureRootField: true, mcpServers: { broken: { command: 42 }, local: { command: 'server' } } }))
     ).toEqual({
@@ -197,7 +190,7 @@ describe('global MCP config parsing', () => {
     expect(parseMcpConfig({ mcpServers: { local: { command: 42, resources: true } } })).toEqual({ local: { invalid: true } })
   })
 
-  test('does not silently widen unsupported server or OAuth fields', () => {
+  it.effect('does not silently widen unsupported server or OAuth fields', () => {
     expect(
       parseMcpConfig({
         mcpServers: {
@@ -208,23 +201,38 @@ describe('global MCP config parsing', () => {
     ).toEqual({ local: { invalid: true }, remote: { invalid: true } })
   })
 
-  test('returns an empty map when a requested config file is absent', async () => {
-    const path = await temporaryPath('missing.json')
-    expect(await loadMcpConfigFile(path)).toEqual({})
-  })
+  it.effect('returns an empty map when a requested config file is absent', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const path = yield* temporaryPath('missing.json')
+        expect(yield* loadMcpConfigFile(path)).toEqual({})
+      })
+    )
+  )
 
-  test('loads JSON from a supplied test path', async () => {
-    const path = await temporaryPath('mcp.json')
-    await runPlatform(fileSystem.writeFileString(path, JSON.stringify({ mcpServers: { local: { command: 'server' } } })))
-    expect(await loadMcpConfigFile(path)).toEqual({
-      local: { command: 'server', type: 'stdio' },
-    })
-  })
+  it.effect('loads JSON from a supplied test path', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const path = yield* temporaryPath('mcp.json')
+        yield* fs.writeFileString(path, '{"mcpServers":{"local":{"command":"server"}}}')
+        expect(yield* loadMcpConfigFile(path)).toEqual({
+          local: { command: 'server', type: 'stdio' },
+        })
+      })
+    )
+  )
 
-  test('does not swallow malformed JSON', async () => {
-    expect(() => parseMcpConfigText('{ nope', 'fixture.json')).toThrow('fixture.json: contains malformed JSON')
-    const path = await temporaryPath('malformed.json')
-    await runPlatform(fileSystem.writeFileString(path, '{ nope'))
-    expect(loadMcpConfigFile(path)).rejects.toThrow('contains malformed JSON')
-  })
+  it.effect('does not swallow malformed JSON', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        expect(() => parseMcpConfigText('{ nope', 'fixture.json')).toThrow('fixture.json: contains malformed JSON')
+        const fs = yield* FileSystem.FileSystem
+        const path = yield* temporaryPath('malformed.json')
+        yield* fs.writeFileString(path, '{ nope')
+        const failure = yield* Effect.flip(loadMcpConfigFile(path))
+        expect(failure.message).toContain('contains malformed JSON')
+      })
+    )
+  )
 })

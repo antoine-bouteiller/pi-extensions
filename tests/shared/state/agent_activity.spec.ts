@@ -1,9 +1,9 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 
 import { createAgentActivityStore, type RunningAgent } from '@/shared/state/agent_activity.js'
 
 describe('agent activity store', () => {
-  test('publishes a snapshot that later mutations cannot change', () => {
+  it.effect('publishes a snapshot that later mutations cannot change', () => {
     const store = createAgentActivityStore()
     const published: RunningAgent[] = [{ color: 'accent', name: '/scout' }]
 
@@ -13,7 +13,7 @@ describe('agent activity store', () => {
     expect(store.list()).toEqual([{ color: 'accent', name: '/scout' }])
   })
 
-  test('notifies subscribers until they unsubscribe', () => {
+  it.effect('notifies subscribers until they unsubscribe', () => {
     const store = createAgentActivityStore()
     let notifications = 0
     const unsubscribe = store.subscribe(() => notifications++)

@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach } from 'bun:test'
 
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect } from 'effect'
@@ -28,7 +29,7 @@ afterEach(() => {
 })
 
 describe('status panel registration', () => {
-  test('registers only Azure response forwarding in a subagent', async () => {
+  it.effect('registers only Azure response forwarding in a subagent', async () => {
     const ownerToken = '11111111-1111-4111-8111-111111111111'
     process.env.PI_SUBAGENT_OWNER_TOKEN = ownerToken
     const { pi, state, emit } = createFakePi()
@@ -52,7 +53,7 @@ describe('status panel registration', () => {
     expect(consumeSubagentAzureQuota(ownerToken)).toBe(75)
   })
 
-  test('registers the normal main-session lifecycle handlers', () => {
+  it.effect('registers the normal main-session lifecycle handlers', () => {
     const { pi, state } = createFakePi()
 
     statusPanel(pi, runtime)
@@ -71,7 +72,7 @@ describe('status panel registration', () => {
 })
 
 describe('status panel formatting', () => {
-  test('formats token counts and bounded progress bars', () => {
+  it.effect('formats token counts and bounded progress bars', () => {
     expect(formatTokens(999)).toBe('999')
     expect(formatTokens(12_400)).toBe('12k')
     expect(formatTokens(1_250_000)).toBe('1.3M')
@@ -79,17 +80,17 @@ describe('status panel formatting', () => {
     expect(progressBar(150, 4)).toBe('▓▓▓▓')
   })
 
-  test('keeps columns within the available width', () => {
+  it.effect('keeps columns within the available width', () => {
     const rendered = columns('a very long branch name', 'model/context', 20)
     expect(Bun.stringWidth(rendered)).toBeLessThanOrEqual(20)
   })
 
-  test('creates independent empty state values', () => {
+  it.effect('creates independent empty state values', () => {
     expect(emptyModelInfoState().modelId).toBe('no-model')
     expect(emptyGitInfoState()).toEqual({ branch: undefined, changedFiles: 0, pullRequest: undefined })
   })
 
-  test('moves footer information into a bounded right sidebar', async () => {
+  it.effect('moves footer information into a bounded right sidebar', async () => {
     const { pi, emit } = createFakePi()
     let renderFooter: ((width: number) => string[]) | undefined
     let renderSidebar: ((width: number) => string[]) | undefined
@@ -201,7 +202,7 @@ const quotaLifecycleContext = (mode: 'tui' | 'rpc', provider = 'anthropic') => (
 })
 
 describe('status panel quota lifecycle', () => {
-  test('does not request Anthropic quota outside TUI mode', async () => {
+  it.effect('does not request Anthropic quota outside TUI mode', async () => {
     const { pi, emit } = createFakePi()
     const signals: AbortSignal[] = []
     statusPanel(pi, runtime, {
@@ -218,7 +219,7 @@ describe('status panel quota lifecycle', () => {
     await emit('session_shutdown', {}, ctx)
   })
 
-  test('keeps polling Claude while another provider is active and aborts on shutdown', async () => {
+  it.effect('keeps polling Claude while another provider is active and aborts on shutdown', async () => {
     const { pi, emit } = createFakePi()
     const baseUrls: string[] = []
     const signals: AbortSignal[] = []
@@ -250,7 +251,7 @@ describe('status panel quota lifecycle', () => {
 })
 
 describe('status panel cross-feature sharing', () => {
-  test('renders subagents published through the shared AgentActivity singleton, as sub-agents does', async () => {
+  it.effect('renders subagents published through the shared AgentActivity singleton, as sub-agents does', async () => {
     runningAgents.publish([{ color: 'accent', name: '/scout-shared', profile: 'scout' }])
 
     const { pi, emit } = createFakePi()

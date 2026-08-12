@@ -1,5 +1,4 @@
-import { describe, expect, test } from 'bun:test'
-
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asExtensionContext, asFooterDataProvider } from '@tests/utils/casts.js'
 
 import { collectStatuses, statusLines } from '@/features/status_panel/statuses.js'
@@ -16,7 +15,7 @@ const footerData = (entries: Record<string, string>) =>
   })
 
 describe('collectStatuses', () => {
-  test('renders and splits a shared-channel status once despite the mirror into pi', () => {
+  it.effect('renders and splits a shared-channel status once despite the mirror into pi', () => {
     const channel = createStatusChannel('collect-mcp', { tone: 'muted' })
     channel.set(ctx, { text: 'MCP linear: connected\nMCP slack: needs auth' })
 
@@ -26,14 +25,14 @@ describe('collectStatuses', () => {
     channel.clear(ctx)
   })
 
-  test('keeps statuses owned by other extensions and splits their lines', () => {
+  it.effect('keeps statuses owned by other extensions and splits their lines', () => {
     const collected = collectStatuses(footerData({ other: 'first\nsecond' }))
 
     expect(statusLines(collected)).toEqual(['first', 'second'])
     expect(collected.every((entry) => entry.tone === 'muted')).toBeTrue()
   })
 
-  test('works without a footer data provider', () => {
+  it.effect('works without a footer data provider', () => {
     const channel = createStatusChannel('collect-solo', { icon: '🛡️' })
     channel.set(ctx, { text: 'cmd-guard' })
 

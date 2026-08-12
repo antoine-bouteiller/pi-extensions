@@ -1,5 +1,4 @@
-import { describe, expect, test } from 'bun:test'
-
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { Effect } from 'effect'
 
@@ -8,7 +7,7 @@ import { fetchGitInfo } from '@/features/status_panel/git.js'
 const success = (stdout: string) => ({ code: 0, killed: false, stderr: '', stdout })
 
 describe('status panel git state', () => {
-  test('reports the current branch and porcelain entry count', async () => {
+  it.effect('reports the current branch and porcelain entry count', async () => {
     const calls: string[][] = []
     const outputs = [success('true\n'), success('feature/footer\n'), success(' M one\n?? two\n')]
     const { pi } = createFakePi({
@@ -30,7 +29,7 @@ describe('status panel git state', () => {
     ])
   })
 
-  test('returns empty state outside a repository or when git fails', async () => {
+  it.effect('returns empty state outside a repository or when git fails', async () => {
     const outside = createFakePi({
       exec: async (_command, args) => (args[0] === 'rev-parse' ? { ...success('false\n'), code: 128 } : success('ignored')),
     })
@@ -45,7 +44,7 @@ describe('status panel git state', () => {
     expect(await Effect.runPromise(fetchGitInfo(failing.pi))).toEqual(empty)
   })
 
-  test('degrades malformed command results instead of leaking a defect', async () => {
+  it.effect('degrades malformed command results instead of leaking a defect', async () => {
     const malformed = {
       ...success(''),
       get stdout(): string {
@@ -61,7 +60,7 @@ describe('status panel git state', () => {
     })
   })
 
-  test('does not use failed branch or status command output', async () => {
+  it.effect('does not use failed branch or status command output', async () => {
     const outputs = [success('true\n'), { ...success('stale-branch\n'), code: 1 }, { ...success(' M stale\n'), code: 1 }]
     const { pi } = createFakePi({
       exec: async () => outputs.shift() ?? success(''),

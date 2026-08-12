@@ -1,6 +1,5 @@
-import { describe, expect, test } from 'bun:test'
-
 import { visibleWidth } from '@earendil-works/pi-tui'
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asExtensionContext } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 
@@ -56,7 +55,7 @@ const ANSI_PATTERN = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`
 const stripAnsi = (text: string) => text.replace(ANSI_PATTERN, '')
 
 describe('sidebar rendering', () => {
-  test('renders the Atelier-style information hierarchy', () => {
+  it.effect('renders the Atelier-style information hierarchy', () => {
     const lines = renderSidebarLines({ height: 36, now: 0, state, theme, width: 44 })
     const text = stripAnsi(lines.join('\n'))
 
@@ -75,7 +74,7 @@ describe('sidebar rendering', () => {
     expect(text).toContain('╭─ ✦ QUOTA')
   })
 
-  test('does not apply palette or theme colors when NO_COLOR is set', () => {
+  it.effect('does not apply palette or theme colors when NO_COLOR is set', () => {
     const previousNoColor = process.env.NO_COLOR
     let colorCalls = 0
     process.env.NO_COLOR = '1'
@@ -105,7 +104,7 @@ describe('sidebar rendering', () => {
     }
   })
 
-  test('renders session and weekly quota as matching bars with their time left', () => {
+  it.effect('renders session and weekly quota as matching bars with their time left', () => {
     const lines = renderSidebarLines({ height: 36, now: 0, state, theme, width: 44 }).map(stripAnsi)
     const quotaIndex = lines.findIndex((line) => line.includes('QUOTA'))
     const quotaLines = lines.slice(quotaIndex + 1, quotaIndex + 5)
@@ -125,7 +124,7 @@ describe('sidebar rendering', () => {
     expect(lines.slice(quotaIndex).join('\n')).toContain('Azure')
   })
 
-  test('falls back to a single labelled bar when only Azure quota is available', () => {
+  it.effect('falls back to a single labelled bar when only Azure quota is available', () => {
     const text = stripAnsi(
       renderSidebarLines({
         height: 36,
@@ -140,7 +139,7 @@ describe('sidebar rendering', () => {
     expect(text).toContain('71.0%')
   })
 
-  test('pulses only the working Agent jewel', () => {
+  it.effect('pulses only the working Agent jewel', () => {
     const first = stripAnsi(renderSidebarLines({ height: 20, now: 0, state, theme, width: 44 }).join('\n'))
     const second = stripAnsi(renderSidebarLines({ height: 20, now: 400, state, theme, width: 44 }).join('\n'))
 
@@ -149,7 +148,7 @@ describe('sidebar rendering', () => {
     expect(second).toContain('╭─ ✦ CONTEXT')
   })
 
-  test('lists running subagents and hides the panel when none are running', () => {
+  it.effect('lists running subagents and hides the panel when none are running', () => {
     const text = stripAnsi(renderSidebarLines({ height: 36, now: 0, state: withAgents(2), theme, width: 44 }).join('\n'))
 
     expect(text).toContain('╭─ ✦ SUBAGENTS')
@@ -159,7 +158,7 @@ describe('sidebar rendering', () => {
     expect(stripAnsi(renderSidebarLines({ height: 36, now: 0, state, theme, width: 44 }).join('\n'))).not.toContain('SUBAGENTS')
   })
 
-  test('caps the subagent list so a large fan-out cannot crowd out other panels', () => {
+  it.effect('caps the subagent list so a large fan-out cannot crowd out other panels', () => {
     const text = stripAnsi(renderSidebarLines({ height: 40, now: 0, state: withAgents(9), theme, width: 44 }).join('\n'))
 
     expect(text).toContain('▸ /scout-4')
@@ -167,7 +166,7 @@ describe('sidebar rendering', () => {
     expect(text).toContain('+4 more')
   })
 
-  test('renders MCP servers in their own panel instead of STATUS', () => {
+  it.effect('renders MCP servers in their own panel instead of STATUS', () => {
     const lines = renderSidebarLines({
       height: 48,
       state: {
@@ -192,7 +191,7 @@ describe('sidebar rendering', () => {
     expect(lines.slice(statusIndex).join('\n')).not.toContain('linear: connected')
   })
 
-  test('keeps running subagents visible after other optional panels are dropped', () => {
+  it.effect('keeps running subagents visible after other optional panels are dropped', () => {
     const text = stripAnsi(renderSidebarLines({ height: 20, now: 0, state: withAgents(2), theme, width: 44 }).join('\n'))
 
     expect(text).toContain('SUBAGENTS')
@@ -200,7 +199,7 @@ describe('sidebar rendering', () => {
     expect(text).not.toContain('STATUS')
   })
 
-  test('drops optional panels as terminal height contracts', () => {
+  it.effect('drops optional panels as terminal height contracts', () => {
     const text = stripAnsi(renderSidebarLines({ height: 12, now: 0, state, theme, width: 44 }).join('\n'))
 
     expect(text).toContain('AGENT')
@@ -210,7 +209,7 @@ describe('sidebar rendering', () => {
     expect(text).not.toContain('STATUS')
   })
 
-  test('keeps output bounded at narrow sidebar widths', () => {
+  it.effect('keeps output bounded at narrow sidebar widths', () => {
     const long: SidebarState = {
       ...state,
       cwd: `/Users/example/${'界'.repeat(60)}`,
@@ -226,7 +225,7 @@ describe('sidebar rendering', () => {
     expect(stripAnsi(renderSidebarLines({ height: 24, state: long, theme, width: 28 }).join('\n'))).toContain('◆ Working')
   })
 
-  test('renders unavailable context explicitly', () => {
+  it.effect('renders unavailable context explicitly', () => {
     const unavailable = {
       ...state,
       model: { ...state.model, contextPercent: undefined, contextTokens: undefined },
@@ -285,7 +284,7 @@ const flushMicrotasks = async () => {
 }
 
 describe('sidebar controller overlay race', () => {
-  test('does not let a stale generation clobber a newer overlay once it is active', async () => {
+  it.effect('does not let a stale generation clobber a newer overlay once it is active', async () => {
     const calls: CustomCall[] = []
     const hiddenHandles: string[] = []
     const renderRequests: string[] = []
@@ -341,7 +340,7 @@ describe('sidebar controller overlay race', () => {
     sidebar.dispose()
   })
 
-  test('redraws only while working and stops the redraw fiber on dispose', async () => {
+  it.effect('redraws only while working and stops the redraw fiber on dispose', async () => {
     const calls: CustomCall[] = []
     let renderRequests = 0
     let currentState: SidebarState = { ...state, activity: 'ready' }

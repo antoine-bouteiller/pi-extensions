@@ -1,5 +1,3 @@
-import { test } from 'bun:test'
-
 import { NodeFileSystem } from '@effect/platform-node'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Effect, FileSystem } from 'effect'
@@ -9,7 +7,7 @@ import { boundToolTextEffect, truncateOutput, truncationNotice, writePrivateTemp
 const lines = (count: number) => Array.from({ length: count }, (_value, index) => `line ${index}`).join('\n')
 
 describe('truncateOutput', () => {
-  test('keeps the head or the tail depending on direction', () => {
+  it.effect('keeps the head or the tail depending on direction', () => {
     const text = lines(100)
 
     const head = truncateOutput(text, { maxBytes: 1_000_000, maxLines: 5 })
@@ -21,7 +19,7 @@ describe('truncateOutput', () => {
     expect(tail.content).not.toContain('line 0\n')
   })
 
-  test('leaves short output untouched', () => {
+  it.effect('leaves short output untouched', () => {
     const result = truncateOutput('short', { maxBytes: 1000, maxLines: 10 })
 
     expect(result.truncated).toBeFalse()
@@ -39,11 +37,11 @@ describe('truncationNotice', () => {
     truncated: true,
   }
 
-  test('describes tail truncation as showing the last lines', () => {
+  it.effect('describes tail truncation as showing the last lines', () => {
     expect(truncationNotice(truncation, { from: 'tail' })).toContain('showing the last 1 of 20 lines')
   })
 
-  test('mentions the spill file only when there is one', () => {
+  it.effect('mentions the spill file only when there is one', () => {
     expect(truncationNotice(truncation)).not.toContain('Full output saved to:')
     expect(truncationNotice(truncation, { fullOutputPath: '/tmp/out.txt' })).toContain('Full output saved to: /tmp/out.txt')
   })
@@ -60,7 +58,7 @@ describe('bounded tool output', () => {
     }).pipe(Effect.provide(NodeFileSystem.layer))
   )
 
-  test('boundToolTextEffect spills the complete text and keeps the notice inside the budget', async () => {
+  it.effect('boundToolTextEffect spills the complete text and keeps the notice inside the budget', async () => {
     const text = lines(500)
     let saved = ''
 
@@ -85,7 +83,7 @@ describe('bounded tool output', () => {
     expect(result.text.split('\n').length).toBeLessThanOrEqual(50)
   })
 
-  test('boundToolTextEffect skips the spill when the text already fits', async () => {
+  it.effect('boundToolTextEffect skips the spill when the text already fits', async () => {
     let saves = 0
     const result = await Effect.runPromise(
       boundToolTextEffect('short', {
@@ -102,7 +100,7 @@ describe('bounded tool output', () => {
     expect([result.truncated, result.text, saves]).toEqual([false, 'short', 0])
   })
 
-  test('boundToolTextEffect propagates a failure from the spill', async () => {
+  it.effect('boundToolTextEffect propagates a failure from the spill', async () => {
     const failure = await Effect.runPromise(
       boundToolTextEffect(lines(500), {
         maxBytes: 100_000,

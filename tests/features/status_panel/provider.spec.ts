@@ -95,7 +95,7 @@ describe('Anthropic quota provider', () => {
     })
   )
 
-  it('reads the active profile rather than the first one', async () => {
+  it.effect('reads the active profile rather than the first one', async () => {
     const fakeFetch = asFetch(() =>
       gatewayResponse({
         activeProfile: 'work',
@@ -117,7 +117,7 @@ describe('Anthropic quota provider', () => {
     expect(quota?.percent).toBe(50)
   })
 
-  it('strips trailing slashes from the configured base URL', async () => {
+  it.effect('strips trailing slashes from the configured base URL', async () => {
     let requestedUrl = ''
     const fakeFetch = asFetch((input) => {
       requestedUrl = String(input)
@@ -128,7 +128,7 @@ describe('Anthropic quota provider', () => {
     expect(requestedUrl).toBe('http://127.0.0.1:3456/v1/usage/quota/all')
   })
 
-  it('returns null without a base URL, and for unsuccessful or malformed responses', async () => {
+  it.effect('returns null without a base URL, and for unsuccessful or malformed responses', async () => {
     const unusable = asFetch(() => {
       throw new Error('should not be called')
     })
@@ -146,7 +146,7 @@ describe('Anthropic quota provider', () => {
     expect(await fetchAnthropicQuota('http://gateway', undefined, empty)).toBeUndefined()
   })
 
-  it('derives Azure quota only from valid token headers', () => {
+  it.effect('derives Azure quota only from valid token headers', () => {
     expect(
       quotaFromHeaders('azure-openai', {
         'x-ratelimit-limit-tokens': '1000',

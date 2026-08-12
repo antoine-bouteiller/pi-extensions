@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 
 import {
   AGENT_CONFIGS,
@@ -31,7 +31,7 @@ const context = {
 }
 
 describe('model selectors', () => {
-  test('parses bare and provider-qualified exact selectors', () => {
+  it.effect('parses bare and provider-qualified exact selectors', () => {
     expect(parseModelSelector('claude-sonnet-5')).toEqual({ id: 'claude-sonnet-5' })
     expect(parseModelSelector('anthropic/claude-sonnet-5')).toEqual({
       id: 'claude-sonnet-5',
@@ -40,7 +40,7 @@ describe('model selectors', () => {
     expect(() => parseModelSelector('anthropic/')).toThrow('Invalid provider-qualified')
   })
 
-  test('prefers the canonical provider, then official variants, deterministically', () => {
+  it.effect('prefers the canonical provider, then official variants, deterministically', () => {
     expect(resolveModelSelector('gpt-5.6-luna', availableModels)).toEqual({
       id: 'gpt-5.6-luna',
       provider: 'openai',
@@ -54,14 +54,14 @@ describe('model selectors', () => {
     expect(resolveModelSelector('anthropic/claude-sonnet-5', availableModels)).toEqual({ id: 'claude-sonnet-5', provider: 'anthropic' })
   })
 
-  test('uses only exact authenticated non-Google models', () => {
+  it.effect('uses only exact authenticated non-Google models', () => {
     expect(() => resolveModelSelector('gpt-5.6', availableModels)).toThrow('not authenticated')
     expect(() => resolveModelSelector('gemini-2.5-pro', [{ id: 'gemini-2.5-pro', provider: 'google' }])).toThrow('not authenticated')
     expect(hasModelId(availableModels, 'claude-opus-5')).toBe(true)
     expect(firstAvailable(availableModels, 'missing', 'claude-opus-5')).toBe('claude-opus-5')
   })
 
-  test('recognizes Claude by model family across providers', () => {
+  it.effect('recognizes Claude by model family across providers', () => {
     expect(isClaudeModelId('claude-opus-5')).toBe(true)
     expect(isClaudeModelId('CLAUDE-custom')).toBe(true)
     expect(isClaudeModelId('gpt-5.6-sol')).toBe(false)
@@ -69,7 +69,7 @@ describe('model selectors', () => {
 })
 
 describe('generic agent registry', () => {
-  test('contains the three built-ins and generates descriptions from registry keys', () => {
+  it.effect('contains the three built-ins and generates descriptions from registry keys', () => {
     expect(AGENT_PROFILE_NAMES).toEqual(['scout', 'librarian', 'reviewer'])
     const description = getAgentProfilesDescription()
     for (const key of AGENT_PROFILE_NAMES) {
@@ -79,7 +79,7 @@ describe('generic agent registry', () => {
     expect(configuredProfileColor('missing')).toBe('muted')
   })
 
-  test('normalizes defaults for a future entry with only the four required fields', () => {
+  it.effect('normalizes defaults for a future entry with only the four required fields', () => {
     const registry = {
       future: {
         allowedTools: ['read', 'read'],
@@ -102,7 +102,7 @@ describe('generic agent registry', () => {
     })
   })
 
-  test('passes immutable context to function selectors', () => {
+  it.effect('passes immutable context to function selectors', () => {
     let received: ModelSelectorContext | undefined
     const registry = {
       selected: {
@@ -122,7 +122,7 @@ describe('generic agent registry', () => {
     expect(Object.isFrozen(received?.parentModel)).toBe(true)
   })
 
-  test('resolves every built-in solely from its config', () => {
+  it.effect('resolves every built-in solely from its config', () => {
     const expected = {
       librarian: {
         color: 'mdLink',
@@ -157,7 +157,7 @@ describe('generic agent registry', () => {
     ).toBe('gpt-5.6-sol')
   })
 
-  test('fails unknown, unavailable, and invalid selector results', () => {
+  it.effect('fails unknown, unavailable, and invalid selector results', () => {
     expect(() => resolveAgentConfig('missing', context)).toThrow('Unknown agent profile')
     expect(() =>
       resolveAgentConfig('scout', {

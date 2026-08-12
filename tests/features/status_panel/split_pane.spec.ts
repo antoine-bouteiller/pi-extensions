@@ -1,6 +1,5 @@
-import { describe, expect, test } from 'bun:test'
-
 import { TuiAltScreen, TuiMainScreen as PiTuiMainScreen, type Terminal, type TUI } from '@earendil-works/pi-tui'
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asTui } from '@tests/utils/casts.js'
 
 import { createSplitPaneController, DEFAULT_SIDEBAR_WIDTH, MIN_MAIN_WIDTH, MIN_SIDEBAR_WIDTH } from '@/features/status_panel/split_pane.js'
@@ -86,7 +85,7 @@ const fullscreenRenderer = () => {
 }
 
 describe('status panel split pane', () => {
-  test('reserves space while preserving a usable main pane', () => {
+  it.effect('reserves space while preserving a usable main pane', () => {
     const { tui } = fakeTui()
     const split = createSplitPaneController()
     split.show()
@@ -96,7 +95,7 @@ describe('status panel split pane', () => {
     expect(tui.render(MIN_MAIN_WIDTH + MIN_SIDEBAR_WIDTH)).toEqual([`main:${MIN_MAIN_WIDTH}`])
   })
 
-  test('auto-hides in narrow terminals and matches overlay visibility', () => {
+  it.effect('auto-hides in narrow terminals and matches overlay visibility', () => {
     const { tui } = fakeTui()
     const split = createSplitPaneController()
     split.show()
@@ -108,7 +107,7 @@ describe('status panel split pane', () => {
     expect(overlay.visible?.(MIN_MAIN_WIDTH + MIN_SIDEBAR_WIDTH, 30)).toBeTrue()
   })
 
-  test('keeps the overlay width aligned with the reserved gutter', () => {
+  it.effect('keeps the overlay width aligned with the reserved gutter', () => {
     const { tui } = fakeTui()
     const split = createSplitPaneController()
     split.show()
@@ -122,7 +121,7 @@ describe('status panel split pane', () => {
     expect(split.overlayOptions()).toBe(overlay)
   })
 
-  test('hide and dispose restore full-width rendering', () => {
+  it.effect('hide and dispose restore full-width rendering', () => {
     const { tui, renderCount } = fakeTui()
     const split = createSplitPaneController()
     split.show()
@@ -137,7 +136,7 @@ describe('status panel split pane', () => {
     expect(renderCount()).toBeGreaterThan(0)
   })
 
-  test('rejects invalid attachment lifecycles', () => {
+  it.effect('rejects invalid attachment lifecycles', () => {
     const first = fakeTui().tui
     const second = fakeTui().tui
     const split = createSplitPaneController()
@@ -148,7 +147,7 @@ describe('status panel split pane', () => {
     expect(() => split.attach(second)).toThrow('disposed')
   })
 
-  test('show, hide, attach, and dispose are idempotent', () => {
+  it.effect('show, hide, attach, and dispose are idempotent', () => {
     const { renderer, tui } = fakeTui()
     const split = createSplitPaneController()
 
@@ -165,7 +164,7 @@ describe('status panel split pane', () => {
     expect(Object.is(Reflect.get(renderer, 'render'), Reflect.get(TuiMainScreen.prototype, 'render'))).toBeTrue()
   })
 
-  test('reserves width on Pi 0.84 concrete regular renderers without proxy recursion', () => {
+  it.effect('reserves width on Pi 0.84 concrete regular renderers without proxy recursion', () => {
     const renderer = new PiTuiMainScreen(fakeTerminal())
     const widths: number[] = []
     renderer.requestRender = () => undefined
@@ -188,7 +187,7 @@ describe('status panel split pane', () => {
     expect(renderer.render(120)).toEqual(['main:120'])
   })
 
-  test('renders the fullscreen sidebar in the layout and keeps its overlay hidden', () => {
+  it.effect('renders the fullscreen sidebar in the layout and keeps its overlay hidden', () => {
     const { renderer, root, widths } = fullscreenRenderer()
     const sidebarWidths: number[] = []
     const sidebar = {
@@ -232,7 +231,7 @@ describe('status panel split pane', () => {
     expect(Reflect.get(renderer, 'layoutRoot')).not.toBe(root)
   })
 
-  test('replaces the fullscreen sidebar component on the same TUI', () => {
+  it.effect('replaces the fullscreen sidebar component on the same TUI', () => {
     const { renderer } = fullscreenRenderer()
     const tui = stableTuiReference(() => renderer)
     const firstWidths: number[] = []
@@ -250,7 +249,7 @@ describe('status panel split pane', () => {
     expect(secondWidths.at(-1)).toBe(DEFAULT_SIDEBAR_WIDTH)
   })
 
-  test('keeps the overlay fallback for unsupported fullscreen renderers', () => {
+  it.effect('keeps the overlay fallback for unsupported fullscreen renderers', () => {
     const tui = asTui({
       mode: 'fullscreen',
       render: unsupportedRender,
@@ -265,7 +264,7 @@ describe('status panel split pane', () => {
     expect(split.overlayOptions().visible?.(120, 36)).toBeTrue()
   })
 
-  test('reconciles a replaced fullscreen renderer after hide and show', () => {
+  it.effect('reconciles a replaced fullscreen renderer after hide and show', () => {
     let current = fullscreenRenderer()
     const tui = stableTuiReference(() => current.renderer)
     const split = createSplitPaneController()
@@ -284,7 +283,7 @@ describe('status panel split pane', () => {
     expect(Reflect.get(current.renderer, 'layoutRoot')).toBe(current.root)
   })
 
-  test('does not overwrite a regular renderer installed after the split adapter', () => {
+  it.effect('does not overwrite a regular renderer installed after the split adapter', () => {
     const { renderer, tui } = fakeTui()
     const split = createSplitPaneController()
     split.attach(tui)
@@ -298,7 +297,7 @@ describe('status panel split pane', () => {
     expect(renderer.render(120)).toEqual(['later:120'])
   })
 
-  test('uses the non-overlapping adapter only for supported Pi renderers', () => {
+  it.effect('uses the non-overlapping adapter only for supported Pi renderers', () => {
     const tui = asTui({ mode: 'regular', render: unsupportedRender, requestRender: () => undefined, terminal: { columns: 120 } })
     const split = createSplitPaneController()
 

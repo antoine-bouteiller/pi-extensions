@@ -1,5 +1,4 @@
-import { describe, expect, test } from 'bun:test'
-
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asError, asOAuthCredentialPayload } from '@tests/utils/casts.js'
 import { Effect, Option } from 'effect'
 
@@ -90,7 +89,7 @@ const credential: OAuthCredentialPayload = {
 }
 
 describe('Keychain OAuth credential store', () => {
-  test('round trips one validated URL-bound credential payload', async () => {
+  it.effect('round trips one validated URL-bound credential payload', async () => {
     const keyring = inMemoryKeyring()
     const store = new KeychainCredentialStore({ createEntry: keyring.createEntry })
 
@@ -116,7 +115,7 @@ describe('Keychain OAuth credential store', () => {
     expect(JSON.parse(serialized)).toEqual(credential)
   })
 
-  test('awaits async keyring operations and forwards cancellation', async () => {
+  it.effect('awaits async keyring operations and forwards cancellation', async () => {
     const controller = new AbortController()
     const signals: (AbortSignal | undefined)[] = []
     let serialized: string | undefined
@@ -149,14 +148,14 @@ describe('Keychain OAuth credential store', () => {
     expect(signals).toEqual([controller.signal, controller.signal, controller.signal])
   })
 
-  test('uses a stable SHA-256 account without exposing the server name', () => {
+  it.effect('uses a stable SHA-256 account without exposing the server name', () => {
     expect(keychainAccount('slack')).toMatch(/^[0-9a-f]{64}$/)
     expect(keychainAccount('slack')).not.toContain('slack')
     expect(keychainAccount('slack')).toBe(keychainAccount('slack'))
     expect(keychainAccount('linear')).not.toBe(keychainAccount('slack'))
   })
 
-  test('rejects a payload when the configured endpoint was repointed', async () => {
+  it.effect('rejects a payload when the configured endpoint was repointed', async () => {
     const keyring = inMemoryKeyring()
     const store = new KeychainCredentialStore({ createEntry: keyring.createEntry })
     await store.set('slack', credential)
@@ -165,7 +164,7 @@ describe('Keychain OAuth credential store', () => {
     expect(keyring.values.has(keychainAccount('slack'))).toBeTrue()
   })
 
-  test('deletes credentials and treats absent entries as empty', async () => {
+  it.effect('deletes credentials and treats absent entries as empty', async () => {
     const keyring = inMemoryKeyring()
     const store = new KeychainCredentialStore({ createEntry: keyring.createEntry })
 
@@ -176,7 +175,7 @@ describe('Keychain OAuth credential store', () => {
     expect(await store.get('slack', credential.serverUrl)).toBeUndefined()
   })
 
-  test('rejects malformed JSON and malformed credential members', async () => {
+  it.effect('rejects malformed JSON and malformed credential members', async () => {
     for (const serialized of [
       '{ nope',
       JSON.stringify({ serverUrl: credential.serverUrl }),
@@ -200,7 +199,7 @@ describe('Keychain OAuth credential store', () => {
     }
   })
 
-  test('validates payloads before writing to Keychain', async () => {
+  it.effect('validates payloads before writing to Keychain', async () => {
     const keyring = inMemoryKeyring()
     const store = new KeychainCredentialStore({ createEntry: keyring.createEntry })
     const malformed = asOAuthCredentialPayload({
@@ -212,7 +211,7 @@ describe('Keychain OAuth credential store', () => {
     expect(keyring.calls).toEqual([])
   })
 
-  test('redacts native lookup, write, and deletion failures', async () => {
+  it.effect('redacts native lookup, write, and deletion failures', async () => {
     for (const operation of ['get', 'set', 'delete'] as const) {
       const keyring = inMemoryKeyring({}, operation)
       const store = new KeychainCredentialStore({ createEntry: keyring.createEntry })
@@ -238,7 +237,7 @@ describe('Keychain OAuth credential store', () => {
     }
   })
 
-  test('isolates server names that share one URL and exposes the Effect service as Option', async () => {
+  it.effect('isolates server names that share one URL and exposes the Effect service as Option', async () => {
     const keyring = inMemoryKeyring()
     const store = new KeychainCredentialStore({ createEntry: keyring.createEntry })
     await store.set('alpha', credential)

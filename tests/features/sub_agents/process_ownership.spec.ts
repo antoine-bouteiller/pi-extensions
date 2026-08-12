@@ -222,7 +222,7 @@ describe('ProcessInspector: liveness and ownership comparison', () => {
 })
 
 describe('plain exported functions delegate to the live probe', () => {
-  it('inspectProcess/ownershipMatches/processOwnerIsActive stay usable without Effect', () => {
+  it.effect('inspectProcess/ownershipMatches/processOwnerIsActive stay usable without Effect', () => {
     expect(inspectProcess(-1)).toBeUndefined()
     expect(ownershipMatches({ pid: -1, processIdentity: 'x', token: 'y' })).toBe(false)
     expect(processOwnerIsActive({ pid: -1 })).toBe(false)
@@ -230,7 +230,7 @@ describe('plain exported functions delegate to the live probe', () => {
 })
 
 describe('ProcessInspectorLive', () => {
-  it('matches the running Node process to the live probe platform', () => {
+  it.effect('matches the running Node process to the live probe platform', () => {
     expect(nodeProcessProbe.platform).toBe(process.platform)
     expect(nodeProcessProbe.processAlive(process.pid)).toBe(true)
   })

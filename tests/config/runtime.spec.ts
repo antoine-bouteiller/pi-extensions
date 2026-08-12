@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'bun:test'
 import { fileURLToPath } from 'node:url'
 
 import { NodeFileSystem, NodePath } from '@effect/platform-node'
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { Effect, Layer, ManagedRuntime } from 'effect'
 import { FetchHttpClient } from 'effect/unstable/http'
@@ -65,11 +65,11 @@ const sharedActivityScript = (paths: { aggregate: string; activity: string; runt
 `
 
 describe('process-wide runtime', () => {
-  it('memoises to one instance across repeated lookups', () => {
+  it.effect('memoises to one instance across repeated lookups', () => {
     expect(getOrCreateProcessRuntime()).toBe(getOrCreateProcessRuntime())
   })
 
-  it('uses the runtime supplied to a feature register function', async () => {
+  it.effect('uses the runtime supplied to a feature register function', async () => {
     let subscriptions = 0
     const sentinelActivity: AgentActivityShape = {
       list: () => [],
@@ -97,7 +97,7 @@ describe('process-wide runtime', () => {
     }
   })
 
-  it('makes AgentActivity observable through aggregate and explicit feature registration', async () => {
+  it.effect('makes AgentActivity observable through aggregate and explicit feature registration', async () => {
     const script = sharedActivityScript({
       activity: fileURLToPath(new URL('../../src/shared/effect/app_services.ts', import.meta.url)),
       aggregate: fileURLToPath(new URL('../../src/index.ts', import.meta.url)),

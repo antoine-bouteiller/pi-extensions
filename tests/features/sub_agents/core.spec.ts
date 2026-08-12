@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from 'bun:test'
+import { mock } from 'bun:test'
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- Fixture setup and teardown must stay synchronously ordered against the child processes these specs start.
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { userInfo } from 'node:os'
@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path'
 
 import { type Theme } from '@earendil-works/pi-coding-agent'
 import { visibleWidth } from '@earendil-works/pi-tui'
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asError, asExtensionApi, asNarrowed, asResult, asTheme, asTui } from '@tests/utils/casts.js'
 import { Data, Effect } from 'effect'
 
@@ -145,7 +146,7 @@ const createAgentManager = (options: Record<string, unknown> = {}) =>
   )
 
 const processTest = (name: string, run: () => void | Promise<void>): void => {
-  test(name, run, 15_000)
+  it.effect(name, () => Promise.resolve(run()), 15_000)
 }
 
 const withScoutProfile = async <Result>(patch: Partial<{ model: string; isReadonly: boolean }>, run: () => Promise<Result>): Promise<Result> => {
@@ -160,7 +161,7 @@ const withScoutProfile = async <Result>(patch: Partial<{ model: string; isReadon
 }
 
 describe('RPC framing', () => {
-  test('splits only on LF and preserves Unicode line separators', () => {
+  it.effect('splits only on LF and preserves Unicode line separators', () => {
     const decoder = new RpcJsonlDecoder()
     const payload = JSON.stringify({ text: 'before\u2028after' })
     expect(decoder.push(Buffer.from(payload.slice(0, 7)))).toEqual([])
@@ -170,7 +171,7 @@ describe('RPC framing', () => {
 })
 
 describe('session-scoped identities', () => {
-  test('separates parent sessions and formerly colliding task names', () => {
+  it.effect('separates parent sessions and formerly colliding task names', () => {
     expect(parentScopeKey('parent-a')).not.toBe(parentScopeKey('parent-b'))
     expect(taskStorageKey('review/api')).not.toBe(taskStorageKey('review__api'))
   })
@@ -181,12 +182,12 @@ describe('run storage', () => {
   const configFile = join(packageDir, 'config.json')
   const fixtureDir = join(TEST_AGENT_DIR, 'retention-fixture')
 
-  test('uses persistent package storage by default', () => {
+  it.effect('uses persistent package storage by default', () => {
     rmSync(configFile, { force: true })
     expect(getRunsDir()).toBe(join(packageDir, 'runs'))
   })
 
-  test('keeps legacy temporary runs discoverable', () => {
+  it.effect('keeps legacy temporary runs discoverable', () => {
     rmSync(configFile, { force: true })
     const parentSessionId = 'legacy-parent'
     const id = '11111111-1111-4111-8111-111111111111'
@@ -213,7 +214,7 @@ describe('run storage', () => {
     rmSync(legacyScope, { force: true, recursive: true })
   })
 
-  test('keeps agent lists in creation order when activity changes', async () => {
+  it.effect('keeps agent lists in creation order when activity changes', async () => {
     rmSync(configFile, { force: true })
     const parentSessionId = 'creation-order'
     const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
@@ -255,7 +256,7 @@ describe('run storage', () => {
     }
   })
 
-  test('removes expired runs and outputs using configurable retention', () => {
+  it.effect('removes expired runs and outputs using configurable retention', () => {
     mkdirSync(packageDir, { recursive: true })
     rmSync(fixtureDir, { force: true, recursive: true })
     writeFileSync(configFile, JSON.stringify({ retentionDays: 3, storageDir: fixtureDir }))
@@ -328,7 +329,7 @@ describe('run storage', () => {
     }
   })
 
-  test('creates the default run and socket directories with 0700 permissions', async () => {
+  it.effect('creates the default run and socket directories with 0700 permissions', async () => {
     if (process.platform === 'win32') {
       return
     }
@@ -345,7 +346,7 @@ describe('run storage', () => {
     }
   })
 
-  test('creates the _outputs directory with 0700 permissions', () => {
+  it.effect('creates the _outputs directory with 0700 permissions', () => {
     if (process.platform === 'win32') {
       return
     }
@@ -360,7 +361,7 @@ describe('run storage', () => {
     }
   })
 
-  test('chmods a freshly created configured storage root to 0700', async () => {
+  it.effect('chmods a freshly created configured storage root to 0700', async () => {
     if (process.platform === 'win32') {
       return
     }
@@ -376,7 +377,7 @@ describe('run storage', () => {
     }
   })
 
-  test('does not tighten permissions on a pre-existing configured storage root', async () => {
+  it.effect('does not tighten permissions on a pre-existing configured storage root', async () => {
     if (process.platform === 'win32') {
       return
     }
@@ -1819,7 +1820,7 @@ describe('subagent peek overlay', () => {
     })
   }
 
-  test('initially follows a long transcript at the end', () => {
+  it.effect('initially follows a long transcript at the end', () => {
     const overlay = createOverlay()
     try {
       const internals = asNarrowed<PeekOverlayInternals, typeof overlay>(overlay)
@@ -1836,7 +1837,7 @@ describe('subagent peek overlay', () => {
     }
   })
 
-  test('renders profile identity separately from semantic status color', () => {
+  it.effect('renders profile identity separately from semantic status color', () => {
     const overlay = createOverlay()
     try {
       const colors: string[] = []
@@ -1854,7 +1855,7 @@ describe('subagent peek overlay', () => {
     }
   })
 
-  test('keeps every frame line within a narrow render width', () => {
+  it.effect('keeps every frame line within a narrow render width', () => {
     const overlay = createOverlay(12, 14)
     try {
       const internals = asNarrowed<PeekOverlayInternals, typeof overlay>(overlay)
@@ -1869,7 +1870,7 @@ describe('subagent peek overlay', () => {
     }
   })
 
-  test('escape cancels the running parent without closing the overlay while q closes it', () => {
+  it.effect('escape cancels the running parent without closing the overlay while q closes it', () => {
     const navigation: ('previous' | 'next' | undefined)[] = []
     let escapes = 0
     const overlay = createOverlay(
@@ -1887,7 +1888,7 @@ describe('subagent peek overlay', () => {
 })
 
 describe('completion mailbox', () => {
-  test('waits until explicitly cancelled when no completion exists', async () => {
+  it.effect('waits until explicitly cancelled when no completion exists', async () => {
     const manager = createAgentManager()
     const controller = new AbortController()
     Effect.runFork(Effect.flatMap(Effect.sleep(10), () => Effect.sync(() => controller.abort(new Error('cancelled')))))
@@ -1895,7 +1896,7 @@ describe('completion mailbox', () => {
     await manager.shutdown()
   })
 
-  test('consumes one matching completion without dropping siblings', () => {
+  it.effect('consumes one matching completion without dropping siblings', () => {
     const events = [
       { agentName: '/one', createdAt: 1, id: '1', parentSessionId: 'parent', status: 'completed' },
       { agentName: '/two', createdAt: 2, id: '2', parentSessionId: 'parent', status: 'completed' },

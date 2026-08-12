@@ -1,6 +1,5 @@
-import { describe, expect, test } from 'bun:test'
-
 import { type AgentToolResult, type Theme } from '@earendil-works/pi-coding-agent'
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asError, asNarrowed, asTheme, asTool } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
@@ -82,7 +81,7 @@ const streamedResponse = (chunkBytes: number, chunkCount: number, init: Response
 }
 
 describe('webfetch', () => {
-  test('registers the tool with static-web guidance', () => {
+  it.effect('registers the tool with static-web guidance', () => {
     const harness = createHarness(async () => new Response('ok'))
 
     expect([...harness.fixture.state.tools.keys()]).toEqual(['webfetch'])
@@ -90,7 +89,7 @@ describe('webfetch', () => {
     expect(harness.tool?.promptSnippet).toContain('static web pages')
   })
 
-  test('shows a short preview until tool output is expanded', async () => {
+  it.effect('shows a short preview until tool output is expanded', async () => {
     const complete = Array.from({ length: 25 }, (_value, index) => `line ${index + 1}`).join('\n')
     const harness = createHarness(async () => new Response(complete, { headers: { 'content-type': 'text/plain' } }))
     const result = await harness.execute({ url: 'https://example.com/preview.txt' })
@@ -112,7 +111,7 @@ describe('webfetch', () => {
     expect(expanded).toContain('line 25')
   })
 
-  test('fetches HTML, extracts article content, and converts it to markdown', async () => {
+  it.effect('fetches HTML, extracts article content, and converts it to markdown', async () => {
     const updates: string[] = []
     const html = `<!doctype html>
       <html>
@@ -150,7 +149,7 @@ describe('webfetch', () => {
     })
   })
 
-  test('tags transport failures while preserving their cause and message', async () => {
+  it.effect('tags transport failures while preserving their cause and message', async () => {
     const cause = new Error('socket exploded')
     const harness = createHarness(() => Promise.reject(cause))
 
@@ -162,7 +161,7 @@ describe('webfetch', () => {
     expect(rejection).toMatchObject({ _tag: 'ToolFailure', cause, message: 'socket exploded' })
   })
 
-  test('supports plain text and raw HTML output', async () => {
+  it.effect('supports plain text and raw HTML output', async () => {
     const html =
       "<html><head><title>Title</title></head><body><main><h1>Heading</h1><p>A <strong>bold</strong> link to <a href='https://example.com'>home</a>.</p></main></body></html>"
     const harness = createHarness(async () => new Response(html, { headers: { 'content-type': 'text/html' } }))
@@ -181,7 +180,7 @@ describe('webfetch', () => {
     expect(raw.details?.converted).toBeFalse()
   })
 
-  test('returns non-HTML responses unchanged and preserves non-success status metadata', async () => {
+  it.effect('returns non-HTML responses unchanged and preserves non-success status metadata', async () => {
     const harness = createHarness(
       async () =>
         new Response('{"error":"missing"}', {
@@ -207,7 +206,7 @@ describe('webfetch', () => {
     })
   })
 
-  test('rejects unsupported protocols before making a request', async () => {
+  it.effect('rejects unsupported protocols before making a request', async () => {
     let calls = 0
     const harness = createHarness(async () => {
       calls += 1
@@ -219,7 +218,7 @@ describe('webfetch', () => {
     expect(calls).toBe(0)
   })
 
-  test('rejects responses larger than the download limit declared up front', async () => {
+  it.effect('rejects responses larger than the download limit declared up front', async () => {
     const harness = createHarness(
       async () =>
         new Response('ignored', {
@@ -230,7 +229,7 @@ describe('webfetch', () => {
     expect(await rejectionMessage(harness.execute({ url: 'https://example.com/large' }))).toContain('download limit')
   })
 
-  test('cancels a no-Content-Length stream once it crosses the download limit mid-stream', async () => {
+  it.effect('cancels a no-Content-Length stream once it crosses the download limit mid-stream', async () => {
     let cancelledAfterChunks = -1
     let fetchAborted = false
     const harness = createHarness(async (_url, init) => {
@@ -268,7 +267,7 @@ describe('webfetch', () => {
     expect(fetchAborted).toBeTrue()
   })
 
-  test('rejects with an exact message when the request exceeds its timeout', async () => {
+  it.effect('rejects with an exact message when the request exceeds its timeout', async () => {
     const rejection = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -290,7 +289,7 @@ describe('webfetch', () => {
     expect(asError(rejection).message).toBe('webfetch timed out after 1s')
   })
 
-  test('truncates large model output and saves the complete text', async () => {
+  it.effect('truncates large model output and saves the complete text', async () => {
     const complete = `${'a'.repeat(60 * 1024)}\nlast line`
     let saved = ''
     const harness = createHarness(
@@ -313,7 +312,7 @@ describe('webfetch', () => {
     })
   })
 
-  test('does not issue a request when cancellation happened before dispatch', async () => {
+  it.effect('does not issue a request when cancellation happened before dispatch', async () => {
     let requests = 0
     const harness = createHarness(async () => {
       requests += 1
@@ -331,7 +330,7 @@ describe('webfetch', () => {
     expect(requests).toBe(0)
   })
 
-  test('propagates cancellation as a concise, exact tool error, distinct from a timeout', async () => {
+  it.effect('propagates cancellation as a concise, exact tool error, distinct from a timeout', async () => {
     const harness = createHarness((_url, init) => pendingFetch(init?.signal))
     const controller = new AbortController()
     const pending = harness.execute({ url: 'https://example.com/slow' }, controller.signal)
@@ -348,7 +347,7 @@ describe('webfetch', () => {
 })
 
 describe('webfetch streaming (unbounded)', () => {
-  test('accepts a no-Content-Length stream that stays under the download limit', async () => {
+  it.effect('accepts a no-Content-Length stream that stays under the download limit', async () => {
     const harness = createHarness(async () => streamedResponse(1024, 10, { headers: { 'content-type': 'text/plain' } }))
 
     const result = await harness.execute({ url: 'https://example.com/ok' })

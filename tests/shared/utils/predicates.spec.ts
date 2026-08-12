@@ -1,5 +1,5 @@
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 // oxlint-disable unicorn/no-null -- Null literals are required to exercise the nullish predicates.
-import { describe, expect, test } from 'bun:test'
 
 import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 
@@ -11,22 +11,22 @@ const emptyValue = (value: '' | 'value'): '' | undefined => (isEmptyString(value
 const nonEmptyValue = (value: '' | 'value'): 'value' | undefined => (isNotEmptyString(value) ? value : undefined)
 
 describe('shared predicates', () => {
-  test('distinguishes nullish values without rejecting other falsy values', () => {
+  it.effect('distinguishes nullish values without rejecting other falsy values', () => {
     expect([null, undefined, false, 0, ''].filter(isNullOrUndefined)).toEqual([null, undefined])
     expect([null, undefined, false, 0, ''].filter(isNotNullOrUndefined)).toEqual([false, 0, ''])
   })
 
-  test('preserves nullable boolean states', () => {
+  it.effect('preserves nullable boolean states', () => {
     expect([true, false, null, undefined].filter(isTrue)).toEqual([true])
     expect([true, false, null, undefined].filter(isFalse)).toEqual([false])
   })
 
-  test('treats only the zero-length string as empty', () => {
+  it.effect('treats only the zero-length string as empty', () => {
     expect(['', ' ', 'value'].filter(isEmptyString)).toEqual([''])
     expect(['', ' ', 'value'].filter(isNotEmptyString)).toEqual([' ', 'value'])
   })
 
-  test('preserves type narrowing', () => {
+  it.effect('preserves type narrowing', () => {
     expect(presentString('value')).toBe('value')
     expect(trueValue(true)).toBeTrue()
     expect(falseValue(false)).toBeFalse()

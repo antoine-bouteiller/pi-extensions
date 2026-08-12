@@ -45,7 +45,7 @@ describe('bun-effect shim', () => {
     })
   )
 
-  it('released after the scoped test finished', () => {
+  it.effect('released after the scoped test finished', () => {
     expect(log).toEqual(['acquire', 'release'])
   })
 })

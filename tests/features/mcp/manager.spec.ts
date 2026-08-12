@@ -1,7 +1,5 @@
-import { describe, expect, test } from 'bun:test'
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- The spec reserves a real loopback listener to verify ephemeral-port release; an HTTP client cannot create that server.
 import { createServer } from 'node:http'
-import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 import { DEFAULT_MAX_BYTES } from '@earendil-works/pi-coding-agent'
@@ -9,18 +7,16 @@ import { UnauthorizedError, type OAuthClientProvider } from '@modelcontextprotoc
 import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { type Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { type JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asError, asNarrowed } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { httpGet } from '@tests/utils/http.js'
-import { platform } from '@tests/utils/platform.js'
-import { Effect } from 'effect'
+import { Effect, FileSystem, Path } from 'effect'
 
 import { readonlyMcpPolicy, type McpOperationOptions, type McpSearchOptions } from '@/features/mcp/gateway.js'
 import { KeychainCredentialError, type CredentialStore } from '@/features/mcp/keychain.js'
 import { McpManager, McpManagerService, mcpManagerLayer } from '@/features/mcp/manager.js'
 import { type McpGatewayPolicy, type McpServerMap } from '@/features/mcp/types.js'
-
-const { join, mkdtemp, readFile, rm } = platform
 
 class FakeTransport {
   onclose?: () => void
@@ -196,7 +192,7 @@ const freePort = async (): Promise<number> => {
 }
 
 describe('MCP manager', () => {
-  test('construction and status are metadata-only', () => {
+  it.effect('construction and status are metadata-only', () => {
     const fixture = harness({
       config: {
         broken: { invalid: true },
@@ -224,7 +220,7 @@ describe('MCP manager', () => {
     expect(fixture.calls.keychainReads).toBe(0)
   })
 
-  test('invalid config cannot connect and does not hide usable servers from search', async () => {
+  it.effect('invalid config cannot connect and does not hide usable servers from search', async () => {
     const fixture = harness({
       config: {
         broken: { invalid: true },
@@ -241,7 +237,7 @@ describe('MCP manager', () => {
     expect(fixture.calls.clients).toBe(1)
   })
 
-  test('the first concurrent list shares one lazy stdio connection', async () => {
+  it.effect('the first concurrent list shares one lazy stdio connection', async () => {
     const gate = deferred<void>()
     const fixture = harness({ connect: async () => gate.promise })
 
@@ -257,7 +253,7 @@ describe('MCP manager', () => {
     expect(fixture.calls.lists).toEqual([undefined])
   })
 
-  test('falls back from compatible Streamable HTTP failures only', async () => {
+  it.effect('falls back from compatible Streamable HTTP failures only', async () => {
     for (const fallbackError of [
       new StreamableHTTPError(405, 'method not allowed'),
       new StreamableHTTPError(-1, 'Unexpected content type: text/event-stream'),
@@ -293,7 +289,7 @@ describe('MCP manager', () => {
     expect(broken.calls.connects).toEqual(['streamable-http'])
   })
 
-  test('defers implicit OAuth until an HTTP 401 challenge', async () => {
+  it.effect('defers implicit OAuth until an HTTP 401 challenge', async () => {
     let attempts = 0
     const fixture = harness({
       config: { linear: { type: 'http', url: 'https://mcp.linear.app/mcp' } },
@@ -315,7 +311,7 @@ describe('MCP manager', () => {
     expect(fixture.calls.keychainReads).toBe(1)
   })
 
-  test('allows explicit authentication for a URL-only HTTP server', async () => {
+  it.effect('allows explicit authentication for a URL-only HTTP server', async () => {
     const fixture = harness({
       config: { linear: { type: 'http', url: 'https://mcp.linear.app/mcp' } },
     })
@@ -325,7 +321,7 @@ describe('MCP manager', () => {
     expect(fixture.manager.status()).toEqual([{ name: 'linear', status: 'connected' }])
   })
 
-  test('does not infer OAuth when custom HTTP headers are configured', async () => {
+  it.effect('does not infer OAuth when custom HTTP headers are configured', async () => {
     const fixture = harness({
       config: {
         remote: {
@@ -345,7 +341,7 @@ describe('MCP manager', () => {
     expect(fixture.calls.keychainReads).toBe(0)
   })
 
-  test('loads every page, sanitizes names, searches, describes, and calls scoped tools', async () => {
+  it.effect('loads every page, sanitizes names, searches, describes, and calls scoped tools', async () => {
     const fixture = harness({
       callResult: {
         content: [
@@ -413,7 +409,7 @@ describe('MCP manager', () => {
     ])
   })
 
-  test('read-only policy filters annotated tools across discovery, description, and calls', async () => {
+  it.effect('read-only policy filters annotated tools across discovery, description, and calls', async () => {
     const fixture = harness({
       config: { linear: { command: 'fixture', type: 'stdio' } },
       pages: {
@@ -456,7 +452,7 @@ describe('MCP manager', () => {
     expect(fixture.calls.toolCalls.map((call) => call.name)).toEqual(['get_issue'])
   })
 
-  test('read-only policy allows only the four exact unannotated DBX metadata tools', async () => {
+  it.effect('read-only policy allows only the four exact unannotated DBX metadata tools', async () => {
     const allowed = ['dbx_list_connections', 'dbx_list_tables', 'dbx_describe_table', 'dbx_get_schema_context']
     const denied = ['dbx_execute_sql', 'dbx_execute_redis', 'dbx_open_ui', 'dbx_add_connection', 'dbx_remove_connection']
     const fixture = harness({
@@ -500,7 +496,7 @@ describe('MCP manager', () => {
     expect(impersonator.manager.call('other_dbx_list_tables', {})).rejects.toThrow('read-only policy')
   })
 
-  test('passes the requested operation and canonical names to policy callbacks', async () => {
+  it.effect('passes the requested operation and canonical names to policy callbacks', async () => {
     const requests: {
       operation: string
       server: string
@@ -537,7 +533,7 @@ describe('MCP manager', () => {
     )
   })
 
-  test('reports sanitized collisions, repeated cursors, invalid regex, and MCP errors', async () => {
+  it.effect('reports sanitized collisions, repeated cursors, invalid regex, and MCP errors', async () => {
     const collision = harness({
       pages: {
         root: {
@@ -584,7 +580,7 @@ describe('MCP manager', () => {
     }
   })
 
-  test('completes an explicit callback-driven OAuth flow and reconnects', async () => {
+  it.effect('completes an explicit callback-driven OAuth flow and reconnects', async () => {
     const port = await freePort()
     let authorized = false
     const opened: string[] = []
@@ -625,7 +621,7 @@ describe('MCP manager', () => {
     expect(fixture.calls.connects).toEqual(['streamable-http', 'streamable-http'])
   })
 
-  test('keeps shared OAuth alive while another authentication waiter remains', async () => {
+  it.effect('keeps shared OAuth alive while another authentication waiter remains', async () => {
     const port = await freePort()
     let authorized = false
     let openedUrl = ''
@@ -672,7 +668,7 @@ describe('MCP manager', () => {
     expect(fixture.calls.connects).toEqual(['streamable-http', 'streamable-http'])
   })
 
-  test('closes a directly authenticated connection when exposed names collide', async () => {
+  it.effect('closes a directly authenticated connection when exposed names collide', async () => {
     const port = await freePort()
     const fixture = harness({
       config: {
@@ -690,37 +686,47 @@ describe('MCP manager', () => {
     expect(fixture.calls.closes).toBe(1)
   })
 
-  test('uses the real SDK over stdio and terminates the fixture on close', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'pi-mcp-manager-test-'))
-    const marker = join(directory, 'pid')
-    const fixturePath = fileURLToPath(new URL('fixtures/stdio_fixture.ts', import.meta.url))
-    const manager = promised(
-      new McpManager(
-        {
-          fixture: {
-            args: [fixturePath],
-            command: process.execPath,
-            env: { PI_MCP_FIXTURE_PID: marker },
-            type: 'stdio',
-          },
-        },
-        { openUrl: async () => undefined }
-      )
+  it.effect('uses the real SDK over stdio and terminates the fixture on close', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const path = yield* Path.Path
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'pi-mcp-manager-test-' })
+        const marker = path.join(directory, 'pid')
+        const fixturePath = fileURLToPath(new URL('fixtures/stdio_fixture.ts', import.meta.url))
+        const manager = yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            promised(
+              new McpManager(
+                {
+                  fixture: {
+                    args: [fixturePath],
+                    command: process.execPath,
+                    env: { PI_MCP_FIXTURE_PID: marker },
+                    type: 'stdio',
+                  },
+                },
+                { openUrl: async () => undefined }
+              )
+            )
+          ),
+          (resource) => Effect.promise(() => resource.close())
+        )
+
+        const tools = yield* Effect.promise(() => manager.list('fixture'))
+        expect(tools.map((tool) => tool.name)).toEqual(['fixture_echo_fixture'])
+        const result = yield* Effect.promise(() => manager.call('fixture_echo_fixture', { value: 'hello' }))
+        expect(result.content[0]).toEqual({ text: 'fixture:hello', type: 'text' })
+        const pid = Number(yield* fs.readFileString(marker))
+
+        yield* Effect.promise(() => manager.close())
+        yield* Effect.promise(() => Bun.sleep(20))
+        expect(() => process.kill(pid, 0)).toThrow()
+      })
     )
+  )
 
-    const tools = await manager.list('fixture')
-    expect(tools.map((tool) => tool.name)).toEqual(['fixture_echo_fixture'])
-    const result = await manager.call('fixture_echo_fixture', { value: 'hello' })
-    expect(result.content[0]).toEqual({ text: 'fixture:hello', type: 'text' })
-    const pid = Number(await readFile(marker, 'utf8'))
-
-    await manager.close()
-    await Bun.sleep(20)
-    expect(() => process.kill(pid, 0)).toThrow()
-    await rm(directory, { force: true, recursive: true })
-  })
-
-  test('redacts transport and SDK request errors from status and callers', async () => {
+  it.effect('redacts transport and SDK request errors from status and callers', async () => {
     const transport = harness({
       config: { remote: { type: 'http', url: 'https://example.test/mcp' } },
       connect: async () => {
@@ -759,7 +765,7 @@ describe('MCP manager', () => {
     expect(keychain.manager.connect('remote')).rejects.toThrow('Ensure Keychain is available and unlocked')
   })
 
-  test('cancelling the sole connection waiter aborts and closes the shared attempt', async () => {
+  it.effect('cancelling the sole connection waiter aborts and closes the shared attempt', async () => {
     const fixture = harness({ connect: () => Effect.runPromise(Effect.never) })
     const controller = new AbortController()
     const connecting = fixture.manager.connect('local', { signal: controller.signal })
@@ -770,7 +776,7 @@ describe('MCP manager', () => {
     expect(fixture.calls.closes).toBe(1)
   })
 
-  test('close aborts and awaits an in-flight connection', async () => {
+  it.effect('close aborts and awaits an in-flight connection', async () => {
     const fixture = harness({ connect: () => Effect.runPromise(Effect.never) })
     const connecting = fixture.manager.connect('local')
     await Promise.resolve()
@@ -779,7 +785,7 @@ describe('MCP manager', () => {
     expect(fixture.calls.closes).toBe(1)
   })
 
-  test('can be owned by an Effect Layer without connecting at construction', async () => {
+  it.effect('can be owned by an Effect Layer without connecting at construction', async () => {
     const statuses = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -791,7 +797,7 @@ describe('MCP manager', () => {
     expect(statuses).toEqual([])
   })
 
-  test('close is idempotent and closes connected clients', async () => {
+  it.effect('close is idempotent and closes connected clients', async () => {
     const fixture = harness()
     await fixture.manager.connect('local')
     await fixture.manager.close()

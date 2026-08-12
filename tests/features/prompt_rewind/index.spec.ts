@@ -1,5 +1,4 @@
-import { describe, expect, test } from 'bun:test'
-
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asCommand, asExtensionContext } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
@@ -182,7 +181,7 @@ const createHarness = (dispatchSubmittedCommands = false) => {
 }
 
 describe('prompt rewind', () => {
-  test('registers exactly one internal command and no tools or message renderers', () => {
+  it.effect('registers exactly one internal command and no tools or message renderers', () => {
     const harness = createHarness()
 
     expect([...harness.fixture.state.handlers.keys()].toSorted()).toEqual(
@@ -201,14 +200,14 @@ describe('prompt rewind', () => {
     expect(harness.fixture.state.tools.size).toBe(0)
   })
 
-  test('does not register a terminal listener outside tui mode', async () => {
+  it.effect('does not register a terminal listener outside tui mode', async () => {
     const harness = createHarness()
     await harness.startSession('rpc')
 
     expect(harness.hasTerminalHandler()).toBeFalse()
   })
 
-  test('Escape dispatches the internal command before aborting and restores the prompt for editing', async () => {
+  it.effect('Escape dispatches the internal command before aborting and restores the prompt for editing', async () => {
     const harness = createHarness(true)
     await harness.startSession()
     await harness.submitAndArm('original raw text')
@@ -225,7 +224,7 @@ describe('prompt rewind', () => {
     expect(harness.editorText()).toBe('original raw text')
   })
 
-  test('never arms for image attachments', async () => {
+  it.effect('never arms for image attachments', async () => {
     const harness = createHarness()
     await harness.startSession()
     await harness.submit({ images: [{ data: 'x', type: 'image' }], source: 'interactive', text: 'hi' })
@@ -236,7 +235,7 @@ describe('prompt rewind', () => {
     expect(harness.aborts).toHaveLength(0)
   })
 
-  test('never arms for non-interactive sources', async () => {
+  it.effect('never arms for non-interactive sources', async () => {
     const harness = createHarness()
     await harness.startSession()
     await harness.submit({ source: 'rpc', text: 'hi' })
@@ -247,7 +246,7 @@ describe('prompt rewind', () => {
     expect(harness.aborts).toHaveLength(0)
   })
 
-  test('never arms for queued steering submissions', async () => {
+  it.effect('never arms for queued steering submissions', async () => {
     const harness = createHarness()
     await harness.startSession()
     await harness.submit({ source: 'interactive', streamingBehavior: 'steer', text: 'hi' })
@@ -258,7 +257,7 @@ describe('prompt rewind', () => {
     expect(harness.aborts).toHaveLength(0)
   })
 
-  test('ignores key release and key repeat sequences even while armed', async () => {
+  it.effect('ignores key release and key repeat sequences even while armed', async () => {
     const harness = createHarness()
     await harness.startSession()
     await harness.submitAndArm()
@@ -268,7 +267,7 @@ describe('prompt rewind', () => {
     expect(harness.aborts).toHaveLength(0)
   })
 
-  test('ignores non-escape keys while armed', async () => {
+  it.effect('ignores non-escape keys while armed', async () => {
     const harness = createHarness()
     await harness.startSession()
     await harness.submitAndArm()
@@ -279,7 +278,7 @@ describe('prompt rewind', () => {
     expect(harness.aborts).toHaveLength(0)
   })
 
-  test('does not hijack Escape while messages are queued, so the built-in restore still runs', async () => {
+  it.effect('does not hijack Escape while messages are queued, so the built-in restore still runs', async () => {
     const harness = createHarness()
     await harness.startSession()
     await harness.submitAndArm()
@@ -291,7 +290,7 @@ describe('prompt rewind', () => {
     expect(harness.aborts).toHaveLength(0)
   })
 
-  test('does not hijack Escape when the editor already holds a fresh draft', async () => {
+  it.effect('does not hijack Escape when the editor already holds a fresh draft', async () => {
     const harness = createHarness()
     await harness.startSession()
     await harness.submitAndArm()
@@ -303,7 +302,7 @@ describe('prompt rewind', () => {
     expect(harness.aborts).toHaveLength(0)
   })
 
-  test('leaves overlay Escape handling alone and disarms the rewind', async () => {
+  it.effect('leaves overlay Escape handling alone and disarms the rewind', async () => {
     const harness = createHarness()
     await harness.startSession()
     await harness.submitAndArm()
@@ -314,7 +313,7 @@ describe('prompt rewind', () => {
     expect(harness.escape()).toBeUndefined()
     expect(harness.submittedCommands).toEqual([])
   })
-  test('consumes a second Escape while the first cancellation is still in flight', async () => {
+  it.effect('consumes a second Escape while the first cancellation is still in flight', async () => {
     const harness = createHarness()
     await harness.startSession()
     await harness.submitAndArm()
@@ -326,7 +325,7 @@ describe('prompt rewind', () => {
     expect(harness.aborts).toHaveLength(0)
   })
 
-  test('disarms on the first assistant message update', async () => {
+  it.effect('disarms on the first assistant message update', async () => {
     const harness = createHarness()
     await harness.startSession()
     await harness.submitAndArm()
@@ -338,7 +337,7 @@ describe('prompt rewind', () => {
     expect(harness.aborts).toHaveLength(0)
   })
 
-  test('disarms on tool_execution_start', async () => {
+  it.effect('disarms on tool_execution_start', async () => {
     const harness = createHarness()
     await harness.startSession()
     await harness.submitAndArm()
@@ -350,7 +349,7 @@ describe('prompt rewind', () => {
     expect(harness.aborts).toHaveLength(0)
   })
 
-  test('disarms on agent_end', async () => {
+  it.effect('disarms on agent_end', async () => {
     const harness = createHarness()
     await harness.startSession()
     await harness.submitAndArm()
@@ -362,7 +361,7 @@ describe('prompt rewind', () => {
     expect(harness.aborts).toHaveLength(0)
   })
 
-  test('does not disarm before the assistant starts producing output', async () => {
+  it.effect('does not disarm before the assistant starts producing output', async () => {
     const harness = createHarness()
     await harness.startSession()
     await harness.submitAndArm()
@@ -373,7 +372,7 @@ describe('prompt rewind', () => {
     expect(result).toEqual({ consume: true })
   })
 
-  test('command handler rewinds the captured user entry and restores the raw pre-expansion text', async () => {
+  it.effect('command handler rewinds the captured user entry and restores the raw pre-expansion text', async () => {
     const harness = createHarness()
     await harness.startSession()
     await harness.submitAndArm('/skill:foo do the thing')
@@ -389,7 +388,7 @@ describe('prompt rewind', () => {
     expect(harness.editorText()).toBe('/skill:foo do the thing')
   })
 
-  test('command handler preserves a draft typed while cancellation settles', async () => {
+  it.effect('command handler preserves a draft typed while cancellation settles', async () => {
     const harness = createHarness()
     await harness.startSession()
     await harness.submitAndArm('original')
@@ -403,7 +402,7 @@ describe('prompt rewind', () => {
     expect(harness.editorText()).toBe('original\n\nnew draft')
   })
 
-  test('command handler notifies when no matching entry exists', async () => {
+  it.effect('command handler notifies when no matching entry exists', async () => {
     const harness = createHarness()
     await harness.startSession()
     await harness.submitAndArm('original')
@@ -416,7 +415,7 @@ describe('prompt rewind', () => {
     expect(harness.notifications[0]?.level).toBe('warning')
   })
 
-  test('command handler does not restore raw text when navigateTree reports cancellation', async () => {
+  it.effect('command handler does not restore raw text when navigateTree reports cancellation', async () => {
     const harness = createHarness()
     await harness.startSession()
     await harness.submitAndArm('original')
@@ -431,7 +430,7 @@ describe('prompt rewind', () => {
     expect(harness.editorText()).toBe('')
   })
 
-  test('command handler is a no-op when nothing was captured', async () => {
+  it.effect('command handler is a no-op when nothing was captured', async () => {
     const harness = createHarness()
     await harness.startSession()
 
@@ -442,7 +441,7 @@ describe('prompt rewind', () => {
     expect(harness.navigateTreeCalls).toEqual([])
   })
 
-  test('session_shutdown unsubscribes the terminal listener and clears in-flight state', async () => {
+  it.effect('session_shutdown unsubscribes the terminal listener and clears in-flight state', async () => {
     const harness = createHarness()
     await harness.startSession()
     await harness.submitAndArm()
@@ -455,7 +454,7 @@ describe('prompt rewind', () => {
     expect(harness.navigateTreeCalls).toEqual([])
   })
 
-  test('session_start resets stale arming from a previous session', async () => {
+  it.effect('session_start resets stale arming from a previous session', async () => {
     const harness = createHarness()
     await harness.startSession()
     await harness.submitAndArm()

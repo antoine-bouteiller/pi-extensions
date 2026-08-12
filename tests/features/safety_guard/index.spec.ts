@@ -1,9 +1,10 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach } from 'bun:test'
 import { tmpdir } from 'node:os'
 
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asExtensionApi, asResult } from '@tests/utils/casts.js'
-import { platform } from '@tests/utils/platform.js'
 import { runtime } from '@tests/utils/runtime.js'
+import { Effect, FileSystem, Path } from 'effect'
 
 import { register as safeRm } from '@/features/safe_rm/index.js'
 import { SAFETY_STATUS_KEY } from '@/features/safety_guard/constants.js'
@@ -11,12 +12,24 @@ import { register as safetyGuard } from '@/features/safety_guard/index.js'
 import { publishStatus, statusBar } from '@/shared/state/status_bar.js'
 import { isTrue } from '@/shared/utils/predicates.js'
 
-const { join, mkdir, mkdtemp, rm, symlink, writeFile } = platform
+const pathService = runtime.runSync(Path.Path)
+const { join } = pathService
+const mkdir = (path: string, options?: { recursive?: boolean }) => FileSystem.FileSystem.pipe(Effect.flatMap((fs) => fs.makeDirectory(path, options)))
+const mkdtemp = (prefix: string) =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) => fs.makeTempDirectory({ directory: pathService.dirname(prefix), prefix: pathService.basename(prefix) }))
+  )
+const rm = (path: string, options?: { force?: boolean; recursive?: boolean }) =>
+  FileSystem.FileSystem.pipe(Effect.flatMap((fs) => fs.remove(path, options)))
+const symlink = (fromPath: string, toPath: string) => FileSystem.FileSystem.pipe(Effect.flatMap((fs) => fs.symlink(fromPath, toPath)))
+const writeFile = (path: string, data: string) => FileSystem.FileSystem.pipe(Effect.flatMap((fs) => fs.writeFileString(path, data)))
 
 const temporaryDirectories: string[] = []
-afterEach(async () => {
-  await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { force: true, recursive: true })))
-})
+afterEach(() =>
+  runtime.runPromise(
+    Effect.forEach(temporaryDirectories.splice(0), (path) => rm(path, { force: true, recursive: true }), { concurrency: 'unbounded' })
+  )
+)
 
 interface FakeToolCallEvent {
   toolCallId?: string
@@ -114,320 +127,360 @@ const resultEvent = (toolCallId: string): FakeToolResultEvent => ({
   toolName: 'bash',
 })
 
-const workspace = async () => {
-  const root = await mkdtemp(join(tmpdir(), 'safety-guard-rm-test-'))
+const workspace = Effect.gen(function* () {
+  const root = yield* mkdtemp(join(tmpdir(), 'safety-guard-rm-test-'))
   temporaryDirectories.push(root)
   const cwd = join(root, 'project')
-  await mkdir(cwd)
+  yield* mkdir(cwd)
   return cwd
-}
+})
 
 describe('safety guard', () => {
-  test('routes simple literal rm commands through safe_rm', async () => {
-    const cwd = await workspace()
-    await writeFile(join(cwd, 'first.log'), 'content')
-    await writeFile(join(cwd, 'second.log'), 'content')
-    await mkdir(join(cwd, 'build'))
-    await writeFile(join(cwd, 'build', 'output.txt'), 'content')
-    await mkdir(join(cwd, '@types'))
-    await mkdir(join(cwd, 'types'))
-    await writeFile(join(cwd, '@types', 'marker'), 'scoped')
-    await writeFile(join(cwd, 'types', 'marker'), 'plain')
-    const { handler, resultHandler } = setup()
-    const ctx = { cwd, hasUI: false }
+  it.effect('routes simple literal rm commands through safe_rm', () =>
+    Effect.gen(function* () {
+      const cwd = yield* workspace
+      yield* writeFile(join(cwd, 'first.log'), 'content')
+      yield* writeFile(join(cwd, 'second.log'), 'content')
+      yield* mkdir(join(cwd, 'build'))
+      yield* writeFile(join(cwd, 'build', 'output.txt'), 'content')
+      yield* mkdir(join(cwd, '@types'))
+      yield* mkdir(join(cwd, 'types'))
+      yield* writeFile(join(cwd, '@types', 'marker'), 'scoped')
+      yield* writeFile(join(cwd, 'types', 'marker'), 'plain')
+      const { handler, resultHandler } = setup()
+      const ctx = { cwd, hasUI: false }
 
-    const filesCall = event('rm first.log second.log', 'rm-files')
-    expect(await handler(filesCall, ctx)).toBeUndefined()
-    expect(filesCall.input.command).toBe(': # pi-safe-rm')
-    const files = await resultHandler(resultEvent('rm-files'), ctx)
-    expect(files?.content?.[0]?.text).toContain('Removed: first.log, second.log')
+      const filesCall = event('rm first.log second.log', 'rm-files')
+      expect(yield* Effect.promise(() => handler(filesCall, ctx))).toBeUndefined()
+      expect(filesCall.input.command).toBe(': # pi-safe-rm')
+      const files = yield* Effect.promise(() => resultHandler(resultEvent('rm-files'), ctx))
+      expect(files?.content?.[0]?.text).toContain('Removed: first.log, second.log')
 
-    const directoryCall = event('/bin/rm -rf build @types', 'rm-directory')
-    expect(await handler(directoryCall, ctx)).toBeUndefined()
-    expect(directoryCall.input.command).toBe(': # pi-safe-rm')
-    const directory = await resultHandler(resultEvent('rm-directory'), ctx)
-    expect(directory?.content?.[0]?.text).toContain('Removed: build, @types')
-    expect(await Bun.file(join(cwd, 'first.log')).exists()).toBeFalse()
-    expect(await Bun.file(join(cwd, 'second.log')).exists()).toBeFalse()
-    expect(await Bun.file(join(cwd, 'build', 'output.txt')).exists()).toBeFalse()
-    expect(await Bun.file(join(cwd, '@types', 'marker')).exists()).toBeFalse()
-    expect(await Bun.file(join(cwd, 'types', 'marker')).exists()).toBeTrue()
-  })
-
-  test('does not remove a routed target when bash fails before the handoff', async () => {
-    const cwd = await workspace()
-    await writeFile(join(cwd, 'keep.log'), 'content')
-    const { handler, resultHandler } = setup()
-    const ctx = { cwd, hasUI: false }
-    const call = event('rm keep.log', 'failed-rm')
-
-    expect(await handler(call, ctx)).toBeUndefined()
-    const failed = resultEvent('failed-rm')
-    failed.isError = true
-    expect(await resultHandler(failed, ctx)).toBeUndefined()
-    expect(await Bun.file(join(cwd, 'keep.log')).exists()).toBeTrue()
-  })
-
-  test('fails closed when a routed handoff is lost', async () => {
-    const cwd = await workspace()
-    const { resultHandler } = setup()
-
-    const result = await resultHandler(resultEvent('missing-route'), { cwd, hasUI: false })
-    expect(result?.isError).toBeTrue()
-    expect(result?.content?.[0]?.text).toContain('handoff was lost')
-  })
-
-  test('blocks non-literal and compound shell deletion commands', async () => {
-    const { handler } = setup()
-    const ctx = { cwd: '/work/project', hasUI: false }
-
-    for (const command of [
-      'rm "build log"',
-      'rm build/*.log',
-      'rm build.log; echo done',
-      `rm foo\u00a0bar`,
-      'rmdir build',
-      'unlink build.log',
-      'sudo -u root rm build.log',
-      'command -- rm build.log',
-      'env -i rm build.log',
-      '/usr/bin/env -i /bin/rm build.log',
-      'busybox rm build.log',
-      'nice -n 10 rm build.log',
-      'timeout 2 rm build.log',
-      'nohup /bin/rm build.log',
-      `sh -c 'rm build.log'`,
-      'if true; then /bin/rm build.log; fi',
-      'find build -type f -delete',
-      'find build -exec rm {} +',
-      String.raw`printf '%s\n' build.log | xargs rm`,
-    ]) {
-      const result = await handler(event(command), ctx)
-      expect(result?.block, command).toBeTrue()
-      expect(result?.reason, command).toContain('safe_rm')
-      expect(result?.reason, command).toContain('CRITICAL')
-    }
-  })
-
-  test('describes the regex command guard as best-effort and does not claim arbitrary code analysis', async () => {
-    const { handler } = setup()
-    const ctx = { cwd: '/work/project', hasUI: false }
-
-    const recognized = await handler(event('env -i rm build.log'), ctx)
-    expect(recognized?.reason).toContain('best-effort command policy')
-    // The shell scanner is deliberately a heuristic, not a sandbox. Custom
-    // Destructive tools therefore have to enforce path policy themselves.
-    expect(await handler(event(`python3 -c "__import__('os').remove('build.log')"`), ctx)).toBeUndefined()
-  })
-
-  test('hard-blocks critical commands', async () => {
-    const { handler } = setup()
-    const result = await handler(event('mkfs /dev/sda'), { cwd: '/work/project', hasUI: false })
-    expect(result?.block).toBeTrue()
-    expect(result?.reason).toContain('CRITICAL')
-  })
-
-  test('blocks recognized shell deletion registered for background polling', async () => {
-    const { handler } = setup()
-    const result = await handler({ input: { command: 'rm -rf build' }, toolName: 'background_poll' }, { cwd: '/work/project', hasUI: false })
-    expect(result?.block).toBeTrue()
-    expect(result?.reason).toContain('safe_rm')
-  })
-
-  test('blocks simple rm when safe_rm is inactive', async () => {
-    const { handler } = setup([])
-    const call = event('rm build.log')
-
-    const result = await handler(call, { cwd: '/work/project', hasUI: false })
-    expect(result?.block).toBeTrue()
-    expect(call.input.command).toBe('rm build.log')
-  })
-
-  test('does not offer a confirmation prompt for routed shell deletion', async () => {
-    const { handler } = setup()
-    let confirmed = false
-    const result = await handler(event('rm build.log'), {
-      cwd: '/work/project',
-      hasUI: true,
-      ui: {
-        confirm: async () => {
-          confirmed = true
-          return true
-        },
-        notify: () => undefined,
-      },
+      const directoryCall = event('/bin/rm -rf build @types', 'rm-directory')
+      expect(yield* Effect.promise(() => handler(directoryCall, ctx))).toBeUndefined()
+      expect(directoryCall.input.command).toBe(': # pi-safe-rm')
+      const directory = yield* Effect.promise(() => resultHandler(resultEvent('rm-directory'), ctx))
+      expect(directory?.content?.[0]?.text).toContain('Removed: build, @types')
+      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'first.log')).exists())).toBeFalse()
+      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'second.log')).exists())).toBeFalse()
+      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'build', 'output.txt')).exists())).toBeFalse()
+      expect(yield* Effect.promise(() => Bun.file(join(cwd, '@types', 'marker')).exists())).toBeFalse()
+      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'types', 'marker')).exists())).toBeTrue()
     })
-    expect(result).toBeUndefined()
-    expect(confirmed).toBeFalse()
-  })
+  )
 
-  test('guards destructive Git, container, package, and database operations', async () => {
-    const { handler } = setup()
-    const ctx = { cwd: '/work/project', hasUI: false }
+  it.effect('does not remove a routed target when bash fails before the handoff', () =>
+    Effect.gen(function* () {
+      const cwd = yield* workspace
+      yield* writeFile(join(cwd, 'keep.log'), 'content')
+      const { handler, resultHandler } = setup()
+      const ctx = { cwd, hasUI: false }
+      const call = event('rm keep.log', 'failed-rm')
 
-    for (const command of [
-      'git push --force origin main',
-      'docker system prune -af',
-      'npm uninstall important-package',
-      'psql -c "DROP TABLE users"',
-    ]) {
-      const result = await handler(event(command), ctx)
-      expect(result?.block, command).toBeTrue()
-    }
-  })
+      expect(yield* Effect.promise(() => handler(call, ctx))).toBeUndefined()
+      const failed = resultEvent('failed-rm')
+      failed.isError = true
+      expect(yield* Effect.promise(() => resultHandler(failed, ctx))).toBeUndefined()
+      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'keep.log')).exists())).toBeTrue()
+    })
+  )
 
-  test('hard-blocks Git force pushes', async () => {
-    const { handler } = setup()
-    const ctx = {
-      cwd: '/work/project',
-      hasUI: true,
-      ui: { confirm: async () => true, notify: () => undefined },
-    }
+  it.effect('fails closed when a routed handoff is lost', () =>
+    Effect.gen(function* () {
+      const cwd = yield* workspace
+      const { resultHandler } = setup()
 
-    for (const command of [
-      'git push --force origin main',
-      'git push origin main -f',
-      'git push -uf origin main',
-      'git -C /work/project push --force origin main',
-      'git --git-dir=.git push -f origin main',
-      'git --no-optional-locks push --force origin main',
-      "git push '--force' origin main",
-      String.raw`git pu\
+      const result = yield* Effect.promise(() => resultHandler(resultEvent('missing-route'), { cwd, hasUI: false }))
+      expect(result?.isError).toBeTrue()
+      expect(result?.content?.[0]?.text).toContain('handoff was lost')
+    })
+  )
+
+  it.effect('blocks non-literal and compound shell deletion commands', () =>
+    Effect.gen(function* () {
+      const { handler } = setup()
+      const ctx = { cwd: '/work/project', hasUI: false }
+
+      for (const command of [
+        'rm "build log"',
+        'rm build/*.log',
+        'rm build.log; echo done',
+        `rm foo\u00a0bar`,
+        'rmdir build',
+        'unlink build.log',
+        'sudo -u root rm build.log',
+        'command -- rm build.log',
+        'env -i rm build.log',
+        '/usr/bin/env -i /bin/rm build.log',
+        'busybox rm build.log',
+        'nice -n 10 rm build.log',
+        'timeout 2 rm build.log',
+        'nohup /bin/rm build.log',
+        `sh -c 'rm build.log'`,
+        'if true; then /bin/rm build.log; fi',
+        'find build -type f -delete',
+        'find build -exec rm {} +',
+        String.raw`printf '%s\n' build.log | xargs rm`,
+      ]) {
+        const result = yield* Effect.promise(() => handler(event(command), ctx))
+        expect(result?.block, command).toBeTrue()
+        expect(result?.reason, command).toContain('safe_rm')
+        expect(result?.reason, command).toContain('CRITICAL')
+      }
+    })
+  )
+
+  it.effect('describes the regex command guard as best-effort and does not claim arbitrary code analysis', () =>
+    Effect.gen(function* () {
+      const { handler } = setup()
+      const ctx = { cwd: '/work/project', hasUI: false }
+
+      const recognized = yield* Effect.promise(() => handler(event('env -i rm build.log'), ctx))
+      expect(recognized?.reason).toContain('best-effort command policy')
+      // The shell scanner is deliberately a heuristic, not a sandbox. Custom
+      // Destructive tools therefore have to enforce path policy themselves.
+      expect(yield* Effect.promise(() => handler(event(`python3 -c "__import__('os').remove('build.log')"`), ctx))).toBeUndefined()
+    })
+  )
+
+  it.effect('hard-blocks critical commands', () =>
+    Effect.gen(function* () {
+      const { handler } = setup()
+      const result = yield* Effect.promise(() => handler(event('mkfs /dev/sda'), { cwd: '/work/project', hasUI: false }))
+      expect(result?.block).toBeTrue()
+      expect(result?.reason).toContain('CRITICAL')
+    })
+  )
+
+  it.effect('blocks recognized shell deletion registered for background polling', () =>
+    Effect.gen(function* () {
+      const { handler } = setup()
+      const result = yield* Effect.promise(() =>
+        handler({ input: { command: 'rm -rf build' }, toolName: 'background_poll' }, { cwd: '/work/project', hasUI: false })
+      )
+      expect(result?.block).toBeTrue()
+      expect(result?.reason).toContain('safe_rm')
+    })
+  )
+
+  it.effect('blocks simple rm when safe_rm is inactive', () =>
+    Effect.gen(function* () {
+      const { handler } = setup([])
+      const call = event('rm build.log')
+
+      const result = yield* Effect.promise(() => handler(call, { cwd: '/work/project', hasUI: false }))
+      expect(result?.block).toBeTrue()
+      expect(call.input.command).toBe('rm build.log')
+    })
+  )
+
+  it.effect('does not offer a confirmation prompt for routed shell deletion', () =>
+    Effect.gen(function* () {
+      const { handler } = setup()
+      let confirmed = false
+      const result = yield* Effect.promise(() =>
+        handler(event('rm build.log'), {
+          cwd: '/work/project',
+          hasUI: true,
+          ui: {
+            confirm: async () => {
+              confirmed = true
+              return true
+            },
+            notify: () => undefined,
+          },
+        })
+      )
+      expect(result).toBeUndefined()
+      expect(confirmed).toBeFalse()
+    })
+  )
+
+  it.effect('guards destructive Git, container, package, and database operations', () =>
+    Effect.gen(function* () {
+      const { handler } = setup()
+      const ctx = { cwd: '/work/project', hasUI: false }
+
+      for (const command of [
+        'git push --force origin main',
+        'docker system prune -af',
+        'npm uninstall important-package',
+        'psql -c "DROP TABLE users"',
+      ]) {
+        const result = yield* Effect.promise(() => handler(event(command), ctx))
+        expect(result?.block, command).toBeTrue()
+      }
+    })
+  )
+
+  it.effect('hard-blocks Git force pushes', () =>
+    Effect.gen(function* () {
+      const { handler } = setup()
+      const ctx = {
+        cwd: '/work/project',
+        hasUI: true,
+        ui: { confirm: async () => true, notify: () => undefined },
+      }
+
+      for (const command of [
+        'git push --force origin main',
+        'git push origin main -f',
+        'git push -uf origin main',
+        'git -C /work/project push --force origin main',
+        'git --git-dir=.git push -f origin main',
+        'git --no-optional-locks push --force origin main',
+        "git push '--force' origin main",
+        String.raw`git pu\
 sh --force origin main`,
-      String.raw`git push --for\
+        String.raw`git push --for\
 ce origin main`,
-      String.raw`git push \
+        String.raw`git push \
  --force origin main`,
-      'git push --force; echo done',
-    ]) {
-      const result = await handler(event(command), ctx)
-      expect(result?.block, command).toBeTrue()
-      expect(result?.reason, command).toContain('Git force push')
-      expect(result?.reason, command).toContain('CRITICAL')
-    }
-  })
-
-  test('allows all other Git operations', async () => {
-    const { handler } = setup()
-    const ctx = { cwd: '/work/project', hasUI: false }
-
-    for (const command of [
-      'git reset --hard HEAD~1',
-      'git clean -fd',
-      'git checkout -- package.json',
-      'git restore package.json',
-      'git branch -D feature',
-      'git tag -d v1.0.0',
-      'git filter-repo --path secrets.txt --invert-paths',
-      'git replace old new',
-      'git update-ref -d refs/heads/feature',
-      'git prune',
-      'git push --delete origin feature',
-      'git push origin :refs/heads/feature',
-      'git push --force-with-lease origin main',
-      'git push origin topic-f',
-      'git push origin feature--force',
-      'git push -of origin main',
-      'git push -ofoo origin main',
-      'git push --mirror origin',
-      'git push origin +main',
-      'git --no-pager status push --force',
-      'git commit --amend --no-edit',
-      'git commit --fixup HEAD',
-      'git rebase --onto main feature~2 feature',
-    ]) {
-      expect(await handler(event(command), ctx), command).toBeUndefined()
-    }
-  })
-
-  test('guards protected file reads, writes, and edits', async () => {
-    const { handler } = setup()
-    const ctx = { cwd: '/work/project', hasUI: false }
-
-    for (const toolName of ['read', 'write', 'edit']) {
-      const result = await handler({ input: { path: '.env' }, toolName }, ctx)
-      expect(result?.block, toolName).toBeTrue()
-      expect(result?.reason).toContain(`Protected file ${toolName}`)
-    }
-
-    const atPrefixed = await handler({ input: { path: '@.env' }, toolName: 'read' }, ctx)
-    expect(atPrefixed?.block).toBeTrue()
-    expect(atPrefixed?.reason).toContain('Protected file read')
-
-    expect(await handler({ input: { path: '.env.example' }, toolName: 'read' }, ctx)).toBeUndefined()
-  })
-
-  test('resolves symlinks and the nearest existing parent for protected paths', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'safety-guard-test-'))
-    temporaryDirectories.push(root)
-    const cwd = join(root, 'project')
-    const secrets = join(root, '.ssh')
-    await mkdir(cwd)
-    await mkdir(secrets)
-    await writeFile(join(secrets, 'config'), 'secret')
-    await symlink(join(secrets, 'config'), join(cwd, 'innocent.txt'))
-    await symlink(secrets, join(cwd, 'linked-secrets'))
-
-    const { handler } = setup()
-    const ctx = { cwd, hasUI: false }
-    for (const path of ['innocent.txt', 'linked-secrets/config', 'linked-secrets/new-key.pem']) {
-      const result = await handler({ input: { path }, toolName: 'read' }, ctx)
-      expect(result?.block, path).toBeTrue()
-    }
-  })
-
-  test('routes root deletion to safe_rm, which rejects it', async () => {
-    const cwd = await workspace()
-    const { handler, resultHandler } = setup()
-    let confirmed = false
-    const ctx = {
-      cwd,
-      hasUI: true,
-      ui: {
-        confirm: async () => {
-          confirmed = true
-          return true
-        },
-        notify: () => undefined,
-      },
-    }
-
-    const call = event('rm -rf /', 'rm-root')
-    expect(await handler(call, ctx)).toBeUndefined()
-    expect(call.input.command).toBe(': # pi-safe-rm')
-    const result = await resultHandler(resultEvent('rm-root'), ctx)
-    expect(result?.isError).toBeTrue()
-    expect(result?.content?.[0]?.text).toContain('working directory or /tmp')
-    expect(confirmed).toBeFalse()
-  })
-
-  test('reports blocked state while awaiting confirmation', async () => {
-    const { handler, emitted } = setup()
-    const result = await handler(event('sudo echo ok'), {
-      cwd: '/work/project',
-      hasUI: true,
-      ui: { confirm: async () => false, notify: () => undefined },
+        'git push --force; echo done',
+      ]) {
+        const result = yield* Effect.promise(() => handler(event(command), ctx))
+        expect(result?.block, command).toBeTrue()
+        expect(result?.reason, command).toContain('Git force push')
+        expect(result?.reason, command).toContain('CRITICAL')
+      }
     })
-    expect(result?.block).toBeTrue()
-    expect(emitted).toEqual([
-      ['herdr:blocked', { active: true, label: 'Elevated privileges (sudo)' }],
-      ['herdr:blocked', { active: false }],
-    ])
-  })
+  )
 
-  test('publishes a status-bar entry on session_start', async () => {
-    const { sessionStart } = setup()
-    try {
-      await sessionStart({}, { cwd: '/work/project', hasUI: false })
-      expect(statusBar.list().find((entry) => entry.key === SAFETY_STATUS_KEY)).toEqual({
-        icon: '🛡️',
-        key: SAFETY_STATUS_KEY,
-        priority: 10,
-        text: 'cmd-guard',
-        tone: 'success',
-      })
-    } finally {
-      publishStatus(SAFETY_STATUS_KEY, undefined)
-    }
-  })
+  it.effect('allows all other Git operations', () =>
+    Effect.gen(function* () {
+      const { handler } = setup()
+      const ctx = { cwd: '/work/project', hasUI: false }
+
+      for (const command of [
+        'git reset --hard HEAD~1',
+        'git clean -fd',
+        'git checkout -- package.json',
+        'git restore package.json',
+        'git branch -D feature',
+        'git tag -d v1.0.0',
+        'git filter-repo --path secrets.txt --invert-paths',
+        'git replace old new',
+        'git update-ref -d refs/heads/feature',
+        'git prune',
+        'git push --delete origin feature',
+        'git push origin :refs/heads/feature',
+        'git push --force-with-lease origin main',
+        'git push origin topic-f',
+        'git push origin feature--force',
+        'git push -of origin main',
+        'git push -ofoo origin main',
+        'git push --mirror origin',
+        'git push origin +main',
+        'git --no-pager status push --force',
+        'git commit --amend --no-edit',
+        'git commit --fixup HEAD',
+        'git rebase --onto main feature~2 feature',
+      ]) {
+        expect(yield* Effect.promise(() => handler(event(command), ctx)), command).toBeUndefined()
+      }
+    })
+  )
+
+  it.effect('guards protected file reads, writes, and edits', () =>
+    Effect.gen(function* () {
+      const { handler } = setup()
+      const ctx = { cwd: '/work/project', hasUI: false }
+
+      for (const toolName of ['read', 'write', 'edit']) {
+        const result = yield* Effect.promise(() => handler({ input: { path: '.env' }, toolName }, ctx))
+        expect(result?.block, toolName).toBeTrue()
+        expect(result?.reason).toContain(`Protected file ${toolName}`)
+      }
+
+      const atPrefixed = yield* Effect.promise(() => handler({ input: { path: '@.env' }, toolName: 'read' }, ctx))
+      expect(atPrefixed?.block).toBeTrue()
+      expect(atPrefixed?.reason).toContain('Protected file read')
+
+      expect(yield* Effect.promise(() => handler({ input: { path: '.env.example' }, toolName: 'read' }, ctx))).toBeUndefined()
+    })
+  )
+
+  it.effect('resolves symlinks and the nearest existing parent for protected paths', () =>
+    Effect.gen(function* () {
+      const root = yield* mkdtemp(join(tmpdir(), 'safety-guard-test-'))
+      temporaryDirectories.push(root)
+      const cwd = join(root, 'project')
+      const secrets = join(root, '.ssh')
+      yield* mkdir(cwd)
+      yield* mkdir(secrets)
+      yield* writeFile(join(secrets, 'config'), 'secret')
+      yield* symlink(join(secrets, 'config'), join(cwd, 'innocent.txt'))
+      yield* symlink(secrets, join(cwd, 'linked-secrets'))
+
+      const { handler } = setup()
+      const ctx = { cwd, hasUI: false }
+      for (const path of ['innocent.txt', 'linked-secrets/config', 'linked-secrets/new-key.pem']) {
+        const result = yield* Effect.promise(() => handler({ input: { path }, toolName: 'read' }, ctx))
+        expect(result?.block, path).toBeTrue()
+      }
+    })
+  )
+
+  it.effect('routes root deletion to safe_rm, which rejects it', () =>
+    Effect.gen(function* () {
+      const cwd = yield* workspace
+      const { handler, resultHandler } = setup()
+      let confirmed = false
+      const ctx = {
+        cwd,
+        hasUI: true,
+        ui: {
+          confirm: async () => {
+            confirmed = true
+            return true
+          },
+          notify: () => undefined,
+        },
+      }
+
+      const call = event('rm -rf /', 'rm-root')
+      expect(yield* Effect.promise(() => handler(call, ctx))).toBeUndefined()
+      expect(call.input.command).toBe(': # pi-safe-rm')
+      const result = yield* Effect.promise(() => resultHandler(resultEvent('rm-root'), ctx))
+      expect(result?.isError).toBeTrue()
+      expect(result?.content?.[0]?.text).toContain('working directory or /tmp')
+      expect(confirmed).toBeFalse()
+    })
+  )
+
+  it.effect('reports blocked state while awaiting confirmation', () =>
+    Effect.gen(function* () {
+      const { handler, emitted } = setup()
+      const result = yield* Effect.promise(() =>
+        handler(event('sudo echo ok'), {
+          cwd: '/work/project',
+          hasUI: true,
+          ui: { confirm: async () => false, notify: () => undefined },
+        })
+      )
+      expect(result?.block).toBeTrue()
+      expect(emitted).toEqual([
+        ['herdr:blocked', { active: true, label: 'Elevated privileges (sudo)' }],
+        ['herdr:blocked', { active: false }],
+      ])
+    })
+  )
+
+  it.effect('publishes a status-bar entry on session_start', () =>
+    Effect.gen(function* () {
+      const { sessionStart } = setup()
+      try {
+        yield* Effect.promise(() => sessionStart({}, { cwd: '/work/project', hasUI: false }))
+        expect(statusBar.list().find((entry) => entry.key === SAFETY_STATUS_KEY)).toEqual({
+          icon: '🛡️',
+          key: SAFETY_STATUS_KEY,
+          priority: 10,
+          text: 'cmd-guard',
+          tone: 'success',
+        })
+      } finally {
+        publishStatus(SAFETY_STATUS_KEY, undefined)
+      }
+    })
+  )
 })

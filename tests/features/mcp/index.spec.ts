@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach } from 'bun:test'
 
 import { type AgentToolResult } from '@earendil-works/pi-coding-agent'
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asCommand, asTool } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
@@ -192,14 +193,14 @@ const authContext = (notifications: { message: string; level: string }[], select
 const callsFor = (harness: ReturnType<typeof createHarness>, method: string): RecordedCall[] => harness.calls.filter((call) => call.method === method)
 
 describe('MCP gateway policy selection', () => {
-  test('enables read-only policy only for PI_SUBAGENT_READONLY=1', () => {
+  it.effect('enables read-only policy only for PI_SUBAGENT_READONLY=1', () => {
     expect(mcpPolicyFromEnvironment({ PI_SUBAGENT_READONLY: '1' })).toBe(readonlyMcpPolicy)
     expect(mcpPolicyFromEnvironment({ PI_SUBAGENT_READONLY: '0' })).toBe(unrestrictedMcpPolicy)
     expect(mcpPolicyFromEnvironment({})).toBe(unrestrictedMcpPolicy)
     expect(mcpPolicyFromEnvironment({ PI_SUBAGENT_READONLY: 'true' })).toBe(unrestrictedMcpPolicy)
   })
 
-  test('allows annotated safe reads and exact DBX exceptions only', () => {
+  it.effect('allows annotated safe reads and exact DBX exceptions only', () => {
     const request = {
       annotations: { destructiveHint: false, readOnlyHint: true },
       exposedName: 'linear_get_issue',
@@ -251,7 +252,7 @@ describe('MCP gateway policy selection', () => {
 })
 
 describe('MCP gateway registration and lifecycle', () => {
-  test('registers one gateway tool and the MCP auth command immediately', () => {
+  it.effect('registers one gateway tool and the MCP auth command immediately', () => {
     const harness = createHarness()
 
     expect([...harness.fixture.state.tools.keys()]).toEqual(['mcp'])
@@ -262,7 +263,7 @@ describe('MCP gateway registration and lifecycle', () => {
     expect(harness.calls).toEqual([])
   })
 
-  test('session_start publishes every server and eagerly connects disconnected ones', async () => {
+  it.effect('session_start publishes every server and eagerly connects disconnected ones', async () => {
     const statuses: { key: string; value: unknown }[] = []
     const harness = createHarness()
     await harness.fixture.emit('session_start', {}, context(statuses))
@@ -274,7 +275,7 @@ describe('MCP gateway registration and lifecycle', () => {
     expect([...harness.fixture.state.tools.keys()]).toEqual(['mcp'])
   })
 
-  test('passes its configured policy into each process-local manager', async () => {
+  it.effect('passes its configured policy into each process-local manager', async () => {
     const harness = createHarness()
     let receivedPolicy: unknown
     harness.dependencies.policy = readonlyMcpPolicy
@@ -287,7 +288,7 @@ describe('MCP gateway registration and lifecycle', () => {
     expect(receivedPolicy).toBe(readonlyMcpPolicy)
   })
 
-  test('manager status callbacks show every server status', async () => {
+  it.effect('manager status callbacks show every server status', async () => {
     const statuses: { key: string; value: unknown }[] = []
     const harness = createHarness()
     await harness.fixture.emit('session_start', {}, context(statuses))
@@ -306,7 +307,7 @@ describe('MCP gateway registration and lifecycle', () => {
     ])
   })
 
-  test('empty input is metadata-only status with sorted servers and config path', async () => {
+  it.effect('empty input is metadata-only status with sorted servers and config path', async () => {
     const harness = createHarness()
     await harness.start()
 
@@ -322,7 +323,7 @@ describe('MCP gateway registration and lifecycle', () => {
     expect(text.indexOf('alpha: connected')).toBeLessThan(text.indexOf('zeta: disconnected'))
   })
 
-  test('metadata status renders invalid config without an error', async () => {
+  it.effect('metadata status renders invalid config without an error', async () => {
     const harness = createHarness({
       status: () => [{ name: 'broken', status: 'invalid-config' }],
     })
@@ -333,7 +334,7 @@ describe('MCP gateway registration and lifecycle', () => {
     expect(result.content[0]).toEqual({ text: expect.stringContaining('- broken: invalid config'), type: 'text' })
   })
 
-  test('tool calls accept object args and preserve manager results', async () => {
+  it.effect('tool calls accept object args and preserve manager results', async () => {
     const harness = createHarness()
     await harness.start()
     const controller = new AbortController()
@@ -344,7 +345,7 @@ describe('MCP gateway registration and lifecycle', () => {
     expect(callsFor(harness, 'call')[0]?.values).toEqual(['fff_read', { path: 'README.md' }, { server: 'fff', signal: controller.signal }])
   })
 
-  test('tool calls parse JSON object args and default omitted args', async () => {
+  it.effect('tool calls parse JSON object args and default omitted args', async () => {
     const harness = createHarness()
     await harness.start()
 
@@ -354,7 +355,7 @@ describe('MCP gateway registration and lifecycle', () => {
     expect(callsFor(harness, 'call').map((call) => call.values[1])).toEqual([{ count: 2 }, {}])
   })
 
-  test('connect delegates the requested server and signal', async () => {
+  it.effect('connect delegates the requested server and signal', async () => {
     const harness = createHarness()
     await harness.start()
     const controller = new AbortController()
@@ -368,7 +369,7 @@ describe('MCP gateway registration and lifecycle', () => {
     })
   })
 
-  test('describe delegates resolution scope and renders call syntax', async () => {
+  it.effect('describe delegates resolution scope and renders call syntax', async () => {
     const harness = createHarness()
     await harness.start()
     const controller = new AbortController()
@@ -391,7 +392,7 @@ describe('MCP gateway registration and lifecycle', () => {
     )
   })
 
-  test('search delegates regex, scope, signal, and cap then sorts results', async () => {
+  it.effect('search delegates regex, scope, signal, and cap then sorts results', async () => {
     const harness = createHarness()
     await harness.start()
     const controller = new AbortController()
@@ -403,7 +404,7 @@ describe('MCP gateway registration and lifecycle', () => {
     expect(text.indexOf('a_tool')).toBeLessThan(text.indexOf('z_tool'))
   })
 
-  test('server-only input lists that server and sorts tools', async () => {
+  it.effect('server-only input lists that server and sorts tools', async () => {
     const harness = createHarness()
     await harness.start()
     const controller = new AbortController()
@@ -415,7 +416,7 @@ describe('MCP gateway registration and lifecycle', () => {
     expect(text.indexOf('fff_a')).toBeLessThan(text.indexOf('fff_z'))
   })
 
-  test('mcp-auth authenticates an explicit server and infers the sole OAuth server', async () => {
+  it.effect('mcp-auth authenticates an explicit server and infers the sole OAuth server', async () => {
     const harness = createHarness()
     const notifications: { message: string; level: string }[] = []
     await harness.start()
@@ -433,7 +434,7 @@ describe('MCP gateway registration and lifecycle', () => {
     ])
   })
 
-  test('rejects ambiguous selectors with a tagged failure before delegation', async () => {
+  it.effect('rejects ambiguous selectors with a tagged failure before delegation', async () => {
     const harness = createHarness()
     await harness.start()
 
@@ -450,7 +451,7 @@ describe('MCP gateway registration and lifecycle', () => {
     expect(callsFor(harness, 'search')).toHaveLength(0)
   })
 
-  test('rejects malformed, scalar, array, and null string args', async () => {
+  it.effect('rejects malformed, scalar, array, and null string args', async () => {
     const harness = createHarness()
     await harness.start()
 
@@ -461,7 +462,7 @@ describe('MCP gateway registration and lifecycle', () => {
     expect(callsFor(harness, 'call')).toHaveLength(0)
   })
 
-  test('tags manager failures and preserves their cause', async () => {
+  it.effect('tags manager failures and preserves their cause', async () => {
     const cause = new Error('manager exploded')
     const harness = createHarness({ call: () => Effect.fail(cause) })
     await harness.start()
@@ -474,7 +475,7 @@ describe('MCP gateway registration and lifecycle', () => {
     expect(rejection).toMatchObject({ _tag: 'McpOperationError', cause, message: 'manager exploded' })
   })
 
-  test('session_shutdown awaits in-flight initialization cleanup and clears UI', async () => {
+  it.effect('session_shutdown awaits in-flight initialization cleanup and clears UI', async () => {
     const creation = deferred<McpGatewayManager>()
     const closeStarted = deferred<void>()
     const permitClose = deferred<void>()

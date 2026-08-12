@@ -1,6 +1,5 @@
-import { describe, expect, test } from 'bun:test'
-
 import { CURSOR_MARKER, visibleWidth, type Component, type Focusable } from '@earendil-works/pi-tui'
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asTool } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
@@ -91,7 +90,7 @@ const type = (component: PromptComponent, text: string) => {
 }
 
 describe('ask_user tool behavior', () => {
-  test('returns the selected answer and option number', async () => {
+  it.effect('returns the selected answer and option number', async () => {
     const fixture = setup()
     const pending = fixture.tool.execute('call-1', params, undefined, undefined, fixture.tuiContext)
 
@@ -106,7 +105,7 @@ describe('ask_user tool behavior', () => {
     })
   })
 
-  test('reports dismissal without selecting an answer', async () => {
+  it.effect('reports dismissal without selecting an answer', async () => {
     const fixture = setup()
     const pending = fixture.tool.execute('call-2', params, undefined, undefined, fixture.tuiContext)
 
@@ -117,7 +116,7 @@ describe('ask_user tool behavior', () => {
     expect(result.details).toMatchObject({ answer: undefined, cancelled: true })
   })
 
-  test('reports cancellation when aborted while the prompt is open', async () => {
+  it.effect('reports cancellation when aborted while the prompt is open', async () => {
     const fixture = setup()
     const controller = new AbortController()
     const pending = fixture.tool.execute('call-3', params, controller.signal, undefined, fixture.tuiContext)
@@ -129,7 +128,7 @@ describe('ask_user tool behavior', () => {
     expect(result.details).toMatchObject({ answer: undefined, cancelled: true })
   })
 
-  test('submits trimmed custom input', async () => {
+  it.effect('submits trimmed custom input', async () => {
     const fixture = setup()
     const pending = fixture.tool.execute('call-4', params, undefined, undefined, fixture.tuiContext)
 
@@ -146,7 +145,7 @@ describe('ask_user tool behavior', () => {
     })
   })
 
-  test('returns a plain-text fallback without opening UI outside TUI mode', async () => {
+  it.effect('returns a plain-text fallback without opening UI outside TUI mode', async () => {
     const fixture = setup()
     const result = await fixture.tool.execute('call-5', params, undefined, undefined, fixture.nonTuiContext)
 
@@ -155,7 +154,7 @@ describe('ask_user tool behavior', () => {
     expect(fixture.customCalls).toBe(0)
   })
 
-  test('preserves tagged UI failures at the tool boundary', async () => {
+  it.effect('preserves tagged UI failures at the tool boundary', async () => {
     const cause = new Error('UI exploded')
     const fixture = setup(cause)
 
@@ -169,7 +168,7 @@ describe('ask_user tool behavior', () => {
 })
 
 describe('ask_user prompt component', () => {
-  test('propagates focus to the embedded editor for IME cursor positioning', async () => {
+  it.effect('propagates focus to the embedded editor for IME cursor positioning', async () => {
     const fixture = setup()
     const pending = fixture.tool.execute('call-6', params, undefined, undefined, fixture.tuiContext)
 
@@ -183,7 +182,7 @@ describe('ask_user prompt component', () => {
     await pending
   })
 
-  test('wraps wide Unicode content and invalidates its cache when width changes', async () => {
+  it.effect('wraps wide Unicode content and invalidates its cache when width changes', async () => {
     const fixture = setup()
     const pending = fixture.tool.execute(
       'call-7',

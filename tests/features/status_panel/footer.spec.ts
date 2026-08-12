@@ -1,6 +1,5 @@
-import { describe, expect, test } from 'bun:test'
-
 import { visibleWidth } from '@earendil-works/pi-tui'
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 
 import { renderFooterLines, type FooterState } from '@/features/status_panel/footer.js'
 
@@ -22,7 +21,7 @@ const state: FooterState = {
 }
 
 describe('renderFooterLines', () => {
-  test('always shows the directory, model and context', () => {
+  it.effect('always shows the directory, model and context', () => {
     const lines = renderFooterLines(state, theme, 80)
 
     expect(lines[0]).toContain('pi-extensions')
@@ -30,7 +29,7 @@ describe('renderFooterLines', () => {
     expect(lines[1]).toContain('34k/272k (13%)')
   })
 
-  test('uses a singular file label and omits the branch outside a repository', () => {
+  it.effect('uses a singular file label and omits the branch outside a repository', () => {
     expect(renderFooterLines(state, theme, 80)[2]).toBe('main · 1 file changed')
     expect(renderFooterLines({ ...state, git: { ...state.git, changedFiles: 3 } }, theme, 80)[2]).toBe('main · 3 files changed')
 
@@ -38,7 +37,7 @@ describe('renderFooterLines', () => {
     expect(detached.join('\n')).not.toContain('changed')
   })
 
-  test('renders Claude and Azure quotas together', () => {
+  it.effect('renders Claude and Azure quotas together', () => {
     const lines = renderFooterLines(
       {
         ...state,
@@ -56,7 +55,7 @@ describe('renderFooterLines', () => {
     expect(lines.at(-1)).toContain('Azure:')
   })
 
-  test('renders each status with its icon', () => {
+  it.effect('renders each status with its icon', () => {
     const lines = renderFooterLines(
       {
         ...state,
@@ -73,7 +72,7 @@ describe('renderFooterLines', () => {
     expect(lines.at(-1)).toBe('MCP: 2 connected')
   })
 
-  test('keeps every line within the available width', () => {
+  it.effect('keeps every line within the available width', () => {
     const lines = renderFooterLines(
       {
         ...state,

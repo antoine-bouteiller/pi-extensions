@@ -1,7 +1,7 @@
-import { describe, expect, test } from 'bun:test'
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- The spec asserts real loopback listener binding and cleanup; an HTTP client cannot create the server under test.
 import { createServer } from 'node:http'
 
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { httpGet } from '@tests/utils/http.js'
 import { Effect } from 'effect'
 
@@ -58,7 +58,7 @@ const withCallback = <Value>(options: OAuthCallbackOptions, use: (callback: OAut
 const listenerFailure = (options: OAuthCallbackOptions): Promise<OAuthCallback> => Effect.runPromise(Effect.scoped(startOAuthCallback(options)))
 
 describe('OAuth callback', () => {
-  test('accepts a matching callback and releases the port', async () => {
+  it.effect('accepts a matching callback and releases the port', async () => {
     const port = await freePort()
     await withCallback({ expectedState: 'right', port }, async (callback) => {
       const response = await httpGet(`${callback.redirectUrl}?code=code-1&state=right`)
@@ -70,7 +70,7 @@ describe('OAuth callback', () => {
     await withCallback({ expectedState: 'next', port }, async () => undefined)
   })
 
-  test('rejects a wrong state without consuming the legitimate callback', async () => {
+  it.effect('rejects a wrong state without consuming the legitimate callback', async () => {
     const port = await freePort()
     await withCallback({ expectedState: 'right', port }, async (callback) => {
       const badResponse = await httpGet(`${callback.redirectUrl}?code=bad&state=wrong`)
@@ -81,7 +81,7 @@ describe('OAuth callback', () => {
     })
   })
 
-  test('HTML-escapes reflected OAuth errors and releases scoped listeners', async () => {
+  it.effect('HTML-escapes reflected OAuth errors and releases scoped listeners', async () => {
     const port = await freePort()
     await withCallback({ expectedState: 'state', port }, async (callback) => {
       const payload = `<script>alert("x")</script>&'`
@@ -102,7 +102,7 @@ describe('OAuth callback', () => {
     await withCallback({ expectedState: 'replacement', port }, async () => undefined)
   })
 
-  test('handles OAuth errors, timeout, cancellation, and occupied ports', async () => {
+  it.effect('handles OAuth errors, timeout, cancellation, and occupied ports', async () => {
     await withCallback({ expectedState: 'state', port: await freePort() }, async (callback) => {
       await httpGet(`${callback.redirectUrl}?error=access_denied&error_description=nope&state=state`)
       expect(Effect.runPromise(callback.waitForCode)).rejects.toThrow('access_denied')
@@ -124,7 +124,7 @@ describe('OAuth callback', () => {
     })
   })
 
-  test('rejects non-loopback or mismatched redirect URIs', async () => {
+  it.effect('rejects non-loopback or mismatched redirect URIs', async () => {
     expect(
       listenerFailure({
         expectedState: 'state',
@@ -143,7 +143,7 @@ describe('OAuth callback', () => {
 })
 
 describe('Keychain OAuth provider', () => {
-  test('does not read credentials during construction and returns static client metadata', async () => {
+  it.effect('does not read credentials during construction and returns static client metadata', async () => {
     const store = new MemoryStore()
     const provider = new KeychainOAuthProvider({
       config: { callbackPort: 3118, clientId: 'static-id', clientName: 'My Custom Client', clientSecret: 'static-secret' },
@@ -161,7 +161,7 @@ describe('Keychain OAuth provider', () => {
     expect(provider.clientMetadata.redirect_uris).toEqual(['http://localhost:3118/callback'])
   })
 
-  test('persists dynamic registration and refresh token updates without losing either', async () => {
+  it.effect('persists dynamic registration and refresh token updates without losing either', async () => {
     const store = new MemoryStore()
     const provider = new KeychainOAuthProvider({
       config: { callbackPort: 3119 },
@@ -190,7 +190,7 @@ describe('Keychain OAuth provider', () => {
     expect(store.value?.serverUrl).toBe('https://mcp.example.test/mcp')
   })
 
-  test('opens the browser only in an explicit interactive flow', async () => {
+  it.effect('opens the browser only in an explicit interactive flow', async () => {
     const opened: string[] = []
     const provider = new KeychainOAuthProvider({
       config: { callbackPort: 3120 },
