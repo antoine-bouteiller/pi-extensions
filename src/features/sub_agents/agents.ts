@@ -12,7 +12,7 @@ import {
   type ToolRenderResultOptions,
 } from '@earendil-works/pi-coding-agent'
 import { Text, isKeyRelease, isKeyRepeat, matchesKey, truncateToWidth } from '@earendil-works/pi-tui'
-import { Data, DateTime, Effect } from 'effect'
+import { Data, DateTime, Effect, Result } from 'effect'
 import { type Static, Type } from 'typebox'
 import { Check } from 'typebox/value'
 
@@ -864,66 +864,67 @@ ${getAgentProfilesDescription()}`
     includeAll?: boolean
   }
 
-  // oxlint-disable-next-line effecttsgo/async-function -- Drives Pi's promise-based `ctx.ui.custom` overlay; its render and input callbacks are synchronous TUI APIs.
-  const openAgentOverlay = async (options: OpenAgentOverlayOptions): Promise<void> => {
-    const { ctx, task } = options
-    const scopeId = options.scopeId ?? parentSessionId(ctx)
-    const includeAll = options.includeAll ?? false
-    if (ctx.mode !== 'tui') {
-      ctx.ui.notify('Subagent views require interactive TUI mode.', 'warning')
-      return
-    }
-    let info: AgentInfo
-    try {
-      info = await runtime.runPromise(manager.getAgentInfoFromDisk(task, scopeId))
-    } catch (error) {
-      ctx.ui.notify(error instanceof Error ? error.message : String(error), 'error')
-      return
-    }
+  const openAgentOverlay = (options: OpenAgentOverlayOptions) =>
+    Effect.gen(function* () {
+      const { ctx, task } = options
+      const scopeId = options.scopeId ?? parentSessionId(ctx)
+      const includeAll = options.includeAll ?? false
+      if (ctx.mode !== 'tui') {
+        ctx.ui.notify('Subagent views require interactive TUI mode.', 'warning')
+        return
+      }
+      const loaded = yield* Effect.result(manager.getAgentInfoFromDisk(task, scopeId))
+      if (Result.isFailure(loaded)) {
+        ctx.ui.notify(causeMessage(loaded.failure), 'error')
+        return
+      }
+      let info: AgentInfo = loaded.success
 
-    while (true) {
-      const navigation = await ctx.ui.custom<'previous' | 'next' | undefined>(
-        (tui, theme, _keybindings, done) =>
-          new SubagentPeekOverlay({
-            done,
-            info,
-            onEscape: () => {
-              if (!ctx.isIdle()) {
-                ctx.abort()
-              }
-            },
-            theme,
-            tui,
-          }),
-        {
-          overlay: true,
-          overlayOptions: {
-            anchor: 'top-left',
-            maxHeight: '100%',
-            width: '100%',
-          },
+      while (true) {
+        const navigation = yield* Effect.promise(() =>
+          ctx.ui.custom<'previous' | 'next' | undefined>(
+            (tui, theme, _keybindings, done) =>
+              new SubagentPeekOverlay({
+                done,
+                info,
+                onEscape: () => {
+                  if (!ctx.isIdle()) {
+                    ctx.abort()
+                  }
+                },
+                theme,
+                tui,
+              }),
+            {
+              overlay: true,
+              overlayOptions: {
+                anchor: 'top-left',
+                maxHeight: '100%',
+                width: '100%',
+              },
+            }
+          )
+        )
+        if (navigation !== 'previous' && navigation !== 'next') {
+          return
         }
-      )
-      if (navigation !== 'previous' && navigation !== 'next') {
-        return
-      }
 
-      const currentSessionId = parentSessionId(ctx)
-      const entries = await runtime.runPromise(manager.listAgentsFromDisk(undefined, currentSessionId, includeAll))
-      if (entries.length < 2) {
-        return
+        const currentSessionId = parentSessionId(ctx)
+        const entries = yield* manager.listAgentsFromDisk(undefined, currentSessionId, includeAll)
+        if (entries.length < 2) {
+          return
+        }
+        const currentIndex = entries.findIndex(
+          (entry) => entry.agent_name === info.canonicalName && (entry.parent_session_id || currentSessionId) === info.parentSessionId
+        )
+        if (currentIndex === -1) {
+          return
+        }
+        const offset = navigation === 'next' ? 1 : -1
+        const next = entries[(currentIndex + offset + entries.length) % entries.length]
+        info = yield* manager.getAgentInfoFromDisk(next.agent_name, next.parent_session_id || currentSessionId)
       }
-      const currentIndex = entries.findIndex(
-        (entry) => entry.agent_name === info.canonicalName && (entry.parent_session_id || currentSessionId) === info.parentSessionId
-      )
-      if (currentIndex === -1) {
-        return
-      }
-      const offset = navigation === 'next' ? 1 : -1
-      const next = entries[(currentIndex + offset + entries.length) % entries.length]
-      info = await runtime.runPromise(manager.getAgentInfoFromDisk(next.agent_name, next.parent_session_id || currentSessionId))
-    }
-  }
+    })
 
   interface PickedAgent {
     task: string
@@ -931,157 +932,146 @@ ${getAgentProfilesDescription()}`
     includeAll: boolean
   }
 
-  // oxlint-disable-next-line effecttsgo/async-function -- Awaits Pi's promise-based `ctx.ui.custom` selection overlay.
-  const pickAgent = async (ctx: PiExtensionContext): Promise<PickedAgent | undefined> => {
-    const currentSessionId = parentSessionId(ctx)
-    await runtime.runPromise(manager.listAgentsFromDisk(undefined, currentSessionId, true))
-    return await ctx.ui.custom<PickedAgent | undefined>((tui, theme, _keybindings, done) => {
-      let selected = 0
-      let showAll = false
-      let cached: string[] | undefined
-      const fg = theme.fg.bind(theme)
-      const pageSize = 10
-      const refresh = () => {
-        cached = undefined
-        tui.requestRender()
-      }
-      const agents = () => manager.listAgents(undefined, currentSessionId, showAll)
-      const renderAgentRow = (entry: AgentListEntry, index: number, width: number): string[] => {
-        const info = manager.getAgentInfo(entry.agent_name, entry.parent_session_id || currentSessionId)
-        const pointer = index === selected ? fg('accent', '› ') : '  '
-        const name = truncateToWidth(entry.agent_name, 28).padEnd(28)
-        const sessionId = entry.parent_session_id || ''
-        const parent = showAll ? ` ${sessionId.slice(-8)}` : ''
-        let statusColor: ThemeColor
-        if (entry.agent_status === 'failed') {
-          statusColor = 'error'
-        } else if (entry.agent_status === 'completed') {
-          statusColor = 'success'
-        } else {
-          statusColor = 'warning'
-        }
-        const rowLines = [
-          `${pointer}${fg(persistedProfileColor(info.profile, info.color), name)} ${fg(
-            statusColor,
-            entry.agent_status.padEnd(11)
-          )} ${fg('dim', `${runtimeLabel(info)}${parent}`)}`,
-        ]
-        if (isNotNullOrUndefined(entry.last_task_message) && isNotEmptyString(entry.last_task_message)) {
-          rowLines.push(`  ${fg('dim', truncateToWidth(entry.last_task_message.replaceAll(/\s+/g, ' '), Math.max(20, width - 4)))}`)
-        }
-        return rowLines
-      }
-      return {
-        handleInput(data: string) {
-          const entries = agents()
-          if (matchesKey(data, 'escape') || data === 'q') {
-            done(undefined)
-            return
+  const pickAgent = (ctx: PiExtensionContext) =>
+    Effect.gen(function* () {
+      const currentSessionId = parentSessionId(ctx)
+      yield* manager.listAgentsFromDisk(undefined, currentSessionId, true)
+      return yield* Effect.promise(() =>
+        ctx.ui.custom<PickedAgent | undefined>((tui, theme, _keybindings, done) => {
+          let selected = 0
+          let showAll = false
+          let cached: string[] | undefined
+          const fg = theme.fg.bind(theme)
+          const pageSize = 10
+          const refresh = () => {
+            cached = undefined
+            tui.requestRender()
           }
-          if (matchesKey(data, 'tab') || data === '\t') {
-            showAll = !showAll
-            selected = 0
-            refresh()
-            return
+          const agents = () => manager.listAgents(undefined, currentSessionId, showAll)
+          const renderAgentRow = (entry: AgentListEntry, index: number, width: number): string[] => {
+            const info = manager.getAgentInfo(entry.agent_name, entry.parent_session_id || currentSessionId)
+            const pointer = index === selected ? fg('accent', '› ') : '  '
+            const name = truncateToWidth(entry.agent_name, 28).padEnd(28)
+            const sessionId = entry.parent_session_id || ''
+            const parent = showAll ? ` ${sessionId.slice(-8)}` : ''
+            let statusColor: ThemeColor
+            if (entry.agent_status === 'failed') {
+              statusColor = 'error'
+            } else if (entry.agent_status === 'completed') {
+              statusColor = 'success'
+            } else {
+              statusColor = 'warning'
+            }
+            const rowLines = [
+              `${pointer}${fg(persistedProfileColor(info.profile, info.color), name)} ${fg(
+                statusColor,
+                entry.agent_status.padEnd(11)
+              )} ${fg('dim', `${runtimeLabel(info)}${parent}`)}`,
+            ]
+            if (isNotNullOrUndefined(entry.last_task_message) && isNotEmptyString(entry.last_task_message)) {
+              rowLines.push(`  ${fg('dim', truncateToWidth(entry.last_task_message.replaceAll(/\s+/g, ' '), Math.max(20, width - 4)))}`)
+            }
+            return rowLines
           }
-          if (data === 'r') {
-            void runtime.runPromise(manager.listAgentsFromDisk(undefined, currentSessionId, true)).then(refresh)
-            return
+          return {
+            handleInput(data: string) {
+              const entries = agents()
+              if (matchesKey(data, 'escape') || data === 'q') {
+                done(undefined)
+                return
+              }
+              if (matchesKey(data, 'tab') || data === '\t') {
+                showAll = !showAll
+                selected = 0
+                refresh()
+                return
+              }
+              if (data === 'r') {
+                void runtime.runPromise(manager.listAgentsFromDisk(undefined, currentSessionId, true)).then(refresh)
+                return
+              }
+              if (matchesKey(data, 'down') || data === 'j') {
+                selected = Math.min(entries.length - 1, selected + 1)
+                refresh()
+                return
+              }
+              if (matchesKey(data, 'up') || data === 'k') {
+                selected = Math.max(0, selected - 1)
+                refresh()
+                return
+              }
+              if (matchesKey(data, 'return') && entries[selected] !== undefined) {
+                done({
+                  includeAll: showAll,
+                  parentSessionId: entries[selected].parent_session_id || currentSessionId,
+                  task: entries[selected].agent_name,
+                })
+              }
+            },
+            invalidate() {
+              cached = undefined
+            },
+            render(width: number): string[] {
+              if (cached !== undefined) {
+                return cached
+              }
+              const entries = agents()
+              if (selected >= entries.length) {
+                selected = Math.max(0, entries.length - 1)
+              }
+              const scopeLabel = showAll ? 'all sessions' : 'this session'
+              const lines = [
+                fg('accent', '─'.repeat(width)),
+                fg('accent', theme.bold(' Subagents')) + fg('dim', ` (${entries.length}, ${scopeLabel})`),
+                '',
+              ]
+              if (entries.length === 0) {
+                lines.push(fg('dim', showAll ? 'No subagents found.' : 'No subagents for this session. Press tab to show all.'))
+              }
+              const viewStart = entries.length > pageSize ? Math.max(0, Math.min(selected - Math.floor(pageSize / 2), entries.length - pageSize)) : 0
+              const viewEnd = Math.min(viewStart + pageSize, entries.length)
+              if (viewStart > 0) {
+                lines.push(fg('dim', `  ↑ ${viewStart} more`))
+              }
+              for (let index = viewStart; index < viewEnd; index++) {
+                lines.push(...renderAgentRow(entries[index], index, width))
+              }
+              if (viewEnd < entries.length) {
+                lines.push(fg('dim', `  ↓ ${entries.length - viewEnd} more`))
+              }
+              lines.push('', fg('dim', 'enter: open  tab: this/all sessions  r: refresh  q/esc: close'))
+              cached = lines
+              return lines
+            },
           }
-          if (matchesKey(data, 'down') || data === 'j') {
-            selected = Math.min(entries.length - 1, selected + 1)
-            refresh()
-            return
-          }
-          if (matchesKey(data, 'up') || data === 'k') {
-            selected = Math.max(0, selected - 1)
-            refresh()
-            return
-          }
-          if (matchesKey(data, 'return') && entries[selected] !== undefined) {
-            done({
-              includeAll: showAll,
-              parentSessionId: entries[selected].parent_session_id || currentSessionId,
-              task: entries[selected].agent_name,
-            })
-          }
-        },
-        invalidate() {
-          cached = undefined
-        },
-        render(width: number): string[] {
-          if (cached !== undefined) {
-            return cached
-          }
-          const entries = agents()
-          if (selected >= entries.length) {
-            selected = Math.max(0, entries.length - 1)
-          }
-          const scopeLabel = showAll ? 'all sessions' : 'this session'
-          const lines = [
-            fg('accent', '─'.repeat(width)),
-            fg('accent', theme.bold(' Subagents')) + fg('dim', ` (${entries.length}, ${scopeLabel})`),
-            '',
-          ]
-          if (entries.length === 0) {
-            lines.push(fg('dim', showAll ? 'No subagents found.' : 'No subagents for this session. Press tab to show all.'))
-          }
-          const viewStart = entries.length > pageSize ? Math.max(0, Math.min(selected - Math.floor(pageSize / 2), entries.length - pageSize)) : 0
-          const viewEnd = Math.min(viewStart + pageSize, entries.length)
-          if (viewStart > 0) {
-            lines.push(fg('dim', `  ↑ ${viewStart} more`))
-          }
-          for (let index = viewStart; index < viewEnd; index++) {
-            lines.push(...renderAgentRow(entries[index], index, width))
-          }
-          if (viewEnd < entries.length) {
-            lines.push(fg('dim', `  ↓ ${entries.length - viewEnd} more`))
-          }
-          lines.push('', fg('dim', 'enter: open  tab: this/all sessions  r: refresh  q/esc: close'))
-          cached = lines
-          return lines
-        },
-      }
+        })
+      )
     })
-  }
 
   const subagentCommand = {
     description: 'Browse subagents, or open one directly. Usage: /subagent [task-name]',
-    // oxlint-disable-next-line effecttsgo/async-function -- Pi awaits this through the registered command handler, so it must stay a promise.
-    handler: async (args: string, ctx: ExtensionCommandContext) => {
+    handler: (args: string, ctx: ExtensionCommandContext) => {
       const task = args?.trim().replace(/^\//, '')
-      if (isNotNullOrUndefined(task) && isNotEmptyString(task)) {
-        await openAgentOverlay({ ctx, task })
-        return
-      }
-      const selected = await pickAgent(ctx)
+      return runtime.runPromise(isNotNullOrUndefined(task) && isNotEmptyString(task) ? openAgentOverlay({ ctx, task }) : browseAgents(ctx))
+    },
+  }
+
+  const browseAgents = (ctx: PiExtensionContext) =>
+    Effect.gen(function* () {
+      const selected = yield* pickAgent(ctx)
       if (selected !== undefined) {
-        await openAgentOverlay({
+        yield* openAgentOverlay({
           ctx,
           includeAll: selected.includeAll,
           scopeId: selected.parentSessionId,
           task: selected.task,
         })
       }
-    },
-  }
-
-  // oxlint-disable-next-line effecttsgo/async-function -- Sequences the two promise-based TUI overlays above.
-  const browseAgents = async (ctx: PiExtensionContext): Promise<void> => {
-    const selected = await pickAgent(ctx)
-    if (selected !== undefined) {
-      await openAgentOverlay({
-        ctx,
-        includeAll: selected.includeAll,
-        scopeId: selected.parentSessionId,
-        task: selected.task,
-      })
-    }
-  }
+    })
 
   const browseAgentsCommand = {
     description: 'Browse subagents',
-    handler: (_args: string, ctx: ExtensionCommandContext) => browseAgents(ctx),
+    handler: (_args: string, ctx: ExtensionCommandContext) => runtime.runPromise(browseAgents(ctx)),
   }
 
   return {

@@ -17,6 +17,7 @@ import {
   type SessionStartEvent,
 } from '@earendil-works/pi-coding-agent'
 import { type EditorComponent, isKeyRelease, isKeyRepeat, matchesKey, type TUI } from '@earendil-works/pi-tui'
+import { Effect } from 'effect'
 
 import { isNotEmptyString, isTrue } from '@/shared/utils/predicates.js'
 
@@ -28,7 +29,7 @@ interface RewindCapture {
 }
 
 export interface RewindController {
-  readonly rewindCancelledPrompt: (ctx: ExtensionCommandContext) => Promise<void>
+  readonly rewindCancelledPrompt: (ctx: ExtensionCommandContext) => Effect.Effect<void>
   readonly captureInput: (event: InputEvent) => void
   readonly capturePrompt: (event: BeforeAgentStartEvent, ctx: ExtensionContext) => void
   readonly arm: () => void
@@ -142,38 +143,42 @@ export const makeRewindController = (): RewindController => {
     resetState()
   }
 
-  // oxlint-disable-next-line effecttsgo/async-function -- Pi awaits this through the registered command handler, so it must stay a promise.
-  const rewindCancelledPrompt = async (ctx: ExtensionCommandContext): Promise<void> => {
-    const capture = pendingRewind
-    pendingRewind = undefined
-    if (capture === undefined) {
-      canceling = false
-      return
-    }
-
-    try {
-      ctx.abort()
-      await ctx.waitForIdle()
-
-      const branch = ctx.sessionManager.getBranch()
-      const parentIndex = capture.parentId === null ? -1 : branch.findIndex((entry) => entry.id === capture.parentId)
-      const userEntry = branch
-        .slice(parentIndex + 1)
-        .find((entry): entry is SessionMessageEntry => entry.type === 'message' && entry.message.role === 'user')
-      if ((capture.parentId !== null && parentIndex === -1) || userEntry === undefined) {
-        ctx.ui.notify('prompt_rewind: could not find the cancelled message to rewind.', 'warning')
-        return
+  const rewindCancelledPrompt = (ctx: ExtensionCommandContext): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      const capture = pendingRewind
+      pendingRewind = undefined
+      if (capture === undefined) {
+        canceling = false
+        return Effect.void
       }
 
-      const draft = ctx.ui.getEditorText()
-      const result = await ctx.navigateTree(userEntry.id)
-      if (!result.cancelled) {
-        ctx.ui.setEditorText([capture.rawText, draft].filter((text) => text.trim()).join('\n\n'))
-      }
-    } finally {
-      canceling = false
-    }
-  }
+      return Effect.gen(function* () {
+        ctx.abort()
+        yield* Effect.promise(() => ctx.waitForIdle())
+
+        const branch = ctx.sessionManager.getBranch()
+        const parentIndex = capture.parentId === null ? -1 : branch.findIndex((entry) => entry.id === capture.parentId)
+        const userEntry = branch
+          .slice(parentIndex + 1)
+          .find((entry): entry is SessionMessageEntry => entry.type === 'message' && entry.message.role === 'user')
+        if ((capture.parentId !== null && parentIndex === -1) || userEntry === undefined) {
+          ctx.ui.notify('prompt_rewind: could not find the cancelled message to rewind.', 'warning')
+          return
+        }
+
+        const draft = ctx.ui.getEditorText()
+        const result = yield* Effect.promise(() => ctx.navigateTree(userEntry.id))
+        if (!result.cancelled) {
+          ctx.ui.setEditorText([capture.rawText, draft].filter((text) => text.trim()).join('\n\n'))
+        }
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            canceling = false
+          })
+        )
+      )
+    })
 
   return { arm, captureInput, capturePrompt, disarm, rewindCancelledPrompt, shutdown, start }
 }

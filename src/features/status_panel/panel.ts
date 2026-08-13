@@ -1,5 +1,6 @@
 import { type ExtensionAPI, type ExtensionContext, type ReadonlyFooterDataProvider } from '@earendil-works/pi-coding-agent'
 import { Effect, Path, Ref } from 'effect'
+import { type HttpClient } from 'effect/unstable/http'
 
 import { type AppRuntime, AgentActivity, StatusBar } from '@/shared/effect/app_services.js'
 import { azureQuota, writeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
@@ -44,8 +45,8 @@ export interface PanelControllerOptions {
 }
 
 export interface PanelHandlers {
-  readonly sessionStart: (event: unknown, ctx: ExtensionContext) => Effect.Effect<void>
-  readonly modelSelect: (event: ModelSelectPayload, ctx: ExtensionContext) => Effect.Effect<void>
+  readonly sessionStart: (event: unknown, ctx: ExtensionContext) => Effect.Effect<void, never, HttpClient.HttpClient>
+  readonly modelSelect: (event: ModelSelectPayload, ctx: ExtensionContext) => Effect.Effect<void, never, HttpClient.HttpClient>
   readonly thinkingLevelSelect: (event: ThinkingLevelSelectPayload, ctx: ExtensionContext) => Effect.Effect<void>
   readonly agentStart: (event: unknown, ctx: ExtensionContext) => Effect.Effect<void>
   readonly turnEnd: (event: unknown, ctx: ExtensionContext) => Effect.Effect<void>
@@ -114,7 +115,7 @@ export const makePanelController = ({ dependencies, pi, runtime }: PanelControll
     )
   )
 
-  const startAnthropicQuota = (ctx: ExtensionContext): Effect.Effect<void> =>
+  const startAnthropicQuota = (ctx: ExtensionContext): Effect.Effect<void, never, HttpClient.HttpClient> =>
     Effect.gen(function* () {
       if (ctx.mode !== 'tui') {
         return

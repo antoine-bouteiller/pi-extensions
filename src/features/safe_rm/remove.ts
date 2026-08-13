@@ -403,48 +403,45 @@ interface RoutedRmResult {
 
 export interface RmRouter {
   readonly route: (event: ToolCallEvent) => void
-  readonly complete: (event: ToolResultEvent, ctx: ExtensionContext) => Promise<RoutedRmResult | undefined>
+  readonly complete: (event: ToolResultEvent, ctx: ExtensionContext) => Effect.Effect<RoutedRmResult | undefined, never, FileSystem>
   readonly forget: (event: { toolCallId: string }) => void
 }
 
 export interface RmRouterOptions {
   readonly pi: ExtensionAPI
-  readonly runRm: (params: SafeRmToolParams, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<ToolOutput>
+  readonly runRm: SafeRmRun
 }
+
+const routedRmFailure = (text: string): RoutedRmResult => ({ content: [{ text, type: 'text' as const }], details: {}, isError: true })
+
+const notRouted: Effect.Effect<RoutedRmResult | undefined> = Effect.void.pipe(Effect.as(undefined))
 
 export const makeRmRouter = ({ pi, runRm }: RmRouterOptions): RmRouter => {
   const pending = new Map<string, SafeRmToolParams>()
 
   return {
-    // oxlint-disable-next-line effecttsgo/async-function -- Pi awaits this through the `tool_result` listener, so it must stay a promise.
-    complete: async (event, ctx) => {
-      if (!isBashToolResult(event) || event.input.command !== ROUTED_RM_SENTINEL) {
-        return undefined
-      }
-      const route = pending.get(event.toolCallId)
-      pending.delete(event.toolCallId)
-      if (event.isError) {
-        return undefined
-      }
-      if (route === undefined) {
-        return {
-          content: [{ text: 'Safe removal handoff was lost; no paths were removed', type: 'text' as const }],
-          details: {},
-          isError: true,
+    complete: (event, ctx) =>
+      Effect.suspend(() => {
+        if (!isBashToolResult(event) || event.input.command !== ROUTED_RM_SENTINEL) {
+          return notRouted
         }
-      }
+        const route = pending.get(event.toolCallId)
+        pending.delete(event.toolCallId)
+        if (event.isError) {
+          return notRouted
+        }
+        if (route === undefined) {
+          return Effect.succeed(routedRmFailure('Safe removal handoff was lost; no paths were removed'))
+        }
 
-      try {
-        const result = await runRm(route, ctx.signal, ctx)
-        return { content: result.content, details: {}, isError: false }
-      } catch (error) {
-        return {
-          content: [{ text: error instanceof Error ? error.message : String(error), type: 'text' as const }],
-          details: {},
-          isError: true,
-        }
-      }
-    },
+        return runRm(route, ctx.signal, ctx).pipe(
+          Effect.map((result): RoutedRmResult => ({ content: result.content, details: {}, isError: false })),
+          Effect.catchCause((cause) => {
+            const error: unknown = Cause.squash(cause)
+            return Effect.succeed(routedRmFailure(error instanceof Error ? error.message : String(error)))
+          })
+        )
+      }),
     forget: (event) => {
       pending.delete(event.toolCallId)
     },

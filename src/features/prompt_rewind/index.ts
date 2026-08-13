@@ -13,7 +13,7 @@ import { type AppRuntime } from '@/shared/effect/app_services.js'
 
 import { makeRewindController, REWIND_COMMAND } from './rewind.js'
 
-export const register = (pi: ExtensionAPI, _runtime: AppRuntime): void => {
+export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
   const controller = makeRewindController()
 
   pi.on('input', controller.captureInput)
@@ -27,6 +27,6 @@ export const register = (pi: ExtensionAPI, _runtime: AppRuntime): void => {
 
   pi.registerCommand(REWIND_COMMAND, {
     description: 'Internal: rewinds the just-cancelled prompt from the active branch and restores its raw text to the editor.',
-    handler: (_args, ctx) => controller.rewindCancelledPrompt(ctx),
+    handler: (_args, ctx) => runtime.runPromise(controller.rewindCancelledPrompt(ctx)),
   })
 }

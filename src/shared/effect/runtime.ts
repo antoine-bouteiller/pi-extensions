@@ -15,8 +15,8 @@ export const perInvocation = (ctx: ExtensionContext): Context.Context<HandlerSer
 export const makeToolExecutor =
   <AppServices>(runtime: ManagedRuntime.ManagedRuntime<AppServices, never>) =>
   <Params, Result>(body: (params: Params) => Effect.Effect<Result, ToolFailure, AppServices | HandlerServices>) =>
-  // oxlint-disable-next-line effecttsgo/async-function -- Pi awaits the value returned by `execute`, so this boundary must stay a promise.
-  async (_toolCallId: string, params: Params, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext): Promise<Result> =>
+  // Pi awaits the value returned by `execute`, so this boundary hands back the runtime's promise directly.
+  (_toolCallId: string, params: Params, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext): Promise<Result> =>
     runtime.runPromise(
       /*
        * RunPromise inspects the signal only after it begins evaluating, and returns immediately for
@@ -35,8 +35,8 @@ export const makeToolExecutor =
 export const makeEventHandler =
   <AppServices>(runtime: ManagedRuntime.ManagedRuntime<AppServices, never>) =>
   <Event, Result, Failure>(body: (event: Event, ctx: ExtensionContext) => Effect.Effect<Result, Failure, AppServices | HandlerServices>) =>
-  // oxlint-disable-next-line effecttsgo/async-function -- Pi awaits event listeners, so this boundary must stay a promise.
-  async (event: Event, ctx: ExtensionContext): Promise<Result> =>
+  // Pi awaits event listeners, so this boundary hands back the runtime's promise directly.
+  (event: Event, ctx: ExtensionContext): Promise<Result> =>
     runtime.runPromise(body(event, ctx).pipe(Effect.provide(perInvocation(ctx))))
 
 /**

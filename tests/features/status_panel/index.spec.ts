@@ -36,7 +36,7 @@ describe('status panel registration', () => {
         const dependencies = {
           get fetchAnthropicQuota() {
             dependencyReads += 1
-            return () => promiseFromEffect(Effect.void.pipe(Effect.as(undefined)))
+            return () => Effect.void.pipe(Effect.as(undefined))
           },
         }
 
@@ -245,10 +245,11 @@ describe('status panel quota lifecycle', () => {
         const { pi, emit } = createFakePi()
         const signals: AbortSignal[] = []
         statusPanel(pi, runtime, {
-          fetchAnthropicQuota: (_baseUrl, signal) => {
-            signals.push(signal)
-            return promiseFromEffect(Effect.never)
-          },
+          fetchAnthropicQuota: () =>
+            Effect.promise((signal) => {
+              signals.push(signal)
+              return promiseFromEffect(Effect.never)
+            }),
         })
         const ctx = quotaLifecycleContext('rpc')
 
@@ -267,11 +268,12 @@ describe('status panel quota lifecycle', () => {
         const baseUrls: string[] = []
         const signals: AbortSignal[] = []
         statusPanel(pi, runtime, {
-          fetchAnthropicQuota: (baseUrl, signal) => {
-            baseUrls.push(baseUrl)
-            signals.push(signal)
-            return promiseFromEffect(Effect.never)
-          },
+          fetchAnthropicQuota: (baseUrl) =>
+            Effect.promise((signal) => {
+              baseUrls.push(baseUrl)
+              signals.push(signal)
+              return promiseFromEffect(Effect.never)
+            }),
         })
         const ctx = quotaLifecycleContext('tui', 'azure-openai-responses')
 

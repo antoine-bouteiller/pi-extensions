@@ -1,12 +1,17 @@
-import { makeAbortController } from '@tests/utils/abort_controller.js'
 import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asFetch } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { Clock, Effect } from 'effect'
 import { TestClock } from 'effect/testing'
+import { FetchHttpClient, type HttpClient } from 'effect/unstable/http'
 
 import { fetchAnthropicQuota, makeQuotaPoller, quotaFromHeaders } from '@/features/status_panel/provider.js'
 import { type ProviderQuota } from '@/features/status_panel/state.js'
+
+const withFakeFetch = <Success, Failure>(
+  fetchImpl: typeof fetch,
+  effect: Effect.Effect<Success, Failure, HttpClient.HttpClient>
+): Effect.Effect<Success, Failure> => effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.provideService(FetchHttpClient.Fetch, fetchImpl))
 
 const flushPromises = (): Promise<void> =>
   promiseFromEffect(
@@ -19,10 +24,9 @@ const flushPromises = (): Promise<void> =>
 const gatewayResponse = (profiles: unknown) => Promise.resolve(Response.json(profiles, { status: 200 }))
 
 describe('Anthropic quota provider', () => {
-  it.live('passes the abort signal and converts gateway fractions to percentages', () =>
+  it.live('passes an abort signal and converts gateway fractions to percentages', () =>
     Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis
-      const controller = makeAbortController()
       let requestedUrl = ''
       let requestedInit: RequestInit | undefined
       const fakeFetch = asFetch((input, init) => {
@@ -45,7 +49,7 @@ describe('Anthropic quota provider', () => {
         })
       })
 
-      const quota = yield* Effect.promise(() => fetchAnthropicQuota('http://127.0.0.1:3456', controller.signal, fakeFetch))
+      const quota = yield* withFakeFetch(fakeFetch, fetchAnthropicQuota('http://127.0.0.1:3456'))
       if (quota === undefined) {
         throw new Error('expected a quota')
       }
@@ -55,7 +59,7 @@ describe('Anthropic quota provider', () => {
       }
 
       expect(requestedUrl).toBe('http://127.0.0.1:3456/v1/usage/quota/all')
-      expect(requestedInit?.signal).toBe(controller.signal)
+      expect(requestedInit?.signal).toBeInstanceOf(AbortSignal)
       expect(quota.label).toBe('anthropic')
       expect(quota.percent).toBe(37.5)
       expect(quota.detail).toContain('1h 30m')
@@ -89,7 +93,7 @@ describe('Anthropic quota provider', () => {
         })
       )
 
-      const quota = yield* Effect.promise(() => fetchAnthropicQuota('http://gateway', undefined, fakeFetch))
+      const quota = yield* withFakeFetch(fakeFetch, fetchAnthropicQuota('http://gateway'))
 
       expect(quota?.percent).toBe(0)
       expect(quota?.windows?.[0]).toEqual({ label: 'Session', percent: 0 })
@@ -117,7 +121,7 @@ describe('Anthropic quota provider', () => {
         })
       )
 
-      const quota = yield* Effect.promise(() => fetchAnthropicQuota('http://gateway', undefined, fakeFetch))
+      const quota = yield* withFakeFetch(fakeFetch, fetchAnthropicQuota('http://gateway'))
       expect(quota?.percent).toBe(50)
     })
   )
@@ -130,7 +134,7 @@ describe('Anthropic quota provider', () => {
         return gatewayResponse({ profiles: [] })
       })
 
-      yield* Effect.promise(() => fetchAnthropicQuota('http://127.0.0.1:3456/', undefined, fakeFetch))
+      yield* withFakeFetch(fakeFetch, fetchAnthropicQuota('http://127.0.0.1:3456/'))
       expect(requestedUrl).toBe('http://127.0.0.1:3456/v1/usage/quota/all')
     })
   )
@@ -148,10 +152,10 @@ describe('Anthropic quota provider', () => {
       )
       const empty = asFetch(() => gatewayResponse({ profiles: [] }))
 
-      expect(yield* Effect.promise(() => fetchAnthropicQuota('', undefined, unusable))).toBeUndefined()
-      expect(yield* Effect.promise(() => fetchAnthropicQuota('http://gateway', undefined, unsuccessful))).toBeUndefined()
-      expect(yield* Effect.promise(() => fetchAnthropicQuota('http://gateway', undefined, malformed))).toBeUndefined()
-      expect(yield* Effect.promise(() => fetchAnthropicQuota('http://gateway', undefined, empty))).toBeUndefined()
+      expect(yield* withFakeFetch(unusable, fetchAnthropicQuota(''))).toBeUndefined()
+      expect(yield* withFakeFetch(unsuccessful, fetchAnthropicQuota('http://gateway'))).toBeUndefined()
+      expect(yield* withFakeFetch(malformed, fetchAnthropicQuota('http://gateway'))).toBeUndefined()
+      expect(yield* withFakeFetch(empty, fetchAnthropicQuota('http://gateway'))).toBeUndefined()
     })
   )
 
@@ -179,11 +183,12 @@ describe('Anthropic quota polling lifecycle', () => {
     Effect.gen(function* () {
       const requests: ReturnType<typeof deferred<ProviderQuota | undefined>>[] = []
       const poller = yield* makeQuotaPoller(() => undefined, {
-        fetchQuota: () => {
-          const request = deferred<ProviderQuota | undefined>()
-          requests.push(request)
-          return request.promise
-        },
+        fetchQuota: () =>
+          Effect.promise(() => {
+            const request = deferred<ProviderQuota | undefined>()
+            requests.push(request)
+            return request.promise
+          }),
         refreshMs: 10,
       })
 
@@ -205,7 +210,7 @@ describe('Anthropic quota polling lifecycle', () => {
       yield* poller.stop
       yield* TestClock.adjust('60 millis')
       expect(requests).toHaveLength(2)
-    })
+    }).pipe(Effect.provide(FetchHttpClient.layer))
   )
 
   it.effect('continues polling when publishing a quota throws', () =>
@@ -221,12 +226,10 @@ describe('Anthropic quota polling lifecycle', () => {
         },
         {
           fetchQuota: () =>
-            promiseFromEffect(
-              Effect.sync(() => {
-                fetches += 1
-                return { label: 'anthropic', percent: 10 }
-              })
-            ),
+            Effect.sync(() => {
+              fetches += 1
+              return { label: 'anthropic', percent: 10 }
+            }),
           refreshMs: 10,
         }
       )
@@ -237,7 +240,7 @@ describe('Anthropic quota polling lifecycle', () => {
       expect(fetches).toBe(2)
       expect(publications).toBe(2)
       yield* poller.stop
-    })
+    }).pipe(Effect.provide(FetchHttpClient.layer))
   )
 
   it.effect('aborts stopped generations and ignores their late results', () =>
@@ -253,11 +256,12 @@ describe('Anthropic quota polling lifecycle', () => {
           published.push(quota)
         },
         {
-          fetchQuota: (baseUrl, signal) => {
-            const result = deferred<ProviderQuota | undefined>()
-            requests.push({ baseUrl, result, signal })
-            return result.promise
-          },
+          fetchQuota: (baseUrl) =>
+            Effect.promise((signal) => {
+              const result = deferred<ProviderQuota | undefined>()
+              requests.push({ baseUrl, result, signal })
+              return result.promise
+            }),
           refreshMs: 10,
         }
       )
@@ -291,6 +295,6 @@ describe('Anthropic quota polling lifecycle', () => {
       expect(third.signal.aborted).toBeTrue()
       yield* TestClock.adjust('60 millis')
       expect(requests).toHaveLength(3)
-    })
+    }).pipe(Effect.provide(FetchHttpClient.layer))
   )
 })
