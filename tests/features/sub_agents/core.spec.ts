@@ -7,24 +7,22 @@ import { makeAbortController } from '@tests/utils/abort_controller.js'
 import { promiseFromEffect, tryPromiseEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asError, asExtensionApi, asNarrowed, asResult, asTheme, asTui } from '@tests/utils/casts.js'
 import { withProcessEnv } from '@tests/utils/process_env.js'
-import { Data, DateTime, Deferred, Effect, Fiber } from 'effect'
+import { Cause, Data, DateTime, Deferred, Effect, Fiber } from 'effect'
 
-import { hostFileSystemSync } from '@/shared/effect/bun_host_file_system.js'
-import { bunPath } from '@/shared/effect/bun_services.js'
+import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
 import { jsonText, parseJsonText, prettyJsonText } from '@/shared/utils/json.js'
 
 const { dirname, join } = bunPath
 const {
-  chmod: chmodSync,
-  exists: existsSync,
-  makeDirectory: mkdirSync,
-  readFile: readFileSync,
-  remove: rmSync,
-  rename: renameSync,
-  stat: statSync,
-  utimes: utimesSync,
-  writeFile: writeFileSync,
-} = hostFileSystemSync
+  chmod: chmodFile,
+  exists: existsFile,
+  makeDirectory,
+  readFileString: readText,
+  remove: removeFile,
+  stat: statFile,
+  utimes: touchFile,
+  writeFileString: writeText,
+} = bunFileSystem
 const TEST_AGENT_DIR = '/tmp/pi-codex-subagents-tests'
 const FAKE_RPC_CHILD = join(import.meta.dir, 'fixtures', 'fake_rpc_child.js')
 const TEST_TEMP_DIR = join(TEST_AGENT_DIR, 'temp')
@@ -141,7 +139,10 @@ const promising = (manager: InstanceType<typeof AgentManager>) => ({
   instance: manager,
   interruptAgent: (...args: Parameters<typeof manager.interruptAgent>) => promiseFromEffect(manager.interruptAgent(...args)),
   listAgents: manager.listAgents.bind(manager),
+  listAgentsFromDisk: (...args: Parameters<typeof manager.listAgentsFromDisk>) => promiseFromEffect(manager.listAgentsFromDisk(...args)),
   readAgentResponse: manager.readAgentResponse.bind(manager),
+  readAgentResponseFromDisk: (...args: Parameters<typeof manager.readAgentResponseFromDisk>) =>
+    promiseFromEffect(manager.readAgentResponseFromDisk(...args)),
   ready: () => promiseFromEffect(manager.ready()),
   sendMessage: (...args: Parameters<typeof manager.sendMessage>) => promiseFromEffect(manager.sendMessage(...args)),
   shutdown: () => promiseFromEffect(manager.shutdown()),
@@ -210,21 +211,36 @@ describe('run storage', () => {
   const fixtureDir = join(TEST_AGENT_DIR, 'retention-fixture')
 
   it.effect('uses persistent package storage by default', () =>
-    Effect.sync(() => {
-      rmSync(configFile, { force: true })
+    Effect.gen(function* () {
+      yield* removeFile(configFile, { force: true })
       expect(getRunsDir()).toBe(join(packageDir, 'runs'))
     })
   )
 
+  it.effect('falls back to default storage when config JSON is malformed', () =>
+    Effect.gen(function* () {
+      yield* makeDirectory(packageDir, { recursive: true })
+      yield* writeText(configFile, '{malformed')
+      const manager = createAgentManager()
+      try {
+        yield* Effect.promise(() => manager.ready())
+        expect(getRunsDir()).toBe(join(packageDir, 'runs'))
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        yield* removeFile(configFile, { force: true })
+      }
+    })
+  )
+
   it.effect('keeps legacy temporary runs discoverable', () =>
-    Effect.sync(() => {
-      rmSync(configFile, { force: true })
+    Effect.gen(function* () {
+      yield* removeFile(configFile, { force: true })
       const parentSessionId = 'legacy-parent'
       const id = '11111111-1111-4111-8111-111111111111'
       const legacyRoot = join(TEST_TEMP_DIR, 'pi-codex-subagents', userInfo().username, 'runs')
       const legacyScope = join(legacyRoot, parentScopeKey(parentSessionId))
-      mkdirSync(legacyScope, { recursive: true })
-      writeFileSync(
+      yield* makeDirectory(legacyScope, { recursive: true })
+      yield* writeText(
         join(legacyScope, `${id}.info.json`),
         jsonText({
           createdAt: nowMs(),
@@ -236,18 +252,18 @@ describe('run storage', () => {
         })
       )
 
-      expect(getAgent('legacy', parentSessionId)).toMatchObject({
+      expect(yield* getAgent('legacy', parentSessionId)).toMatchObject({
         finalResponse: 'legacy response',
         id,
         status: 'completed',
       })
-      rmSync(legacyScope, { force: true, recursive: true })
+      yield* removeFile(legacyScope, { force: true, recursive: true })
     })
   )
 
   it.effect('keeps agent lists in creation order when activity changes', () =>
     Effect.gen(function* () {
-      rmSync(configFile, { force: true })
+      yield* removeFile(configFile, { force: true })
       const parentSessionId = 'creation-order'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
       const now = nowMs()
@@ -265,9 +281,9 @@ describe('run storage', () => {
           taskName: 'newer',
         },
       ]
-      mkdirSync(scope, { recursive: true })
+      yield* makeDirectory(scope, { recursive: true })
       for (const agent of agents) {
-        writeFileSync(
+        yield* writeText(
           join(scope, `${agent.id}.info.json`),
           jsonText({
             ...agent,
@@ -281,19 +297,55 @@ describe('run storage', () => {
 
       const manager = createAgentManager()
       try {
+        yield* Effect.promise(() => manager.ready())
         expect(manager.listAgents(undefined, parentSessionId).map((agent) => agent.agent_name)).toEqual(['/newer', '/older'])
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
+      }
+    })
+  )
+
+  it.effect('refreshes disk-backed tool reads after another process publishes an agent', () =>
+    Effect.gen(function* () {
+      yield* removeFile(configFile, { force: true })
+      const parentSessionId = 'cross-process-refresh'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      const id = '33333333-3333-4333-8333-333333333333'
+      const manager = createAgentManager()
+      try {
+        yield* Effect.promise(() => manager.ready())
+        expect(manager.listAgents(undefined, parentSessionId)).toEqual([])
+        yield* makeDirectory(scope, { recursive: true })
+        yield* writeText(
+          join(scope, `${id}.info.json`),
+          jsonText({
+            canonicalName: '/external',
+            createdAt: nowMs(),
+            id,
+            parentSessionId,
+            status: 'completed',
+            taskName: 'external',
+            updatedAt: nowMs(),
+          })
+        )
+
+        expect((yield* Effect.promise(() => manager.listAgentsFromDisk(undefined, parentSessionId))).map((agent) => agent.agent_name)).toEqual([
+          '/external',
+        ])
+        expect((yield* Effect.promise(() => manager.readAgentResponseFromDisk('external', parentSessionId))).agent_name).toBe('/external')
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
 
   it.effect('removes expired runs and outputs using configurable retention', () =>
-    Effect.sync(() => {
-      mkdirSync(packageDir, { recursive: true })
-      rmSync(fixtureDir, { force: true, recursive: true })
-      writeFileSync(configFile, jsonText({ retentionDays: 3, storageDir: fixtureDir }))
+    Effect.gen(function* () {
+      yield* makeDirectory(packageDir, { recursive: true })
+      yield* removeFile(fixtureDir, { force: true, recursive: true })
+      yield* writeText(configFile, jsonText({ retentionDays: 3, storageDir: fixtureDir }))
 
       const now = nowMs()
       const oldTime = dateOf(now - 4 * 24 * 60 * 60 * 1000)
@@ -311,15 +363,15 @@ describe('run storage', () => {
       const liveOwnerLock = join(scope, `.task-${'d'.repeat(24)}.lock`)
 
       try {
-        mkdirSync(scope, { recursive: true })
-        mkdirSync(unrelatedScope, { recursive: true })
-        mkdirSync(outputs, { recursive: true })
-        mkdirSync(dirname(activeMarker), { recursive: true })
+        yield* makeDirectory(scope, { recursive: true })
+        yield* makeDirectory(unrelatedScope, { recursive: true })
+        yield* makeDirectory(outputs, { recursive: true })
+        yield* makeDirectory(dirname(activeMarker), { recursive: true })
         for (const [file, id] of [
           [expiredInfo, expiredId],
           [activeInfo, activeId],
         ]) {
-          writeFileSync(
+          yield* writeText(
             file,
             jsonText({
               createdAt: oldTime.getTime(),
@@ -328,38 +380,42 @@ describe('run storage', () => {
               updatedAt: oldTime.getTime(),
             })
           )
-          utimesSync(file, oldTime, oldTime)
+          yield* touchFile(file, oldTime, oldTime)
         }
-        writeFileSync(activeMarker, jsonText({ pid: process.pid, startedAt: now, token: 'test' }))
-        writeFileSync(unrelatedAgentFile, 'keep')
-        writeFileSync(staleLock, '')
-        writeFileSync(liveOwnerLock, jsonText({ pid: process.pid }))
-        utimesSync(staleLock, oldTime, oldTime)
-        utimesSync(liveOwnerLock, oldTime, oldTime)
-        writeFileSync(expiredOutput, 'old')
-        utimesSync(expiredOutput, oldTime, oldTime)
-        writeFileSync(join(outputs, 'unrelated.txt'), 'keep')
-        writeFileSync(join(unrelatedScope, 'unrelated.txt'), 'keep')
+        yield* writeText(activeMarker, jsonText({ pid: process.pid, startedAt: now, token: 'test' }))
+        yield* writeText(unrelatedAgentFile, 'keep')
+        yield* writeText(staleLock, '')
+        yield* writeText(liveOwnerLock, jsonText({ pid: process.pid }))
+        yield* touchFile(staleLock, oldTime, oldTime)
+        yield* touchFile(liveOwnerLock, oldTime, oldTime)
+        yield* writeText(expiredOutput, 'old')
+        yield* touchFile(expiredOutput, oldTime, oldTime)
+        yield* writeText(join(outputs, 'unrelated.txt'), 'keep')
+        yield* writeText(join(unrelatedScope, 'unrelated.txt'), 'keep')
 
-        createAgentManager()
-        expect(existsSync(expiredInfo)).toBe(false)
-        expect(existsSync(activeInfo)).toBe(true)
-        expect(existsSync(unrelatedAgentFile)).toBe(true)
-        expect(existsSync(staleLock)).toBe(false)
-        expect(existsSync(liveOwnerLock)).toBe(true)
-        expect(existsSync(expiredOutput)).toBe(false)
-        expect(existsSync(join(outputs, 'unrelated.txt'))).toBe(true)
-        expect(existsSync(join(unrelatedScope, 'unrelated.txt'))).toBe(true)
+        const firstManager = createAgentManager()
+        yield* Effect.promise(() => firstManager.ready())
+        expect(yield* existsFile(expiredInfo)).toBe(false)
+        expect(yield* existsFile(activeInfo)).toBe(true)
+        expect(yield* existsFile(unrelatedAgentFile)).toBe(true)
+        expect(yield* existsFile(staleLock)).toBe(false)
+        expect(yield* existsFile(liveOwnerLock)).toBe(true)
+        expect(yield* existsFile(expiredOutput)).toBe(false)
+        expect(yield* existsFile(join(outputs, 'unrelated.txt'))).toBe(true)
+        expect(yield* existsFile(join(unrelatedScope, 'unrelated.txt'))).toBe(true)
 
-        writeFileSync(configFile, jsonText({ retentionDays: 0, storageDir: fixtureDir }))
-        writeFileSync(expiredInfo, '{}')
-        utimesSync(expiredInfo, oldTime, oldTime)
-        createAgentManager()
-        expect(existsSync(expiredInfo)).toBe(true)
+        yield* writeText(configFile, jsonText({ retentionDays: 0, storageDir: fixtureDir }))
+        yield* writeText(expiredInfo, '{}')
+        yield* touchFile(expiredInfo, oldTime, oldTime)
+        yield* Effect.promise(() => firstManager.shutdown())
+        const secondManager = createAgentManager()
+        yield* Effect.promise(() => secondManager.ready())
+        expect(yield* existsFile(expiredInfo)).toBe(true)
+        yield* Effect.promise(() => secondManager.shutdown())
       } finally {
-        rmSync(fixtureDir, { force: true, recursive: true })
-        rmSync(activeMarker, { force: true })
-        rmSync(configFile, { force: true })
+        yield* removeFile(fixtureDir, { force: true, recursive: true })
+        yield* removeFile(activeMarker, { force: true })
+        yield* removeFile(configFile, { force: true })
       }
     })
   )
@@ -369,14 +425,15 @@ describe('run storage', () => {
       if (process.platform === 'win32') {
         return
       }
-      rmSync(configFile, { force: true })
-      rmSync(join(packageDir, 'runs'), { force: true, recursive: true })
+      yield* removeFile(configFile, { force: true })
+      yield* removeFile(join(packageDir, 'runs'), { force: true, recursive: true })
       const socketDir = join(TEST_TEMP_DIR, 'pi-codex-subagents', userInfo().username, 'sockets')
-      rmSync(socketDir, { force: true, recursive: true })
+      yield* removeFile(socketDir, { force: true, recursive: true })
       const manager = createAgentManager()
       try {
-        expect(statSync(getRunsDir()).mode & 0o777).toBe(0o700)
-        expect(statSync(socketDir).mode & 0o777).toBe(0o700)
+        yield* Effect.promise(() => manager.ready())
+        expect((yield* statFile(getRunsDir())).mode & 0o777).toBe(0o700)
+        expect((yield* statFile(socketDir)).mode & 0o777).toBe(0o700)
       } finally {
         yield* Effect.promise(() => manager.shutdown())
       }
@@ -384,18 +441,18 @@ describe('run storage', () => {
   )
 
   it.effect('creates the _outputs directory with 0700 permissions', () =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
       if (process.platform === 'win32') {
         return
       }
-      rmSync(configFile, { force: true })
+      yield* removeFile(configFile, { force: true })
       const outputsDir = join(getRunsDir(), '_outputs')
-      rmSync(outputsDir, { force: true, recursive: true })
+      yield* removeFile(outputsDir, { force: true, recursive: true })
       try {
-        writeFullToolOutput('characterization content')
-        expect(statSync(outputsDir).mode & 0o777).toBe(0o700)
+        yield* writeFullToolOutput('characterization content')
+        expect((yield* statFile(outputsDir)).mode & 0o777).toBe(0o700)
       } finally {
-        rmSync(outputsDir, { force: true, recursive: true })
+        yield* removeFile(outputsDir, { force: true, recursive: true })
       }
     })
   )
@@ -405,15 +462,16 @@ describe('run storage', () => {
       if (process.platform === 'win32') {
         return
       }
-      rmSync(fixtureDir, { force: true, recursive: true })
-      writeFileSync(configFile, jsonText({ storageDir: fixtureDir }))
+      yield* removeFile(fixtureDir, { force: true, recursive: true })
+      yield* writeText(configFile, jsonText({ storageDir: fixtureDir }))
       const manager = createAgentManager()
       try {
-        expect(statSync(fixtureDir).mode & 0o777).toBe(0o700)
+        yield* Effect.promise(() => manager.ready())
+        expect((yield* statFile(fixtureDir)).mode & 0o777).toBe(0o700)
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(fixtureDir, { force: true, recursive: true })
-        rmSync(configFile, { force: true })
+        yield* removeFile(fixtureDir, { force: true, recursive: true })
+        yield* removeFile(configFile, { force: true })
       }
     })
   )
@@ -423,28 +481,29 @@ describe('run storage', () => {
       if (process.platform === 'win32') {
         return
       }
-      rmSync(fixtureDir, { force: true, recursive: true })
-      mkdirSync(fixtureDir, { recursive: true })
-      chmodSync(fixtureDir, 0o755)
-      writeFileSync(configFile, jsonText({ storageDir: fixtureDir }))
+      yield* removeFile(fixtureDir, { force: true, recursive: true })
+      yield* makeDirectory(fixtureDir, { recursive: true })
+      yield* chmodFile(fixtureDir, 0o755)
+      yield* writeText(configFile, jsonText({ storageDir: fixtureDir }))
       const manager = createAgentManager()
       try {
-        expect(statSync(fixtureDir).mode & 0o777).toBe(0o755)
+        expect((yield* statFile(fixtureDir)).mode & 0o777).toBe(0o755)
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(fixtureDir, { force: true, recursive: true })
-        rmSync(configFile, { force: true })
+        yield* removeFile(fixtureDir, { force: true, recursive: true })
+        yield* removeFile(configFile, { force: true })
       }
     })
   )
 })
 
-const waitUntil = (predicate: () => boolean, timeoutMs = 12_000): Promise<void> =>
+const waitUntil = (predicate: () => boolean | Effect.Effect<boolean>, timeoutMs = 12_000): Promise<void> =>
   promiseFromEffect(
     Effect.gen(function* () {
       const deadline = nowMs() + timeoutMs
       while (nowMs() < deadline) {
-        if (predicate()) {
+        const result = predicate()
+        if (Effect.isEffect(result) ? yield* result : result) {
           return undefined
         }
         yield* Effect.sleep(20)
@@ -480,9 +539,9 @@ const spawnParams = (parentSessionId: string, task_name: string, message: string
   task_name,
 })
 
-const writeSessionWithContextUsage = (sessionFile: string, contextTokens: number): void => {
+const writeSessionWithContextUsage = (sessionFile: string, contextTokens: number) => {
   const timestamp = dateOf(nowMs()).toISOString()
-  writeFileSync(
+  return writeText(
     sessionFile,
     `${[
       JSON.stringify({ cwd: TEST_AGENT_DIR, id: '11111111-1111-4111-8111-111111111111', timestamp, type: 'session', version: 3 }),
@@ -519,7 +578,7 @@ describe('child process lifecycle', () => {
     Effect.gen(function* () {
       const parentSessionId = 'unavailable-profile-model'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const manager = createAgentManager()
       try {
         expect(
@@ -528,7 +587,7 @@ describe('child process lifecycle', () => {
             availableModels: AVAILABLE_MODELS.filter((model) => model.id !== 'gpt-5.6-luna'),
           })
         ).rejects.toThrow('not authenticated or available')
-        expect(existsSync(scope)).toBe(false)
+        expect(yield* existsFile(scope)).toBe(false)
       } finally {
         yield* Effect.promise(() => manager.shutdown())
       }
@@ -539,7 +598,7 @@ describe('child process lifecycle', () => {
     Effect.gen(function* () {
       const parentSessionId = 'claude-write-capable'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const manager = createAgentManager()
       try {
         yield* withScoutProfile(
@@ -555,7 +614,7 @@ describe('child process lifecycle', () => {
         )
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -564,7 +623,7 @@ describe('child process lifecycle', () => {
     Effect.gen(function* () {
       const parentSessionId = 'claude-live-limit'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const manager = createAgentManager()
       try {
         yield* withScoutProfile(
@@ -585,7 +644,7 @@ describe('child process lifecycle', () => {
         )
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -594,7 +653,7 @@ describe('child process lifecycle', () => {
     Effect.gen(function* () {
       const parentSessionId = 'single-follow-up'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const manager = createAgentManager()
       try {
         yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold initial')))
@@ -603,7 +662,7 @@ describe('child process lifecycle', () => {
         expect(manager.sendMessage(parentSessionId, 'worker', 'another correction')).rejects.toThrow('single follow-up')
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -612,7 +671,7 @@ describe('child process lifecycle', () => {
     Effect.gen(function* () {
       const parentSessionId = 'atomic-follow-up'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const firstManager = createAgentManager()
       const secondManager = createAgentManager()
       try {
@@ -636,7 +695,7 @@ describe('child process lifecycle', () => {
         expect(firstManager.getAgentInfo('worker', parentSessionId).followUpUsed).toBe(true)
       } finally {
         yield* Effect.promise(() => Promise.all([firstManager.shutdown(), secondManager.shutdown()]))
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -645,7 +704,7 @@ describe('child process lifecycle', () => {
     Effect.gen(function* () {
       const parentSessionId = 'claude-context-limit'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const manager = createAgentManager()
       try {
         yield* withScoutProfile(
@@ -659,7 +718,7 @@ describe('child process lifecycle', () => {
               })
             )
             const info = manager.getAgentInfo('worker', parentSessionId)
-            writeSessionWithContextUsage(info.sessionFile, 112_000)
+            yield* writeSessionWithContextUsage(info.sessionFile, 112_000)
             const failure = yield* Effect.promise(() =>
               manager.sendMessage(parentSessionId, 'worker', 'too much context').then(
                 () => undefined,
@@ -670,13 +729,13 @@ describe('child process lifecycle', () => {
             expect(manager.getAgentInfo('worker', parentSessionId).childProcess).toBeUndefined()
             expect(manager.getAgentInfo('worker', parentSessionId).followUpUsed).toBe(false)
 
-            writeSessionWithContextUsage(info.sessionFile, 111_999)
+            yield* writeSessionWithContextUsage(info.sessionFile, 111_999)
             expect(yield* Effect.promise(() => manager.sendMessage(parentSessionId, 'worker', 'hold below limit'))).toEqual({ delivery: 'prompt' })
           })
         )
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -685,7 +744,7 @@ describe('child process lifecycle', () => {
     Effect.gen(function* () {
       const parentSessionId = 'readonly-profile-metadata'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const manager = createAgentManager()
       try {
         yield* Effect.promise(() =>
@@ -703,12 +762,14 @@ describe('child process lifecycle', () => {
           provider: 'openai',
         })
         yield* Effect.promise(() =>
-          waitUntil(() => {
-            const contents = readFileSync(info.sessionFile, 'utf8')
-            return contents.includes('"type":"prompt"') && contents.includes('"type":"started"')
-          })
+          waitUntil(() =>
+            readText(info.sessionFile).pipe(
+              Effect.map((contents) => contents.includes('"type":"prompt"') && contents.includes('"type":"started"')),
+              Effect.orElseSucceed(() => false)
+            )
+          )
         )
-        const records = readFileSync(info.sessionFile, 'utf8')
+        const records = (yield* readText(info.sessionFile))
           .trim()
           .split('\n')
           .map((line) => JSON.parse(line))
@@ -722,7 +783,7 @@ describe('child process lifecycle', () => {
         expect(start.args[start.args.indexOf('--tools') + 1]).toContain('fff-multi-grep')
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -731,7 +792,7 @@ describe('child process lifecycle', () => {
     Effect.gen(function* () {
       const parentSessionId = 'subagent-azure-quota'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       azureQuota.set(undefined)
       const manager = createAgentManager()
       try {
@@ -741,7 +802,7 @@ describe('child process lifecycle', () => {
       } finally {
         yield* Effect.promise(() => manager.shutdown())
         azureQuota.set(undefined)
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -753,9 +814,9 @@ describe('child process lifecycle', () => {
       const configFile = join(packageDir, 'config.json')
       const scope = join(packageDir, 'runs', parentScopeKey(parentSessionId))
       const lockFile = join(scope, `.task-${taskStorageKey('worker')}.lock`)
-      mkdirSync(scope, { recursive: true })
-      writeFileSync(configFile, jsonText({ retentionDays: 0 }))
-      writeFileSync(
+      yield* makeDirectory(scope, { recursive: true })
+      yield* writeText(configFile, jsonText({ retentionDays: 0 }))
+      yield* writeText(
         lockFile,
         jsonText({
           createdAt: nowMs(),
@@ -767,12 +828,12 @@ describe('child process lifecycle', () => {
       try {
         yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold lock recovery')))
         expect(manager.getAgentInfo('worker', parentSessionId).status).toBe('running')
-        expect(existsSync(lockFile)).toBe(false)
+        expect(yield* existsFile(lockFile)).toBe(false)
         yield* Effect.promise(() => manager.interruptAgent(parentSessionId, 'worker'))
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
-        rmSync(configFile, { force: true })
+        yield* removeFile(scope, { force: true, recursive: true })
+        yield* removeFile(configFile, { force: true })
       }
     })
   )
@@ -785,9 +846,9 @@ describe('child process lifecycle', () => {
       const scope = join(packageDir, 'runs', parentScopeKey(parentSessionId))
       const lockFile = join(scope, `.task-${taskStorageKey('worker')}.lock`)
       const displacedLock = `${lockFile}.displaced`
-      mkdirSync(scope, { recursive: true })
-      writeFileSync(configFile, jsonText({ retentionDays: 0 }))
-      writeFileSync(
+      yield* makeDirectory(scope, { recursive: true })
+      yield* writeText(configFile, jsonText({ retentionDays: 0 }))
+      yield* writeText(
         lockFile,
         jsonText({
           createdAt: nowMs(),
@@ -798,33 +859,38 @@ describe('child process lifecycle', () => {
       )
       let replaced = false
       const manager = createAgentManager({
-        beforeReclaimTaskLockRemoval(file: string) {
-          if (replaced) {
-            return
-          }
-          replaced = true
-          renameSync(file, displacedLock)
-          writeFileSync(
-            file,
-            JSON.stringify({
-              createdAt: nowMs(),
-              pid: process.pid,
-              token: 'live-replacement',
-            })
-          )
-        },
+        beforeReclaimTaskLockRemoval: (file: string) =>
+          Effect.suspend(() => {
+            if (replaced) {
+              return Effect.void
+            }
+            replaced = true
+            return bunFileSystem.rename(file, displacedLock).pipe(
+              Effect.andThen(
+                bunFileSystem.writeFileString(
+                  file,
+                  jsonText({
+                    createdAt: nowMs(),
+                    pid: process.pid,
+                    token: 'live-replacement',
+                  })
+                )
+              ),
+              Effect.mapError((cause) => new Cause.UnknownError(cause))
+            )
+          }),
       })
       try {
         expect(manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'must not start'))).rejects.toThrow('already being created')
         expect(replaced).toBe(true)
-        expect(parseJsonText(readFileSync(lockFile, 'utf8'))).toMatchObject({
+        expect(parseJsonText(yield* readText(lockFile))).toMatchObject({
           pid: process.pid,
           token: 'live-replacement',
         })
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
-        rmSync(configFile, { force: true })
+        yield* removeFile(scope, { force: true, recursive: true })
+        yield* removeFile(configFile, { force: true })
       }
     })
   )
@@ -834,34 +900,39 @@ describe('child process lifecycle', () => {
       const parentSessionId = 'lock-release-race'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
       const lockFile = join(scope, `.task-${taskStorageKey('worker')}.lock`)
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       let replaced = false
       const manager = createAgentManager({
-        beforeReleaseTaskLockRemoval(file: string) {
-          if (replaced || file !== lockFile) {
-            return
-          }
-          replaced = true
-          renameSync(file, `${file}.displaced`)
-          writeFileSync(
-            file,
-            JSON.stringify({
-              createdAt: nowMs(),
-              pid: process.pid,
-              token: 'concurrent-winner',
-            })
-          )
-        },
+        beforeReleaseTaskLockRemoval: (file: string) =>
+          Effect.suspend(() => {
+            if (replaced || file !== lockFile) {
+              return Effect.void
+            }
+            replaced = true
+            return bunFileSystem.rename(file, `${file}.displaced`).pipe(
+              Effect.andThen(
+                bunFileSystem.writeFileString(
+                  file,
+                  jsonText({
+                    createdAt: nowMs(),
+                    pid: process.pid,
+                    token: 'concurrent-winner',
+                  })
+                )
+              ),
+              Effect.mapError((cause) => new Cause.UnknownError(cause))
+            )
+          }),
       })
       try {
         yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold release race')))
         expect(replaced).toBe(true)
         expect(manager.getAgentInfo('worker', parentSessionId).status).toBe('running')
-        expect(parseJsonText(readFileSync(lockFile, 'utf8'))).toMatchObject({ token: 'concurrent-winner' })
+        expect(parseJsonText(yield* readText(lockFile))).toMatchObject({ token: 'concurrent-winner' })
         yield* Effect.promise(() => manager.interruptAgent(parentSessionId, 'worker'))
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -873,9 +944,9 @@ describe('child process lifecycle', () => {
       const id = '33333333-3333-4333-8333-333333333333'
       const infoFile = join(scope, `${id}.info.json`)
       const now = nowMs()
-      rmSync(scope, { force: true, recursive: true })
-      mkdirSync(scope, { recursive: true })
-      writeFileSync(
+      yield* removeFile(scope, { force: true, recursive: true })
+      yield* makeDirectory(scope, { recursive: true })
+      yield* writeText(
         infoFile,
         jsonText({
           canonicalName: '/worker',
@@ -905,7 +976,7 @@ describe('child process lifecycle', () => {
         expect(reconciled.childProcess).toBeUndefined()
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -914,7 +985,7 @@ describe('child process lifecycle', () => {
     Effect.gen(function* () {
       const parentSessionId = 'startup-crash-window'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const manager = createAgentManager({
         childEnv: { PI_SUBAGENT_TEST_GET_STATE_DELAY_MS: '300' },
       })
@@ -941,16 +1012,16 @@ describe('child process lifecycle', () => {
         yield* Effect.promise(() => manager.interruptAgent(parentSessionId, 'worker'))
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
 
   processTest('hibernates after settle and lazily restarts the persisted session', () =>
     Effect.gen(function* () {
-      rmSync(join(TEST_AGENT_DIR, 'pi-codex-subagents', 'config.json'), { force: true })
+      yield* removeFile(join(TEST_AGENT_DIR, 'pi-codex-subagents', 'config.json'), { force: true })
       const parentSessionId = 'lifecycle-settle'
-      rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
+      yield* removeFile(join(getRunsDir(), parentScopeKey(parentSessionId)), {
         force: true,
         recursive: true,
       })
@@ -983,7 +1054,7 @@ describe('child process lifecycle', () => {
         expect(manager.readAgentResponse('worker', parentSessionId).finalResponse).toBe('response:second')
         expect(manager.getAgentInfo('worker', parentSessionId).followUpUsed).toBe(true)
         expect(manager.sendMessage(parentSessionId, 'worker', 'third')).rejects.toThrow('single follow-up')
-        const sessionRecords = readFileSync(first.sessionFile, 'utf8')
+        const sessionRecords = (yield* readText(first.sessionFile))
           .trim()
           .split('\n')
           .map((line) => JSON.parse(line))
@@ -1020,7 +1091,7 @@ describe('child process lifecycle', () => {
         }
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
+        yield* removeFile(join(getRunsDir(), parentScopeKey(parentSessionId)), {
           force: true,
           recursive: true,
         })
@@ -1032,7 +1103,7 @@ describe('child process lifecycle', () => {
     Effect.gen(function* () {
       const parentSessionId = 'removed-profile'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const manager = createAgentManager()
       try {
         yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'first')))
@@ -1043,7 +1114,7 @@ describe('child process lifecycle', () => {
           })
         )
         const info = manager.getAgentInfo('worker', parentSessionId)
-        writeFileSync(
+        yield* writeText(
           info.infoFile,
           prettyJsonText({ ...info, agentType: 'implementer', allowedTools: ['write'], isReadonly: false, profile: 'implementer' })
         )
@@ -1052,7 +1123,7 @@ describe('child process lifecycle', () => {
         expect(manager.getAgentInfo('worker', parentSessionId).childProcess).toBeUndefined()
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -1060,7 +1131,7 @@ describe('child process lifecycle', () => {
   processTest('hibernates after failure while preserving the error', () =>
     Effect.gen(function* () {
       const parentSessionId = 'lifecycle-failure'
-      rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
+      yield* removeFile(join(getRunsDir(), parentScopeKey(parentSessionId)), {
         force: true,
         recursive: true,
       })
@@ -1080,7 +1151,7 @@ describe('child process lifecycle', () => {
         expect(pidAlive(pid)).toBe(false)
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
+        yield* removeFile(join(getRunsDir(), parentScopeKey(parentSessionId)), {
           force: true,
           recursive: true,
         })
@@ -1092,7 +1163,7 @@ describe('child process lifecycle', () => {
     Effect.gen(function* () {
       const parentSessionId = 'lifecycle-exit-after-output'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const manager = createAgentManager()
       try {
         yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'exit-after-output')))
@@ -1104,10 +1175,10 @@ describe('child process lifecycle', () => {
         )
         const info = manager.getAgentInfo('worker', parentSessionId)
         expect(manager.readAgentResponse('worker', parentSessionId).finalResponse).toHaveLength(60 * 1024)
-        expect(readFileSync(info.logFile, 'utf8')).toContain('final stderr before exit')
+        expect(yield* readText(info.logFile)).toContain('final stderr before exit')
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -1115,7 +1186,7 @@ describe('child process lifecycle', () => {
     Effect.gen(function* () {
       const parentSessionId = 'lifecycle-closed-stdin'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const manager = createAgentManager()
       try {
         yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'close-stdin')))
@@ -1129,7 +1200,7 @@ describe('child process lifecycle', () => {
         )
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -1137,7 +1208,7 @@ describe('child process lifecycle', () => {
     Effect.gen(function* () {
       const parentSessionId = 'lifecycle-interrupted-setup'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const spawned = yield* Deferred.make<void>()
       const blocked = yield* Deferred.make<void>()
       const manager = createAgentManager({
@@ -1148,9 +1219,14 @@ describe('child process lifecycle', () => {
         yield* Deferred.await(spawned)
         const info = manager.getAgentInfo('worker', parentSessionId)
         yield* Effect.promise(() =>
-          waitUntil(() => existsSync(info.sessionFile) && readFileSync(info.sessionFile, 'utf8').includes('"type":"started"'))
+          waitUntil(() =>
+            Effect.all([existsFile(info.sessionFile), readText(info.sessionFile)], { concurrency: 2 }).pipe(
+              Effect.map(([exists, content]) => exists && content.includes('"type":"started"')),
+              Effect.orElseSucceed(() => false)
+            )
+          )
         )
-        const started = readFileSync(info.sessionFile, 'utf8')
+        const started = (yield* readText(info.sessionFile))
           .trim()
           .split('\n')
           .map((line) => parseJsonText(line))
@@ -1163,7 +1239,7 @@ describe('child process lifecycle', () => {
         yield* Effect.promise(() => waitUntil(() => !pidAlive(pid)))
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -1174,7 +1250,7 @@ describe('child process lifecycle', () => {
         return
       }
       const parentSessionId = 'lifecycle-darwin'
-      rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
+      yield* removeFile(join(getRunsDir(), parentScopeKey(parentSessionId)), {
         force: true,
         recursive: true,
       })
@@ -1186,7 +1262,7 @@ describe('child process lifecycle', () => {
         expect(pidAlive(requireChildProcess(running.childProcess).pid)).toBe(true)
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
+        yield* removeFile(join(getRunsDir(), parentScopeKey(parentSessionId)), {
           force: true,
           recursive: true,
         })
@@ -1197,7 +1273,7 @@ describe('child process lifecycle', () => {
   processTest('interrupt terminates the child and clears runtime artifacts', () =>
     Effect.gen(function* () {
       const parentSessionId = 'lifecycle-interrupt'
-      rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
+      yield* removeFile(join(getRunsDir(), parentScopeKey(parentSessionId)), {
         force: true,
         recursive: true,
       })
@@ -1213,14 +1289,14 @@ describe('child process lifecycle', () => {
         expect(interrupted.childProcess).toBeUndefined()
         expect(pidAlive(pid)).toBe(false)
         const socketDir = join(TEST_TEMP_DIR, 'pi-codex-subagents', userInfo().username, 'sockets')
-        expect(existsSync(join(socketDir, `${running.id}.active.json`))).toBe(false)
-        expect(existsSync(join(socketDir, `${running.id}.peek.json`))).toBe(false)
+        expect(yield* existsFile(join(socketDir, `${running.id}.active.json`))).toBe(false)
+        expect(yield* existsFile(join(socketDir, `${running.id}.peek.json`))).toBe(false)
         if (process.platform !== 'win32') {
-          expect(existsSync(getSocketPath(running.id))).toBe(false)
+          expect(yield* existsFile(getSocketPath(running.id))).toBe(false)
         }
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
+        yield* removeFile(join(getRunsDir(), parentScopeKey(parentSessionId)), {
           force: true,
           recursive: true,
         })
@@ -1231,7 +1307,7 @@ describe('child process lifecycle', () => {
   processTest('reconciles owned children without risking PID-reuse kills', () =>
     Effect.gen(function* () {
       const parentSessionId = 'lifecycle-reconcile'
-      rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
+      yield* removeFile(join(getRunsDir(), parentScopeKey(parentSessionId)), {
         force: true,
         recursive: true,
       })
@@ -1252,11 +1328,20 @@ describe('child process lifecycle', () => {
         expect(pidAlive(orphanPid)).toBe(false)
 
         yield* Effect.promise(() => owner.spawnAgent(spawnParams(parentSessionId, 'pid-reuse', 'hold identity')))
+        yield* Effect.promise(() => waitUntil(() => owner.getAgentInfo('pid-reuse', parentSessionId).status === 'running'))
         const mismatched = owner.getAgentInfo('pid-reuse', parentSessionId)
         const mismatchedPid = requireChildProcess(mismatched.childProcess).pid
         requireChildProcess(mismatched.childProcess).processIdentity = 'not-the-owned-process'
-        writeFileSync(mismatched.infoFile, prettyJsonText(mismatched))
-        const mismatchReconciler = createAgentManager()
+        yield* writeText(mismatched.infoFile, prettyJsonText(mismatched))
+        expect(pidAlive(mismatchedPid)).toBe(true)
+        const mismatchReconciler = createAgentManager({
+          processInspector: {
+            alive: () => Effect.succeed(true),
+            inspect: () => Effect.void,
+            ownerIsActive: () => Effect.succeed(false),
+            ownershipMatches: () => Effect.succeed(false),
+          },
+        })
         reconcilers.push(mismatchReconciler)
         yield* Effect.promise(() =>
           waitUntil(() => {
@@ -1269,7 +1354,7 @@ describe('child process lifecycle', () => {
         expect(pidAlive(mismatchedPid)).toBe(false)
       } finally {
         yield* Effect.promise(() => Promise.all([owner.shutdown(), ...reconcilers.map((manager) => manager.shutdown())]))
-        rmSync(join(getRunsDir(), parentScopeKey(parentSessionId)), {
+        yield* removeFile(join(getRunsDir(), parentScopeKey(parentSessionId)), {
           force: true,
           recursive: true,
         })
@@ -1283,7 +1368,7 @@ describe('completion delivery', () => {
     Effect.gen(function* () {
       const parentSessionId = 'completion-callbacks'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const completions: CompletionEvent[] = []
       const manager = createAgentManager({
         onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
@@ -1308,7 +1393,7 @@ describe('completion delivery', () => {
         expect(crashed?.error).toContain('code=23')
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -1317,7 +1402,7 @@ describe('completion delivery', () => {
     Effect.gen(function* () {
       const parentSessionId = 'foreground-immediate'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const completions: CompletionEvent[] = []
       const manager = createAgentManager({
         onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
@@ -1335,7 +1420,7 @@ describe('completion delivery', () => {
         expect(completions).toEqual([])
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -1344,7 +1429,7 @@ describe('completion delivery', () => {
     Effect.gen(function* () {
       const parentSessionId = 'foreground-priority'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const manager = createAgentManager()
       const waitController = makeAbortController()
       let olderWaitSettled = false
@@ -1366,7 +1451,7 @@ describe('completion delivery', () => {
       } finally {
         waitController.abort(new Error('test cleanup'))
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -1375,7 +1460,7 @@ describe('completion delivery', () => {
     Effect.gen(function* () {
       const parentSessionId = 'foreground-failure'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const completions: CompletionEvent[] = []
       const manager = createAgentManager({
         onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
@@ -1390,7 +1475,7 @@ describe('completion delivery', () => {
         expect(completions).toEqual([])
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -1399,7 +1484,7 @@ describe('completion delivery', () => {
     Effect.gen(function* () {
       const parentSessionId = 'foreground-abort-running'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const completions: CompletionEvent[] = []
       const controller = makeAbortController()
       const manager = createAgentManager({
@@ -1418,7 +1503,7 @@ describe('completion delivery', () => {
         expect(manager.getAgentInfo('worker', parentSessionId).status).toBe('completed')
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -1427,7 +1512,7 @@ describe('completion delivery', () => {
     Effect.gen(function* () {
       const parentSessionId = 'foreground-pre-abort'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const reason = new Error('already stopped')
       const signal = AbortSignal.abort(reason)
       const manager = createAgentManager()
@@ -1440,10 +1525,10 @@ describe('completion delivery', () => {
         expect(rejection.message).toBe('already stopped')
         expect(rejection.cause).toBe(reason)
         expect(() => manager.getAgentInfo('worker', parentSessionId)).toThrow('Agent not found')
-        expect(existsSync(scope)).toBe(false)
+        expect(yield* existsFile(scope)).toBe(false)
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -1452,7 +1537,7 @@ describe('completion delivery', () => {
     Effect.gen(function* () {
       const parentSessionId = 'foreground-abort-startup'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const completions: CompletionEvent[] = []
       const controller = makeAbortController()
       const manager = createAgentManager({
@@ -1474,7 +1559,7 @@ describe('completion delivery', () => {
         expect(completions.filter((event) => event.agentName === '/worker')).toHaveLength(1)
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -1483,7 +1568,7 @@ describe('completion delivery', () => {
     Effect.gen(function* () {
       const parentSessionId = 'foreground-abort-before-ownership'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const controller = makeAbortController()
       const manager = createAgentManager()
       let reconciler: ReturnType<typeof createAgentManager> | undefined
@@ -1506,7 +1591,7 @@ describe('completion delivery', () => {
         expect(startedReconciler.getAgentInfo('worker', parentSessionId).status).toBe('starting')
       } finally {
         yield* Effect.promise(() => Promise.all([manager.shutdown(), ...(reconciler === undefined ? [] : [reconciler.shutdown()])]))
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -1515,7 +1600,7 @@ describe('completion delivery', () => {
     Effect.gen(function* () {
       const parentSessionId = 'foreground-launch-rejection'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const completions: CompletionEvent[] = []
       const manager = createAgentManager({
         onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
@@ -1550,7 +1635,7 @@ describe('completion delivery', () => {
         expect(completions).toEqual([expect.objectContaining({ agentName: '/worker', finalResponse: 'later result' })])
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -1559,7 +1644,7 @@ describe('completion delivery', () => {
     Effect.gen(function* () {
       const parentSessionId = 'completion-waits'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const completions: CompletionEvent[] = []
       const manager = createAgentManager({
         onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
@@ -1576,7 +1661,7 @@ describe('completion delivery', () => {
         expect(completions).toEqual([])
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -1585,7 +1670,7 @@ describe('completion delivery', () => {
     Effect.gen(function* () {
       const parentSessionId = 'completion-wait-cancel'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const completions: CompletionEvent[] = []
       const manager = createAgentManager({
         onUnclaimedCompletion: (event: CompletionEvent) => completions.push(event),
@@ -1603,7 +1688,7 @@ describe('completion delivery', () => {
         expect(completions.filter((event) => event.agentName === '/fast')).toHaveLength(1)
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -1612,7 +1697,7 @@ describe('completion delivery', () => {
     Effect.gen(function* () {
       const parentSessionId = 'status-transitions'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const activity: boolean[] = []
       const manager = createAgentManager({
         onActivityChange: (event: ActivityEvent) => {
@@ -1646,7 +1731,7 @@ describe('completion delivery', () => {
         expect(activity.at(-1)).toBe(false)
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -1655,7 +1740,7 @@ describe('completion delivery', () => {
     Effect.gen(function* () {
       const parentSessionId = 'inactivity-monitor'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const inactivity: InactivityEvent[] = []
       const manager = createAgentManager({
         inactivityTimeoutMs: 50,
@@ -1674,7 +1759,7 @@ describe('completion delivery', () => {
         expect(inactivity).toHaveLength(2)
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -1683,7 +1768,7 @@ describe('completion delivery', () => {
     Effect.gen(function* () {
       const parentSessionId = 'two-waiters'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const manager = createAgentManager()
       const secondController = makeAbortController()
       try {
@@ -1702,7 +1787,7 @@ describe('completion delivery', () => {
         yield* Effect.promise(() => waitUntil(() => secondSettled))
       } finally {
         yield* Effect.promise(() => manager.shutdown())
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )
@@ -1786,7 +1871,7 @@ describe('extension completion delivery and status activity', () => {
         },
       }
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
-      rmSync(scope, { force: true, recursive: true })
+      yield* removeFile(scope, { force: true, recursive: true })
       const { register: subagentExtension } = yield* Effect.promise(() => import('@/features/sub_agents/index.js'))
       subagentExtension(asExtensionApi(pi), runtime, { inactivityTimeoutMs: 5000, piCommand: { command: FAKE_RPC_CHILD } })
       const emit = (name: string, event: unknown = {}): Promise<void> =>
@@ -1945,7 +2030,7 @@ describe('extension completion delivery and status activity', () => {
         expect(largeForeground.content[0].text.split('\n').length).toBeLessThanOrEqual(2000)
         expect(largeForeground.content[0].text).toContain('Output truncated')
         expect(largeForeground.details.fullOutputPath).toBeString()
-        expect(existsSync(String(largeForeground.details.fullOutputPath))).toBe(true)
+        expect(yield* existsFile(String(largeForeground.details.fullOutputPath))).toBe(true)
 
         const abortController = makeAbortController()
         const abortNotifications = sentMessages.length
@@ -1992,7 +2077,7 @@ describe('extension completion delivery and status activity', () => {
         expect(Buffer.byteLength(large.content, 'utf8')).toBeLessThanOrEqual(50 * 1024)
         expect(large.content).toContain('Output truncated')
         expect(large.details.fullOutputPath).toBeString()
-        expect(existsSync(large.details.fullOutputPath)).toBe(true)
+        expect(yield* existsFile(large.details.fullOutputPath)).toBe(true)
 
         yield* Effect.promise(() =>
           requireTool('spawn_agent').execute(
@@ -2024,7 +2109,7 @@ describe('extension completion delivery and status activity', () => {
         yield* Effect.promise(() => waitUntil(() => runningAgents.list().length === 0))
       } finally {
         yield* Effect.promise(() => emit('session_shutdown', { reason: 'quit' }))
-        rmSync(scope, { force: true, recursive: true })
+        yield* removeFile(scope, { force: true, recursive: true })
       }
     })
   )

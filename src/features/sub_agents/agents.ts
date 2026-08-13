@@ -45,12 +45,6 @@ const textResult = <TDetails>(text: string, details: TDetails): AgentToolResult<
   details,
 })
 
-interface BoundedText {
-  text: string
-  fullOutputPath?: string
-  truncated?: true
-}
-
 class SubagentFeatureError extends Data.TaggedError('SubagentFeatureError')<{
   readonly cause: unknown
   readonly message: string
@@ -76,37 +70,32 @@ const preserveWaitCancellation = <Result>(promise: Promise<Result>): Promise<Res
 const sessionIdOf = <Failure>(ctx: ExtensionContext, onError: (cause: unknown) => Failure): Effect.Effect<string, Failure> =>
   Effect.try({ catch: onError, try: () => parentSessionId(ctx) })
 
-const boundedText = (text: string, maxBytes = DEFAULT_MAX_BYTES, maxLines = DEFAULT_MAX_LINES): BoundedText => {
-  const initial = truncateOutput(text, { maxBytes, maxLines })
-  if (!initial.truncated) {
-    return { text }
-  }
-  const fullOutputPath = writeFullToolOutput(text)
-  const truncation = truncateOutput(text, {
-    maxBytes: maxBytes - 2048,
-    maxLines: maxLines - 4,
+const boundedText = (text: string, maxBytes = DEFAULT_MAX_BYTES, maxLines = DEFAULT_MAX_LINES) =>
+  Effect.gen(function* () {
+    const initial = truncateOutput(text, { maxBytes, maxLines })
+    if (!initial.truncated) {
+      return { text }
+    }
+    const fullOutputPath = yield* writeFullToolOutput(text)
+    const truncation = truncateOutput(text, {
+      maxBytes: maxBytes - 2048,
+      maxLines: maxLines - 4,
+    })
+    return {
+      fullOutputPath,
+      text: truncation.content + truncationNotice(truncation, { fullOutputPath }),
+      truncated: true as const,
+    }
   })
-  return {
-    fullOutputPath,
-    text: truncation.content + truncationNotice(truncation, { fullOutputPath }),
-    truncated: true,
-  }
-}
 
-const boundedTextResult = <TDetails extends Record<string, unknown>>(
-  text: string,
-  details: TDetails
-): AgentToolResult<TDetails & { fullOutputPath?: string; truncated?: true }> => {
-  const bounded = boundedText(text)
-  if (!isTrue(bounded.truncated)) {
-    return textResult(bounded.text, details)
-  }
-  return textResult(bounded.text, {
-    ...details,
-    fullOutputPath: bounded.fullOutputPath,
-    truncated: true,
-  })
-}
+const boundedTextResult = <TDetails extends Record<string, unknown>>(text: string, details: TDetails) =>
+  boundedText(text).pipe(
+    Effect.map((bounded) =>
+      isTrue(bounded.truncated)
+        ? textResult(bounded.text, { ...details, fullOutputPath: bounded.fullOutputPath, truncated: true })
+        : textResult(bounded.text, details)
+    )
+  )
 
 const cleanTarget = (target: string): string => target.trim().replace(/^\/+/, '')
 
@@ -225,23 +214,38 @@ export const makeSubagentFeature = ({ managerOptions = {}, pi, runtime }: Subage
       undefined,
       2
     )
-    const bounded = boundedText(payload, DEFAULT_MAX_BYTES - 1024, DEFAULT_MAX_LINES - 4)
-    pi.sendMessage(
-      {
-        content: `<subagent_notification>\n${bounded.text}\n</subagent_notification>`,
-        customType: completionMessageType,
-        details: {
-          agent_name: event.agentName,
-          status: event.status,
-          ...(isNullOrUndefined(event.profile) || isEmptyString(event.profile) ? {} : { profile: event.profile }),
-          color: event.color,
-          ...(event.isReadonly === undefined ? {} : { is_readonly: event.isReadonly }),
-          ...(isNullOrUndefined(bounded.fullOutputPath) || isEmptyString(bounded.fullOutputPath) ? {} : { fullOutputPath: bounded.fullOutputPath }),
+    const publish = (bounded: { text: string; fullOutputPath?: string }) => {
+      if (!isCurrentSession(event.parentSessionId)) {
+        return
+      }
+      pi.sendMessage(
+        {
+          content: `<subagent_notification>\n${bounded.text}\n</subagent_notification>`,
+          customType: completionMessageType,
+          details: {
+            agent_name: event.agentName,
+            status: event.status,
+            ...(isNullOrUndefined(event.profile) || isEmptyString(event.profile) ? {} : { profile: event.profile }),
+            color: event.color,
+            ...(event.isReadonly === undefined ? {} : { is_readonly: event.isReadonly }),
+            ...(isNullOrUndefined(bounded.fullOutputPath) || isEmptyString(bounded.fullOutputPath) ? {} : { fullOutputPath: bounded.fullOutputPath }),
+          },
+          display: true,
         },
-        display: true,
-      },
-      { deliverAs: 'steer', triggerTurn: true }
-    )
+        { deliverAs: 'steer', triggerTurn: true }
+      )
+    }
+    const fallback = { text: truncateOutput(payload, { maxBytes: DEFAULT_MAX_BYTES - 1024, maxLines: DEFAULT_MAX_LINES - 4 }).content }
+    void runtime
+      .runPromise(boundedText(payload, DEFAULT_MAX_BYTES - 1024, DEFAULT_MAX_LINES - 4).pipe(Effect.orElseSucceed(() => fallback)))
+      .then((bounded) => {
+        try {
+          return publish(bounded)
+        } catch {
+          return undefined
+        }
+      })
+      .catch(() => undefined)
   }
 
   const deliverInactivity = (event: AgentInactivityEvent) => {
@@ -438,7 +442,7 @@ ${getAgentProfilesDescription()}`
           if (result.completion === undefined) {
             return yield* featureError('spawn_agent failed: foreground completion was not returned.', undefined)
           }
-          return boundedTextResult(prettyJsonText(result.completion), { ...result })
+          return yield* boundedTextResult(prettyJsonText(result.completion), { ...result })
         })
       )
       return operation.catch((error: unknown) => {
@@ -548,7 +552,7 @@ ${getAgentProfilesDescription()}`
             const result = yield* manager
               .waitAgent(sessionId, parseTargets(params.targets), signal)
               .pipe(Effect.mapError((error) => failure(error.cause ?? error)))
-            return boundedTextResult(prettyJsonText(result), {
+            return yield* boundedTextResult(prettyJsonText(result), {
               event: result.event,
               message: result.message,
             })
@@ -614,7 +618,7 @@ ${getAgentProfilesDescription()}`
             const result = yield* manager
               .waitAllAgents(sessionId, parseTargets(params.targets), signal)
               .pipe(Effect.mapError((error) => failure(error.cause ?? error)))
-            return boundedTextResult(prettyJsonText(result), {
+            return yield* boundedTextResult(prettyJsonText(result), {
               message: result.message,
               responses: result.responses,
             })
@@ -655,9 +659,9 @@ ${getAgentProfilesDescription()}`
       'List agents owned by the current parent session. Set include_all only for an explicit read-only historical listing across parent sessions.',
     execute(_id: string, params: Static<typeof listAgentsParameters>, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
       return runtime.runPromise(
-        Effect.sync(() => {
-          const agents = manager.listAgents(params.path_prefix, parentSessionId(ctx), isTrue(params.include_all))
-          return boundedTextResult(prettyJsonText({ agents }), { agents })
+        Effect.gen(function* () {
+          const agents = yield* manager.listAgentsFromDisk(params.path_prefix, parentSessionId(ctx), isTrue(params.include_all))
+          return yield* boundedTextResult(prettyJsonText({ agents }), { agents })
         })
       )
     },
@@ -692,18 +696,19 @@ ${getAgentProfilesDescription()}`
       ctx: ExtensionContext
     ) {
       return runtime.runPromise(
-        Effect.try({
-          catch: (cause) => featureError(`read_agent_response failed: ${cause instanceof Error ? cause.message : String(cause)}`, cause),
-          try: () => {
-            const result = manager.readAgentResponse(cleanTarget(params.target), parentSessionId(ctx))
-            return boundedTextResult(prettyJsonText(result), {
-              agent_name: result.agent_name,
-              color: result.color,
-              is_readonly: result.is_readonly,
-              profile: result.profile,
-              status: result.status,
-            })
-          },
+        Effect.gen(function* () {
+          const failure = (cause: unknown) => featureError(`read_agent_response failed: ${causeMessage(cause)}`, cause)
+          const sessionId = yield* sessionIdOf(ctx, failure)
+          const result = yield* manager
+            .readAgentResponseFromDisk(cleanTarget(params.target), sessionId)
+            .pipe(Effect.mapError((cause) => failure(cause)))
+          return yield* boundedTextResult(prettyJsonText(result), {
+            agent_name: result.agent_name,
+            color: result.color,
+            is_readonly: result.is_readonly,
+            profile: result.profile,
+            status: result.status,
+          })
         })
       )
     },
@@ -870,7 +875,7 @@ ${getAgentProfilesDescription()}`
     }
     let info: AgentInfo
     try {
-      info = manager.getAgentInfo(task, scopeId)
+      info = await runtime.runPromise(manager.getAgentInfoFromDisk(task, scopeId))
     } catch (error) {
       ctx.ui.notify(error instanceof Error ? error.message : String(error), 'error')
       return
@@ -904,7 +909,7 @@ ${getAgentProfilesDescription()}`
       }
 
       const currentSessionId = parentSessionId(ctx)
-      const entries = manager.listAgents(undefined, currentSessionId, includeAll)
+      const entries = await runtime.runPromise(manager.listAgentsFromDisk(undefined, currentSessionId, includeAll))
       if (entries.length < 2) {
         return
       }
@@ -916,7 +921,7 @@ ${getAgentProfilesDescription()}`
       }
       const offset = navigation === 'next' ? 1 : -1
       const next = entries[(currentIndex + offset + entries.length) % entries.length]
-      info = manager.getAgentInfo(next.agent_name, next.parent_session_id || currentSessionId)
+      info = await runtime.runPromise(manager.getAgentInfoFromDisk(next.agent_name, next.parent_session_id || currentSessionId))
     }
   }
 
@@ -929,6 +934,7 @@ ${getAgentProfilesDescription()}`
   // oxlint-disable-next-line effecttsgo/async-function -- Awaits Pi's promise-based `ctx.ui.custom` selection overlay.
   const pickAgent = async (ctx: PiExtensionContext): Promise<PickedAgent | undefined> => {
     const currentSessionId = parentSessionId(ctx)
+    await runtime.runPromise(manager.listAgentsFromDisk(undefined, currentSessionId, true))
     return await ctx.ui.custom<PickedAgent | undefined>((tui, theme, _keybindings, done) => {
       let selected = 0
       let showAll = false
@@ -979,7 +985,7 @@ ${getAgentProfilesDescription()}`
             return
           }
           if (data === 'r') {
-            refresh()
+            void runtime.runPromise(manager.listAgentsFromDisk(undefined, currentSessionId, true)).then(refresh)
             return
           }
           if (matchesKey(data, 'down') || data === 'j') {

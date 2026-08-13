@@ -20,18 +20,6 @@ export interface HostDirectoryEntry {
   readonly isSymbolicLink: boolean
 }
 
-export interface HostDirectoryEntrySync {
-  readonly name: string
-  isDirectory: () => boolean
-  isFile: () => boolean
-  isSymbolicLink: () => boolean
-}
-
-export interface HostAppendStream {
-  end: () => void
-  write: (content: string) => void
-}
-
 const fileInfo = (stat: fs.Stats): HostFileInfo => ({
   isDirectory: stat.isDirectory(),
   isFile: stat.isFile(),
@@ -126,21 +114,18 @@ export const closeHeldFile = (handle: HeldFile): void => {
   }
 }
 
-export const removeHeldFileIfUnchanged = ({
+const revalidateAndRemoveHeldFile = ({
   path,
   handle,
   contentMatches,
-  beforeRevalidate,
 }: {
   path: string
   handle: HeldFile
   contentMatches: (content: string) => boolean
-  beforeRevalidate?: (path: string) => void
 }): boolean => {
   const held = stateOf(handle)
   let currentDescriptor: number | undefined
   try {
-    beforeRevalidate?.(path)
     currentDescriptor = fs.openSync(path, 'r')
     const currentStat = fs.fstatSync(currentDescriptor)
     const currentContent = fs.readFileSync(currentDescriptor, 'utf8')
@@ -159,22 +144,20 @@ export const removeHeldFileIfUnchanged = ({
   }
 }
 
-export const readHostDirectoryEntriesSync = (path: string): HostDirectoryEntrySync[] => fs.readdirSync(path, { withFileTypes: true })
-
-export const createHostAppendStream = (path: string): HostAppendStream => fs.createWriteStream(path, { flags: 'a' })
-
-export const hostFileSystemSync = {
-  appendFile: fs.appendFileSync,
-  chmod: fs.chmodSync,
-  exists: fs.existsSync,
-  makeDirectory: fs.mkdirSync,
-  readDirectory: fs.readdirSync,
-  readFile: fs.readFileSync,
-  remove: fs.rmSync,
-  removeDirectory: fs.rmdirSync,
-  rename: fs.renameSync,
-  stat: fs.statSync,
-  unlink: fs.unlinkSync,
-  utimes: fs.utimesSync,
-  writeFile: fs.writeFileSync,
-}
+export const removeHeldFileIfUnchanged = ({
+  path,
+  handle,
+  contentMatches,
+  beforeRevalidate,
+}: {
+  path: string
+  handle: HeldFile
+  contentMatches: (content: string) => boolean
+  beforeRevalidate?: (path: string) => Effect.Effect<void, Cause.UnknownError>
+}): Effect.Effect<boolean> =>
+  Effect.gen(function* () {
+    if (beforeRevalidate !== undefined) {
+      yield* beforeRevalidate(path)
+    }
+    return revalidateAndRemoveHeldFile({ contentMatches, handle, path })
+  }).pipe(Effect.orElseSucceed(() => false))
