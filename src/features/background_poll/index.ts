@@ -1,11 +1,10 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
-import { Function } from 'effect'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 
 import { BackgroundPollParams, makePollHandlers } from './poll.js'
 
-const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime): void => {
+export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
   const handlers = makePollHandlers(pi)
 
   pi.registerTool({
@@ -26,8 +25,3 @@ const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime): void => {
   pi.on('session_start', () => runtime.runPromise(handlers.startSession))
   pi.on('session_shutdown', (_event, ctx) => runtime.runPromise(handlers.stopSession(ctx)))
 }
-
-export const register: {
-  (runtime: AppRuntime): (pi: ExtensionAPI) => void
-  (pi: ExtensionAPI, runtime: AppRuntime): void
-} = Function.dual((args) => typeof args[0].on === 'function', registerImpl)

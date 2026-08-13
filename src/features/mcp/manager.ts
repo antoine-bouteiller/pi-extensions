@@ -5,7 +5,7 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { type Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import { Context, Data, Effect, Fiber, Function, Layer, Result, Schema } from 'effect'
+import { Context, Data, Effect, Fiber, Layer, Result, Schema } from 'effect'
 
 import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 import { isRecord } from '@/shared/utils/records.js'
@@ -1058,14 +1058,10 @@ export class McpManager {
 /** Scoped Effect service for callers that own the manager through a Layer. */
 export class McpManagerService extends Context.Service<McpManagerService, McpManager>()('pi-extensions/features/mcp/manager/McpManagerService') {}
 
-export const mcpManagerLayer: {
-  (options: McpManagerOptions): (config: McpServerMap) => Layer.Layer<McpManagerService>
-  (config: McpServerMap, options: McpManagerOptions): Layer.Layer<McpManagerService>
-} = Function.dual(2, (config: McpServerMap, options: McpManagerOptions): Layer.Layer<McpManagerService> =>
+export const mcpManagerLayer = (config: McpServerMap, options: McpManagerOptions): Layer.Layer<McpManagerService> =>
   Layer.effect(McpManagerService)(
     Effect.acquireRelease(
       Effect.sync(() => new McpManager(config, options)),
       (manager) => manager.close
     )
   )
-)

@@ -50,7 +50,6 @@ const mkLive =
 const mods = <Runner extends object>(make: (runner: typeof test) => Runner): Runner & { skip: Runner; skipIf: (condition: boolean) => Runner } =>
   Object.assign(make(test), { skip: make(test.skip), skipIf: (condition: boolean) => make(test.skipIf(condition)) })
 
-// oxlint-disable-next-line effecttsgo/missing-pipeable-signature -- Bun's callable test API is not an Effect function and cannot expose a pipeable data-first overload.
 export const it = Object.assign(test, {
   effect: mods(mkEffect),
   live: mods(mkLive),

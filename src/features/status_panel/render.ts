@@ -1,7 +1,6 @@
 import { homedir } from 'node:os'
 
 import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui'
-import { Function } from 'effect'
 import { type Path } from 'effect/Path'
 
 import { isEmptyString } from '@/shared/utils/predicates.js'
@@ -16,13 +15,10 @@ export const formatTokens = (tokens: number) => {
   return `${(tokens / 1_000_000).toFixed(1)}M`
 }
 
-export const progressBar: {
-  (width: number): (percent: number) => string
-  (percent: number, width: number): string
-} = Function.dual(2, (percent: number, width: number): string => {
+export const progressBar = (percent: number, width: number): string => {
   const filled = Math.round((Math.max(0, Math.min(100, percent)) / 100) * width)
   return `${'▓'.repeat(filled)}${'░'.repeat(width - filled)}`
-})
+}
 
 export interface ProgressLineOptions {
   label: string
@@ -34,10 +30,7 @@ export interface ProgressLineOptions {
 export const progressLine = ({ label, percent, detail, width = 10 }: ProgressLineOptions) =>
   `${label}: ${progressBar(percent, width)} ${percent.toFixed(1)}%${isEmptyString(detail) ? '' : `  ${detail}`}`
 
-export const formatDirectory: {
-  (path: Path): (cwd: string) => string
-  (cwd: string, path: Path): string
-} = Function.dual(2, (cwd: string, path: Path): string => {
+export const formatDirectory = (cwd: string, path: Path): string => {
   const home = homedir()
   if (cwd === home) {
     return '~'
@@ -46,12 +39,9 @@ export const formatDirectory: {
     return `~/${path.relative(home, cwd)}`
   }
   return cwd
-})
+}
 
-export const columns: {
-  (right: string, width: number): (left: string) => string
-  (left: string, right: string, width: number): string
-} = Function.dual(3, (left: string, right: string, width: number): string => {
+export const columns = (left: string, right: string, width: number): string => {
   if (isEmptyString(right)) {
     return truncateToWidth(left, width)
   }
@@ -64,4 +54,4 @@ export const columns: {
   const fittedRight = truncateToWidth(right, Math.max(1, width - leftWidth - 1))
   const gap = Math.max(1, width - visibleWidth(fittedLeft) - visibleWidth(fittedRight))
   return truncateToWidth(`${fittedLeft}${' '.repeat(gap)}${fittedRight}`, width)
-})
+}

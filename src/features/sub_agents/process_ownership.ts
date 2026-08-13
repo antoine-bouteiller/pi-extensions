@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 
-import { Cause, Context, Effect, Function, Layer, Stream } from 'effect'
+import { Cause, Context, Effect, Layer, Stream } from 'effect'
 import { type PlatformError } from 'effect/PlatformError'
 import { ChildProcess } from 'effect/unstable/process'
 
@@ -173,13 +173,8 @@ export const nodeProcessProbe = {
   runPs: (args: string[]) => runCommand('ps', args),
 } satisfies ProcessProbeShape
 
-export const inspectProcess: {
-  (token: string | undefined): (pid: number) => Effect.Effect<ProcessSnapshot | undefined>
-  (pid: number, token?: string): Effect.Effect<ProcessSnapshot | undefined>
-} = Function.dual(
-  (args) => typeof args[0] === 'number',
-  (pid: number, token?: string): Effect.Effect<ProcessSnapshot | undefined> => inspectProcessWith(nodeProcessProbe)(pid, token)
-)
+export const inspectProcess = (pid: number, token?: string): Effect.Effect<ProcessSnapshot | undefined> =>
+  inspectProcessWith(nodeProcessProbe)(pid, token)
 
 export const ownershipMatches = (ownership: ProcessOwnership): Effect.Effect<boolean> => ownershipMatchesWith(inspectProcess, ownership)
 

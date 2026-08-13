@@ -1,5 +1,5 @@
 import { type BeforeAgentStartEvent, type BeforeProviderHeadersEvent, type ExtensionContext } from '@earendil-works/pi-coding-agent'
-import { Effect, Function } from 'effect'
+import { Effect } from 'effect'
 
 import { isEmptyString, isNullOrUndefined } from '@/shared/utils/predicates.js'
 
@@ -47,10 +47,7 @@ const setCanonicalHeader = (headers: BeforeProviderHeadersEvent['headers'], name
   headers[name] = value
 }
 
-export const applySessionAffinity: {
-  (ctx: ExtensionContext): (event: BeforeProviderHeadersEvent) => Effect.Effect<void>
-  (event: BeforeProviderHeadersEvent, ctx: ExtensionContext): Effect.Effect<void>
-} = Function.dual(2, (event: BeforeProviderHeadersEvent, ctx: ExtensionContext): Effect.Effect<void> =>
+export const applySessionAffinity = (event: BeforeProviderHeadersEvent, ctx: ExtensionContext): Effect.Effect<void> =>
   Effect.sync(() => {
     if (!isMeridianRequest(event, ctx)) {
       return
@@ -63,7 +60,6 @@ export const applySessionAffinity: {
 
     setCanonicalHeader(event.headers, SESSION_AFFINITY_HEADER, sessionId)
   })
-)
 
 export interface ScrubRequest {
   readonly ctx: ExtensionContext

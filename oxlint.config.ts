@@ -93,6 +93,12 @@ export default defineConfig({
     'unicorn/max-nested-calls': 'off',
 
     /*
+     * Pipeable data-last overloads are for library APIs composed through `pipe`. Nothing in this
+     * package is ever called data-last, so the rule only produced `Function.dual` boilerplate.
+     */
+    'effecttsgo/missing-pipeable-signature': 'off',
+
+    /*
      * Every environment read in this package is either a module-level constant resolved at import
      * time or a synchronous Pi/TUI callback, and `Config` can only be read from an Effect context.
      */

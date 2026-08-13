@@ -1,12 +1,11 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
-import { Function } from 'effect'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 
 import { makeSubagentFeature } from './agents.js'
 import { type AgentManagerOptions } from './core.js'
 
-const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: AgentManagerOptions = {}): void => {
+export const register = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: AgentManagerOptions = {}): void => {
   const feature = makeSubagentFeature({ managerOptions, pi, runtime })
 
   pi.on('session_start', feature.onSessionStart)
@@ -25,8 +24,3 @@ const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: Age
   pi.registerCommand('agents', feature.browseAgentsCommand)
   pi.registerCommand('subagents', feature.browseAgentsCommand)
 }
-
-export const register: {
-  (runtime: AppRuntime, managerOptions?: AgentManagerOptions): (pi: ExtensionAPI) => void
-  (pi: ExtensionAPI, runtime: AppRuntime, managerOptions?: AgentManagerOptions): void
-} = Function.dual((args) => typeof args[0].on === 'function', registerImpl)

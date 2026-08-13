@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { tmpdir, userInfo } from 'node:os'
 
-import { Effect, Function } from 'effect'
+import { Effect } from 'effect'
 
 import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
 import { jsonText, parseJsonText } from '@/shared/utils/json.js'
@@ -16,10 +16,7 @@ const quotaPath = (token: string) => join(quotaDir(), `${token}.json`)
 
 export const azureQuota = createObservableStore<number | undefined>(undefined)
 
-export const writeSubagentAzureQuota: {
-  (percent: number): (token: string) => Effect.Effect<void>
-  (token: string, percent: number): Effect.Effect<void>
-} = Function.dual(2, (token: string, percent: number): Effect.Effect<void> => {
+export const writeSubagentAzureQuota = (token: string, percent: number): Effect.Effect<void> => {
   if (!TOKEN_PATTERN.test(token) || !Number.isFinite(percent)) {
     return Effect.void
   }
@@ -34,7 +31,7 @@ export const writeSubagentAzureQuota: {
     yield* bunFileSystem.writeFileString(temporary, jsonText(percent), { mode: 0o600 })
     yield* bunFileSystem.rename(temporary, target)
   }).pipe(Effect.catch(() => bunFileSystem.remove(temporary, { force: true }).pipe(Effect.ignore)))
-})
+}
 
 export const consumeSubagentAzureQuota = (token: string): Effect.Effect<number | undefined> => {
   if (!TOKEN_PATTERN.test(token)) {

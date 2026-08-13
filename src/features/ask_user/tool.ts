@@ -10,7 +10,7 @@ import {
   type EditorTheme,
   type Focusable,
 } from '@earendil-works/pi-tui'
-import { Data, Effect, Function } from 'effect'
+import { Data, Effect } from 'effect'
 import { Type, type Static } from 'typebox'
 
 import { ToolFailure } from '@/shared/effect/errors.js'
@@ -288,10 +288,7 @@ const showQuestion = (
       }),
   })
 
-export const askUserEffect: {
-  (signal: AbortSignal | undefined): (params: Static<typeof AskUserParams>) => Effect.Effect<AskUserResult, ToolFailure | AskUserUiError, PiCtx>
-  (params: Static<typeof AskUserParams>, signal: AbortSignal | undefined): Effect.Effect<AskUserResult, ToolFailure | AskUserUiError, PiCtx>
-} = Function.dual(2, (params: Static<typeof AskUserParams>, signal: AbortSignal | undefined) =>
+export const askUserEffect = (params: Static<typeof AskUserParams>, signal: AbortSignal | undefined) =>
   Effect.gen(function* () {
     const optionCount = params.options.length
     if (optionCount < MIN_OPTIONS || optionCount > MAX_OPTIONS) {
@@ -350,4 +347,3 @@ export const askUserEffect: {
       result.answer
     )
   })
-)

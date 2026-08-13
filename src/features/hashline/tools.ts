@@ -19,7 +19,7 @@ import {
   Patch,
   Patcher,
 } from '@oh-my-pi/hashline'
-import { Context, Data, Effect, Function, Path } from 'effect'
+import { Context, Data, Effect, Path } from 'effect'
 import { type FileSystem } from 'effect/FileSystem'
 import { Type, type Static } from 'typebox'
 
@@ -420,17 +420,14 @@ const hashlineFailure = (message: string): Effect.Effect<never, HashlineToolErro
 const abortCheck = (signal: AbortSignal | undefined): Effect.Effect<void, HashlineToolError> =>
   isTrue(signal?.aborted) ? hashlineFailure('Hashline operation aborted') : Effect.void
 
-export const renderHashlineRead: {
-  (options: unknown, theme: Theme): (readResult: RenderableToolOutput) => Component
-  (readResult: RenderableToolOutput, options: unknown, theme: Theme): Component
-} = Function.dual(3, (readResult: RenderableToolOutput, _options: unknown, theme: Theme): Component => {
+export const renderHashlineRead = (readResult: RenderableToolOutput, _options: unknown, theme: Theme): Component => {
   let text = typeof readResult.details?.path === 'string' ? readResult.details.path : ''
   if (isTrue(readResult.isError)) {
     const [content] = readResult.content
     text = content?.type === 'text' ? content.text : 'Hashline read failed'
   }
   return new Text(theme.fg(isTrue(readResult.isError) ? 'error' : 'toolOutput', text), 0, 0)
-})
+}
 
 type HashlineToolEffect = Effect.Effect<ToolOutput, HashlineToolError, HandlerServices | FileSystem | Path.Path>
 

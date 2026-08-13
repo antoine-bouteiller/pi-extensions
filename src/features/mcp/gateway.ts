@@ -1,7 +1,9 @@
 import { homedir } from 'node:os'
 
 import { type AgentToolResult, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from '@earendil-works/pi-coding-agent'
-import { Data, Deferred, Effect, Match, Option, Ref, Schema } from 'effect'
+import { Context, Data, Deferred, Effect, Layer, Match, Option, Ref, Schema } from 'effect'
+import { type FileSystem } from 'effect/FileSystem'
+import { type Path } from 'effect/Path'
 import { Type, type Static } from 'typebox'
 
 import { type AppServices } from '@/shared/effect/app_services.js'
@@ -113,13 +115,14 @@ interface McpManagerContext {
   policy: McpGatewayPolicy
 }
 
-export interface McpGatewayDependencies<TConfig = unknown> {
-  configPath: string
-  loadConfig: Effect.Effect<TConfig, Error, AppServices>
-  createManager: (config: TConfig, context: McpManagerContext) => McpGatewayManager | Promise<McpGatewayManager>
-  /** Defaults to unrestricted. Production selects this from PI_SUBAGENT_READONLY. */
-  policy?: McpGatewayPolicy
+export interface McpGatewayShape {
+  readonly configPath: string
+  readonly loadConfig: Effect.Effect<McpServerMap, Error, FileSystem | Path>
+  readonly createManager: (config: McpServerMap, context: McpManagerContext) => McpGatewayManager | Promise<McpGatewayManager>
+  readonly policy: McpGatewayPolicy
 }
+
+export class McpGateway extends Context.Service<McpGateway, McpGatewayShape>()('pi-extensions/features/mcp/gateway/McpGateway') {}
 
 const textResult = (text: string, details?: unknown): Effect.Effect<AgentToolResult<unknown>, McpOperationError> =>
   boundGatewayOutput([{ text, type: 'text' }]).pipe(
@@ -425,28 +428,24 @@ const dispatchGateway = (
     })
   })
 
-export interface GatewaySessionOptions<TConfig> {
-  readonly dependencies: McpGatewayDependencies<TConfig>
-  readonly pi: ExtensionAPI
-}
-
 export interface GatewaySession {
   readonly authenticate: (args: string, ctx: ExtensionCommandContext) => Effect.Effect<void>
   readonly dispatch: (
     params: McpGatewayInput,
     signal: AbortSignal | undefined
-  ) => Effect.Effect<AgentToolResult<unknown>, McpOperationError | ToolFailure>
+  ) => Effect.Effect<AgentToolResult<unknown>, McpOperationError | ToolFailure, McpGateway>
   readonly oauthCompletions: (prefix: string) => { label: string; value: string }[]
-  readonly start: (ctx: ExtensionContext) => Effect.Effect<void, McpOperationError, AppServices>
+  readonly start: (ctx: ExtensionContext) => Effect.Effect<void, McpOperationError, AppServices | McpGateway>
   readonly stop: (ctx: ExtensionContext) => Effect.Effect<void, McpOperationError>
 }
 
-/** Owns one gateway lifecycle with injectable config and manager dependencies for isolated tests. */
-export const makeGatewaySession = <TConfig>({ dependencies, pi }: GatewaySessionOptions<TConfig>): GatewaySession => {
+/** Owns one gateway lifecycle; its config and manager are supplied by the `McpGateway` service. */
+export const makeGatewaySession = (pi: ExtensionAPI): GatewaySession => {
   const state = Effect.runSync(makeState)
 
-  const startSession = (ctx: ExtensionContext): Effect.Effect<void, McpOperationError, AppServices> =>
+  const startSession = (ctx: ExtensionContext): Effect.Effect<void, McpOperationError, AppServices | McpGateway> =>
     Effect.gen(function* () {
+      const gateway = yield* McpGateway
       const generation = yield* Ref.updateAndGet(state.generation, (value) => value + 1)
       const previousManager = yield* Ref.getAndSet(state.manager, Option.none())
       const deferred = yield* Deferred.make<void, McpOperationError>()
@@ -457,10 +456,10 @@ export const makeGatewaySession = <TConfig>({ dependencies, pi }: GatewaySession
         if (Option.isSome(previousManager)) {
           yield* previousManager.value.close
         }
-        const config = yield* fromManager(dependencies.loadConfig)
+        const config = yield* fromManager(gateway.loadConfig)
         const candidate = yield* callManager(() =>
           Promise.resolve(
-            dependencies.createManager(config, {
+            gateway.createManager(config, {
               callbacks: {
                 onStatusChange: (update) => {
                   if (Effect.runSyncWith(context)(Ref.get(state.generation)) === generation) {
@@ -469,7 +468,7 @@ export const makeGatewaySession = <TConfig>({ dependencies, pi }: GatewaySession
                 },
               },
               pi,
-              policy: dependencies.policy ?? unrestrictedMcpPolicy,
+              policy: gateway.policy,
             })
           )
         )
@@ -551,7 +550,11 @@ export const makeGatewaySession = <TConfig>({ dependencies, pi }: GatewaySession
 
   return {
     authenticate,
-    dispatch: (params, signal) => dispatchGateway(dependencies.configPath, state, params, signal),
+    dispatch: (params, signal) =>
+      Effect.gen(function* () {
+        const gateway = yield* McpGateway
+        return yield* dispatchGateway(gateway.configPath, state, params, signal)
+      }),
     oauthCompletions,
     start: startSession,
     stop: stopSession,
@@ -560,7 +563,7 @@ export const makeGatewaySession = <TConfig>({ dependencies, pi }: GatewaySession
 
 const globalConfigPath = join(homedir(), '.config', 'mcp', 'mcp.json')
 
-export const productionDependencies: McpGatewayDependencies<McpServerMap> = {
+export const McpGatewayLive: Layer.Layer<McpGateway> = Layer.succeed(McpGateway)({
   configPath: globalConfigPath,
   /*
    * Keep the manager behind the session lifecycle boundary: importing this entrypoint and
@@ -583,4 +586,4 @@ export const productionDependencies: McpGatewayDependencies<McpServerMap> = {
     ),
   loadConfig: loadGlobalMcpConfig,
   policy: mcpPolicyFromEnvironment(),
-}
+})

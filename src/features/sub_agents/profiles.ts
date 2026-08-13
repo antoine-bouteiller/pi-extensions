@@ -1,5 +1,4 @@
 import { type ThemeColor } from '@earendil-works/pi-coding-agent'
-import { Function } from 'effect'
 
 import { isEmptyString } from '@/shared/utils/predicates.js'
 
@@ -107,10 +106,8 @@ const providerRank = (provider: string, modelId: string): number => {
   return 2
 }
 
-export const hasModelId: {
-  (id: string): (models: readonly AvailableModel[]) => boolean
-  (models: readonly AvailableModel[], id: string): boolean
-} = Function.dual(2, (models: readonly AvailableModel[], id: string): boolean => models.some((model) => model.id === id && !isGoogleCandidate(model)))
+export const hasModelId = (models: readonly AvailableModel[], id: string): boolean =>
+  models.some((model) => model.id === id && !isGoogleCandidate(model))
 
 export const parseModelSelector = (selector: string): { provider?: string; id: string } => {
   const normalized = selector.trim()
@@ -129,10 +126,7 @@ export const parseModelSelector = (selector: string): { provider?: string; id: s
   return { id, provider }
 }
 
-export const resolveModelSelector: {
-  (availableModels: readonly AvailableModel[]): (selector: string) => AvailableModel
-  (selector: string, availableModels: readonly AvailableModel[]): AvailableModel
-} = Function.dual(2, (selector: string, availableModels: readonly AvailableModel[]): AvailableModel => {
+export const resolveModelSelector = (selector: string, availableModels: readonly AvailableModel[]): AvailableModel => {
   const parsed = parseModelSelector(selector)
   const candidates = availableModels.filter(
     (model) => model.id === parsed.id && (parsed.provider === undefined || model.provider === parsed.provider) && !isGoogleCandidate(model)
@@ -146,7 +140,7 @@ export const resolveModelSelector: {
       left.provider.localeCompare(right.provider) ||
       left.id.localeCompare(right.id)
   )[0]
-})
+}
 
 export const firstAvailable = (models: readonly AvailableModel[], ...selectors: readonly string[]): string | undefined =>
   selectors.find((selector) => {
@@ -171,49 +165,47 @@ export const getAgentProfilesDescription = (registry?: Readonly<Record<string, A
     .join('\n')
 }
 
-export const resolveAgentConfig: {
-  (context: ModelSelectorContext, registry?: Readonly<Record<string, AgentConfig>>): (key: string) => ResolvedAgentConfig
-  (key: string, context: ModelSelectorContext, registry?: Readonly<Record<string, AgentConfig>>): ResolvedAgentConfig
-} = Function.dual(
-  (args) => typeof args[0] === 'string',
-  (key: string, context: ModelSelectorContext, registry: Readonly<Record<string, AgentConfig>> = AGENT_CONFIGS): ResolvedAgentConfig => {
-    const config = registry[key]
-    if (config === undefined) {
-      throw new Error(`Unknown agent profile: ${key}`)
-    }
-    const availableModels = Object.freeze(context.availableModels.map((model) => Object.freeze({ id: model.id, provider: model.provider })))
-    const selectorContext = Object.freeze({
-      availableModels,
-      parentModel: Object.freeze({
-        id: context.parentModel.id,
-        provider: context.parentModel.provider,
-      }),
-    })
-    const selector = typeof config.model === 'function' ? config.model(selectorContext) : config.model
-    if (typeof selector !== 'string') {
-      throw new Error(`Agent profile ${key} returned an invalid model selector.`)
-    }
-    const selected = resolveModelSelector(selector, availableModels)
-    const allowedTools = Object.freeze([...new Set(config.allowedTools.map((tool) => tool.trim()).filter(Boolean))])
-    if (allowedTools.length === 0) {
-      throw new Error(`Agent profile ${key} must allow at least one tool.`)
-    }
-    if (isEmptyString(config.prompt.trim())) {
-      throw new Error(`Agent profile ${key} must define a prompt.`)
-    }
-    return Object.freeze({
-      allowedTools,
-      color: config.color ?? 'accent',
-      description: config.description?.trim() || key,
-      isReadonly: config.isReadonly,
-      key,
-      modelId: selected.id,
-      prompt: config.prompt,
-      provider: selected.provider,
-      thinking: config.thinking ?? 'high',
-    })
+export const resolveAgentConfig = (
+  key: string,
+  context: ModelSelectorContext,
+  registry: Readonly<Record<string, AgentConfig>> = AGENT_CONFIGS
+): ResolvedAgentConfig => {
+  const config = registry[key]
+  if (config === undefined) {
+    throw new Error(`Unknown agent profile: ${key}`)
   }
-)
+  const availableModels = Object.freeze(context.availableModels.map((model) => Object.freeze({ id: model.id, provider: model.provider })))
+  const selectorContext = Object.freeze({
+    availableModels,
+    parentModel: Object.freeze({
+      id: context.parentModel.id,
+      provider: context.parentModel.provider,
+    }),
+  })
+  const selector = typeof config.model === 'function' ? config.model(selectorContext) : config.model
+  if (typeof selector !== 'string') {
+    throw new Error(`Agent profile ${key} returned an invalid model selector.`)
+  }
+  const selected = resolveModelSelector(selector, availableModels)
+  const allowedTools = Object.freeze([...new Set(config.allowedTools.map((tool) => tool.trim()).filter(Boolean))])
+  if (allowedTools.length === 0) {
+    throw new Error(`Agent profile ${key} must allow at least one tool.`)
+  }
+  if (isEmptyString(config.prompt.trim())) {
+    throw new Error(`Agent profile ${key} must define a prompt.`)
+  }
+  return Object.freeze({
+    allowedTools,
+    color: config.color ?? 'accent',
+    description: config.description?.trim() || key,
+    isReadonly: config.isReadonly,
+    key,
+    modelId: selected.id,
+    prompt: config.prompt,
+    provider: selected.provider,
+    thinking: config.thinking ?? 'high',
+  })
+}
 
 export const THEME_COLOR_VALUES = [
   'accent',
@@ -276,7 +268,5 @@ export const configuredProfileColor = (profile: unknown): ThemeColor => {
 
 const isThemeColor = (value: unknown): value is ThemeColor => typeof value === 'string' && THEME_COLORS.has(value)
 
-export const persistedProfileColor: {
-  (color: unknown): (profile: unknown) => ThemeColor
-  (profile: unknown, color: unknown): ThemeColor
-} = Function.dual(2, (profile: unknown, color: unknown): ThemeColor => (typeof profile === 'string' && isThemeColor(color) ? color : 'muted'))
+export const persistedProfileColor = (profile: unknown, color: unknown): ThemeColor =>
+  typeof profile === 'string' && isThemeColor(color) ? color : 'muted'

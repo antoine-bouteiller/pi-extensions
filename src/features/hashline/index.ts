@@ -1,12 +1,12 @@
 import { type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
-import { Effect, Function } from 'effect'
+import { Effect } from 'effect'
 
 import { type AppServices, type AppRuntime } from '@/shared/effect/app_services.js'
 import { perInvocation, type HandlerServices } from '@/shared/effect/runtime.js'
 
 import { makeHashlineTools, pruneSupersededReads, readSchema, renderHashlineRead, writeSchema, type HashlineToolError } from './tools.js'
 
-const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime): void => {
+export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
   const tools = makeHashlineTools(runtime)
 
   /*
@@ -50,8 +50,3 @@ const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime): void => {
 
   pi.on('context', (event) => ({ messages: pruneSupersededReads(event.messages) }))
 }
-
-export const register: {
-  (runtime: AppRuntime): (pi: ExtensionAPI) => void
-  (pi: ExtensionAPI, runtime: AppRuntime): void
-} = Function.dual((args) => typeof args[0].on === 'function', registerImpl)

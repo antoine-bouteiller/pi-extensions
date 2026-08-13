@@ -1,6 +1,6 @@
 import { homedir } from 'node:os'
 
-import { Effect, Function, Schema } from 'effect'
+import { Effect, Schema } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
 import { Path } from 'effect/Path'
 import { type PlatformError } from 'effect/PlatformError'
@@ -337,10 +337,7 @@ export const parseMcpConfigEffect = (value: unknown): Effect.Effect<McpServerMap
   })
 
 /** Parse JSON text without adding JSONC or interpolation semantics. */
-export const parseMcpConfigText: {
-  (source: string): (text: string) => McpServerMap
-  (text: string, source: string): McpServerMap
-} = Function.dual(2, (text: string, source = 'MCP config'): McpServerMap => {
+export const parseMcpConfigText = (text: string, source = 'MCP config'): McpServerMap => {
   let value: unknown
   try {
     value = JSON.parse(text) as unknown
@@ -348,7 +345,7 @@ export const parseMcpConfigText: {
     throw McpConfigError.from(source, 'contains malformed JSON')
   }
   return parseMcpConfig(value)
-})
+}
 
 const missingConfig: McpServerMap = {}
 

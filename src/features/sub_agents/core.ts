@@ -3,25 +3,7 @@ import { createServer, type Server, type Socket } from 'node:net'
 import { homedir, tmpdir, userInfo } from 'node:os'
 
 import { getAgentDir, migrateSessionEntries, parseSessionEntries, type SessionEntry, type ThemeColor } from '@earendil-works/pi-coding-agent'
-import {
-  Cause,
-  Clock,
-  Data,
-  DateTime,
-  Deferred,
-  Effect,
-  Exit,
-  Fiber,
-  Function,
-  HashMap,
-  Option,
-  Queue,
-  Ref,
-  Result,
-  Scope,
-  Semaphore,
-  Stream,
-} from 'effect'
+import { Cause, Clock, Data, DateTime, Deferred, Effect, Exit, Fiber, HashMap, Option, Queue, Ref, Result, Scope, Semaphore, Stream } from 'effect'
 import { ChildProcess } from 'effect/unstable/process'
 import { type ChildProcessHandle } from 'effect/unstable/process/ChildProcessSpawner'
 import { Type, type Static } from 'typebox'
@@ -827,13 +809,10 @@ const readAllInfos = () => {
   )
 }
 
-export const getAgent: {
-  (parentSessionId: string): (name: string) => Effect.Effect<AgentInfo | undefined>
-  (name: string, parentSessionId: string): Effect.Effect<AgentInfo | undefined>
-} = Function.dual(2, (name: string, parentSessionId: string): Effect.Effect<AgentInfo | undefined> => {
+export const getAgent = (name: string, parentSessionId: string): Effect.Effect<AgentInfo | undefined> => {
   const taskName = normalizeTaskName(name)
   return readScopeInfos(parentSessionId).pipe(Effect.map((infos) => infos.find((info) => info.taskName === taskName)))
-})
+}
 
 interface PeekMarker {
   pid: number

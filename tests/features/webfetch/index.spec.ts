@@ -4,14 +4,17 @@ import { promiseFromEffect, tryPromiseEffect, describe, expect, it } from '@test
 import { asError, asNarrowed, asTheme, asTool } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
-import { runtime } from '@tests/utils/runtime.js'
-import { type Clock, Data, Effect, Layer } from 'effect'
+import { testRuntime } from '@tests/utils/runtime.js'
+import { Clock, Data, Effect, Layer } from 'effect'
 import { TestClock } from 'effect/testing'
 import { FetchHttpClient, type HttpClient } from 'effect/unstable/http'
 
-import { type WebfetchDetails, type WebfetchFetch, type WebfetchInput } from '@/features/webfetch/fetch.js'
-import { createWebfetchExtension } from '@/features/webfetch/index.js'
+import { type WebfetchDetails, type WebfetchInput } from '@/features/webfetch/fetch.js'
+import { register } from '@/features/webfetch/index.js'
 import { isTrue } from '@/shared/utils/predicates.js'
+
+/** The shape `HttpClientRequest.get`'s injected `Fetch` accepts. */
+type WebfetchFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 
 const stubHttpClient = (fetchImpl: WebfetchFetch): Layer.Layer<HttpClient.HttpClient> =>
   Layer.mergeAll(FetchHttpClient.layer, Layer.succeed(FetchHttpClient.Fetch)(asNarrowed<typeof fetch, WebfetchFetch>(fetchImpl)))
@@ -26,9 +29,10 @@ const pendingFetch = (signal: AbortSignal | null | undefined, onStart?: () => vo
     })
   )
 
-const createHarness = (fetchImpl: WebfetchFetch, saveFullOutput?: (content: string) => Effect.Effect<string>, clock?: Clock.Clock) => {
+const createHarness = (fetchImpl: WebfetchFetch, clock?: Clock.Clock) => {
   const fixture = createFakePi()
-  createWebfetchExtension({ clock, httpClient: stubHttpClient(fetchImpl), saveFullOutput }, runtime)(fixture.pi)
+  const stubs = clock === undefined ? stubHttpClient(fetchImpl) : Layer.mergeAll(stubHttpClient(fetchImpl), Layer.succeed(Clock.Clock)(clock))
+  register(fixture.pi, testRuntime(stubs))
   const tool = fixture.state.tools.get('webfetch')
 
   const execute = (
@@ -323,7 +327,7 @@ describe('webfetch', () => {
         Effect.gen(function* () {
           const clock = yield* TestClock.make()
           const started = deferred<void>()
-          const harness = createHarness((_url, init) => pendingFetch(init?.signal, () => started.resolve(undefined)), undefined, clock)
+          const harness = createHarness((_url, init) => pendingFetch(init?.signal, () => started.resolve(undefined)), clock)
           const pending = harness.execute({ timeout: 0.05, url: 'https://example.com/slow' }).then(
             () => undefined,
             (error: unknown) => error
@@ -342,25 +346,16 @@ describe('webfetch', () => {
   it.effect('truncates large model output and saves the complete text', () =>
     Effect.gen(function* () {
       const complete = `${'a'.repeat(60 * 1024)}\nlast line`
-      let saved = ''
-      const harness = createHarness(
-        () => promiseFromEffect(Effect.sync(() => new Response(complete, { headers: { 'content-type': 'text/plain' } }))),
-        (content) =>
-          Effect.sync(() => {
-            saved = content
-            return '/tmp/pi-webfetch-test/output.txt'
-          })
-      )
+      const harness = createHarness(() => promiseFromEffect(Effect.sync(() => new Response(complete, { headers: { 'content-type': 'text/plain' } }))))
 
       const result = yield* Effect.promise(() => harness.execute({ url: 'https://example.com/large.txt' }))
+      const fullOutputPath = result.details.fullOutputPath ?? ''
 
-      expect(saved).toBe(complete)
+      expect(fullOutputPath).toStartWith('/')
+      expect(yield* Effect.promise(() => Bun.file(fullOutputPath).text())).toBe(complete)
       expect(text(result)).toContain('[Output truncated:')
-      expect(text(result)).toContain('/tmp/pi-webfetch-test/output.txt')
-      expect(result.details).toMatchObject({
-        fullOutputPath: '/tmp/pi-webfetch-test/output.txt',
-        outputTruncated: true,
-      })
+      expect(text(result)).toContain(fullOutputPath)
+      expect(result.details).toMatchObject({ outputTruncated: true })
     })
   )
 

@@ -1,6 +1,5 @@
 import { type ThemeColor } from '@earendil-works/pi-coding-agent'
 import { truncateToWidth } from '@earendil-works/pi-tui'
-import { Function } from 'effect'
 import { type Path } from 'effect/Path'
 
 import { formatStatusText, type StatusEntry } from '@/shared/state/status_bar.js'
@@ -21,10 +20,7 @@ export interface FooterState {
   statuses: readonly StatusEntry[]
 }
 
-export const renderFooterLines: {
-  (theme: FooterTheme, width: number, path: Path): (state: FooterState) => string[]
-  (state: FooterState, theme: FooterTheme, width: number, path: Path): string[]
-} = Function.dual(4, (state: FooterState, theme: FooterTheme, width: number, path: Path): string[] => {
+export const renderFooterLines = (state: FooterState, theme: FooterTheme, width: number, path: Path): string[] => {
   const { model, git, quotas } = state
   const percent = model.contextPercent ?? 0
   const tokens = formatTokens(model.contextTokens ?? 0)
@@ -59,4 +55,4 @@ export const renderFooterLines: {
     lines.push(truncateToWidth(theme.fg(STATUS_TONE_COLORS[status.tone ?? 'muted'], formatStatusText(status)), width))
   }
   return lines
-})
+}

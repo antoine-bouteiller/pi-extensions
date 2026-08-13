@@ -5,21 +5,24 @@ import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect
 import { asCommand, asTool } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
-import { runtime } from '@tests/utils/runtime.js'
-import { Effect } from 'effect'
+import { testRuntime } from '@tests/utils/runtime.js'
+import { Effect, Layer } from 'effect'
+import { FetchHttpClient } from 'effect/unstable/http'
 
 import {
+  McpGateway,
   mcpPolicyFromEnvironment,
   readonlyMcpPolicy,
   unrestrictedMcpPolicy,
-  type McpGatewayDependencies,
   type McpGatewayManager,
+  type McpGatewayShape,
   type McpManagerCallbacks,
   type McpOperationOptions,
   type McpSearchOptions,
   type McpToolDescription,
 } from '@/features/mcp/gateway.js'
-import { createMcpExtension } from '@/features/mcp/index.js'
+import { register } from '@/features/mcp/index.js'
+import { type McpServerMap } from '@/features/mcp/types.js'
 import { publishStatus } from '@/shared/state/status_bar.js'
 import { parseJsonText } from '@/shared/utils/json.js'
 
@@ -29,7 +32,12 @@ interface RecordedCall {
   values: unknown[]
 }
 
-const createHarness = (overrides: Partial<McpGatewayManager> = {}) => {
+const testConfig: McpServerMap = { alpha: { command: 'noop', type: 'stdio' } }
+
+const createHarness = (
+  overrides: Partial<McpGatewayManager> = {},
+  gateway: (manager: McpGatewayManager) => Partial<McpGatewayShape> = () => ({})
+) => {
   const calls: RecordedCall[] = []
   let callbacks: McpManagerCallbacks | undefined
   let loadCount = 0
@@ -112,20 +120,22 @@ const createHarness = (overrides: Partial<McpGatewayManager> = {}) => {
     ...overrides,
   }
 
-  const dependencies: McpGatewayDependencies<string> = {
+  const gatewayLayer = Layer.succeed(McpGateway)({
     configPath: '/test-home/.config/mcp/mcp.json',
     createManager(config, { callbacks: managerCallbacks }) {
-      expect(config).toBe('config')
+      expect(config).toBe(testConfig)
       callbacks = managerCallbacks
       return manager
     },
     loadConfig: Effect.sync(() => {
       loadCount += 1
-      return 'config'
+      return testConfig
     }),
-  }
+    policy: unrestrictedMcpPolicy,
+    ...gateway(manager),
+  })
   const fixture = createFakePi()
-  createMcpExtension(dependencies, runtime)(fixture.pi)
+  register(fixture.pi, testRuntime(Layer.mergeAll(FetchHttpClient.layer, gatewayLayer)))
 
   const start = (): Promise<void> => promiseFromEffect(Effect.promise(() => fixture.emit('session_start', {}, context())).pipe(Effect.asVoid))
 
@@ -149,7 +159,6 @@ const createHarness = (overrides: Partial<McpGatewayManager> = {}) => {
     callResult,
     callbacks: () => callbacks,
     calls,
-    dependencies,
     execute,
     fixture,
     invokeCommand,
@@ -276,13 +285,14 @@ describe('MCP gateway registration and lifecycle', () => {
 
   it.effect('passes its configured policy into each process-local manager', () =>
     Effect.gen(function* () {
-      const harness = createHarness()
       let receivedPolicy: unknown
-      harness.dependencies.policy = readonlyMcpPolicy
-      harness.dependencies.createManager = (_config, { policy }) => {
-        receivedPolicy = policy
-        return harness.manager
-      }
+      const harness = createHarness({}, (manager) => ({
+        createManager: (_config, { policy }) => {
+          receivedPolicy = policy
+          return manager
+        },
+        policy: readonlyMcpPolicy,
+      }))
 
       yield* Effect.promise(() => harness.start())
       expect(receivedPolicy).toBe(readonlyMcpPolicy)
@@ -516,20 +526,16 @@ describe('MCP gateway registration and lifecycle', () => {
       const creation = deferred<McpGatewayManager>()
       const closeStarted = deferred<void>()
       const permitClose = deferred<void>()
-      const harness = createHarness({
-        close: Effect.gen(function* () {
-          closeStarted.resolve()
-          yield* Effect.promise(() => permitClose.promise)
-        }),
-      })
-      harness.dependencies.createManager = (_config, managerContext) => {
-        harness.callbacks()?.onStatusChange(0)
-        void managerContext
-        return promiseFromEffect(Effect.promise(() => creation.promise))
-      }
-      // Re-register against the modified dependency object in a fresh fixture.
-      const fixture = createFakePi()
-      createMcpExtension(harness.dependencies, runtime)(fixture.pi)
+      const harness = createHarness(
+        {
+          close: Effect.gen(function* () {
+            closeStarted.resolve()
+            yield* Effect.promise(() => permitClose.promise)
+          }),
+        },
+        () => ({ createManager: () => promiseFromEffect(Effect.promise(() => creation.promise)) })
+      )
+      const { fixture } = harness
       const statuses: { key: string; value: unknown }[] = []
 
       const starting = fixture.emit('session_start', {}, context(statuses))

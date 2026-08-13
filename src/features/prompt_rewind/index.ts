@@ -8,13 +8,12 @@
  */
 
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
-import { Function } from 'effect'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 
 import { makeRewindController, REWIND_COMMAND } from './rewind.js'
 
-const registerImpl = (pi: ExtensionAPI, _runtime: AppRuntime): void => {
+export const register = (pi: ExtensionAPI, _runtime: AppRuntime): void => {
   const controller = makeRewindController()
 
   pi.on('input', controller.captureInput)
@@ -31,8 +30,3 @@ const registerImpl = (pi: ExtensionAPI, _runtime: AppRuntime): void => {
     handler: (_args, ctx) => controller.rewindCancelledPrompt(ctx),
   })
 }
-
-export const register: {
-  (runtime: AppRuntime): (pi: ExtensionAPI) => void
-  (pi: ExtensionAPI, runtime: AppRuntime): void
-} = Function.dual((args) => typeof args[0].on === 'function', registerImpl)

@@ -1,5 +1,4 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
-import { Function } from 'effect'
 
 import { register as askUser } from '@/features/ask_user/index.js'
 import { register as backgroundPoll } from '@/features/background_poll/index.js'
@@ -16,11 +15,12 @@ import { register as safetyGuard } from '@/features/safety_guard/index.js'
 import { register as statusPanel } from '@/features/status_panel/index.js'
 import { register as subAgents } from '@/features/sub_agents/index.js'
 import { register as webfetch } from '@/features/webfetch/index.js'
-import { type AppRuntime } from '@/shared/effect/app_services.js'
+
+import { type ProcessRuntime } from './runtime.js'
 
 export interface FeatureRegistration {
   readonly name: string
-  readonly register: (pi: ExtensionAPI, runtime: AppRuntime) => void
+  readonly register: (pi: ExtensionAPI, runtime: ProcessRuntime) => void
 }
 
 export const features: readonly FeatureRegistration[] = [
@@ -41,11 +41,8 @@ export const features: readonly FeatureRegistration[] = [
   { name: 'webfetch', register: webfetch },
 ]
 
-export const registerFeatures: {
-  (runtime: AppRuntime): (pi: ExtensionAPI) => void
-  (pi: ExtensionAPI, runtime: AppRuntime): void
-} = Function.dual(2, (pi: ExtensionAPI, runtime: AppRuntime): void => {
+export const registerFeatures = (pi: ExtensionAPI, runtime: ProcessRuntime): void => {
   for (const feature of features) {
     feature.register(pi, runtime)
   }
-})
+}

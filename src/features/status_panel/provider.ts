@@ -1,4 +1,4 @@
-import { Data, DateTime, Duration, Effect, Fiber, Function, Ref } from 'effect'
+import { Data, DateTime, Duration, Effect, Fiber, Ref } from 'effect'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
@@ -27,10 +27,7 @@ export interface QuotaPollerOptions {
  * its own `refresh` attempt rather than awaiting the previous one -- so the in-flight guard below
  * is load-bearing, not redundant: without it, a slow gateway would let requests overlap.
  */
-export const makeQuotaPoller: {
-  (options: QuotaPollerOptions): (onQuota: (quota: ProviderQuota | undefined) => void) => Effect.Effect<QuotaPoller>
-  (onQuota: (quota: ProviderQuota | undefined) => void, options: QuotaPollerOptions): Effect.Effect<QuotaPoller>
-} = Function.dual(2, (onQuota: (quota: ProviderQuota | undefined) => void, options: QuotaPollerOptions): Effect.Effect<QuotaPoller> =>
+export const makeQuotaPoller = (onQuota: (quota: ProviderQuota | undefined) => void, options: QuotaPollerOptions): Effect.Effect<QuotaPoller> =>
   Effect.gen(function* () {
     const fetchQuota = options.fetchQuota ?? ((baseUrl, signal) => fetchAnthropicQuota(baseUrl, signal))
     const generationRef = yield* Ref.make(0)
@@ -84,7 +81,6 @@ export const makeQuotaPoller: {
 
     return { start, stop }
   })
-)
 
 /** One usage window as reported by the gateway, with `utilization` as a 0..1 fraction. */
 const GatewayQuotaWindowSchema = Type.Object({
@@ -153,59 +149,54 @@ const extraUsageDetail = (profile: GatewayQuotaProfile): string => {
  * Reads quota from the gateway the anthropic provider is pointed at, which owns the
  * subscription credentials. Upstream `/api/oauth/usage` is not reachable through it.
  */
-export const fetchAnthropicQuota: {
-  (signal?: AbortSignal, fetchImpl?: typeof fetch): (baseUrl: string) => Promise<ProviderQuota | undefined>
-  (baseUrl: string, signal?: AbortSignal, fetchImpl?: typeof fetch): Promise<ProviderQuota | undefined>
-} = Function.dual(
-  (args) => typeof args[0] === 'string',
-  // oxlint-disable-next-line effecttsgo/async-function -- This is the `QuotaFetcher` seam callers inject: it must stay assignable to the promise-returning fetch contract used by `panel` and the tests.
-  async (baseUrl: string, signal?: AbortSignal, fetchImpl: typeof fetch = globalThis.fetch): Promise<ProviderQuota | undefined> => {
-    if (isEmptyString(baseUrl)) {
-      return undefined
-    }
-    try {
-      const endpoint = `${baseUrl.replace(/\/+$/, '')}/v1/usage/quota/all`
-      const response = await fetchImpl(endpoint, { signal })
-      if (!response.ok) {
-        return undefined
-      }
-      const payload: unknown = await response.json()
-      if (!Check(GatewayQuotaResponseSchema, payload)) {
-        return undefined
-      }
-      const profile = activeProfile(payload)
-      if (profile === undefined) {
-        return undefined
-      }
-      const windows = profile.windows ?? []
-      const session = windows.find((window) => window.type === 'five_hour')
-      const weekly = windows.find((window) => window.type === 'seven_day')
-      if (typeof session?.utilization !== 'number' || typeof weekly?.utilization !== 'number') {
-        return undefined
-      }
-      const sessionPercent = session.utilization * 100
-      const weeklyPercent = weekly.utilization * 100
-      const extraUsage = extraUsageDetail(profile)
-      const weeklyDetail = isEmptyString(extraUsage) ? '' : ` ${extraUsage}`
-      return {
-        detail: `${formatReset(session.resetsAt)}  Weekly: ${progressBar(weeklyPercent, 10)} ${weeklyPercent.toFixed(1)}%${weeklyDetail}`,
-        label: 'anthropic',
-        percent: sessionPercent,
-        windows: [
-          quotaWindow('Session', sessionPercent, session.resetsAt),
-          { ...quotaWindow('Weekly', weeklyPercent, weekly.resetsAt), ...(isEmptyString(extraUsage) ? {} : { detail: extraUsage }) },
-        ],
-      }
-    } catch {
-      return undefined
-    }
+// oxlint-disable-next-line effecttsgo/async-function -- This is the `QuotaFetcher` seam callers inject: it must stay assignable to the promise-returning fetch contract used by `panel` and the tests.
+export const fetchAnthropicQuota = async (
+  baseUrl: string,
+  signal?: AbortSignal,
+  fetchImpl: typeof fetch = globalThis.fetch
+): Promise<ProviderQuota | undefined> => {
+  if (isEmptyString(baseUrl)) {
+    return undefined
   }
-)
+  try {
+    const endpoint = `${baseUrl.replace(/\/+$/, '')}/v1/usage/quota/all`
+    const response = await fetchImpl(endpoint, { signal })
+    if (!response.ok) {
+      return undefined
+    }
+    const payload: unknown = await response.json()
+    if (!Check(GatewayQuotaResponseSchema, payload)) {
+      return undefined
+    }
+    const profile = activeProfile(payload)
+    if (profile === undefined) {
+      return undefined
+    }
+    const windows = profile.windows ?? []
+    const session = windows.find((window) => window.type === 'five_hour')
+    const weekly = windows.find((window) => window.type === 'seven_day')
+    if (typeof session?.utilization !== 'number' || typeof weekly?.utilization !== 'number') {
+      return undefined
+    }
+    const sessionPercent = session.utilization * 100
+    const weeklyPercent = weekly.utilization * 100
+    const extraUsage = extraUsageDetail(profile)
+    const weeklyDetail = isEmptyString(extraUsage) ? '' : ` ${extraUsage}`
+    return {
+      detail: `${formatReset(session.resetsAt)}  Weekly: ${progressBar(weeklyPercent, 10)} ${weeklyPercent.toFixed(1)}%${weeklyDetail}`,
+      label: 'anthropic',
+      percent: sessionPercent,
+      windows: [
+        quotaWindow('Session', sessionPercent, session.resetsAt),
+        { ...quotaWindow('Weekly', weeklyPercent, weekly.resetsAt), ...(isEmptyString(extraUsage) ? {} : { detail: extraUsage }) },
+      ],
+    }
+  } catch {
+    return undefined
+  }
+}
 
-export const quotaFromHeaders: {
-  (headers: Record<string, string>): (provider: string) => ProviderQuota | undefined
-  (provider: string, headers: Record<string, string>): ProviderQuota | undefined
-} = Function.dual(2, (provider: string, headers: Record<string, string>): ProviderQuota | undefined => {
+export const quotaFromHeaders = (provider: string, headers: Record<string, string>): ProviderQuota | undefined => {
   if (!provider.startsWith('azure')) {
     return undefined
   }
@@ -215,4 +206,4 @@ export const quotaFromHeaders: {
     return undefined
   }
   return { label: 'azure', percent: Math.max(0, Math.min(100, ((limit - remaining) / limit) * 100)) }
-})
+}

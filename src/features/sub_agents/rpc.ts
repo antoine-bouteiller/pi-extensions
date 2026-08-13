@@ -1,7 +1,5 @@
 import { StringDecoder } from 'node:string_decoder'
 
-import { Function } from 'effect'
-
 import { isEmptyString } from '@/shared/utils/predicates.js'
 
 export class RpcJsonlDecoder {
@@ -42,19 +40,16 @@ interface MailboxEvent {
   agentName: string
 }
 
-// oxlint-disable-next-line effecttsgo/missing-pipeable-signature -- Generic overloads preserve each mailbox event subtype; Function.dual provides both call forms.
-const consumeFirstMatchingMailboxEvent: {
-  <TEvent extends MailboxEvent>(parentSessionId: string, targets?: Set<string>): (events: TEvent[]) => TEvent | undefined
-  <TEvent extends MailboxEvent>(events: TEvent[], parentSessionId: string, targets?: Set<string>): TEvent | undefined
-} = Function.dual(
-  (args) => Array.isArray(args[0]),
-  <TEvent extends MailboxEvent>(events: TEvent[], parentSessionId: string, targets?: Set<string>): TEvent | undefined => {
-    const index = events.findIndex((event) => event.parentSessionId === parentSessionId && (targets === undefined || targets.has(event.agentName)))
-    if (index === -1) {
-      return undefined
-    }
-    return events.splice(index, 1)[0]
+const consumeFirstMatchingMailboxEvent = <TEvent extends MailboxEvent>(
+  events: TEvent[],
+  parentSessionId: string,
+  targets?: Set<string>
+): TEvent | undefined => {
+  const index = events.findIndex((event) => event.parentSessionId === parentSessionId && (targets === undefined || targets.has(event.agentName)))
+  if (index === -1) {
+    return undefined
   }
-)
+  return events.splice(index, 1)[0]
+}
 
 export { consumeFirstMatchingMailboxEvent }

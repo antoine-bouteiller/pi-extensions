@@ -1,5 +1,5 @@
 import { isToolCallEventType, type ExtensionContext, type ToolCallEvent, type ToolCallEventResult } from '@earendil-works/pi-coding-agent'
-import { Effect, Function, Match } from 'effect'
+import { Effect, Match } from 'effect'
 import { type FileSystem } from 'effect/FileSystem'
 import { type PlatformError } from 'effect/PlatformError'
 
@@ -130,10 +130,7 @@ const extractProtectedTarget = (event: ToolCallEvent): { operation: 'edit' | 're
   return undefined
 }
 
-export const handleToolCall: {
-  (ctx: ExtensionContext): (event: ToolCallEvent) => Effect.Effect<ToolCallEventResult | undefined, PlatformError, Pi | Ui | FileSystem>
-  (event: ToolCallEvent, ctx: ExtensionContext): Effect.Effect<ToolCallEventResult | undefined, PlatformError, Pi | Ui | FileSystem>
-} = Function.dual(2, (event: ToolCallEvent, ctx: ExtensionContext) =>
+export const handleToolCall = (event: ToolCallEvent, ctx: ExtensionContext) =>
   Effect.gen(function* () {
     const command = extractCommand(event)
     if (command !== undefined) {
@@ -148,7 +145,6 @@ export const handleToolCall: {
     const decision = yield* decideForProtectedTarget(target.operation, target.path, ctx.cwd)
     return yield* runDecision(decision)
   })
-)
 
 export const announceGuardStatus: Effect.Effect<void, never, StatusBar | Ui> = Effect.gen(function* () {
   const statusBar = yield* StatusBar

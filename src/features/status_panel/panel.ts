@@ -1,5 +1,5 @@
 import { type ExtensionAPI, type ExtensionContext, type ReadonlyFooterDataProvider } from '@earendil-works/pi-coding-agent'
-import { Effect, Function, Path, Ref } from 'effect'
+import { Effect, Path, Ref } from 'effect'
 
 import { type AppRuntime, AgentActivity, StatusBar } from '@/shared/effect/app_services.js'
 import { azureQuota, writeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
@@ -54,13 +54,10 @@ export interface PanelHandlers {
   readonly sessionShutdown: (event: unknown, ctx: ExtensionContext) => Effect.Effect<void>
 }
 
-export const recordSubagentQuota: {
-  (ctx: ExtensionContext): (event: ProviderResponsePayload) => Effect.Effect<void>
-  (event: ProviderResponsePayload, ctx: ExtensionContext): Effect.Effect<void>
-} = Function.dual(2, (event: ProviderResponsePayload, ctx: ExtensionContext): Effect.Effect<void> => {
+export const recordSubagentQuota = (event: ProviderResponsePayload, ctx: ExtensionContext): Effect.Effect<void> => {
   const quota = quotaFromHeaders(ctx.model?.provider ?? '', event.headers)
   return quota === undefined ? Effect.void : writeSubagentAzureQuota(process.env.PI_SUBAGENT_OWNER_TOKEN ?? '', quota.percent)
-})
+}
 
 export const makePanelController = ({ dependencies, pi, runtime }: PanelControllerOptions): PanelHandlers => {
   const agentActivity = runtime.runSync(AgentActivity)

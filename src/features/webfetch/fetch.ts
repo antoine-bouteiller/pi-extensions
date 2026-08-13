@@ -8,7 +8,7 @@ import {
   type ToolRenderResultOptions,
 } from '@earendil-works/pi-coding-agent'
 import { Text, type Component } from '@earendil-works/pi-tui'
-import { Clock, Duration, Effect, Function, Layer, ManagedRuntime, Schema, Stream } from 'effect'
+import { Duration, Effect, Schema, Stream } from 'effect'
 import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest, type HttpClientResponse } from 'effect/unstable/http'
 import TurndownService from 'turndown'
 import { Type, type Static } from 'typebox'
@@ -61,15 +61,6 @@ export interface WebfetchDetails {
   outputTruncated: boolean
   outputBytes: number
   fullOutputPath?: string
-}
-
-/** Kept for tests: the shape `HttpClientRequest.get`'s injected `Fetch` accepts. */
-export type WebfetchFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
-
-export interface WebfetchDependencies {
-  clock?: Clock.Clock
-  httpClient: Layer.Layer<HttpClient.HttpClient>
-  saveFullOutput: (content: string) => Effect.Effect<string, ToolFailure>
 }
 
 const normalizeTimeout = (value: number | undefined): number => {
@@ -258,9 +249,13 @@ const webfetchFailure = (failure: ToolFailure | HttpClientError.HttpClientError)
   })
 }
 
+const saveFullOutput = (content: string): Effect.Effect<string, ToolFailure> =>
+  writePrivateTempFileEffect(content, { prefix: 'pi-webfetch-' }).pipe(
+    Effect.mapError((cause) => ToolFailure.make({ cause, message: cause.message }))
+  )
+
 interface BuildFetchResultOptions {
   readonly body: Uint8Array
-  readonly dependencies: WebfetchDependencies
   readonly finalUrl: string
   readonly format: WebfetchFormat
   readonly response: HttpClientResponse.HttpClientResponse
@@ -271,7 +266,6 @@ interface BuildFetchResultOptions {
 
 const buildFetchResult = ({
   body,
-  dependencies,
   finalUrl,
   format,
   response,
@@ -287,7 +281,7 @@ const buildFetchResult = ({
     const bounded = yield* boundToolTextEffect(completeOutput, {
       maxBytes: MAX_OUTPUT_BYTES,
       maxLines: MAX_OUTPUT_LINES,
-      saveFullOutput: dependencies.saveFullOutput,
+      saveFullOutput,
     })
     const { fullOutputPath, truncation } = bounded
 
@@ -320,14 +314,12 @@ const cancellationEffect = (signal: AbortSignal): Effect.Effect<never, ToolFailu
   })
 
 interface FetchResultOptions {
-  readonly dependencies: WebfetchDependencies
   readonly onUpdate: ((result: AgentToolResult<unknown>) => void) | undefined
   readonly params: WebfetchInput
   readonly signal: AbortSignal | undefined
 }
 
 const fetchResult = ({
-  dependencies,
   onUpdate,
   params,
   signal,
@@ -349,7 +341,6 @@ const fetchResult = ({
       const body = yield* readCappedBody(response)
       return yield* buildFetchResult({
         body,
-        dependencies,
         finalUrl: meta?.url || url.href,
         format,
         response,
@@ -373,50 +364,16 @@ export type WebfetchRunner = (
   onUpdate: AgentToolUpdateCallback<unknown> | undefined
 ) => Promise<AgentToolResult<WebfetchDetails>>
 
-/**
- * Overriding `httpClient`/`clock` (tests only) builds a dedicated runtime from those layers
- * instead of the shared `AppRuntime`, since the whole point of the override is isolation from the
- * real `FetchHttpClient.layer` the shared runtime carries.
- */
-export interface WebfetchRunnerOptions {
-  readonly overrides: Partial<WebfetchDependencies>
-  readonly runtime: AppRuntime
-}
-
-export const makeWebfetchRunner = ({ overrides, runtime }: WebfetchRunnerOptions): WebfetchRunner => {
-  const dependencies: WebfetchDependencies = {
-    ...(overrides.clock === undefined ? {} : { clock: overrides.clock }),
-    httpClient: overrides.httpClient ?? FetchHttpClient.layer,
-    saveFullOutput:
-      overrides.saveFullOutput ??
-      ((content) =>
-        writePrivateTempFileEffect(content, { prefix: 'pi-webfetch-' }).pipe(
-          Effect.mapError((cause) => ToolFailure.make({ cause, message: cause.message }))
-        )),
-  }
-  const hasOverride = overrides.clock !== undefined || overrides.httpClient !== undefined
-  const executor = hasOverride
-    ? ManagedRuntime.make(
-        dependencies.clock === undefined
-          ? dependencies.httpClient
-          : Layer.mergeAll(dependencies.httpClient, Layer.succeed(Clock.Clock)(dependencies.clock))
-      )
-    : runtime
-
-  return (params, signal, onUpdate) =>
-    executor.runPromise(
+export const makeWebfetchRunner =
+  (runtime: AppRuntime): WebfetchRunner =>
+  (params, signal, onUpdate) =>
+    runtime.runPromise(
       Effect.suspend(() =>
-        isTrue(signal?.aborted)
-          ? Effect.fail(ToolFailure.make({ message: 'webfetch was cancelled' }))
-          : fetchResult({ dependencies, onUpdate, params, signal })
+        isTrue(signal?.aborted) ? Effect.fail(ToolFailure.make({ message: 'webfetch was cancelled' })) : fetchResult({ onUpdate, params, signal })
       )
     )
-}
 
-export const renderWebfetchResult: {
-  (options: ToolRenderResultOptions, theme: Theme): (result: AgentToolResult<unknown>) => Component
-  (result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme): Component
-} = Function.dual(3, (result: AgentToolResult<unknown>, { expanded }: ToolRenderResultOptions, theme: Theme): Component => {
+export const renderWebfetchResult = (result: AgentToolResult<unknown>, { expanded }: ToolRenderResultOptions, theme: Theme): Component => {
   const content = result.content.find((item) => item.type === 'text')
   const output = new Text(theme.fg('toolOutput', content?.text ?? ''), 0, 0)
   if (expanded) {
@@ -433,4 +390,4 @@ export const renderWebfetchResult: {
       return lines.length > PREVIEW_LINES ? [...lines.slice(0, PREVIEW_LINES), ...hint.render(width)] : lines
     },
   }
-})
+}

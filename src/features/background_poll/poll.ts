@@ -1,5 +1,5 @@
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
-import { Clock, Context, Deferred, Effect, Exit, type Fiber, Function, HashMap, Option, Ref, Scope, Semaphore } from 'effect'
+import { Clock, Context, Deferred, Effect, Exit, type Fiber, HashMap, Option, Ref, Scope, Semaphore } from 'effect'
 import { Type, type Static } from 'typebox'
 
 import { ToolFailure } from '@/shared/effect/errors.js'
@@ -66,10 +66,7 @@ export interface PollLoopResult {
   readonly output: string
 }
 
-export const formatPollOutput: {
-  (stderr: string): (stdout: string) => string
-  (stdout: string, stderr: string): string
-} = Function.dual(2, (stdout: string, stderr: string): string => {
+export const formatPollOutput = (stdout: string, stderr: string): string => {
   const output = [stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join('\n')
   if (isEmptyString(output)) {
     return '(command produced no output)'
@@ -81,7 +78,7 @@ export const formatPollOutput: {
     maxLines: DEFAULT_MAX_LINES,
   })
   return truncated.truncated ? truncated.content + truncationNotice(truncated, { from: 'tail' }) : truncated.content
-})
+}
 
 export const runPollLoop = (options: PollLoopOptions): Effect.Effect<PollLoopResult> =>
   Effect.gen(function* () {

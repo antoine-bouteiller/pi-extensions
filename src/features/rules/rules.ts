@@ -10,7 +10,7 @@ import {
   type SessionTreeEvent,
   type ToolResultEvent,
 } from '@earendil-works/pi-coding-agent'
-import { Context, Deferred, Effect, Function, HashSet, Path, Ref } from 'effect'
+import { Context, Deferred, Effect, HashSet, Path, Ref } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
 import { type PlatformError } from 'effect/PlatformError'
 
@@ -523,10 +523,7 @@ const stringProperty = (value: unknown, property: string): string | undefined =>
 }
 
 /** Extract paths from Pi's file tools, including the local hashline compatibility tools. */
-export const extractToolPaths: {
-  (cwd: string, pathService: Path.Path): (event: ToolResultEvent) => string[]
-  (event: ToolResultEvent, cwd: string, pathService: Path.Path): string[]
-} = Function.dual(3, (event: ToolResultEvent, cwd: string, pathService: Path.Path): string[] => {
+export const extractToolPaths = (event: ToolResultEvent, cwd: string, pathService: Path.Path): string[] => {
   if (event.isError || !['read', 'edit', 'write', 'hashline_read', 'hashline_write'].includes(event.toolName)) {
     return []
   }
@@ -560,7 +557,7 @@ export const extractToolPaths: {
   }
 
   return [...paths]
-})
+}
 
 interface DiscoverySlot {
   key: string
