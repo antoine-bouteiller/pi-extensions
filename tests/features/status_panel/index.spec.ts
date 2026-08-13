@@ -76,6 +76,19 @@ describe('status panel registration', () => {
     })
   })
 
+  it.effect('treats a corrupt quota handoff as absent instead of failing', () => {
+    const temporaryRoot = process.env.PI_SUBAGENT_TEMP_DIR || tmpdir()
+    return Effect.gen(function* () {
+      const token = randomUUID()
+      const directory = bunPath.join(temporaryRoot, 'pi-codex-subagents', userInfo().username, 'quota')
+      yield* bunFileSystem.makeDirectory(directory, { recursive: true })
+      yield* bunFileSystem.writeFileString(bunPath.join(directory, `${token}.json`), '{ not json')
+
+      expect(yield* consumeSubagentAzureQuota(token)).toBeUndefined()
+      expect((yield* bunFileSystem.readDirectory(directory)).some((name) => name.startsWith(token))).toBe(false)
+    })
+  })
+
   it.effect('registers the normal main-session lifecycle handlers', () =>
     inMainSession(() =>
       Effect.sync(() => {
@@ -355,6 +368,70 @@ describe('status panel cross-feature sharing', () => {
           throw new Error('expected a sidebar renderer')
         }
         expect(renderSidebar(44).join('\n')).toContain('/scout-shared')
+
+        yield* Effect.promise(() => emit('session_shutdown', {}, ctx))
+      })
+    )
+  )
+
+  it.effect('keeps re-rendering on agent activity after a session restart', () =>
+    inMainSession(() =>
+      Effect.gen(function* () {
+        const { pi, emit } = createFakePi()
+        let renders = 0
+        const tui = {
+          render: (_width: number) => [],
+          requestRender() {
+            renders += 1
+          },
+          terminal: { columns: 120, rows: 30 },
+        }
+        const theme = {
+          bold: (value: string) => value,
+          fg: (_color: string, value: string) => value,
+        }
+        const ui = {
+          custom(
+            factory: (...args: unknown[]) => { render: (width: number) => string[] },
+            options: { onHandle?: (handle: { hide: () => void }) => void }
+          ) {
+            return promiseFromEffect(
+              Effect.callback<void>((resume) => {
+                factory(tui, theme, {}, () => resume(Effect.void))
+                options.onHandle?.({
+                  hide() {
+                    /* Empty */
+                  },
+                })
+              })
+            )
+          },
+          setFooter() {
+            /* Empty */
+          },
+          setTitle() {
+            /* Empty */
+          },
+        }
+        const ctx = {
+          cwd: '/project',
+          getContextUsage: () => undefined,
+          mode: 'tui',
+          model: { contextWindow: 100_000, id: 'model', provider: 'openai' },
+          ui,
+        }
+
+        statusPanel(pi, runtime)
+        yield* Effect.promise(() => emit('session_start', {}, ctx))
+        renders = 0
+        runningAgents.publish([{ color: 'accent', name: '/first', profile: 'scout' }])
+        expect(renders).toBeGreaterThan(0)
+
+        yield* Effect.promise(() => emit('session_shutdown', {}, ctx))
+        yield* Effect.promise(() => emit('session_start', {}, ctx))
+        renders = 0
+        runningAgents.publish([{ color: 'accent', name: '/second', profile: 'scout' }])
+        expect(renders).toBeGreaterThan(0)
 
         yield* Effect.promise(() => emit('session_shutdown', {}, ctx))
       })

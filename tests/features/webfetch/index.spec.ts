@@ -258,6 +258,35 @@ describe('webfetch', () => {
     })
   )
 
+  it.effect('reports the URL the body came from after fetch followed a redirect', () =>
+    Effect.gen(function* () {
+      const harness = createHarness(() =>
+        promiseFromEffect(
+          Effect.sync(() => {
+            const response = new Response('done', { headers: { 'content-type': 'text/plain' } })
+            Object.defineProperty(response, 'url', { value: 'https://example.com/final' })
+            return response
+          })
+        )
+      )
+
+      const result = yield* Effect.promise(() => harness.execute({ url: 'https://example.com/start' }))
+
+      expect(result.details.finalUrl).toBe('https://example.com/final')
+      expect(text(result)).toBe('done')
+    })
+  )
+
+  it.effect('falls back to the requested URL when the response carries none', () =>
+    Effect.gen(function* () {
+      const harness = createHarness(() => promiseFromEffect(Effect.succeed(new Response('done', { headers: { 'content-type': 'text/plain' } }))))
+
+      const result = yield* Effect.promise(() => harness.execute({ url: 'https://example.com/start' }))
+
+      expect(result.details.finalUrl).toBe('https://example.com/start')
+    })
+  )
+
   it.effect('rejects responses larger than the download limit declared up front', () =>
     Effect.gen(function* () {
       const harness = createHarness(() =>
@@ -343,13 +372,15 @@ describe('webfetch', () => {
     })
   )
 
-  it.effect('truncates large model output and saves the complete text', () =>
+  it.scoped('truncates large model output and saves the complete text', () =>
     Effect.gen(function* () {
       const complete = `${'a'.repeat(60 * 1024)}\nlast line`
       const harness = createHarness(() => promiseFromEffect(Effect.sync(() => new Response(complete, { headers: { 'content-type': 'text/plain' } }))))
 
       const result = yield* Effect.promise(() => harness.execute({ url: 'https://example.com/large.txt' }))
       const fullOutputPath = result.details.fullOutputPath ?? ''
+
+      yield* Effect.addFinalizer(() => Effect.promise(() => Bun.file(fullOutputPath).delete()).pipe(Effect.ignore))
 
       expect(fullOutputPath).toStartWith('/')
       expect(yield* Effect.promise(() => Bun.file(fullOutputPath).text())).toBe(complete)

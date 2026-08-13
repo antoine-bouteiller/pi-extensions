@@ -37,7 +37,11 @@ export const makeEventHandler =
   <Event, Result, Failure>(body: (event: Event, ctx: ExtensionContext) => Effect.Effect<Result, Failure, AppServices | HandlerServices>) =>
   // Pi awaits event listeners, so this boundary hands back the runtime's promise directly.
   (event: Event, ctx: ExtensionContext): Promise<Result> =>
-    runtime.runPromise(body(event, ctx).pipe(Effect.provide(perInvocation(ctx))))
+    /*
+     * Suspended so that a handler throwing while its effect is still being built becomes a rejected
+     * promise like every other failure, rather than a synchronous throw into Pi's event dispatch.
+     */
+    runtime.runPromise(Effect.suspend(() => body(event, ctx)).pipe(Effect.provide(perInvocation(ctx))))
 
 /**
  * Keeps the rejection in the error channel instead of dying, so callers can `catchAll` it and map

@@ -99,10 +99,16 @@ const inspectUnixProcess = (probe: ProcessProbeShape, pid: number, token?: strin
     }
   })
 
-/** Return an identity tied to a process lifetime, not only its PID. */
+/**
+ * Return an identity tied to a process lifetime, not only its PID. A failed probe (EACCES,
+ * an unreadable /proc entry, a `ps` that could not run) stays in the error channel: callers
+ * that decide whether to reclaim a lock or kill a process must not read it as "process gone".
+ */
+type ProcessInspect = (pid: number, token?: string) => Effect.Effect<ProcessSnapshot | undefined, Cause.UnknownError>
+
 const inspectProcessWith =
-  (probe: ProcessProbeShape) =>
-  (pid: number, token?: string): Effect.Effect<ProcessSnapshot | undefined> =>
+  (probe: ProcessProbeShape): ProcessInspect =>
+  (pid, token) =>
     Effect.gen(function* () {
       if (!(yield* probeResult(() => probe.processAlive(pid)))) {
         return undefined
@@ -111,20 +117,24 @@ const inspectProcessWith =
         return yield* inspectLinuxProcess(probe, pid, token)
       }
       return yield* probe.platform === 'win32' ? inspectWindowsProcess(probe, pid) : inspectUnixProcess(probe, pid, token)
-    }).pipe(Effect.orElseSucceed(() => undefined))
+    })
 
-const ownershipMatchesWith = (
-  inspect: (pid: number, token?: string) => Effect.Effect<ProcessSnapshot | undefined>,
-  ownership: ProcessOwnership
-): Effect.Effect<boolean> =>
+/**
+ * `unverifiable` is deliberately distinct from `match`: a failed probe must keep the ownership
+ * record alive, but it must never authorise a signal. PIDs are reused, so signalling a process
+ * whose identity could not be read can kill an unrelated process or process group.
+ */
+export type OwnershipVerdict = 'match' | 'mismatch' | 'unverifiable'
+
+const ownershipVerdictWith = (inspect: ProcessInspect, ownership: ProcessOwnership): Effect.Effect<OwnershipVerdict> =>
   inspect(ownership.pid, ownership.token).pipe(
-    Effect.map((snapshot) => snapshot?.identity === ownership.processIdentity && !isFalse(snapshot.tokenMatches))
+    Effect.map((snapshot): OwnershipVerdict =>
+      snapshot?.identity === ownership.processIdentity && !isFalse(snapshot.tokenMatches) ? 'match' : 'mismatch'
+    ),
+    Effect.orElseSucceed((): OwnershipVerdict => 'unverifiable')
   )
 
-const processOwnerIsActiveWith = (
-  inspect: (pid: number, token?: string) => Effect.Effect<ProcessSnapshot | undefined>,
-  owner: { pid?: number; processIdentity?: string }
-): Effect.Effect<boolean> => {
+const processOwnerIsActiveWith = (inspect: ProcessInspect, owner: { pid?: number; processIdentity?: string }): Effect.Effect<boolean> => {
   if (typeof owner.pid !== 'number') {
     return Effect.succeed(false)
   }
@@ -133,7 +143,8 @@ const processOwnerIsActiveWith = (
       (snapshot) =>
         isNotNullOrUndefined(snapshot) &&
         (isNullOrUndefined(owner.processIdentity) || isEmptyString(owner.processIdentity) || snapshot.identity === owner.processIdentity)
-    )
+    ),
+    Effect.orElseSucceed(() => true)
   )
 }
 
@@ -147,7 +158,11 @@ const collectStdout = (stream: Stream.Stream<Uint8Array, PlatformError>): Effect
     Effect.mapError(processProbeError)
   )
 
-const runCommand = (command: string, args: string[]): Effect.Effect<{ status: number | undefined; stdout: string }> =>
+/**
+ * A probe that could not run is a failure, not an absent process: succeeding with empty output
+ * would let a spawn error or timeout be read as "this process is gone" and reclaim a live lock.
+ */
+const runCommand = (command: string, args: string[]): Effect.Effect<{ status: number | undefined; stdout: string }, Cause.UnknownError> =>
   Effect.scoped(
     Effect.gen(function* () {
       const child = yield* bunChildProcessSpawner.spawn(
@@ -160,8 +175,8 @@ const runCommand = (command: string, args: string[]): Effect.Effect<{ status: nu
       return { status, stdout }
     })
   ).pipe(
-    Effect.timeoutOrElse({ duration: 3000, orElse: () => Effect.succeed({ status: undefined, stdout: '' }) }),
-    Effect.orElseSucceed(() => ({ status: undefined, stdout: '' }))
+    Effect.timeoutOrElse({ duration: 3000, orElse: () => Effect.fail(processProbeError(new Error(`${command} probe timed out`))) }),
+    Effect.mapError(processProbeError)
   )
 
 export const nodeProcessProbe = {
@@ -174,18 +189,19 @@ export const nodeProcessProbe = {
 } satisfies ProcessProbeShape
 
 export const inspectProcess = (pid: number, token?: string): Effect.Effect<ProcessSnapshot | undefined> =>
-  inspectProcessWith(nodeProcessProbe)(pid, token)
+  inspectProcessWith(nodeProcessProbe)(pid, token).pipe(Effect.orElseSucceed(() => undefined))
 
-export const ownershipMatches = (ownership: ProcessOwnership): Effect.Effect<boolean> => ownershipMatchesWith(inspectProcess, ownership)
+export const ownershipVerdict = (ownership: ProcessOwnership): Effect.Effect<OwnershipVerdict> =>
+  ownershipVerdictWith(inspectProcessWith(nodeProcessProbe), ownership)
 
 /** Legacy lock records have only a PID and remain active conservatively while that process lives. */
 export const processOwnerIsActive = (owner: { pid?: number; processIdentity?: string }): Effect.Effect<boolean> =>
-  processOwnerIsActiveWith(inspectProcess, owner)
+  processOwnerIsActiveWith(inspectProcessWith(nodeProcessProbe), owner)
 
 export interface ProcessInspectorShape {
   readonly inspect: (pid: number, token?: string) => Effect.Effect<ProcessSnapshot | undefined>
   readonly alive: (pid: number) => Effect.Effect<boolean>
-  readonly ownershipMatches: (ownership: ProcessOwnership) => Effect.Effect<boolean>
+  readonly ownershipVerdict: (ownership: ProcessOwnership) => Effect.Effect<OwnershipVerdict>
   readonly ownerIsActive: (owner: { pid?: number; processIdentity?: string }) => Effect.Effect<boolean>
 }
 
@@ -197,9 +213,9 @@ export const processInspectorFromProbe = (probe: ProcessProbeShape): ProcessInsp
   const inspect = inspectProcessWith(probe)
   return {
     alive: (pid) => probeResult(() => probe.processAlive(pid)).pipe(Effect.orElseSucceed(() => false)),
-    inspect,
+    inspect: (pid, token) => inspect(pid, token).pipe(Effect.orElseSucceed(() => undefined)),
     ownerIsActive: (owner) => processOwnerIsActiveWith(inspect, owner),
-    ownershipMatches: (ownership) => ownershipMatchesWith(inspect, ownership),
+    ownershipVerdict: (ownership) => ownershipVerdictWith(inspect, ownership),
   }
 }
 

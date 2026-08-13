@@ -72,12 +72,29 @@ const settle = (message) =>
       process.stdout.write(`${jsonText(messageEnd)}\n${jsonText({ type: 'agent_settled' })}\n`, () => process.exit(0))
       return
     }
+    if (message.startsWith('garbage')) {
+      process.stdout.write('{ not json\n')
+    }
     send(messageEnd)
     send({ type: 'agent_settled' })
   })
 
 /** @param {string} message */
 const reportQuota = (message) => (message.startsWith('quota') ? writeSubagentAzureQuota(ownerToken, 73) : Effect.void)
+
+/**
+ * `survive-stdin` outlives its own stdin, so the parent proves which signals it does and does not send.
+ *
+ * @param {string} message
+ */
+const staysAlive = (message) => {
+  if (message.startsWith('survive-stdin')) {
+    // oxlint-disable-next-line effecttsgo/global-timers -- A pending timer is what keeps the child running once stdin is gone.
+    setInterval(() => undefined, 1000)
+    return true
+  }
+  return message.startsWith('hold')
+}
 
 /** @param {string} line */
 const handle = (line) =>
@@ -115,7 +132,7 @@ const handle = (line) =>
         setInterval(() => undefined, 1000)
         return
       }
-      if (message.startsWith('hold')) {
+      if (staysAlive(message)) {
         return
       }
       if (message.startsWith('crash')) {

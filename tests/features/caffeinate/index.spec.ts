@@ -138,6 +138,18 @@ describe('caffeinate', () => {
     })
   )
 
+  it.live('stops within a bounded deadline even when the child never reports its exit', () =>
+    Effect.gen(function* () {
+      const harness = createHarness('darwin', false)
+      yield* Effect.promise(() => harness.fixture.emit('agent_start'))
+
+      // The child's `exit` deferred is deliberately never resolved.
+      yield* Effect.promise(() => harness.settle())
+
+      expect(harness.children[0]?.killCalls).toBeGreaterThan(0)
+    })
+  )
+
   it.effect('reserves a pending spawn and kills it when settlement wins the race', () =>
     Effect.gen(function* () {
       const harness = createHarness('darwin', true, false, true)

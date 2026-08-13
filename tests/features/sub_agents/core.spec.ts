@@ -38,6 +38,7 @@ await mock.module('@earendil-works/pi-coding-agent', () => ({
 const { runtime } = await import('@tests/utils/runtime.js')
 const {
   AgentManager,
+  MAX_RPC_FRAME_CHARS,
   RpcJsonlDecoder,
   consumeFirstMatchingMailboxEvent,
   getAgent,
@@ -48,6 +49,7 @@ const {
   writeFullToolOutput,
 } = await import('@/features/sub_agents/core.js')
 const { AGENT_CONFIGS } = await import('@/features/sub_agents/profiles.js')
+const { inspectProcess, ownershipVerdict, processAlive, processOwnerIsActive } = await import('@/features/sub_agents/process_ownership.js')
 const { SubagentPeekOverlay } = await import('@/features/sub_agents/peek.js')
 const { azureQuota } = await import('@/shared/state/azure_quota.js')
 const { runningAgents } = await import('@/shared/state/agent_activity.js')
@@ -192,6 +194,48 @@ describe('RPC framing', () => {
       expect(decoder.push(Buffer.from(payload.slice(0, 7)))).toEqual([])
       expect(decoder.push(Buffer.from(`${payload.slice(7)}\n`))).toEqual([payload])
       expect(decoder.end()).toEqual([])
+    })
+  )
+
+  it.effect('rejects an unterminated frame instead of buffering it without bound', () =>
+    Effect.sync(() => {
+      const decoder = new RpcJsonlDecoder()
+      const chunk = 'x'.repeat(1024 * 1024)
+
+      for (let written = 0; written < MAX_RPC_FRAME_CHARS; written += chunk.length) {
+        expect(decoder.push(chunk)).toEqual([])
+      }
+
+      expect(() => decoder.push(chunk)).toThrow(/RPC frame over the/)
+      expect(decoder.push('recovered\n')).toEqual(['recovered'])
+    })
+  )
+
+  it.effect('rejects an oversized frame that is newline-terminated', () =>
+    Effect.sync(() => {
+      const decoder = new RpcJsonlDecoder()
+
+      expect(() => decoder.push(`${'x'.repeat(MAX_RPC_FRAME_CHARS + 1)}\n`)).toThrow(/RPC frame over the/)
+      expect(decoder.push('recovered\n')).toEqual(['recovered'])
+    })
+  )
+
+  it.effect('accepts a terminated frame exactly at the limit', () =>
+    Effect.sync(() => {
+      const decoder = new RpcJsonlDecoder()
+      const frame = 'x'.repeat(MAX_RPC_FRAME_CHARS)
+
+      expect(decoder.push(`${frame}\n`)).toEqual([frame])
+    })
+  )
+
+  it.effect('flushes an unterminated final frame at end of stream', () =>
+    Effect.sync(() => {
+      const decoder = new RpcJsonlDecoder()
+      const payload = jsonText({ text: 'final' })
+
+      expect(decoder.push(payload)).toEqual([])
+      expect(decoder.end()).toEqual([payload])
     })
   )
 })
@@ -662,6 +706,29 @@ describe('child process lifecycle', () => {
         expect(manager.sendMessage(parentSessionId, 'worker', 'another correction')).rejects.toThrow('single follow-up')
       } finally {
         yield* Effect.promise(() => manager.shutdown())
+        yield* removeFile(scope, { force: true, recursive: true })
+      }
+    })
+  )
+
+  /*
+   * The claim is given back on any non-committed exit, not just a failure: an interrupt landing after
+   * the claim file is created must not burn the agent's single follow-up.
+   */
+  processTest('gives the single follow-up back when the send is interrupted before delivery', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'interrupted-follow-up'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      yield* removeFile(scope, { force: true, recursive: true })
+      const manager = new AgentManager({ piCommand: { command: FAKE_RPC_CHILD } })
+      try {
+        yield* manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold initial'))
+        const fiber = yield* Effect.forkChild(manager.sendMessage(parentSessionId, 'worker', 'interrupt me'))
+        yield* Fiber.interrupt(fiber)
+        expect(manager.getAgentInfo('worker', parentSessionId).followUpUsed).toBe(false)
+        expect(yield* manager.sendMessage(parentSessionId, 'worker', 'second attempt')).toEqual({ delivery: 'steer' })
+      } finally {
+        yield* manager.shutdown()
         yield* removeFile(scope, { force: true, recursive: true })
       }
     })
@@ -1204,6 +1271,101 @@ describe('child process lifecycle', () => {
       }
     })
   )
+  processTest('never signals a live child whose ownership can no longer be verified', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'lifecycle-unverifiable-live'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      yield* removeFile(scope, { force: true, recursive: true })
+      let verifiable = true
+      const manager = createAgentManager({
+        processInspector: {
+          alive: processAlive,
+          inspect: inspectProcess,
+          ownerIsActive: processOwnerIsActive,
+          ownershipVerdict: (ownership: Parameters<typeof ownershipVerdict>[0]) =>
+            verifiable ? ownershipVerdict(ownership) : Effect.succeed('unverifiable' as const),
+        },
+      })
+      let pid: number | undefined
+      try {
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'survive-stdin')))
+        const { pid: childPid } = requireChildProcess(manager.getAgentInfo('worker', parentSessionId).childProcess)
+        pid = childPid
+        expect(pidAlive(childPid)).toBe(true)
+        verifiable = false
+        const failure = yield* Effect.promise(() => manager.interruptAgent(parentSessionId, 'worker').then(() => undefined, asError))
+        expect(failure).toBeInstanceOf(Error)
+        expect(pidAlive(childPid)).toBe(true)
+      } finally {
+        verifiable = true
+        yield* Effect.promise(() => manager.shutdown())
+        const terminated = pid
+        if (terminated !== undefined) {
+          yield* Effect.promise(() => waitUntil(() => !pidAlive(terminated)))
+        }
+        yield* removeFile(scope, { force: true, recursive: true })
+      }
+    })
+  )
+  processTest('an interrupted teardown still stops every child', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'lifecycle-interrupted-teardown'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      yield* removeFile(scope, { force: true, recursive: true })
+      const manager = createAgentManager()
+      try {
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'survive-stdin')))
+        const { pid } = requireChildProcess(manager.getAgentInfo('worker', parentSessionId).childProcess)
+
+        const stopping = yield* Effect.forkChild(manager.instance.shutdown(), { startImmediately: true })
+        yield* Fiber.interrupt(stopping)
+
+        yield* Effect.promise(() => waitUntil(() => !pidAlive(pid)))
+        expect(pidAlive(pid)).toBe(false)
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        yield* removeFile(scope, { force: true, recursive: true })
+      }
+    })
+  )
+  processTest('keeps the ownership record of a child that survives manager teardown', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'lifecycle-retain-unterminated'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      yield* removeFile(scope, { force: true, recursive: true })
+      let verifiable = true
+      const manager = createAgentManager({
+        processInspector: {
+          alive: processAlive,
+          inspect: inspectProcess,
+          ownerIsActive: processOwnerIsActive,
+          ownershipVerdict: (ownership: Parameters<typeof ownershipVerdict>[0]) =>
+            verifiable ? ownershipVerdict(ownership) : Effect.succeed('unverifiable' as const),
+        },
+      })
+      let pid: number | undefined
+      try {
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'survive-stdin')))
+        const started = manager.getAgentInfo('worker', parentSessionId)
+        const { pid: ownedPid, token } = requireChildProcess(started.childProcess)
+        pid = ownedPid
+        verifiable = false
+
+        yield* Effect.promise(() => manager.shutdown())
+
+        expect(parseJsonText(yield* readText(started.infoFile))).toMatchObject({ childProcess: { token } })
+      } finally {
+        verifiable = true
+        yield* Effect.promise(() => manager.shutdown())
+        const terminated = pid
+        if (terminated !== undefined && pidAlive(terminated)) {
+          process.kill(terminated, 'SIGKILL')
+          yield* Effect.promise(() => waitUntil(() => !pidAlive(terminated)))
+        }
+        yield* removeFile(scope, { force: true, recursive: true })
+      }
+    })
+  )
   processTest('closes a spawned child when setup is interrupted before publication', () =>
     Effect.gen(function* () {
       const parentSessionId = 'lifecycle-interrupted-setup'
@@ -1237,6 +1399,7 @@ describe('child process lifecycle', () => {
         const { pid } = started
         yield* Fiber.interrupt(launch)
         yield* Effect.promise(() => waitUntil(() => !pidAlive(pid)))
+        yield* Effect.promise(() => waitUntil(() => manager.getAgentInfo('worker', parentSessionId).status === 'interrupted'))
       } finally {
         yield* Effect.promise(() => manager.shutdown())
         yield* removeFile(scope, { force: true, recursive: true })
@@ -1339,7 +1502,7 @@ describe('child process lifecycle', () => {
             alive: () => Effect.succeed(true),
             inspect: () => Effect.void,
             ownerIsActive: () => Effect.succeed(false),
-            ownershipMatches: () => Effect.succeed(false),
+            ownershipVerdict: () => Effect.succeed('mismatch' as const),
           },
         })
         reconcilers.push(mismatchReconciler)
@@ -1350,6 +1513,19 @@ describe('child process lifecycle', () => {
           })
         )
         expect(pidAlive(mismatchedPid)).toBe(true)
+
+        const unverifiableReconciler = createAgentManager({
+          processInspector: {
+            alive: () => Effect.succeed(true),
+            inspect: () => Effect.void,
+            ownerIsActive: () => Effect.succeed(false),
+            ownershipVerdict: () => Effect.succeed('unverifiable' as const),
+          },
+        })
+        reconcilers.push(unverifiableReconciler)
+        yield* Effect.promise(() => unverifiableReconciler.shutdown())
+        expect(pidAlive(mismatchedPid)).toBe(true)
+
         yield* Effect.promise(() => owner.shutdown())
         expect(pidAlive(mismatchedPid)).toBe(false)
       } finally {
@@ -1659,6 +1835,23 @@ describe('completion delivery', () => {
         const all = yield* Effect.promise(() => manager.waitAllAgents(parentSessionId, ['two']))
         expect(all.responses).toEqual([expect.objectContaining({ agent_name: '/two', status: 'completed' })])
         expect(completions).toEqual([])
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        yield* removeFile(scope, { force: true, recursive: true })
+      }
+    })
+  )
+
+  processTest('keeps consuming child output after a malformed RPC line', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'completion-malformed'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      yield* removeFile(scope, { force: true, recursive: true })
+      const manager = createAgentManager({})
+      try {
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'garbage then settle')))
+        const waited = yield* Effect.promise(() => manager.waitAgent(parentSessionId, ['worker']))
+        expect(waited.event).toMatchObject({ agentName: '/worker', status: 'completed' })
       } finally {
         yield* Effect.promise(() => manager.shutdown())
         yield* removeFile(scope, { force: true, recursive: true })

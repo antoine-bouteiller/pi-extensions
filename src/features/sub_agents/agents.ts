@@ -7,6 +7,7 @@ import {
   type ExtensionAPI,
   type ExtensionCommandContext,
   type ExtensionContext,
+  type MessageRenderer,
   type Theme,
   type ThemeColor,
   type ToolRenderResultOptions,
@@ -18,6 +19,7 @@ import { Check } from 'typebox/value'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { runningAgents } from '@/shared/state/agent_activity.js'
+import { publishStatus } from '@/shared/state/status_bar.js'
 import { prettyJsonText } from '@/shared/utils/json.js'
 import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 import { truncateOutput, truncationNotice } from '@/shared/utils/tool_output.js'
@@ -169,6 +171,35 @@ Keep work in your own context when it depends on conversation history that is ex
 
 type PiExtensionContext = ExtensionContext | ExtensionCommandContext
 
+const completionMessageType = 'pi-codex-subagent-completion'
+
+const renderCompletionMessage: MessageRenderer<CompletionMessageDetails> = (message, { expanded }, theme) => {
+  const status = message.details?.status
+  let statusColor: ThemeColor
+  if (status === 'completed') {
+    statusColor = 'success'
+  } else if (status === 'failed') {
+    statusColor = 'error'
+  } else {
+    statusColor = 'warning'
+  }
+  const identityColor = persistedProfileColor(message.details?.profile, message.details?.color)
+  let icon = '✗'
+  if (status === 'completed') {
+    icon = '✓'
+  } else if (status === 'inactive') {
+    icon = '!'
+  }
+  let text =
+    theme.fg(statusColor, `${icon} `) +
+    theme.fg(identityColor, message.details?.agent_name || 'subagent') +
+    theme.fg(statusColor, ` ${status || 'finished'}`)
+  if (expanded && typeof message.content === 'string') {
+    text += `\n${theme.fg('dim', message.content)}`
+  }
+  return new Text(text, 0, 0)
+}
+
 export interface SubagentFeatureOptions {
   readonly managerOptions?: AgentManagerOptions
   readonly pi: ExtensionAPI
@@ -176,7 +207,6 @@ export interface SubagentFeatureOptions {
 }
 
 export const makeSubagentFeature = ({ managerOptions = {}, pi, runtime }: SubagentFeatureOptions) => {
-  const completionMessageType = 'pi-codex-subagent-completion'
   let activeContext: PiExtensionContext | undefined
   const activeAgents = new Map<string, { profile?: string; color: ThemeColor }>()
   let terminalUnsubscribe: (() => void) | undefined
@@ -235,6 +265,16 @@ export const makeSubagentFeature = ({ managerOptions = {}, pi, runtime }: Subage
         { deliverAs: 'steer', triggerTurn: true }
       )
     }
+    /*
+     * Completion delivery is the only automatic notification the agent gets, so a failure has to be
+     * visible: silently dropping it looks identical to an agent that never finished.
+     */
+    const reportUndelivered = (): void => {
+      publishStatus(`subagent-undelivered:${event.agentName}`, {
+        text: `${event.agentName} finished but its notification could not be delivered — use wait_agent or read_agent_response.`,
+        tone: 'warning',
+      })
+    }
     const fallback = { text: truncateOutput(payload, { maxBytes: DEFAULT_MAX_BYTES - 1024, maxLines: DEFAULT_MAX_LINES - 4 }).content }
     void runtime
       .runPromise(boundedText(payload, DEFAULT_MAX_BYTES - 1024, DEFAULT_MAX_LINES - 4).pipe(Effect.orElseSucceed(() => fallback)))
@@ -242,10 +282,10 @@ export const makeSubagentFeature = ({ managerOptions = {}, pi, runtime }: Subage
         try {
           return publish(bounded)
         } catch {
-          return undefined
+          return reportUndelivered()
         }
       })
-      .catch(() => undefined)
+      .catch(reportUndelivered)
   }
 
   const deliverInactivity = (event: AgentInactivityEvent) => {
@@ -314,8 +354,17 @@ export const makeSubagentFeature = ({ managerOptions = {}, pi, runtime }: Subage
       }
       const targets = [...activeAgents.keys()]
       Effect.runFork(
-        Effect.forEach(targets, (target) => manager.interruptAgent(currentParentId, target), { concurrency: 'unbounded' }).pipe(
-          Effect.tapError((error) => Effect.sync(() => ctx.ui.notify(error.message, 'error'))),
+        // One stale target must not cancel the interruption of its siblings.
+        Effect.forEach(targets, (target) => Effect.result(manager.interruptAgent(currentParentId, target)), { concurrency: 'unbounded' }).pipe(
+          Effect.tap((outcomes) =>
+            Effect.sync(() => {
+              for (const outcome of outcomes) {
+                if (Result.isFailure(outcome)) {
+                  ctx.ui.notify(outcome.failure.message, 'error')
+                }
+              }
+            })
+          ),
           Effect.ignore
         )
       )
@@ -336,33 +385,6 @@ export const makeSubagentFeature = ({ managerOptions = {}, pi, runtime }: Subage
   }
 
   const coloredTargets = (targets: string[], theme: Theme): string => targets.map((target) => theme.fg(colorForTarget(target), target)).join(',')
-
-  pi.registerMessageRenderer<CompletionMessageDetails>(completionMessageType, (message, { expanded }, theme) => {
-    const status = message.details?.status
-    let statusColor: ThemeColor
-    if (status === 'completed') {
-      statusColor = 'success'
-    } else if (status === 'failed') {
-      statusColor = 'error'
-    } else {
-      statusColor = 'warning'
-    }
-    const identityColor = persistedProfileColor(message.details?.profile, message.details?.color)
-    let icon = '✗'
-    if (status === 'completed') {
-      icon = '✓'
-    } else if (status === 'inactive') {
-      icon = '!'
-    }
-    let text =
-      theme.fg(statusColor, `${icon} `) +
-      theme.fg(identityColor, message.details?.agent_name || 'subagent') +
-      theme.fg(statusColor, ` ${status || 'finished'}`)
-    if (expanded && typeof message.content === 'string') {
-      text += `\n${theme.fg('dim', message.content)}`
-    }
-    return new Text(text, 0, 0)
-  })
 
   const spawnAgentParameters = Type.Object({
     agent_type: StringEnum(AGENT_PROFILE_NAMES, {
@@ -747,7 +769,7 @@ ${getAgentProfilesDescription()}`
   const sendMessageTool = {
     description:
       'Send the single allowed follow-up to a session-owned agent. Steers the current run when active; otherwise starts one final turn. Prefer spawning a fresh agent for a distinct task.',
-    execute(_id: string, params: Static<typeof sendMessageParameters>, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+    execute(_id: string, params: Static<typeof sendMessageParameters>, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
       const failure = (cause: unknown) => featureError(`send_message failed: ${causeMessage(cause)}`, cause)
       return runtime.runPromise(
         Effect.gen(function* () {
@@ -766,7 +788,9 @@ ${getAgentProfilesDescription()}`
               target: params.target,
             })
           })
-        )
+        ),
+        // Cancelling before the child accepts the message must give the single follow-up back.
+        { signal }
       )
     },
     label: 'Send Message',
@@ -1076,12 +1100,14 @@ ${getAgentProfilesDescription()}`
 
   return {
     browseAgentsCommand,
+    completionMessageType,
     interruptAgentTool,
     listAgentsTool,
     onBeforeAgentStart,
     onSessionShutdown,
     onSessionStart,
     readAgentResponseTool,
+    renderCompletionMessage,
     sendMessageTool,
     spawnAgentTool,
     subagentCommand,

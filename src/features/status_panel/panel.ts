@@ -1,4 +1,4 @@
-import { type ExtensionAPI, type ExtensionContext, type ReadonlyFooterDataProvider } from '@earendil-works/pi-coding-agent'
+import { type ExtensionAPI, type ExtensionContext, type ExtensionEvent, type ReadonlyFooterDataProvider } from '@earendil-works/pi-coding-agent'
 import { Effect, Path, Ref } from 'effect'
 import { type HttpClient } from 'effect/unstable/http'
 
@@ -22,21 +22,11 @@ export interface StatusPanelDependencies {
 }
 
 /*
- * `after_provider_response`, `model_select`, and `thinking_level_select` payload types are not
- * re-exported from the package root, so these mirror the fields this panel reads structurally
- * rather than deep-importing an internal path.
+ * The individual payload interfaces are not re-exported from the package root, but the
+ * `ExtensionEvent` union is, so each payload is narrowed by its own `type` discriminant instead of
+ * being restated here.
  */
-interface ProviderResponsePayload {
-  readonly headers: Record<string, string>
-}
-
-interface ModelSelectPayload {
-  readonly model: { readonly contextWindow: number; readonly id: string; readonly provider: string; readonly reasoning?: boolean }
-}
-
-interface ThinkingLevelSelectPayload {
-  readonly level: string
-}
+type PiEvent<Type extends ExtensionEvent['type']> = Extract<ExtensionEvent, { type: Type }>
 
 export interface PanelControllerOptions {
   readonly dependencies: StatusPanelDependencies
@@ -45,17 +35,17 @@ export interface PanelControllerOptions {
 }
 
 export interface PanelHandlers {
-  readonly sessionStart: (event: unknown, ctx: ExtensionContext) => Effect.Effect<void, never, HttpClient.HttpClient>
-  readonly modelSelect: (event: ModelSelectPayload, ctx: ExtensionContext) => Effect.Effect<void, never, HttpClient.HttpClient>
-  readonly thinkingLevelSelect: (event: ThinkingLevelSelectPayload, ctx: ExtensionContext) => Effect.Effect<void>
-  readonly agentStart: (event: unknown, ctx: ExtensionContext) => Effect.Effect<void>
-  readonly turnEnd: (event: unknown, ctx: ExtensionContext) => Effect.Effect<void>
-  readonly agentSettled: (event: unknown, ctx: ExtensionContext) => Effect.Effect<void>
-  readonly afterProviderResponse: (event: ProviderResponsePayload, ctx: ExtensionContext) => Effect.Effect<void>
-  readonly sessionShutdown: (event: unknown, ctx: ExtensionContext) => Effect.Effect<void>
+  readonly sessionStart: (event: PiEvent<'session_start'>, ctx: ExtensionContext) => Effect.Effect<void, never, HttpClient.HttpClient>
+  readonly modelSelect: (event: PiEvent<'model_select'>, ctx: ExtensionContext) => Effect.Effect<void, never, HttpClient.HttpClient>
+  readonly thinkingLevelSelect: (event: PiEvent<'thinking_level_select'>, ctx: ExtensionContext) => Effect.Effect<void>
+  readonly agentStart: (event: PiEvent<'agent_start'>, ctx: ExtensionContext) => Effect.Effect<void>
+  readonly turnEnd: (event: PiEvent<'turn_end'>, ctx: ExtensionContext) => Effect.Effect<void>
+  readonly agentSettled: (event: PiEvent<'agent_settled'>, ctx: ExtensionContext) => Effect.Effect<void>
+  readonly afterProviderResponse: (event: PiEvent<'after_provider_response'>, ctx: ExtensionContext) => Effect.Effect<void>
+  readonly sessionShutdown: (event: PiEvent<'session_shutdown'>, ctx: ExtensionContext) => Effect.Effect<void>
 }
 
-export const recordSubagentQuota = (event: ProviderResponsePayload, ctx: ExtensionContext): Effect.Effect<void> => {
+export const recordSubagentQuota = (event: PiEvent<'after_provider_response'>, ctx: ExtensionContext): Effect.Effect<void> => {
   const quota = quotaFromHeaders(ctx.model?.provider ?? '', event.headers)
   return quota === undefined ? Effect.void : writeSubagentAzureQuota(process.env.PI_SUBAGENT_OWNER_TOKEN ?? '', quota.percent)
 }
@@ -71,8 +61,8 @@ export const makePanelController = ({ dependencies, pi, runtime }: PanelControll
   let requestRender: (() => void) | undefined
   let anthropicQuotaBaseUrl: string | undefined
   let unsubscribeAzureQuota: (() => void) | undefined
-  agentActivity.subscribe(() => requestRender?.())
-  statusBar.subscribe(() => requestRender?.())
+  let unsubscribeAgentActivity: (() => void) | undefined = agentActivity.subscribe(() => requestRender?.())
+  let unsubscribeStatusBar: (() => void) | undefined = statusBar.subscribe(() => requestRender?.())
 
   const getState = (): PanelState => Effect.runSync(Ref.get(stateRef))
   const updateState = (updater: (state: PanelState) => PanelState): Effect.Effect<void> => Ref.update(stateRef, updater)
@@ -273,6 +263,10 @@ export const makePanelController = ({ dependencies, pi, runtime }: PanelControll
         anthropicQuotaBaseUrl = undefined
         unsubscribeAzureQuota?.()
         unsubscribeAzureQuota = undefined
+        unsubscribeAgentActivity?.()
+        unsubscribeAgentActivity = undefined
+        unsubscribeStatusBar?.()
+        unsubscribeStatusBar = undefined
         sidebar?.dispose()
         sidebar = undefined
         footerData = undefined
@@ -286,9 +280,13 @@ export const makePanelController = ({ dependencies, pi, runtime }: PanelControll
         yield* anthropicQuota.stop
         anthropicQuotaBaseUrl = undefined
         unsubscribeAzureQuota?.()
+        unsubscribeAgentActivity?.()
+        unsubscribeStatusBar?.()
         azureQuota.set(undefined)
         yield* Ref.set(stateRef, emptyPanelState())
         unsubscribeAzureQuota = azureQuota.subscribe(syncAzureQuota)
+        unsubscribeAgentActivity = agentActivity.subscribe(() => requestRender?.())
+        unsubscribeStatusBar = statusBar.subscribe(() => requestRender?.())
         yield* install(ctx)
         if (ctx.mode !== 'tui') {
           yield* refreshModel(ctx)

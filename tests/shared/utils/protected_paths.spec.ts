@@ -26,6 +26,9 @@ describe('protected path resolution over FileSystem', () => {
           ['src/index.ts', false],
           ['.ssh/id_rsa', true],
           ['secrets.pem', true],
+          ['.docker/config.json', true],
+          ['.kube/config', true],
+          ['docker/config.json', false],
         ]
 
         for (const [path, expected] of cases) {

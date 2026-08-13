@@ -11,7 +11,7 @@ import { asError, asNarrowed } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { httpGet } from '@tests/utils/http.js'
 import { freeLoopbackPort } from '@tests/utils/loopback_port.js'
-import { Effect, FileSystem, Path } from 'effect'
+import { Effect, Fiber, FileSystem, Path } from 'effect'
 
 import { readonlyMcpPolicy, type McpOperationOptions, type McpSearchOptions } from '@/features/mcp/gateway.js'
 import { KeychainCredentialError, type CredentialStore } from '@/features/mcp/keychain.js'
@@ -76,6 +76,7 @@ const harness = (
     config?: McpServerMap
     pages?: Record<string, FakePage>
     connect?: (transport: FakeTransport, provider?: OAuthClientProvider) => Promise<void>
+    listTools?: () => Promise<FakePage>
     call?: (params: { name: string; arguments: Record<string, unknown> }) => Promise<unknown>
     callResult?: unknown
     openUrl?: (url: string, signal?: AbortSignal) => Promise<void>
@@ -143,6 +144,10 @@ const harness = (
           return 'fixture instructions'
         },
         listTools(params?: { cursor?: string }) {
+          const { listTools } = options
+          if (listTools !== undefined) {
+            return listTools()
+          }
           return promiseFromEffect(
             tryEffect(() => {
               calls.lists.push(params?.cursor)
@@ -175,7 +180,7 @@ const harness = (
     openUrl: options.openUrl ?? (() => promiseFromEffect(Effect.void)),
     policy: options.policy,
   })
-  return { calls, manager: promised(manager) }
+  return { calls, manager: promised(manager), raw: manager }
 }
 
 /** The manager is Effect-native; these behavioural tests drive it through one promise facade. */
@@ -898,6 +903,44 @@ describe('MCP manager', () => {
       yield* Effect.promise(() => fixture.manager.close())
       expect(fixture.calls.closes).toBe(1)
       expect(fixture.manager.status()).toEqual([{ name: 'local', status: 'disconnected' }])
+    })
+  )
+
+  it.effect('concurrent closes all await the single teardown', () =>
+    Effect.gen(function* () {
+      const fixture = harness()
+      yield* Effect.promise(() => fixture.manager.connect('local'))
+
+      yield* Effect.all([Effect.promise(() => fixture.manager.close()), Effect.promise(() => fixture.manager.close())], { concurrency: 2 })
+
+      expect(fixture.calls.closes).toBe(1)
+      expect(fixture.manager.status()).toEqual([{ name: 'local', status: 'disconnected' }])
+    })
+  )
+
+  it.effect('closes the client when tool discovery ignores the abort signal and is interrupted', () =>
+    Effect.gen(function* () {
+      const fixture = harness({ listTools: () => promiseFromEffect(Effect.never) })
+
+      const connecting = fixture.manager.connect('local')
+      yield* Effect.promise(() => Promise.resolve())
+      yield* Effect.promise(() => fixture.manager.close())
+
+      expect(connecting).rejects.toThrow()
+      expect(fixture.calls.closes).toBe(1)
+    })
+  )
+
+  it.effect('an interrupted close still tears the connection down', () =>
+    Effect.gen(function* () {
+      const fixture = harness()
+      yield* Effect.promise(() => fixture.manager.connect('local'))
+
+      const closing = yield* Effect.forkChild(fixture.raw.close)
+      yield* Fiber.interrupt(closing)
+      yield* Effect.promise(() => fixture.manager.close())
+
+      expect(fixture.calls.closes).toBe(1)
     })
   )
 })

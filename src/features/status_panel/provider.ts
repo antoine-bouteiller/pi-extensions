@@ -171,11 +171,22 @@ const quotaFromPayload = (payload: unknown): ProviderQuota | undefined => {
   }
 }
 
+/**
+ * Without this bound a hung gateway leaves `inFlightRef` set forever, and every later tick of the
+ * poll loop returns early: quota would silently stop updating for the rest of the session.
+ */
+const QUOTA_REQUEST_TIMEOUT_MS = 10_000
+
 const requestQuotaPayload = (endpoint: string): Effect.Effect<unknown, HttpClientError.HttpClientError, HttpClient.HttpClient> =>
   Effect.gen(function* () {
     const response = yield* HttpClient.get(endpoint)
-    return response.status >= 200 && response.status < 300 ? yield* response.json : undefined
-  })
+    if (response.status >= 200 && response.status < 300) {
+      return yield* response.json
+    }
+    // An unread body holds its connection, so an error response is drained before being discarded.
+    yield* Effect.ignore(response.text)
+    return undefined
+  }).pipe(Effect.timeoutOrElse({ duration: QUOTA_REQUEST_TIMEOUT_MS, orElse: () => Effect.void }))
 
 /**
  * Reads quota from the gateway the anthropic provider is pointed at, which owns the

@@ -96,6 +96,11 @@ interface OutputChunks {
   readonly size: number
 }
 
+const appendChunk = (output: OutputChunks, chunk: Uint8Array, size: number): OutputChunks => {
+  output.chunks.push(chunk)
+  return { chunks: output.chunks, size }
+}
+
 const collectOutput = (stream: Stream.Stream<Uint8Array, PlatformError>): Effect.Effect<string, PlatformError | Cause.UnknownError> =>
   Stream.runFoldEffect(
     stream,
@@ -104,7 +109,7 @@ const collectOutput = (stream: Stream.Stream<Uint8Array, PlatformError>): Effect
       const size = output.size + chunk.byteLength
       return size > MAX_OUTPUT_BYTES
         ? Effect.fail(new Cause.UnknownError(undefined, `Comment checker output exceeded ${MAX_OUTPUT_BYTES} bytes`))
-        : Effect.succeed({ chunks: [...output.chunks, chunk], size })
+        : Effect.succeed(appendChunk(output, chunk, size))
     }
   ).pipe(Effect.map(({ chunks }) => Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString()))
 

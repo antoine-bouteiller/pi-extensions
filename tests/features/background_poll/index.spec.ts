@@ -6,7 +6,8 @@ import { Effect, Fiber } from 'effect'
 import { TestClock } from 'effect/testing'
 
 import { register as backgroundPoll } from '@/features/background_poll/index.js'
-import { formatPollOutput, runPollLoop } from '@/features/background_poll/poll.js'
+import { formatPollOutput, runPollLoop, type PollExec } from '@/features/background_poll/poll.js'
+import { ToolFailure } from '@/shared/effect/errors.js'
 
 interface ToolResult {
   content: { text: string; type: string }[]
@@ -32,6 +33,14 @@ type Exec = (
   options: { signal?: AbortSignal; timeout?: number }
 ) => Promise<{ stdout: string; stderr: string; code: number }>
 
+const asPollExec =
+  (exec: Exec): PollExec =>
+  (command, timeoutMs) =>
+    Effect.tryPromise({
+      catch: (cause) => ToolFailure.make({ cause, message: cause instanceof Error ? cause.message : String(cause) }),
+      try: (signal) => exec('sh', ['-lc', command], { signal, timeout: timeoutMs }),
+    })
+
 const setup = (exec: Exec) => {
   let tool: Tool | undefined
   const handlers = new Map<string, Handler>()
@@ -42,7 +51,6 @@ const setup = (exec: Exec) => {
 
   backgroundPoll(
     asExtensionApi({
-      exec,
       on: (event: string, handler: Handler) => handlers.set(event, handler),
       registerTool: (definition: Tool) => {
         tool = definition
@@ -52,7 +60,8 @@ const setup = (exec: Exec) => {
         messageSent.resolve(undefined)
       },
     }),
-    runtime
+    runtime,
+    asPollExec(exec)
   )
 
   const ctx = {
@@ -219,6 +228,7 @@ describe('background poll', () => {
       const fiber = yield* Effect.forkChild(
         runPollLoop({
           command: 'check',
+          cwd: undefined,
           exec: () =>
             Effect.sync(() => {
               attempts += 1
@@ -238,6 +248,53 @@ describe('background poll', () => {
       expect(result.details.elapsedMs).toBe(3000)
       expect(result.details.attempts).toBe(3)
       expect(attempts).toBe(3)
+    })
+  )
+
+  it.effect('retries an attempt that exceeded its own timeout instead of ending the poll', () =>
+    Effect.gen(function* () {
+      let attempts = 0
+      const fiber = yield* Effect.forkChild(
+        runPollLoop({
+          command: 'check',
+          cwd: undefined,
+          exec: () =>
+            Effect.sync(() => {
+              attempts += 1
+              return attempts === 1
+                ? { code: 124, stderr: 'Poll command did not finish within 1000ms', stdout: '' }
+                : { code: 0, stderr: '', stdout: 'ready' }
+            }),
+          intervalMs: 1000,
+          label: 'slow-start',
+          taskId: 'poll-timeout',
+          timeoutMs: 30_000,
+        })
+      )
+
+      yield* TestClock.adjust('1 second')
+      const result = yield* Fiber.join(fiber)
+
+      expect(result.details.outcome).toBe('completed')
+      expect(result.details.attempts).toBe(2)
+      expect(result.output).toContain('ready')
+    })
+  )
+
+  it.effect('ends the poll only when the command itself fails to run', () =>
+    Effect.gen(function* () {
+      const result = yield* runPollLoop({
+        command: 'check',
+        cwd: undefined,
+        exec: () => ToolFailure.make({ message: 'spawn sh ENOENT' }),
+        intervalMs: 1000,
+        label: 'broken',
+        taskId: 'poll-broken',
+        timeoutMs: 30_000,
+      })
+
+      expect(result.details.outcome).toBe('error')
+      expect(result.output).toBe('spawn sh ENOENT')
     })
   )
 

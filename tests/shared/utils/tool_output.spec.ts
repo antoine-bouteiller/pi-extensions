@@ -1,9 +1,9 @@
 import { BunFileSystem } from '@effect/platform-bun'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { Effect, FileSystem } from 'effect'
+import { DateTime, Effect, FileSystem } from 'effect'
 
-import { bunPath } from '@/shared/effect/bun_services.js'
-import { boundToolTextEffect, truncateOutput, truncationNotice, writePrivateTempFileEffect } from '@/shared/utils/tool_output.js'
+import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
+import { boundToolTextEffect, SPILL_TTL_MS, truncateOutput, truncationNotice, writePrivateTempFileEffect } from '@/shared/utils/tool_output.js'
 
 const lines = (count: number) => Array.from({ length: count }, (_value, index) => `line ${index}`).join('\n')
 
@@ -68,6 +68,19 @@ describe('bounded tool output', () => {
     }).pipe(Effect.provide(BunFileSystem.layer))
   )
 
+  it.effect('writePrivateTempFileEffect leaves no directory behind when the write fails', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const before = yield* fs.readDirectory(bunPath.dirname(yield* fs.makeTempDirectory({ prefix: 'tool-output-probe-' })))
+
+      yield* Effect.flip(writePrivateTempFileEffect('secret', { filename: 'missing/output.txt', prefix: 'tool-output-failure-' }))
+
+      const after = yield* fs.readDirectory(bunPath.dirname(yield* fs.makeTempDirectory({ prefix: 'tool-output-probe-' })))
+      expect(after.filter((entry) => entry.startsWith('tool-output-failure-'))).toEqual([])
+      expect(before.filter((entry) => entry.startsWith('tool-output-failure-'))).toEqual([])
+    }).pipe(Effect.provide(BunFileSystem.layer))
+  )
+
   it.effect('boundToolTextEffect spills the complete text and keeps the notice inside the budget', () =>
     Effect.gen(function* () {
       const text = lines(500)
@@ -121,6 +134,27 @@ describe('bounded tool output', () => {
       )
 
       expect(failure).toBe('disk full')
+    })
+  )
+
+  it.live('reaps expired spill directories but keeps recent ones', () =>
+    Effect.gen(function* () {
+      const prefix = `tool-output-reap-${process.pid}-`
+
+      const stale = yield* writePrivateTempFileEffect('stale', { prefix })
+      const staleDirectory = bunPath.dirname(stale)
+      const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis)
+      // `utimes` reads a bare number as nanoseconds, so the age is applied as a Date.
+      const expired = DateTime.toDateUtc(DateTime.makeUnsafe(now - SPILL_TTL_MS - 60_000))
+      yield* bunFileSystem.utimes(staleDirectory, expired, expired)
+
+      const fresh = yield* writePrivateTempFileEffect('fresh', { prefix })
+      const freshDirectory = bunPath.dirname(fresh)
+
+      expect(yield* bunFileSystem.exists(staleDirectory)).toBeFalse()
+      expect(yield* bunFileSystem.exists(freshDirectory)).toBeTrue()
+
+      yield* bunFileSystem.remove(freshDirectory, { force: true, recursive: true })
     })
   )
 })

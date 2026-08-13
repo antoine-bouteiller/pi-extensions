@@ -9,7 +9,7 @@ import { HttpServerRequest, HttpServerResponse } from 'effect/unstable/http'
 import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 
 import { type CredentialStore, type OAuthCredentialPayload } from './keychain.js'
-import { McpError, type OAuthConfig } from './types.js'
+import { assertOpenableAuthorizationUrl, McpError, type OAuthConfig } from './types.js'
 
 const CALLBACK_TIMEOUT_MS = 5 * 60 * 1000
 const DEFAULT_CALLBACK_PORT = 3334
@@ -55,8 +55,9 @@ const callbackUrl = (options: OAuthCallbackOptions): { url: URL; bindHost: strin
   if (isNotEmptyString(url.username) || isNotEmptyString(url.password) || isNotEmptyString(url.search) || isNotEmptyString(url.hash)) {
     throw new Error('OAuth redirectUri must not contain credentials, a query, or a fragment')
   }
-  const configuredPort = isEmptyString(url.port) ? 80 : Number(url.port)
-  if (configuredPort !== options.port) {
+  if (isEmptyString(url.port)) {
+    url.port = String(options.port)
+  } else if (Number(url.port) !== options.port) {
     throw new Error('OAuth redirectUri port must match callbackPort')
   }
   return {
@@ -88,7 +89,7 @@ const respondToCallback = (
   } catch {
     return HttpServerResponse.text('Invalid OAuth callback request', { contentType: 'text/plain; charset=utf-8', status: 400 })
   }
-  if (request.method !== 'GET' || requested.pathname !== url.pathname) {
+  if (request.method !== 'GET' || requested.origin !== url.origin || requested.pathname !== url.pathname) {
     return HttpServerResponse.text('Not found', { contentType: 'text/plain; charset=utf-8', status: 404 })
   }
 
@@ -178,13 +179,18 @@ export const startOAuthCallback = (options: OAuthCallbackOptions): Effect.Effect
       )
     }
 
-    yield* Effect.forkScoped(
+    yield* Effect.forkIn(
       Effect.sleep(options.timeoutMs ?? CALLBACK_TIMEOUT_MS).pipe(
         Effect.andThen(Deferred.fail(code, new McpError({ message: 'OAuth callback timed out after five minutes' })))
-      )
+      ),
+      listenerScope
     )
 
-    return { close: Scope.close(listenerScope, Exit.void), redirectUrl: url.href, waitForCode: Deferred.await(code) }
+    return {
+      close: Deferred.fail(code, abortError('OAuth authentication was cancelled')).pipe(Effect.andThen(Scope.close(listenerScope, Exit.void))),
+      redirectUrl: url.href,
+      waitForCode: Deferred.await(code),
+    }
   })
 
 export interface KeychainOAuthProviderOptions {
@@ -277,7 +283,7 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
     if (!isTrue(this.options.interactive) || isNullOrUndefined(this.options.openUrl)) {
       throw new UnauthorizedError('OAuth authorization is required; use /mcp-auth <server>')
     }
-    await this.options.openUrl(authorizationUrl.href, this.options.signal)
+    await this.options.openUrl(assertOpenableAuthorizationUrl(authorizationUrl.href).href, this.options.signal)
   }
 
   saveCodeVerifier(codeVerifier: string): void {
@@ -343,7 +349,8 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
               : this.options.store.set(this.options.serverName, next, this.options.signal)
           )
         })
-      )
+      ),
+      { signal: this.options.signal }
     )
   }
 }

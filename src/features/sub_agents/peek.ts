@@ -14,7 +14,7 @@ import {
   type ThemeColor,
 } from '@earendil-works/pi-coding-agent'
 import { Container, matchesKey, truncateToWidth, visibleWidth, type TUI } from '@earendil-works/pi-tui'
-import { DateTime, Effect, Exit, Fiber, Schema, Scope, Semaphore } from 'effect'
+import { DateTime, Effect, Exit, Fiber, Schema, Scope } from 'effect'
 
 import { bunFileSystem } from '@/shared/effect/bun_services.js'
 import { isEmptyString, isNotEmptyString } from '@/shared/utils/predicates.js'
@@ -255,7 +255,9 @@ export class SubagentPeekOverlay {
   private sessionMessages: ReturnType<typeof buildSessionContext>['messages'] = []
   private lastFileSize = 0
   private loadGeneration = 0
-  private readonly reloadSemaphore = Semaphore.makeUnsafe(1)
+  /** Survives a superseded reload: the snapshot carries in-flight state that is on no disk transcript. */
+  private pendingSync: SyncEvent | undefined = undefined
+  private reloadFiber: Fiber.Fiber<void> | undefined = undefined
   private readonly chatContainer = new Container()
   private scrollOffset = Number.MAX_SAFE_INTEGER
   private followMode = true
@@ -303,23 +305,31 @@ export class SubagentPeekOverlay {
     }).pipe(Effect.orElseSucceed(() => false))
   }
 
+  /** One reload at a time, latest request wins: the 200ms poll would otherwise queue a full reparse per tick. */
   private requestReload(afterLoad?: () => void): void {
     const generation = ++this.loadGeneration
-    Effect.runFork(
-      this.reloadSemaphore.withPermits(1)(
-        this.loadSession(generation).pipe(
-          Effect.tap((loaded) =>
-            Effect.sync(() => {
-              if (!loaded || this.disposed || generation !== this.loadGeneration) {
-                return
-              }
-              this.rebuildChat()
-              afterLoad?.()
-              this.tui.requestRender()
-            })
-          )
-        )
-      )
+    const superseded = this.reloadFiber
+    this.reloadFiber = Effect.runFork(
+      Effect.gen({ self: this }, function* () {
+        if (superseded !== undefined) {
+          yield* Fiber.interrupt(superseded)
+        }
+        if (this.disposed || generation !== this.loadGeneration) {
+          return
+        }
+        const loaded = yield* this.loadSession(generation)
+        if (!loaded || this.disposed || generation !== this.loadGeneration) {
+          return
+        }
+        this.rebuildChat()
+        const { pendingSync } = this
+        this.pendingSync = undefined
+        if (pendingSync !== undefined) {
+          this.handleSyncEvent(pendingSync)
+        }
+        afterLoad?.()
+        this.tui.requestRender()
+      })
     )
   }
 
@@ -347,6 +357,23 @@ export class SubagentPeekOverlay {
         }
       }
     }
+    this.reattachStreamingComponent()
+  }
+
+  /*
+   * `clear()` detaches the socket-streamed component, so the pointer has to be rebuilt here: leaving
+   * it aimed at the removed component sends every later delta off-screen and live output vanishes.
+   */
+  private reattachStreamingComponent(): void {
+    const streaming = this.streamingMessage
+    this.streamingComponent = undefined
+    if (streaming === undefined) {
+      return
+    }
+    const component = new AssistantMessageComponent(undefined, true, getMarkdownTheme())
+    this.chatContainer.addChild(component)
+    component.updateContent(streaming)
+    this.streamingComponent = component
   }
 
   private addAssistantMessage(message: AssistantMessage): void {
@@ -577,7 +604,8 @@ export class SubagentPeekOverlay {
       this.loadGeneration++
     }
     if (event.type === 'sync') {
-      this.requestReload(() => this.handleSyncEvent(event))
+      this.pendingSync = event
+      this.requestReload()
     } else if (event.type === 'message_start') {
       this.handleMessageStart(event)
     } else if (event.type === 'message_update') {
@@ -817,6 +845,10 @@ export class SubagentPeekOverlay {
     if (this.pollFiber !== undefined) {
       Effect.runFork(Fiber.interrupt(this.pollFiber))
       this.pollFiber = undefined
+    }
+    if (this.reloadFiber !== undefined) {
+      Effect.runFork(Fiber.interrupt(this.reloadFiber))
+      this.reloadFiber = undefined
     }
     if (this.socketScope !== undefined) {
       this.releaseSocketScope(this.socketScope)

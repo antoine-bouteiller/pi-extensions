@@ -92,23 +92,20 @@ class CwdFilesystem extends NodeFilesystem {
     return bytes
   }
 
+  // Mutations are checked only before they commit: aborting afterwards would report a failure for a change the file system already took.
   override async writeText(path: string, content: string) {
     throwIfAborted(this.signal)
-    const written = await super.writeText(this.absolute(path), content)
-    throwIfAborted(this.signal)
-    return written
+    return super.writeText(this.absolute(path), content)
   }
 
   override async delete(path: string): Promise<void> {
     throwIfAborted(this.signal)
     await super.delete(this.absolute(path))
-    throwIfAborted(this.signal)
   }
 
   override async move(from: string, to: string, content?: string): Promise<void> {
     throwIfAborted(this.signal)
     await super.move(this.absolute(from), this.absolute(to), content)
-    throwIfAborted(this.signal)
   }
 
   override canonicalPath(path: string): string {
@@ -369,6 +366,10 @@ const writeHashlinePatch = ({
       /*
        * Re-evaluate after waiting: a parent may have been replaced by a
        * symlink while this operation was queued.
+       *
+       * ponytail: revalidate-then-open by pathname, so an ancestor swapped between this check and
+       * `patcher.apply` below is not fenced. Thread verified parent descriptors through `Patcher`
+       * if a hostile local process is in scope.
        */
       for (const path of affectedPaths) {
         yield* assertUnprotectedPathEffect(path, cwd, 'write').pipe(Effect.mapError(hashlineToolError))
@@ -378,7 +379,6 @@ const writeHashlinePatch = ({
       const fs = new CwdFilesystem(cwd, signal)
       const patcher = new Patcher({ fs, snapshots })
       const applied = yield* Effect.tryPromise({ catch: hashlineToolError, try: () => patcher.apply(parsed) })
-      yield* abortCheck(signal)
       const sections = applied.sections.map((section, index) => {
         const path = pathService.relative(cwd, section.canonicalPath) || section.canonicalPath
         const parsedSection = parsed.sections[index]

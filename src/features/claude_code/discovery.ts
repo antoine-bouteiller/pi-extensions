@@ -41,6 +41,8 @@ const compareText = (left: string, right: string): number => {
   return 0
 }
 
+const WRITE_CONCURRENCY = 8
+
 /**
  * Discovery walks a symlink-tolerant tree, so every risky step (`realPath`, `readDirectory`,
  * `stat`) is swallowed to an `Option` rather than failing the whole scan: a missing directory, a
@@ -198,7 +200,7 @@ const writeCommandSkills = (
           const parsed = parseCommandFrontmatter(yield* fs.readFileString(command.path))
           yield* fs.writeFileString(path.join(destination, 'SKILL.md'), formatCommandSkill(name, parsed))
         }),
-      { concurrency: 'unbounded' }
+      { concurrency: WRITE_CONCURRENCY }
     )
   })
 

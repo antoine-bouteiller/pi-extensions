@@ -15,6 +15,7 @@ import { Type } from 'typebox'
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { lstatHostFile, readHostDirectoryEntries } from '@/shared/effect/bun_host_file_system.js'
 import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
+import { unknownError } from '@/shared/effect/errors.js'
 import { isEmptyString, isNotEmptyString } from '@/shared/utils/predicates.js'
 import { assertUnprotectedPathEffect, ProtectedPathError } from '@/shared/utils/protected_paths.js'
 
@@ -149,9 +150,6 @@ const rejectMetadataPath = (absolutePath: string): Effect.Effect<void, GitMetada
   absolutePath.split(sep).some((component) => component.toLowerCase() === '.git')
     ? Effect.fail(GitMetadataError.make({ message: `Refusing to remove Git metadata: ${absolutePath}` }))
     : Effect.void
-
-const unknownError = (cause: unknown): Cause.UnknownError =>
-  Cause.isUnknownError(cause) ? cause : new Cause.UnknownError(cause, cause instanceof Error ? cause.message : String(cause))
 
 const realpathEffect = (path: string): Effect.Effect<string, Cause.UnknownError> => bunFileSystem.realPath(path).pipe(Effect.mapError(unknownError))
 
@@ -375,6 +373,11 @@ export const makeSafeRmRunner =
                   /*
                    * Deliberately a genuine second pass, not a reuse of validateTargetEffect: a parent may
                    * have been replaced by a symlink while this target waited in queue.
+                   *
+                   * ponytail: revalidate-then-unlink by pathname, so an ancestor swapped in the window
+                   * between these two lines is not fenced; the queue only serializes this process. Move to
+                   * openat/unlinkat against a verified parent descriptor if a hostile local process is in
+                   * scope.
                    */
                   yield* revalidateTargetEffect({ cwd, roots, signal, target })
                   yield* removeEffect(target.absolute, { force: false, recursive: target.directory })

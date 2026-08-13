@@ -5,7 +5,7 @@ import { Clock, Effect, Layer } from 'effect'
 import {
   inspectProcess,
   nodeProcessProbe,
-  ownershipMatches,
+  ownershipVerdict,
   ProcessInspector,
   ProcessInspectorLive,
   processInspectorFromProbe,
@@ -16,6 +16,10 @@ import {
 import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
 
 const alwaysAlive = () => true
+
+const permissionDenied = (): never => {
+  throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
+}
 
 const fakeProbe = (overrides: Partial<ProcessProbeShape>): ProcessProbeShape => ({
   platform: 'linux',
@@ -199,7 +203,17 @@ describe('ProcessInspector: liveness and ownership comparison', () => {
     })
   )
 
-  it.effect('ownershipMatches fails closed when the token check fails', () =>
+  it.effect('reports an unreadable process as unverifiable so it is neither reclaimed nor signalled', () =>
+    Effect.gen(function* () {
+      const inspector = processInspectorFromProbe(fakeProbe({ readFileBuffer: permissionDenied, readFileUtf8: permissionDenied }))
+
+      expect(yield* inspector.ownershipVerdict({ pid: 1, processIdentity: 'linux:99:whatever', token: 'expected' })).toBe('unverifiable')
+      expect(yield* inspector.ownerIsActive({ pid: 1, processIdentity: 'linux:99:whatever' })).toBe(true)
+      expect(yield* inspector.inspect(1)).toBeUndefined()
+    })
+  )
+
+  it.effect('ownershipVerdict fails closed when the token check fails', () =>
     Effect.gen(function* () {
       const probe = fakeProbe({
         platform: 'linux',
@@ -208,11 +222,11 @@ describe('ProcessInspector: liveness and ownership comparison', () => {
       })
       const inspector = processInspectorFromProbe(probe)
       const ownership: ProcessOwnership = { pid: 1, processIdentity: 'linux:99:whatever', token: 'expected' }
-      expect(yield* inspector.ownershipMatches(ownership)).toBe(false)
+      expect(yield* inspector.ownershipVerdict(ownership)).toBe('mismatch')
     })
   )
 
-  it.effect('ownershipMatches requires both identity and token to match', () =>
+  it.effect('ownershipVerdict requires both identity and token to match', () =>
     Effect.gen(function* () {
       const probe = fakeProbe({
         platform: 'linux',
@@ -222,7 +236,7 @@ describe('ProcessInspector: liveness and ownership comparison', () => {
       const inspector = processInspectorFromProbe(probe)
       const identity = yield* inspector.inspect(1, 'expected')
       const ownership: ProcessOwnership = { pid: 1, processIdentity: identity?.identity ?? '', token: 'expected' }
-      expect(yield* inspector.ownershipMatches(ownership)).toBe(true)
+      expect(yield* inspector.ownershipVerdict(ownership)).toBe('match')
     })
   )
 
@@ -242,10 +256,10 @@ describe('ProcessInspector: liveness and ownership comparison', () => {
 })
 
 describe('exported process effects delegate to the live probe', () => {
-  it.effect('inspectProcess/ownershipMatches/processOwnerIsActive fail closed', () =>
+  it.effect('inspectProcess/ownershipVerdict/processOwnerIsActive fail closed', () =>
     Effect.gen(function* () {
       expect(yield* inspectProcess(-1)).toBeUndefined()
-      expect(yield* ownershipMatches({ pid: -1, processIdentity: 'x', token: 'y' })).toBe(false)
+      expect(yield* ownershipVerdict({ pid: -1, processIdentity: 'x', token: 'y' })).toBe('mismatch')
       expect(yield* processOwnerIsActive({ pid: -1 })).toBe(false)
     })
   )
@@ -262,9 +276,9 @@ describe('ProcessInspectorLive', () => {
         yield* bunFileSystem.writeFileString(executable, `#!/bin/sh\necho $$ > '${pidFile}'\nexec /bin/sleep 10\n`)
         yield* bunFileSystem.chmod(executable, 0o700)
         const startedAt = yield* Clock.currentTimeMillis
-        const result = yield* withProcessEnv('PATH', root, () => nodeProcessProbe.runPs([]))
+        const outcome = yield* withProcessEnv('PATH', root, () => Effect.result(nodeProcessProbe.runPs([])))
         const elapsed = (yield* Clock.currentTimeMillis) - startedAt
-        expect(result).toEqual({ status: undefined, stdout: '' })
+        expect(outcome._tag).toBe('Failure')
         expect(elapsed).toBeGreaterThanOrEqual(2900)
         expect(elapsed).toBeLessThan(4500)
         const pid = Number((yield* bunFileSystem.readFileString(pidFile)).trim())

@@ -17,6 +17,7 @@ import { isRecord } from '@/shared/utils/records.js'
 import { loadGlobalMcpConfig } from './config.js'
 import { boundGatewayOutput } from './output.js'
 import {
+  assertOpenableAuthorizationUrl,
   type McpGatewayPolicy,
   type McpPolicyRequest,
   type McpServerMap,
@@ -29,6 +30,7 @@ const { join } = bunPath
 const SEARCH_RESULT_LIMIT = 30
 const SEARCH_FETCH_LIMIT = SEARCH_RESULT_LIMIT + 1
 const LIST_RESULT_LIMIT = 30
+const STARTUP_CONNECT_CONCURRENCY = 4
 const status = createStatusChannel('mcp', { priority: 30, tone: 'muted' })
 
 const READONLY_DBX_TOOLS = new Set(['dbx_list_connections', 'dbx_list_tables', 'dbx_describe_table', 'dbx_get_schema_context'])
@@ -480,10 +482,14 @@ export const makeGatewaySession = (pi: ExtensionAPI): GatewaySession => {
         yield* Ref.set(state.manager, Option.some(candidate))
         const servers = yield* Effect.sync(() => candidate.status())
         updateUiStatus(ctx, servers)
+        /*
+         * Bounded: unbounded fan-out spawns one stdio process per configured server at once.
+         * The manager's own lifecycle abort cancels whatever is still in flight on stop.
+         */
         yield* Effect.forEach(
           servers.filter((server) => server.status === 'disconnected'),
           (server) => candidate.connect(server.name).pipe(Effect.ignore),
-          { concurrency: 'unbounded', discard: true }
+          { concurrency: STARTUP_CONNECT_CONCURRENCY, discard: true }
         ).pipe((connectAll) => Effect.forkDetach(connectAll, { startImmediately: true }))
       }).pipe(Effect.onExit((exit) => Deferred.done(deferred, exit)))
     })
@@ -576,7 +582,8 @@ export const McpGatewayLive: Layer.Layer<McpGateway> = Layer.succeed(McpGateway)
           onStatusChange: callbacks.onStatusChange,
           // oxlint-disable-next-line effecttsgo/async-function -- `openUrl` is handed to the MCP SDK's OAuth provider, which awaits it.
           async openUrl(url: string, signal?: AbortSignal) {
-            const result = await pi.exec('/usr/bin/open', [url], { signal })
+            // Re-checked at the process boundary: `open` dispatches any scheme the OS has registered.
+            const result = await pi.exec('/usr/bin/open', [assertOpenableAuthorizationUrl(url).href], { signal })
             if (result.code !== 0) {
               throw new Error(`Could not open the OAuth authorization page: ${result.stderr.trim()}`)
             }

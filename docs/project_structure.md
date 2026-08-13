@@ -13,9 +13,9 @@ src/
 ├── index.ts                         # the only Pi extension entrypoint/default export
 ├── config/
 │   ├── features.ts                  # explicit ordered feature registry and registerFeatures
-│   └── runtime.ts                   # process-wide AppRuntime composition
+│   └── runtime.ts                   # process-wide ProcessRuntime composition
 ├── features/
-│   ├── ask_user/{index,tool,render,prompt}.ts
+│   ├── ask_user/{index,tool,prompt}.ts
 │   ├── background_poll/{index,poll}.ts
 │   ├── caffeinate/{index,keep_awake}.ts
 │   ├── claude_code/{index,discovery}.ts
@@ -28,13 +28,13 @@ src/
 │   ├── safe_rm/{index,remove,errors}.ts
 │   ├── safety_guard/{index,guard,constants}.ts
 │   ├── status_panel/{index,panel,footer,git,provider,render,sidebar,split_pane,state,statuses}.ts
-│   ├── sub_agents/{index,agents,core,peek,process_ownership,profiles,rpc}.ts
+│   ├── sub_agents/{index,agents,child_env,core,peek,process_ownership,profiles,rpc}.ts
 │   ├── sub_agents/README.md
 │   └── webfetch/{index,fetch}.ts
 └── shared/
-    ├── effect/{app_services,errors,pi_services,runtime}.ts
-    ├── state/{agent_activity,status_bar,store}.ts
-    └── utils/{protected_paths,records,tool_output}.ts
+    ├── effect/{app_services,bun_host_file_system,bun_services,errors,pi_services,runtime}.ts
+    ├── state/{agent_activity,azure_quota,status_bar,store}.ts
+    └── utils/{json,predicates,protected_paths,records,tool_output}.ts
 
 tests/
 ├── bun_effect.spec.ts
@@ -42,10 +42,11 @@ tests/
 ├── registration.spec.ts
 ├── config/runtime.spec.ts
 ├── features/<feature>/...*.spec.ts   # mirrors src/features
-├── shared/effect/{app_services,runtime}.spec.ts
+├── shared/effect/{app_services,bun_host_file_system,runtime}.spec.ts
 ├── shared/state/{agent_activity,status_bar}.spec.ts
-├── shared/utils/{protected_paths,tool_output}.spec.ts
-└── utils/{bun_effect,casts,fake_pi,runtime}.ts
+├── shared/utils/{predicates,protected_paths,tool_output}.spec.ts
+└── utils/{abort_controller,bun_effect,casts,deferred,fake_pi,http,loopback_port,process_env,runtime}.ts
+    └── process_env.spec.ts           # the one helper with behaviour worth pinning
 ```
 
 ## Dependency direction
@@ -58,16 +59,22 @@ src/index.ts
 ```
 
 - `src/config/` is composition only: `features.ts` holds the explicit ordered feature registry
-  and `runtime.ts` holds the process-wide `AppRuntime` composition. It is not a place to put
+  and `runtime.ts` holds the process-wide `ProcessRuntime` composition. It is not a place to put
   feature-specific configuration; MCP server parsing, for example, stays inside
-  `src/features/mcp/`.
-- `src/features/<snake_case_name>/index.ts` is the feature's only Pi boundary: it exports a named
+  `src/features/mcp/`. The one exception is a feature layer that must live for the whole process:
+  `runtime.ts` merges `McpGatewayLive` so every session shares one gateway, while the gateway's
+  behaviour still lives in `src/features/mcp/gateway.ts`.
+- `src/features/<snake_case_name>/index.ts` owns the feature's Pi registration: it exports a named
   `register(pi, runtime, ...)` function and contains nothing but registration and the bridge onto
   Effect (`pi.registerTool`, `pi.registerCommand`, `pi.on`, `runtime.runPromise`). Behaviour lives
   in sibling modules named after what they do (`poll.ts`, `guard.ts`, `gateway.ts`, ...), which
-  `index.ts` wires together. Because the Pi boundary is confined to that one file per feature, the
-  lint rules that Pi's own signatures conflict with (`effecttsgo/async-function`,
-  `unicorn/no-null`) are relaxed for `src/features/*/index.ts` alone in `oxlint.config.ts`.
+  `index.ts` wires together. Sibling modules still use Pi types, renderers, and helpers, and some
+  are still handed the `ExtensionAPI` itself; only the registration calls are confined to
+  `index.ts`. Because that is where Pi's own callback signatures land, the lint rule those
+  signatures conflict with (`effecttsgo/async-function`) is relaxed for `src/features/*/index.ts`
+  alone in `oxlint.config.ts`. `unicorn/no-null` is relaxed more narrowly still, for
+  `src/features/mcp/index.ts` only, because that is the single registration handing `null` back to
+  a Pi API that requires it.
 - No feature module has a default export, and no feature imports a sibling feature.
 - Reusable code that more than one feature needs is promoted to `src/shared/effect/`,
   `src/shared/state/`, or `src/shared/utils/`. Shared code never imports from `src/config/` or

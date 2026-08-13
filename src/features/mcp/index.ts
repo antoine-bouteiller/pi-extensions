@@ -13,7 +13,13 @@ export const register = (pi: ExtensionAPI, runtime: McpRuntime): void => {
   pi.registerTool({
     description:
       "Access configured remote MCP capabilities through one lazy gateway. Use Pi's native tools directly whenever possible. Search or describe unfamiliar MCP tools before calling them.",
-    execute: async (_toolCallId, params, signal) => runtime.runPromise(session.dispatch(params, signal ?? undefined)),
+    /*
+     * The signal reaches `runPromise` as well as the manager: without it a cancelled call can
+     * still block indefinitely on paths that never touch a manager operation, such as waiting
+     * for gateway initialization or spilling oversized output.
+     */
+    execute: async (_toolCallId, params, signal) =>
+      runtime.runPromise(session.dispatch(params, signal ?? undefined), signal === null ? undefined : { signal }),
     label: 'MCP Gateway',
     name: 'mcp',
     parameters: McpGatewayParameters,

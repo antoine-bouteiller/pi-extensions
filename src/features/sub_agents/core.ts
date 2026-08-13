@@ -13,9 +13,9 @@ import {
   closeHeldFile,
   createHeldFile,
   heldFileContent,
-  openHeldFile,
   readHostDirectoryEntries,
   removeHeldFileIfUnchanged,
+  withHeldFile,
   type HeldFile,
   type HostDirectoryEntry,
 } from '@/shared/effect/bun_host_file_system.js'
@@ -25,6 +25,7 @@ import { jsonText, parseJsonText, prettyJsonText } from '@/shared/utils/json.js'
 import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 import { isRecord } from '@/shared/utils/records.js'
 
+import { buildChildEnv } from './child_env.js'
 import {
   nodeProcessProbe,
   processAlive,
@@ -47,7 +48,7 @@ import {
 import { consumeFirstMatchingMailboxEvent, RpcJsonlDecoder } from './rpc.js'
 
 const { dirname, isAbsolute, join, resolve: resolvePath, sep } = bunPath
-export { consumeFirstMatchingMailboxEvent, RpcJsonlDecoder } from './rpc.js'
+export { consumeFirstMatchingMailboxEvent, MAX_RPC_FRAME_CHARS, RpcJsonlDecoder } from './rpc.js'
 
 const PACKAGE_BASENAME = 'pi-codex-subagents'
 const SUBAGENT_DIR = join(getAgentDir(), PACKAGE_BASENAME)
@@ -57,6 +58,14 @@ const LEGACY_RUNS_DIR = join(TEMP_ROOT, 'runs')
 const SOCKET_DIR = join(TEMP_ROOT, 'sockets')
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 15_000
+const STDIN_BUFFER_CAPACITY = 64
+const SHUTDOWN_LAUNCH_DRAIN_MS = 5000
+/*
+ * A grandchild that inherited the child's stdout or stderr keeps those pipes open after the child
+ * itself exits, so waiting for EOF unconditionally would pin the live entry, its pending RPCs, and
+ * its fibers until shutdown. Draining is bounded; closing `live.scope` then interrupts the readers.
+ */
+const POST_EXIT_DRAIN_MS = 2000
 const DEFAULT_INACTIVITY_MINUTES = 5
 const DEFAULT_RETENTION_DAYS = 7
 const MAX_LIVE_CLAUDE_AGENTS = 3
@@ -225,9 +234,12 @@ interface LiveAgent {
   stderr: string
   streamError?: SubagentProcessError
   expectedExit: boolean
+  /** The OS process is gone. Flipped before output drains, unlike `processFinished`. */
+  processExited: boolean
   processFinished: boolean
   finalizedRun: boolean
   exit: Deferred.Deferred<void>
+  exited: Deferred.Deferred<void>
   termination?: Fiber.Fiber<void, SubagentError>
   inactivityTimeoutMs: number
   inactivityTimer?: NodeJS.Timeout
@@ -306,11 +318,14 @@ interface Waiter {
 interface WaiterClaim {
   /** Settles with the first matching completion, or fails with the caller's abort reason. */
   readonly await: Effect.Effect<AgentCompletionEvent, SubagentError>
+  /** Withdraws the claim, returning false when a completion was already delivered to it. */
+  readonly withdraw: () => boolean
 }
 
 interface SpawnExecution {
   foreground: boolean
   signal: AbortSignal
+  shutdownSignal: AbortSignal
 }
 
 interface LaunchSpawnOptions extends SpawnExecution {
@@ -321,6 +336,7 @@ interface FollowUpClaim {
   handle: HeldFile
   file: string
   token: string
+  settled: boolean
 }
 
 interface WaitAllClaim {
@@ -356,6 +372,9 @@ const errorCode = (cause: unknown): unknown => {
 
 const subagentError = (message: string, cause?: unknown): SubagentError => new SubagentError({ cause, message })
 
+const claudeLaunchLimitError = (): SubagentError =>
+  subagentError(`At most ${MAX_LIVE_CLAUDE_AGENTS} Claude-backed subagents may run at once. Wait for one to finish or use a non-Claude profile.`)
+
 const subagentProcessError = (message: string, cause?: unknown): SubagentProcessError => new SubagentProcessError({ cause, message })
 
 /*
@@ -388,11 +407,17 @@ const awaitAbort = (signal: AbortSignal): Effect.Effect<never, SubagentError> =>
 
 const spawnExecution = (options: SpawnAgentOptions, shutdownSignal: AbortSignal): SpawnExecution => ({
   foreground: isTrue(options.waitForCompletion),
+  shutdownSignal,
   signal: options.signal === undefined ? shutdownSignal : AbortSignal.any([options.signal, shutdownSignal]),
 })
 
-const failIfForegroundAborted = (execution: SpawnExecution): Effect.Effect<void, SubagentError> =>
-  execution.foreground ? failIfAborted(execution.signal) : Effect.void
+/*
+ * A background launch deliberately outlives its caller's abort, but never the manager: once shutdown
+ * has started it must not publish a child, whose lifecycle fibers would attach to a scope shutdown
+ * has already scanned and closed.
+ */
+const failIfLaunchAborted = (execution: SpawnExecution): Effect.Effect<void, SubagentError> =>
+  failIfAborted(execution.foreground ? execution.signal : execution.shutdownSignal)
 
 const expandHome = (value: string): string => {
   if (value === '~') {
@@ -422,10 +447,13 @@ const normalizeConfig = (value: unknown): SubagentConfig => {
   }
 }
 
+/** An absent or malformed config file means defaults; an unreadable one is a real failure and must not be hidden. */
 const loadSubagentConfigEffect = (): Effect.Effect<SubagentConfig> =>
   bunFileSystem.readFileString(CONFIG_PATH).pipe(
-    Effect.flatMap((content) => Effect.try(() => normalizeConfig(parseJsonText(content)))),
-    Effect.orElseSucceed(() => ({}))
+    Effect.matchEffect({
+      onFailure: (error) => (isMissingFileError(error) ? Effect.succeed<SubagentConfig>({}) : Effect.die(error)),
+      onSuccess: (content) => Effect.try(() => normalizeConfig(parseJsonText(content))).pipe(Effect.orElseSucceed((): SubagentConfig => ({}))),
+    })
   )
 
 const DEFAULT_RUNS_DIR = join(SUBAGENT_DIR, 'runs')
@@ -614,7 +642,9 @@ const TaskLockOwnerSchema = Type.Object({
 
 const taskLockIsActive = (parentSessionId: string, taskName: string): Effect.Effect<boolean> =>
   Effect.gen(function* () {
-    const owner = parseJsonText(yield* bunFileSystem.readFileString(taskLockFile(parentSessionId, taskName)))
+    const content = yield* bunFileSystem.readFileString(taskLockFile(parentSessionId, taskName))
+    // A half-written lock is a normal race, not a defect: `Effect.try` keeps it a typed failure the fallback below recovers.
+    const owner = yield* Effect.try(() => parseJsonText(content))
     return Check(TaskLockOwnerSchema, owner) && (yield* processOwnerIsActive(owner))
   }).pipe(Effect.orElseSucceed(() => false))
 
@@ -637,8 +667,9 @@ const reclaimDeadTaskLock = (
   lockFile: string,
   beforeRevalidate?: (lockFile: string) => Effect.Effect<void, Cause.UnknownError>
 ): Effect.Effect<boolean> =>
-  openHeldFile(lockFile).pipe(
-    Effect.flatMap((inspected) =>
+  withHeldFile(
+    lockFile,
+    (inspected) =>
       Effect.gen(function* () {
         const inspectedContent = heldFileContent(inspected)
         if (yield* processOwnerIsActive(parseTaskLockOwner(inspectedContent))) {
@@ -650,10 +681,9 @@ const reclaimDeadTaskLock = (
           handle: inspected,
           path: lockFile,
         })
-      }).pipe(Effect.ensuring(Effect.sync(() => closeHeldFile(inspected))))
-    ),
-    Effect.orElseSucceed(() => false)
-  )
+      })
+    // A lock this pass could not reclaim is left for the next one.
+  ).pipe(Effect.orElseSucceed(() => false))
 
 const releaseTaskLock = (
   lockFile: string,
@@ -666,7 +696,12 @@ const releaseTaskLock = (
     contentMatches: (content) => parseTaskLockOwner(content).token === token,
     handle: owned,
     path: lockFile,
-  }).pipe(Effect.asVoid, Effect.ensuring(Effect.sync(() => closeHeldFile(owned))))
+  }).pipe(
+    Effect.asVoid,
+    // A lock file that cannot be removed is reclaimed by the next creation attempt once this pid is gone.
+    Effect.ignore,
+    Effect.ensuring(Effect.sync(() => closeHeldFile(owned)))
+  )
 
 const infoWrites = Semaphore.makeUnsafe(1)
 const infoCache = new Map<string, AgentInfo>()
@@ -843,48 +878,42 @@ const markActive = (agentId: string, kind: 'active' | 'peek', marker: PeekMarker
 
 const clearActive = (agentId: string, kind: 'active' | 'peek', owner?: Pick<PeekMarker, 'pid' | 'token'>): Effect.Effect<void> => {
   const file = markerPath(agentId, kind)
-  return openHeldFile(file).pipe(
-    Effect.flatMap((held) =>
-      Effect.gen(function* () {
-        const inspectedContent = heldFileContent(held)
-        const current = parseJsonText(inspectedContent)
-        if (owner !== undefined && (!Check(PeekMarkerPartialSchema, current) || current.pid !== owner.pid || current.token !== owner.token)) {
-          return
-        }
-        yield* removeHeldFileIfUnchanged({
-          contentMatches: (content) => content === inspectedContent,
-          handle: held,
-          path: file,
-        })
-      }).pipe(Effect.ensuring(Effect.sync(() => closeHeldFile(held))))
-    ),
-    Effect.ignore
-  )
+  return withHeldFile(file, (held) =>
+    Effect.gen(function* () {
+      const inspectedContent = heldFileContent(held)
+      const current = yield* Effect.try(() => parseJsonText(inspectedContent))
+      if (owner !== undefined && (!Check(PeekMarkerPartialSchema, current) || current.pid !== owner.pid || current.token !== owner.token)) {
+        return
+      }
+      yield* removeHeldFileIfUnchanged({
+        contentMatches: (content) => content === inspectedContent,
+        handle: held,
+        path: file,
+      })
+    })
+  ).pipe(Effect.ignore)
 }
 
 const markerIsActive = (agentId: string, kind: 'active' | 'peek'): Effect.Effect<boolean> => {
   const file = markerPath(agentId, kind)
-  return openHeldFile(file).pipe(
-    Effect.flatMap((held) =>
-      Effect.gen(function* () {
-        const inspectedContent = heldFileContent(held)
-        const marker = parseJsonText(inspectedContent)
-        if (!Check(PeekMarkerSchema, marker)) {
-          return false
-        }
-        if (yield* processAlive(marker.pid)) {
-          return true
-        }
-        yield* removeHeldFileIfUnchanged({
-          contentMatches: (content) => content === inspectedContent,
-          handle: held,
-          path: file,
-        })
+  return withHeldFile(file, (held) =>
+    Effect.gen(function* () {
+      const inspectedContent = heldFileContent(held)
+      const marker = yield* Effect.try(() => parseJsonText(inspectedContent))
+      if (!Check(PeekMarkerSchema, marker)) {
         return false
-      }).pipe(Effect.ensuring(Effect.sync(() => closeHeldFile(held))))
-    ),
-    Effect.orElseSucceed(() => false)
-  )
+      }
+      if (yield* processAlive(marker.pid)) {
+        return true
+      }
+      yield* removeHeldFileIfUnchanged({
+        contentMatches: (content) => content === inspectedContent,
+        handle: held,
+        path: file,
+      })
+      return false
+    })
+  ).pipe(Effect.orElseSucceed(() => false))
 }
 
 const isRunActive = (agentId: string): Effect.Effect<boolean> =>
@@ -995,6 +1024,7 @@ class SessionLogger {
 
 const broadcasterOwners = new Map<string, string>()
 const broadcasterMutations = Semaphore.makeUnsafe(1)
+const MAX_PEEK_PENDING_BYTES = 4 * 1024 * 1024
 
 class EventBroadcaster {
   private server: Server | undefined = undefined
@@ -1047,23 +1077,36 @@ class EventBroadcaster {
     )
   }
 
+  /**
+   * A peek overlay that stops reading would otherwise let events pile up in its socket buffer.
+   * Dropping the slow client bounds the parent's memory; peek is a best-effort view and the
+   * overlay can reconnect.
+   */
+  private writeBounded(connection: Socket, line: string): void {
+    try {
+      connection.write(line)
+      if (connection.writableLength > MAX_PEEK_PENDING_BYTES) {
+        connection.destroy()
+      }
+    } catch {
+      // Best effort; a connection that closed mid-write is not an error.
+    }
+  }
+
   private openSocket(socketPath: string): void {
     this.server = createServer((connection) => {
       this.connections.push(connection)
-      try {
-        connection.write(
-          `${JSON.stringify({
-            activeTools: [...this.activeTools.values()],
-            partialMessage: this.partialMessage,
-            status: this.status,
-            toolName: this.toolName,
-            type: 'sync',
-            userMessage: this.userMessage,
-          } satisfies SyncBroadcastEvent)}\n`
-        )
-      } catch {
-        // Best effort; a connection that closed before the sync write is not an error.
-      }
+      this.writeBounded(
+        connection,
+        `${JSON.stringify({
+          activeTools: [...this.activeTools.values()],
+          partialMessage: this.partialMessage,
+          status: this.status,
+          toolName: this.toolName,
+          type: 'sync',
+          userMessage: this.userMessage,
+        } satisfies SyncBroadcastEvent)}\n`
+      )
       const remove = () => {
         this.connections = this.connections.filter((candidate) => candidate !== connection)
       }
@@ -1174,11 +1217,7 @@ class EventBroadcaster {
     }
     const line = `${JSON.stringify(event)}\n`
     for (const connection of this.connections) {
-      try {
-        connection.write(line)
-      } catch {
-        // Best effort; a connection that closed mid-broadcast is not an error.
-      }
+      this.writeBounded(connection, line)
     }
   }
 
@@ -1342,16 +1381,17 @@ const buildChildArgs = (launch: { command: string; prefixArgs: string[] }, info:
   return args
 }
 
+/** Only a definite `mismatch` proves the child is gone; an unverifiable probe keeps us waiting. */
 const waitForOwnedExit = (inspector: ProcessInspectorShape, ownership: ChildProcessOwnership, timeoutMs: number): Effect.Effect<boolean> =>
   Effect.gen(function* () {
     const deadline = (yield* Clock.currentTimeMillis) + timeoutMs
     while ((yield* Clock.currentTimeMillis) < deadline) {
-      if (!(yield* inspector.ownershipMatches(ownership))) {
+      if ((yield* inspector.ownershipVerdict(ownership)) === 'mismatch') {
         return true
       }
       yield* Effect.sleep(25)
     }
-    return !(yield* inspector.ownershipMatches(ownership))
+    return (yield* inspector.ownershipVerdict(ownership)) === 'mismatch'
   })
 
 /**
@@ -1373,13 +1413,6 @@ const verifyChildOwnership = (inspector: ProcessInspectorShape, pid: number, tok
     return yield* new SubagentProcessError({ message: 'Unable to verify child Pi process ownership.' })
   })
 
-const ownerProcessStillActive = (ownership: ChildProcessOwnership, ownerSnapshot: ProcessSnapshot | undefined): boolean =>
-  ownership.ownerPid !== process.pid &&
-  ownerSnapshot !== undefined &&
-  (isNullOrUndefined(ownership.ownerProcessIdentity) ||
-    isEmptyString(ownership.ownerProcessIdentity) ||
-    ownerSnapshot.identity === ownership.ownerProcessIdentity)
-
 /** Signals the whole detached group first, then the bare PID, because only the group reaches the child's own children. */
 const signalProcessGroup = (pid: number, signal: NodeJS.Signals, useGroup: boolean): void => {
   try {
@@ -1393,26 +1426,15 @@ const signalProcessGroup = (pid: number, signal: NodeJS.Signals, useGroup: boole
   }
 }
 
-const buildChildEnv = (info: AgentInfo, childToken: string, extraChildEnv: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv => {
-  const childEnv = { ...process.env, ...extraChildEnv }
-  delete childEnv.PI_SESSION_ID
-  delete childEnv.PI_SESSION_FILE
-  delete childEnv.PI_PROVIDER
-  delete childEnv.PI_MODEL
-  delete childEnv.PI_REASONING_LEVEL
-  childEnv.PI_SUBAGENT_OWNER_TOKEN = childToken
-  childEnv.PI_SUBAGENT_PROFILE = info.profile ?? ''
-  childEnv.PI_SUBAGENT_READONLY = isTrue(info.isReadonly) ? '1' : '0'
-  return childEnv
-}
-
 export class AgentManager {
   private readonly live = new Map<string, LiveAgent>()
   private readonly mailbox: AgentCompletionEvent[] = []
   private waiters: Waiter[] = []
+  private reservedClaudeLaunches = 0
   private readonly waitAllClaims = new Set<WaitAllClaim>()
   private readonly defaultWaitAllTargets = new Map<string, Set<string>>()
   private readonly shutdownController = new AbortController()
+  private shuttingDown?: Deferred.Deferred<void>
   private readonly inspector: ProcessInspectorShape
   private readonly platform: NodeJS.Platform
   private readonly processSpawner: BunChildProcessSpawner
@@ -1420,6 +1442,7 @@ export class AgentManager {
   private readonly reconciliation: Fiber.Fiber<void>
   /** Launches and terminations are forked here so an aborted caller leaves the child it started alone. */
   private readonly detachedScope: Scope.Closeable = Scope.makeUnsafe()
+  private readonly launchesInFlight = new Set<Deferred.Deferred<void>>()
   private readonly options: AgentManagerOptions
   private config: SubagentConfig = {}
 
@@ -1524,15 +1547,42 @@ export class AgentManager {
       .length
   }
 
+  private claudeLaunchLimitReached(excludeAgentId?: string): boolean {
+    return this.countLiveClaudeAgents(excludeAgentId) + this.reservedClaudeLaunches >= MAX_LIVE_CLAUDE_AGENTS
+  }
+
   private assertClaudeLaunchAllowed(info: Pick<AgentInfo, 'id' | 'modelId'>): Effect.Effect<void, SubagentError> {
     return Effect.suspend(() =>
-      isClaudeModelId(info.modelId) && this.countLiveClaudeAgents(info.id) >= MAX_LIVE_CLAUDE_AGENTS
-        ? Effect.fail(
-            subagentError(
-              `At most ${MAX_LIVE_CLAUDE_AGENTS} Claude-backed subagents may run at once. Wait for one to finish or use a non-Claude profile.`
-            )
-          )
-        : Effect.void
+      isClaudeModelId(info.modelId) && this.claudeLaunchLimitReached(info.id) ? Effect.fail(claudeLaunchLimitError()) : Effect.void
+    )
+  }
+
+  /**
+   * Admission counts published agents, but publication only happens after asynchronous setup, so
+   * concurrent launches would otherwise all pass the check. The reservation is taken in the same
+   * synchronous step as the check and released on every exit; a launch therefore counts twice
+   * between publication and release, which can only reject too eagerly, never over-admit.
+   */
+  private withClaudeLaunchSlot<Value, Failure>(
+    info: Pick<AgentInfo, 'id' | 'modelId'>,
+    launch: Effect.Effect<Value, Failure>
+  ): Effect.Effect<Value, Failure | SubagentError> {
+    if (!isClaudeModelId(info.modelId)) {
+      return launch
+    }
+    return Effect.acquireUseRelease(
+      Effect.suspend(() => {
+        if (this.claudeLaunchLimitReached(info.id)) {
+          return Effect.fail(claudeLaunchLimitError())
+        }
+        this.reservedClaudeLaunches += 1
+        return Effect.void
+      }),
+      () => launch,
+      () =>
+        Effect.sync(() => {
+          this.reservedClaudeLaunches -= 1
+        })
     )
   }
 
@@ -1572,31 +1622,61 @@ export class AgentManager {
     const file = join(dirname(info.infoFile), `${info.id}.follow-up`)
     const token = randomUUID()
     return createHeldFile({ content: jsonText({ token }), path: file }).pipe(
-      Effect.flatMap((handle) => this.setFollowUpUsed(info, live, true).pipe(Effect.as({ file, handle, token }))),
       Effect.mapError((error) =>
         errorCode(error) === 'EEXIST'
           ? subagentError(`Agent ${info.canonicalName} already used its single follow-up. Spawn a fresh agent with a narrow task instead.`, error)
           : subagentError(causeMessage(error), error)
-      )
+      ),
+      Effect.flatMap((handle) =>
+        this.setFollowUpUsed(info, live, true).pipe(
+          Effect.as({ file, handle, settled: false, token }),
+          // Anything short of a claimed follow-up must give the claim back, defects and interruption included.
+          Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : releaseTaskLock(file, handle, token)))
+        )
+      ),
+      /*
+       * The descriptor is caller-owned, so acquiring it and installing the release above must be one
+       * atomic step: an interrupt landing between them would strand both the descriptor and the file.
+       */
+      Effect.uninterruptible
     )
   }
 
   private commitFollowUp(claim: FollowUpClaim): void {
+    claim.settled = true
     closeHeldFile(claim.handle)
   }
 
+  /*
+   * Spans claim to commit so interruption or a defect in the window after the message is accepted but
+   * before it is committed still gives the single follow-up back instead of burning it and leaking
+   * the held descriptor. A no-op once the call site has already settled the claim itself, which lets
+   * those sites keep ordering their own recovery around the rollback.
+   */
+  private withFollowUpClaim<Value, Failure>(
+    info: AgentInfo,
+    claim: FollowUpClaim,
+    body: Effect.Effect<Value, Failure>
+  ): Effect.Effect<Value, Failure> {
+    return body.pipe(Effect.onExit(() => this.rollbackFollowUp(info, this.live.get(info.id), claim)))
+  }
+
   private rollbackFollowUp(info: AgentInfo, live: LiveAgent | undefined, claim: FollowUpClaim): Effect.Effect<void> {
+    if (claim.settled) {
+      return Effect.void
+    }
+    claim.settled = true
     return this.setFollowUpUsed(info, live, false).pipe(Effect.ensuring(releaseTaskLock(claim.file, claim.handle, claim.token)))
   }
 
-  private restartForFollowUp(info: AgentInfo, claim: FollowUpClaim): Effect.Effect<LiveAgent, SubagentFailure> {
+  private restartForFollowUp(info: AgentInfo): Effect.Effect<LiveAgent, SubagentFailure> {
     return Effect.gen({ self: this }, function* () {
       if (info.childProcess !== undefined) {
         yield* this.terminateOwnedChild(info)
       }
       yield* this.markInterruptedIfRunning(info, { notify: false })
       return yield* this.startLiveAgent(info)
-    }).pipe(Effect.tapError(() => this.rollbackFollowUp(info, undefined, claim)))
+    })
   }
 
   private steerFollowUp(
@@ -1606,8 +1686,13 @@ export class AgentManager {
     claim: FollowUpClaim
   ): Effect.Effect<{ delivery: 'steer' }, SubagentFailure> {
     return Effect.gen({ self: this }, function* () {
-      yield* this.sendCommand(live, { message, type: 'steer' }).pipe(Effect.tapError(() => this.rollbackFollowUp(info, live, claim)))
-      this.commitFollowUp(claim)
+      /*
+       * Once the child has accepted the message the follow-up is spent, so the commit cannot be
+       * skipped by an interrupt arriving between acceptance and the claim being settled.
+       */
+      yield* Effect.uninterruptible(
+        this.sendCommand(live, { message, type: 'steer' }).pipe(Effect.tap(() => Effect.sync(() => this.commitFollowUp(claim))))
+      )
       live.info.lastTaskMessage = message
       yield* this.recordActivity(live)
       return { delivery: 'steer' as const }
@@ -1621,15 +1706,17 @@ export class AgentManager {
     claim: FollowUpClaim
   ): Effect.Effect<{ delivery: 'prompt' }, SubagentFailure> {
     return Effect.gen({ self: this }, function* () {
-      yield* this.prompt(live, message, message).pipe(
-        Effect.tapError(() =>
-          Effect.gen({ self: this }, function* () {
-            yield* this.rollbackFollowUp(info, live, claim)
-            yield* this.terminateProcess(live).pipe(Effect.ignore)
-          })
+      yield* Effect.uninterruptible(
+        this.prompt(live, message, message).pipe(
+          Effect.tap(() => Effect.sync(() => this.commitFollowUp(claim))),
+          Effect.tapError(() =>
+            Effect.gen({ self: this }, function* () {
+              yield* this.rollbackFollowUp(info, live, claim)
+              yield* this.terminateProcess(live).pipe(Effect.ignore)
+            })
+          )
         )
       )
-      this.commitFollowUp(claim)
       return { delivery: 'prompt' as const }
     })
   }
@@ -1649,7 +1736,7 @@ export class AgentManager {
 
   private signalOwnedProcess(ownership: ChildProcessOwnership, signal: NodeJS.Signals): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
-      if (yield* this.inspector.ownershipMatches(ownership)) {
+      if ((yield* this.inspector.ownershipVerdict(ownership)) === 'match') {
         signalProcessGroup(ownership.pid, signal, this.platform !== 'win32')
       }
     })
@@ -1692,9 +1779,13 @@ export class AgentManager {
       if (ownership === undefined) {
         return true
       }
-      if (!(yield* this.inspector.ownershipMatches(ownership))) {
+      const verdict = yield* this.inspector.ownershipVerdict(ownership)
+      if (verdict === 'mismatch') {
         yield* this.clearChildOwnership(info, ownership.token)
         return true
+      }
+      if (verdict === 'unverifiable') {
+        return false
       }
       if (this.platform === 'win32') {
         yield* this.killWindowsTree(ownership.pid)
@@ -1706,7 +1797,7 @@ export class AgentManager {
           yield* waitForOwnedExit(this.inspector, ownership, 1000)
         }
       }
-      if (yield* this.inspector.ownershipMatches(ownership)) {
+      if ((yield* this.inspector.ownershipVerdict(ownership)) !== 'mismatch') {
         return false
       }
       yield* this.clearChildOwnership(info, ownership.token)
@@ -1735,18 +1826,49 @@ export class AgentManager {
         }
         return
       }
-      if (!(yield* this.inspector.ownershipMatches(ownership))) {
+      const verdict = yield* this.inspector.ownershipVerdict(ownership)
+      if (verdict === 'unverifiable') {
+        return
+      }
+      if (verdict === 'mismatch') {
         yield* this.markInterruptedIfRunning(info)
         yield* this.clearChildOwnership(info, ownership.token)
         return
       }
-      const ownerSnapshot = yield* this.inspector.inspect(ownership.ownerPid)
-      if (ownerProcessStillActive(ownership, ownerSnapshot)) {
+      /*
+       * `ownerIsActive` treats an unreadable probe as "still active", where `inspect` reports it as
+       * `undefined`: a transient `ps` failure must not be read as "the other manager is gone" and
+       * let this manager terminate a child that is still owned.
+       */
+      const ownedByAnotherProcess =
+        ownership.ownerPid !== process.pid &&
+        (yield* this.inspector.ownerIsActive({
+          pid: ownership.ownerPid,
+          ...(isNullOrUndefined(ownership.ownerProcessIdentity) ? {} : { processIdentity: ownership.ownerProcessIdentity }),
+        }))
+      if (ownedByAnotherProcess) {
         return
       }
       yield* this.markInterruptedIfRunning(info)
       yield* this.terminateOwnedChild(info)
     })
+  }
+
+  /**
+   * A launch is manager-owned from before the shutdown check until the child is published in
+   * `this.live`. Without that window, shutdown can scan an empty map and close `detachedScope`
+   * while a background setup is still about to publish a child nothing will then terminate.
+   */
+  private duringLaunch<Success, Failure>(body: Effect.Effect<Success, Failure>): Effect.Effect<Success, Failure> {
+    return Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const done = Deferred.makeUnsafe<void>()
+        this.launchesInFlight.add(done)
+        return done
+      }),
+      () => body,
+      (done) => Effect.sync(() => this.launchesInFlight.delete(done)).pipe(Effect.andThen(Deferred.succeed(done, undefined)))
+    )
   }
 
   private launchSpawn(
@@ -1755,19 +1877,22 @@ export class AgentManager {
     metadata: Omit<SpawnAgentResult, 'completion' | 'execution'>,
     options: LaunchSpawnOptions
   ): Effect.Effect<SpawnAgentResult, SubagentFailure> {
-    return Effect.gen({ self: this }, function* () {
-      if (!options.foreground) {
-        yield* this.startLiveAgent(info, message, message)
-        return { ...metadata, execution: 'background' as const }
-      }
-      const claim = this.registerWaiter(info.parentSessionId, new Set([info.canonicalName]), options.signal, true)
-      const launch = yield* Effect.forkIn(
-        this.startLiveAgent(info, message, message).pipe(Effect.ensuring(options.releaseLock())),
-        this.detachedScope
-      )
-      const [, completion] = yield* Effect.all([Fiber.join(launch), claim.await], { concurrency: 2 })
-      return { ...metadata, completion, execution: 'foreground' as const }
-    })
+    return this.duringLaunch(
+      Effect.gen({ self: this }, function* () {
+        if (!options.foreground) {
+          yield* failIfLaunchAborted(options)
+          yield* this.startLiveAgent(info, message, message)
+          return { ...metadata, execution: 'background' as const }
+        }
+        const claim = this.registerWaiter(info.parentSessionId, new Set([info.canonicalName]), options.signal, true)
+        const launch = yield* Effect.forkIn(
+          this.startLiveAgent(info, message, message).pipe(Effect.ensuring(options.releaseLock())),
+          this.detachedScope
+        )
+        const [, completion] = yield* Effect.all([Fiber.join(launch), claim.await], { concurrency: 2 })
+        return { ...metadata, completion, execution: 'foreground' as const }
+      })
+    )
   }
 
   /** Wins the per-task creation lock, retrying once after reclaiming a lock whose owner is gone. */
@@ -1839,16 +1964,20 @@ export class AgentManager {
   spawnAgent(params: SpawnAgentParams, options: SpawnAgentOptions = {}): Effect.Effect<SpawnAgentResult, SubagentFailure> {
     return Effect.gen({ self: this }, function* () {
       const execution = spawnExecution(options, this.shutdownController.signal)
-      yield* failIfForegroundAborted(execution)
+      yield* failIfLaunchAborted(execution)
       yield* this.ready()
-      yield* failIfForegroundAborted(execution)
+      yield* failIfLaunchAborted(execution)
       const taskName = yield* Effect.try({
         catch: (cause) => subagentError(causeMessage(cause), cause),
         try: () => normalizeTaskName(params.task_name),
       })
-      const resolved = resolveAgentConfig(params.agent_type, {
-        availableModels: params.availableModels,
-        parentModel: params.parentModel,
+      const resolved = yield* Effect.try({
+        catch: (cause) => subagentError(causeMessage(cause), cause),
+        try: () =>
+          resolveAgentConfig(params.agent_type, {
+            availableModels: params.availableModels,
+            parentModel: params.parentModel,
+          }),
       })
       yield* this.assertClaudeLaunchAllowed({ id: '', modelId: resolved.modelId })
       yield* ensurePrivateDirEffect(scopeDir(params.parentSessionId), true)
@@ -1902,13 +2031,32 @@ export class AgentManager {
     )
   }
 
-  private finishProcess(live: LiveAgent, error?: Error): Effect.Effect<void> {
+  private finishProcess(live: LiveAgent, error?: Error, options: { retainOwnership?: boolean } = {}): Effect.Effect<void> {
     return Effect.suspend(() => {
       if (live.processFinished) {
         return Effect.void
       }
       live.processFinished = true
       this.clearInactivityMonitor(live)
+      const markExited = this.markProcessExited(live)
+      /*
+       * `processFinished` is already true, so a later termination call returns immediately: the
+       * teardown below must therefore run even if persistence or ownership clearing dies, or the
+       * scope, map entry, pending requests, and exit waiters would be stranded forever.
+       */
+      const release = Effect.gen({ self: this }, function* () {
+        yield* markExited
+        const pending = yield* Ref.getAndSet(live.pending, HashMap.empty())
+        for (const [, deferred] of HashMap.entries(pending)) {
+          yield* Deferred.fail(deferred, subagentProcessError(error?.message ?? 'Child Pi process exited before responding.', error))
+        }
+        if (this.live.get(live.info.id) === live) {
+          this.live.delete(live.info.id)
+        }
+        yield* Scope.close(live.scope, Exit.void)
+        yield* Deferred.succeed(live.exit, undefined)
+      }).pipe(Effect.uninterruptible)
+
       return Effect.gen({ self: this }, function* () {
         yield* this.consumeAzureQuota(live)
         const persisted = yield* readInfoFileEffect(live.info.infoFile)
@@ -1916,23 +2064,18 @@ export class AgentManager {
           live.info = persisted
           live.finalizedRun = true
         }
-        const pending = yield* Ref.getAndSet(live.pending, HashMap.empty())
-        for (const [, deferred] of HashMap.entries(pending)) {
-          yield* Deferred.fail(deferred, subagentProcessError(error?.message ?? 'Child Pi process exited before responding.', error))
-        }
         if (!live.expectedExit && !live.finalizedRun && !FINAL_STATUSES.has(live.info.status)) {
           yield* this.markFailed(live, error?.message ?? 'Child Pi process exited unexpectedly.')
         }
+        /*
+         * A child that survived termination stays reconcilable: its ownership record is the only
+         * handle the next manager start has for reaping it, so it must outlive this teardown.
+         */
         const ownership = live.info.childProcess
-        if (ownership !== undefined) {
+        if (ownership !== undefined && options.retainOwnership !== true) {
           yield* this.clearChildOwnership(live.info, ownership.token)
         }
-        if (this.live.get(live.info.id) === live) {
-          this.live.delete(live.info.id)
-        }
-        yield* Scope.close(live.scope, Exit.void)
-        yield* Deferred.succeed(live.exit, undefined)
-      })
+      }).pipe(Effect.ensuring(release))
     })
   }
 
@@ -1951,9 +2094,19 @@ export class AgentManager {
       const stdoutDone = yield* Deferred.make<void>()
       const stderrDone = yield* Deferred.make<void>()
       const stdout = Stream.runForEach(proc.stdout, (chunk) =>
-        Effect.forEach(decoder.push(Buffer.from(chunk)), (line) => this.handleLine(live, line), { discard: true })
+        Effect.try({ catch: (cause) => subagentProcessError(causeMessage(cause), cause), try: () => decoder.push(Buffer.from(chunk)) }).pipe(
+          Effect.flatMap((lines) => Effect.forEach(lines, (line) => this.handleLine(live, line), { discard: true }))
+        )
       ).pipe(
-        Effect.andThen(Effect.forEach(decoder.end(), (line) => this.handleLine(live, line), { discard: true })),
+        /*
+         * `Effect.try` keeps `decoder.end()` lazy. Called eagerly it runs while the pipeline is
+         * still being built, flushes an empty buffer, and loses an unterminated final frame.
+         */
+        Effect.andThen(
+          Effect.try({ catch: (cause) => subagentProcessError(causeMessage(cause), cause), try: () => decoder.end() }).pipe(
+            Effect.flatMap((lines) => Effect.forEach(lines, (line) => this.handleLine(live, line), { discard: true }))
+          )
+        ),
         Effect.catch((error) => this.handleProcessStreamError(live, 'child stdout failed', error)),
         Effect.ensuring(Deferred.succeed(stdoutDone, undefined))
       )
@@ -1970,10 +2123,14 @@ export class AgentManager {
       const stdin = Stream.run(Stream.fromQueue(live.stdin), proc.stdin).pipe(
         Effect.catch((error) => this.handleProcessStreamError(live, 'child stdin failed', error))
       )
-      const awaitOutput = Effect.all([Deferred.await(stdoutDone), Deferred.await(stderrDone)], { concurrency: 2 }).pipe(Effect.asVoid)
+      const awaitOutput = Effect.all([Deferred.await(stdoutDone), Deferred.await(stderrDone)], { concurrency: 2 }).pipe(
+        Effect.timeoutOption(POST_EXIT_DRAIN_MS),
+        Effect.asVoid
+      )
       const exit = Effect.matchEffect(proc.exitCode, {
         onFailure: (cause) =>
           Effect.gen({ self: this }, function* () {
+            yield* this.markProcessExited(live)
             yield* awaitOutput
             yield* logger.info('exit', 'child exited', { error: causeMessage(cause) })
             const suffix = isNotEmptyString(live.stderr.trim()) ? `: ${live.stderr.trim().slice(-1000)}` : ''
@@ -1983,6 +2140,7 @@ export class AgentManager {
           }),
         onSuccess: (code) =>
           Effect.gen({ self: this }, function* () {
+            yield* this.markProcessExited(live)
             yield* awaitOutput
             yield* logger.info('exit', 'child exited', { code: Number(code), signal: undefined })
             const suffix = isNotEmptyString(live.stderr.trim()) ? `: ${live.stderr.trim().slice(-1000)}` : ''
@@ -1999,24 +2157,61 @@ export class AgentManager {
     })
   }
 
-  private startLiveAgent(info: AgentInfo, initialMessage?: string, displayMessage?: string): Effect.Effect<LiveAgent, SubagentFailure> {
+  /**
+   * Setup that ends without publishing a live agent would otherwise leave the persisted record at
+   * `starting` forever, so spawn and handshake share one exit handler.
+   */
+  private finalizeAbandonedSetup(info: AgentInfo, exit: Exit.Exit<LiveAgent, SubagentFailure>): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      if (Exit.isSuccess(exit) || this.live.has(info.id) || FINAL_STATUSES.has(info.status)) {
+        return Effect.void
+      }
+      if (Exit.hasInterrupts(exit)) {
+        return this.markInterruptedIfRunning(info)
+      }
+      const error = Exit.findErrorOption<LiveAgent, SubagentFailure>(exit)
+      return this.markSetupFailed(info, Option.isSome(error) ? error.value.message : 'Child Pi process setup failed.')
+    })
+  }
+
+  private abandonHandshake(live: LiveAgent, exit: Exit.Exit<unknown, SubagentFailure>): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
-      yield* this.assertClaudeLaunchAllowed(info)
+      const error = Exit.findErrorOption(exit)
+      if (!live.finalizedRun && !Exit.hasInterrupts(exit)) {
+        yield* this.markFailed(live, Option.isSome(error) ? error.value.message : 'Child Pi process setup failed.').pipe(Effect.ignoreCause)
+      }
+      // A kill that fails here leaves the persisted ownership record in place, so
+      // `reconcilePersistedChildren` reaps the child on the next manager start.
+      yield* this.terminateProcess(live).pipe(Effect.ignoreCause)
+    }).pipe(Effect.uninterruptible)
+  }
+
+  private markSetupFailed(info: AgentInfo, error: string): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      info.status = 'failed'
+      info.error = error
+      info.completedAt = yield* Clock.currentTimeMillis
+      info.lastActivity = info.completedAt
+      yield* saveInfo(info)
+      this.notifyStatusChange(info)
+    })
+  }
+
+  private startLiveAgent(info: AgentInfo, initialMessage?: string, displayMessage?: string): Effect.Effect<LiveAgent, SubagentFailure> {
+    const launch = Effect.gen({ self: this }, function* () {
       if (info.status !== 'starting' && info.status !== 'running') {
         this.notifyStatusChange({ ...info, lastActivity: yield* Clock.currentTimeMillis, status: 'starting' })
       }
       const live = yield* this.spawnLiveAgent(info)
       return yield* this.handshake(live, initialMessage, displayMessage).pipe(
-        Effect.tapError((error) =>
-          Effect.gen({ self: this }, function* () {
-            if (!live.finalizedRun) {
-              yield* this.markFailed(live, error.message)
-            }
-            yield* this.terminateProcess(live).pipe(Effect.ignore)
-          })
-        )
+        /*
+         * Exit-based, not `tapError`: persistence dies as a defect, and an interrupted handshake
+         * must not leave a spawned child running either.
+         */
+        Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : this.abandonHandshake(live, exit)))
       )
-    })
+    }).pipe(Effect.onExit((exit) => this.finalizeAbandonedSetup(info, exit)))
+    return this.withClaudeLaunchSlot(info, launch)
   }
 
   private spawnLiveAgent(info: AgentInfo): Effect.Effect<LiveAgent, SubagentProcessError> {
@@ -2024,9 +2219,11 @@ export class AgentManager {
       const launch = yield* getPiCommand(this.options.piCommand)
       const args = buildChildArgs(launch, info)
       const childToken = randomUUID()
-      const childEnv = buildChildEnv(info, childToken, this.options.childEnv)
+      const childEnv = buildChildEnv({ childToken, isReadonly: info.isReadonly, profile: info.profile }, this.options.childEnv, process.env)
       const scope = yield* Scope.make()
-      const stdin = yield* Queue.unbounded<Uint8Array, Cause.Done>()
+      // Bounded so a child that stops reading backs pressure up into `dispatchCommand`, whose
+      // `Effect.timeoutOrElse` then fails the send instead of buffering payloads without limit.
+      const stdin = yield* Queue.bounded<Uint8Array, Cause.Done>(STDIN_BUFFER_CAPACITY)
       let transferred = false
       return yield* Effect.gen({ self: this }, function* () {
         const { broadcaster, logger } = yield* Effect.uninterruptible(
@@ -2055,6 +2252,16 @@ export class AgentManager {
           stdout: 'pipe',
           windowsHide: false,
         })
+        /*
+         * The spawner's own finalizer signals `-pid` (the whole detached group) on scope close and
+         * on any non-zero exit, without the `ownershipVerdict` check every other signal in this
+         * module passes.
+         *
+         * ponytail: known ceiling — between the child exiting and `finishProcess` closing `scope`,
+         * a recycled PGID could be signalled instead. Replace this with an ownership-verified
+         * spawner adapter once the platform exposes an opt-out, or if a stray termination is
+         * ever observed.
+         */
         const proc = yield* this.processSpawner.spawn(command).pipe(
           Effect.provideService(Scope.Scope, scope),
           Effect.mapError((cause) => subagentProcessError(causeMessage(cause), cause))
@@ -2067,6 +2274,7 @@ export class AgentManager {
           candidateResponse: '',
           childToken,
           exit: Deferred.makeUnsafe<void>(),
+          exited: Deferred.makeUnsafe<void>(),
           expectedExit: false,
           finalizedRun: false,
           inactivityTimeoutMs: this.options.inactivityTimeoutMs ?? (this.config.inactivityMinutes ?? DEFAULT_INACTIVITY_MINUTES) * 60_000,
@@ -2074,6 +2282,7 @@ export class AgentManager {
           logger,
           pending: Ref.makeUnsafe(HashMap.empty()),
           proc,
+          processExited: false,
           processFinished: false,
           reqId: 0,
           scope,
@@ -2082,6 +2291,14 @@ export class AgentManager {
         }
         yield* this.wireChildProcess(live, new RpcJsonlDecoder())
         if (!live.processFinished) {
+          /*
+           * Shutdown waits for launches only for `SHUTDOWN_LAUNCH_DRAIN_MS`. Past that it has
+           * already scanned `this.live`, so publishing now would strand a child nothing terminates.
+           * Leaving `transferred` false instead tears the freshly spawned child down with the scope.
+           */
+          if (this.shutdownController.signal.aborted) {
+            return yield* subagentProcessError('Agent manager is shutting down.')
+          }
           this.live.set(info.id, live)
           this.resetInactivityMonitor(live)
         }
@@ -2305,7 +2522,8 @@ export class AgentManager {
       if (isEmptyString(line.trim())) {
         return
       }
-      const parsed = parseJsonText(line)
+      // A malformed frame must not end stdout consumption, so parsing stays a typed failure and falls through to the log below.
+      const parsed = yield* Effect.try(() => parseJsonText(line)).pipe(Effect.orElseSucceed(() => undefined))
       if (!Check(SubagentRpcEventSchema, parsed)) {
         yield* live.logger.info('rpc', 'ignored invalid JSON line', { line: line.slice(0, 1000) })
         return
@@ -2485,14 +2703,15 @@ export class AgentManager {
     const deferred = Deferred.makeUnsafe<AgentCompletionEvent, SubagentError>()
     const waiter: Waiter = { deferred, foreground, parentSessionId, targets }
     this.waiters.push(waiter)
+    const remove = (): boolean => {
+      const remaining = this.waiters.filter((candidate) => candidate !== waiter)
+      const wasRegistered = remaining.length !== this.waiters.length
+      this.waiters = remaining
+      return wasRegistered
+    }
     return {
-      await: Effect.raceFirst(Deferred.await(deferred), awaitAbort(signal)).pipe(
-        Effect.ensuring(
-          Effect.sync(() => {
-            this.waiters = this.waiters.filter((candidate) => candidate !== waiter)
-          })
-        )
-      ),
+      await: Effect.raceFirst(Deferred.await(deferred), awaitAbort(signal)).pipe(Effect.ensuring(Effect.sync(remove))),
+      withdraw: remove,
     }
   }
 
@@ -2539,21 +2758,29 @@ export class AgentManager {
       const waitSignal = this.waitSignal(signal)
       yield* failIfAborted(waitSignal)
       const normalizedTargets = targets !== undefined && targets.length > 0 ? new Set(targets.map(canonicalAgentName)) : undefined
+      /*
+       * Registered before the disk read: a completion arriving during it is delivered to this
+       * waiter instead of the mailbox, so a later registration would block forever. `withdraw`
+       * then reports whether the waiter is still unclaimed and may be replaced by a pre-check.
+       */
+      const waiter = this.registerWaiter(parentSessionId, normalizedTargets, waitSignal)
       const existing = consumeFirstMatchingMailboxEvent(this.mailbox, parentSessionId, normalizedTargets)
-      if (existing !== undefined) {
+      if (existing !== undefined && waiter.withdraw()) {
         this.finishWaitTarget(parentSessionId, existing.agentName)
         return {
           event: existing,
           message: `Wait completed: ${existing.agentName} ${existing.status}.`,
         }
       }
-      if (normalizedTargets !== undefined) {
-        const settled = yield* this.settledTargetWait(parentSessionId, normalizedTargets)
-        if (settled !== undefined) {
+      if (existing === undefined && normalizedTargets !== undefined) {
+        const settled = yield* this.settledTargetWait(parentSessionId, normalizedTargets).pipe(
+          Effect.tapError(() => Effect.sync(() => waiter.withdraw()))
+        )
+        if (settled !== undefined && waiter.withdraw()) {
           return settled
         }
       }
-      const event = yield* this.registerWaiter(parentSessionId, normalizedTargets, waitSignal).await
+      const event = yield* waiter.await
       this.finishWaitTarget(parentSessionId, event.agentName)
       return { event, message: `Wait completed: ${event.agentName} ${event.status}.` }
     })
@@ -2586,13 +2813,13 @@ export class AgentManager {
       const explicitTargets = targets !== undefined && targets.length > 0 ? new Set(targets.map(canonicalAgentName)) : undefined
       const defaultTargets = this.defaultWaitAllTargets.get(parentSessionId) ?? new Set<string>()
       const targetSet = explicitTargets ?? new Set(defaultTargets)
-      if (explicitTargets !== undefined) {
-        const infos = yield* readScopeInfos(parentSessionId)
-        const missing = [...explicitTargets].filter((target) => !infos.some((info) => target === info.canonicalName))
-        if (missing.length > 0) {
-          return yield* subagentError(`Agent not found in this parent session: ${missing.join(', ')}`)
-        }
-      }
+      /*
+       * Claimed before target validation reads the disk: a target completing during that read
+       * would otherwise be auto-delivered and then also returned here, breaking exactly-once
+       * completion delivery.
+       */
+      const claim: WaitAllClaim = { parentSessionId, suppressedEventIds: new Set<string>(), targets: targetSet }
+      this.waitAllClaims.add(claim)
       const matchingInfos = () =>
         readScopeInfos(parentSessionId).pipe(Effect.map((infos) => infos.filter((info) => targetSet.has(info.canonicalName))))
       const pendingNames = () =>
@@ -2613,9 +2840,14 @@ export class AgentManager {
           responses,
         }
       })
-      const claim: WaitAllClaim = { parentSessionId, suppressedEventIds: new Set<string>(), targets: targetSet }
-      this.waitAllClaims.add(claim)
-      const poll = Effect.gen(function* () {
+      const claimed = Effect.gen({ self: this }, function* () {
+        if (explicitTargets !== undefined) {
+          const infos = yield* readScopeInfos(parentSessionId)
+          const missing = [...explicitTargets].filter((target) => !infos.some((info) => target === info.canonicalName))
+          if (missing.length > 0) {
+            return yield* subagentError(`Agent not found in this parent session: ${missing.join(', ')}`)
+          }
+        }
         while (true) {
           if ((yield* pendingNames()).length === 0) {
             return yield* finalize
@@ -2623,7 +2855,7 @@ export class AgentManager {
           yield* Effect.raceFirst(Effect.sleep(250), awaitAbort(waitSignal))
         }
       })
-      return yield* poll.pipe(Effect.ensuring(Effect.sync(() => this.releaseWaitAllClaim(claim))))
+      return yield* claimed.pipe(Effect.ensuring(Effect.sync(() => this.releaseWaitAllClaim(claim))))
     })
   }
 
@@ -2662,10 +2894,16 @@ export class AgentManager {
       yield* this.assertContinuationAllowed(info, live)
       const wasLive = live !== undefined
       const claim = yield* this.claimFollowUp(info, live)
-      const liveAgent = live ?? (yield* this.restartForFollowUp(info, claim))
-      return yield* wasLive && (info.status === 'starting' || info.status === 'running')
-        ? this.steerFollowUp(info, liveAgent, message, claim)
-        : this.promptFollowUp(info, liveAgent, message, claim)
+      return yield* this.withFollowUpClaim(
+        info,
+        claim,
+        Effect.gen({ self: this }, function* () {
+          const liveAgent = live ?? (yield* this.restartForFollowUp(info))
+          return yield* wasLive && (info.status === 'starting' || info.status === 'running')
+            ? this.steerFollowUp(info, liveAgent, message, claim)
+            : this.promptFollowUp(info, liveAgent, message, claim)
+        })
+      )
     })
   }
 
@@ -2705,21 +2943,57 @@ export class AgentManager {
     })
   }
 
-  private signalProcessTree(live: LiveAgent, signal: ChildProcess.Signal): Effect.Effect<void> {
-    const direct = live.proc.kill({ killSignal: signal }).pipe(Effect.ignore)
-    if (this.platform === 'win32') {
-      return direct
+  /**
+   * The child can already be gone and its PID reused by the time this runs. The child handle is always safe, but a
+   * process-group signal and a Windows tree kill reach unrelated processes, so both are gated on
+   * a freshly re-verified ownership identity.
+   */
+  private killVerifiedTree(live: LiveAgent, kill: (ownership: ChildProcessOwnership) => Effect.Effect<void>): Effect.Effect<void> {
+    const ownership = live.info.childProcess
+    if (ownership === undefined) {
+      return Effect.void
     }
-    return Effect.try({
-      catch: () => undefined,
-      try: () => process.kill(-Number(live.proc.pid), signal),
-    }).pipe(
-      Effect.asVoid,
-      Effect.catch(() => direct)
+    return Effect.gen({ self: this }, function* () {
+      if ((yield* this.inspector.ownershipVerdict(ownership)) === 'match') {
+        yield* kill(ownership)
+      }
+    })
+  }
+
+  /*
+   * The child handle is not the safe fallback it looks like: the spawner kills the detached process
+   * group (`process.kill(-pid)`, `taskkill /T` on Windows) before it ever falls back to the bare
+   * PID, so an ungated `proc.kill` reaches whatever reused that PID. Every signal is therefore
+   * gated on a re-verified identity, and the handle is used only before one exists to verify.
+   */
+  private signalProcessTree(live: LiveAgent, signal: ChildProcess.Signal): Effect.Effect<void> {
+    if (live.info.childProcess === undefined) {
+      // Pre-handshake: ownership has not been recorded yet, so the handle is the only reference.
+      return live.proc.kill({ killSignal: signal }).pipe(Effect.ignore)
+    }
+    return this.killVerifiedTree(live, (ownership) =>
+      this.platform === 'win32'
+        ? live.proc.kill({ killSignal: signal }).pipe(Effect.ignore)
+        : Effect.sync(() => signalProcessGroup(ownership.pid, signal, true))
     )
   }
 
+  /**
+   * Signalling waits on process death alone: `live.exit` additionally waits for the post-exit
+   * output drain, so a child whose descendants hold the pipes open would look alive after it died.
+   */
+  private markProcessExited(live: LiveAgent): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      live.processExited = true
+      return Deferred.succeed(live.exited, undefined).pipe(Effect.asVoid)
+    })
+  }
+
   private awaitChildExit(live: LiveAgent, timeoutMs: number): Effect.Effect<void> {
+    return Deferred.await(live.exited).pipe(Effect.timeoutOption(timeoutMs), Effect.asVoid)
+  }
+
+  private awaitChildCleanup(live: LiveAgent, timeoutMs: number): Effect.Effect<void> {
     return Deferred.await(live.exit).pipe(Effect.timeoutOption(timeoutMs), Effect.asVoid)
   }
 
@@ -2733,15 +3007,21 @@ export class AgentManager {
       yield* abortRequest
       yield* Queue.end(live.stdin)
       yield* this.awaitChildExit(live, 500)
-      if (!live.processFinished) {
+      if (!live.processExited) {
         yield* this.signalProcessTree(live, 'SIGTERM')
         yield* this.awaitChildExit(live, 1000)
       }
-      if (!live.processFinished) {
-        yield* this.platform === 'win32' ? this.killWindowsTree(Number(live.proc.pid)) : this.signalProcessTree(live, 'SIGKILL')
+      if (!live.processExited) {
+        yield* this.platform === 'win32'
+          ? this.killVerifiedTree(live, (ownership) => this.killWindowsTree(ownership.pid))
+          : this.signalProcessTree(live, 'SIGKILL')
         yield* this.awaitChildExit(live, 1000)
       }
-      return live.processFinished
+      if (live.processExited) {
+        // The child is already gone; callers still expect its artifacts cleared, which only happens once output has drained.
+        yield* this.awaitChildCleanup(live, POST_EXIT_DRAIN_MS + 1000)
+      }
+      return live.processExited
     }).pipe(
       Effect.flatMap((finished) => (finished ? Effect.void : subagentError(`Unable to terminate child Pi process for ${live.info.canonicalName}.`)))
     )
@@ -2760,29 +3040,65 @@ export class AgentManager {
         live.termination = fiber
         return yield* Fiber.join(fiber)
       })
+    }).pipe(
+      // A failed attempt must not be cached, or interrupt and shutdown would only rejoin the failure.
+      Effect.tapError(() =>
+        Effect.sync(() => {
+          live.termination = undefined
+        })
+      )
+    )
+  }
+
+  /**
+   * Every caller awaits the same run: an interrupted first caller would otherwise abort the
+   * controller and then leave children, scopes, and exit watchers alive with nothing to reclaim them.
+   */
+  shutdown(): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      const inFlight = this.shuttingDown
+      if (inFlight !== undefined) {
+        return Deferred.await(inFlight)
+      }
+      const completed = Deferred.makeUnsafe<void>()
+      this.shuttingDown = completed
+      return this.teardown.pipe(Effect.ensuring(Deferred.succeed(completed, undefined)), Effect.uninterruptible)
     })
   }
 
-  shutdown(): Effect.Effect<void> {
-    return Effect.gen({ self: this }, function* () {
-      this.shutdownController.abort(new Error('Agent manager shut down.'))
-      yield* this.ready()
-      const stoppedAt = yield* Clock.currentTimeMillis
-      const terminations: Effect.Effect<void, SubagentError>[] = []
-      for (const live of this.live.values()) {
-        if (live.info.status === 'starting' || live.info.status === 'running') {
-          live.info.status = 'interrupted'
-          live.info.lastActivity = stoppedAt
-          live.finalizedRun = true
-          yield* saveInfo(live.info)
-          this.notifyStatusChange(live.info)
-        }
-        terminations.push(this.terminateProcess(live))
+  private readonly teardown: Effect.Effect<void> = Effect.gen({ self: this }, function* () {
+    this.shutdownController.abort(new Error('Agent manager shut down.'))
+    yield* this.ready()
+    // Bounded: a launch that ignores the abort must delay shutdown, not block it forever.
+    yield* Effect.forEach([...this.launchesInFlight], Deferred.await, { concurrency: 'unbounded' }).pipe(
+      Effect.timeoutOrElse({ duration: SHUTDOWN_LAUNCH_DRAIN_MS, orElse: () => Effect.void })
+    )
+    const stoppedAt = yield* Clock.currentTimeMillis
+    const stopping: { live: LiveAgent; terminate: Effect.Effect<void, SubagentError> }[] = []
+    for (const live of this.live.values()) {
+      if (live.info.status === 'starting' || live.info.status === 'running') {
+        live.info.status = 'interrupted'
+        live.info.lastActivity = stoppedAt
+        live.finalizedRun = true
+        yield* saveInfo(live.info)
+        this.notifyStatusChange(live.info)
       }
-      yield* Effect.forEach(terminations, Effect.exit, { concurrency: 'unbounded' })
-      yield* Scope.close(this.detachedScope, Exit.void)
-    })
-  }
+      stopping.push({ live, terminate: this.terminateProcess(live) })
+    }
+    /*
+     * Exit watchers live in `detachedScope`, so closing it interrupts any watcher still waiting on
+     * a child that refused to die, stranding that child's `live.scope` and its output readers.
+     * `finishProcess` is idempotent, so agents whose watcher already ran are unaffected, and a
+     * child that failed to terminate keeps its ownership record for the next start to reconcile.
+     */
+    yield* Effect.forEach(
+      stopping,
+      ({ live, terminate }) =>
+        Effect.exit(terminate).pipe(Effect.flatMap((exit) => this.finishProcess(live, undefined, { retainOwnership: Exit.isFailure(exit) }))),
+      { concurrency: 'unbounded', discard: true }
+    )
+    yield* Scope.close(this.detachedScope, Exit.void)
+  })
 }
 
 export const writeFullToolOutput = (content: string) =>

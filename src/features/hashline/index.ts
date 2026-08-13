@@ -25,8 +25,7 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
       runtime.runPromise(body(params, signal).pipe(Effect.provide(perInvocation(ctx))))
 
   pi.registerTool({
-    description:
-      'Read a file with stable line anchors and a content hash for hashline_write. Output is bounded; use offset and limit for large files. Protected credential paths are refused by this tool itself.',
+    description: `Read a file with stable line anchors and a content hash for hashline_write. Output is bounded; use offset and limit for large files. Protected credential paths are refused by this tool itself.`,
     execute: runTool(tools.read),
     label: 'Hashline Read',
     name: 'hashline_read',

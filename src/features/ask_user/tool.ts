@@ -1,8 +1,9 @@
-import { type ExtensionContext } from '@earendil-works/pi-coding-agent'
+import { type AgentToolResult, type ExtensionContext, type Theme } from '@earendil-works/pi-coding-agent'
 import {
   Editor,
   Key,
   matchesKey,
+  Text,
   truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
@@ -12,6 +13,7 @@ import {
 } from '@earendil-works/pi-tui'
 import { Data, Effect } from 'effect'
 import { Type, type Static } from 'typebox'
+import { Check } from 'typebox/schema'
 
 import { ToolFailure } from '@/shared/effect/errors.js'
 import { PiCtx } from '@/shared/effect/pi_services.js'
@@ -44,7 +46,7 @@ export const AskUserParams = Type.Object({
   }),
 })
 
-export const AskUserDetailsSchema = Type.Object({
+const AskUserDetailsSchema = Type.Object({
   answer: Type.Optional(Type.String()),
   cancelled: Type.Boolean(),
   options: Type.Array(Type.String()),
@@ -347,3 +349,34 @@ export const askUserEffect = (params: Static<typeof AskUserParams>, signal: Abor
       result.answer
     )
   })
+
+export const renderAskUserCall = (args: Partial<Static<typeof AskUserParams>>, theme: Theme): Component => {
+  let text = theme.fg('toolTitle', theme.bold('ask_user '))
+  text += theme.fg('muted', typeof args.question === 'string' ? args.question : '')
+  const options: DisplayOption[] = Array.isArray(args.options) ? args.options : []
+  if (options.length > 0) {
+    const numbered = options.map((option, index) => `${index + 1}. ${option.label}`)
+    text += `\n${theme.fg('dim', `  ${numbered.join('  ')}`)}`
+  }
+  return new Text(text, 0, 0)
+}
+
+export const renderAskUserResult = (result: AgentToolResult<unknown>, _options: unknown, theme: Theme): Component => {
+  const details = Check(AskUserDetailsSchema, result.details) ? result.details : undefined
+  if (details === undefined) {
+    const [first] = result.content
+    return new Text(first?.type === 'text' ? first.text : '', 0, 0)
+  }
+
+  if (details.cancelled || details.answer === undefined) {
+    return new Text(theme.fg('warning', '✗ dismissed'), 0, 0)
+  }
+
+  if (details.wasCustom) {
+    return new Text(theme.fg('success', '✓ ') + theme.fg('muted', '(wrote) ') + theme.fg('accent', details.answer), 0, 0)
+  }
+
+  const index = details.options.indexOf(details.answer) + 1
+  const display = index > 0 ? `${index}. ${details.answer}` : details.answer
+  return new Text(theme.fg('success', '✓ ') + theme.fg('accent', display), 0, 0)
+}

@@ -1,10 +1,22 @@
-/* oxlint-disable effecttsgo/node-builtin-import -- Effect FileSystem lacks no-follow metadata, typed directory entries, and descriptor identity operations required for safe deletion and cross-process locks. */
+/* oxlint-disable effecttsgo/node-builtin-import -- Effect FileSystem lacks no-follow metadata, typed directory entries, and the unscoped descriptor ownership cross-process locks need. */
 import fs from 'node:fs'
 
-import { Cause, Effect } from 'effect'
+import { type Cause, Effect } from 'effect'
 
-const unknownError = (cause: unknown): Cause.UnknownError =>
-  Cause.isUnknownError(cause) ? cause : new Cause.UnknownError(cause, cause instanceof Error ? cause.message : String(cause))
+import { unknownError } from '@/shared/effect/errors.js'
+
+const isMissingPathError = (error: unknown): boolean =>
+  error instanceof Error && 'code' in error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')
+
+/** Held files carry one small lock record, so a larger file is corrupt or hostile and is never read into memory. */
+const MAX_HELD_FILE_BYTES = 64 * 1024
+
+const readHeldContent = (descriptor: number, size: number): string => {
+  if (size > MAX_HELD_FILE_BYTES) {
+    throw new Error(`Held file is larger than ${MAX_HELD_FILE_BYTES} bytes`)
+  }
+  return fs.readFileSync(descriptor, 'utf8')
+}
 
 export interface HostFileInfo {
   readonly isDirectory: boolean
@@ -57,12 +69,13 @@ interface HeldState {
 
 const heldFiles = new WeakMap<HeldFile, HeldState>()
 
-const heldFile = (descriptor: number, content = fs.readFileSync(descriptor, 'utf8')): HeldFile => {
+const heldFile = (descriptor: number, content?: string): HeldFile => {
+  const stat = fs.fstatSync(descriptor)
   const handle = { [HeldFileTypeId]: true } as const
   heldFiles.set(handle, {
-    content,
+    content: content ?? readHeldContent(descriptor, stat.size),
     descriptor,
-    stat: fs.fstatSync(descriptor),
+    stat,
   })
   return handle
 }
@@ -89,6 +102,12 @@ export const openHeldFile = (path: string): Effect.Effect<HeldFile, Cause.Unknow
     },
   })
 
+/**
+ * Unlike {@link withHeldFile} this handle is deliberately not scoped: the descriptor is a
+ * cross-process lock that must outlive the effect taking it, so the caller owns `closeHeldFile`.
+ * Acquire it inside an uninterruptible region, or interruption can strand the descriptor before
+ * the caller's release is installed.
+ */
 export const createHeldFile = ({ path, content }: { path: string; content: string }): Effect.Effect<HeldFile, Cause.UnknownError> =>
   Effect.try({
     catch: unknownError,
@@ -99,6 +118,11 @@ export const createHeldFile = ({ path, content }: { path: string; content: strin
         return heldFile(descriptor, content)
       } catch (error) {
         fs.closeSync(descriptor)
+        try {
+          fs.unlinkSync(path)
+        } catch {
+          /* The partial file is unreachable anyway; the original failure is what matters. */
+        }
         throw error
       }
     },
@@ -114,6 +138,16 @@ export const closeHeldFile = (handle: HeldFile): void => {
   }
 }
 
+/**
+ * Descriptors are closed by the release step, so interruption between opening the file and the
+ * caller's own error handling cannot leak one.
+ */
+export const withHeldFile = <Value, Failure, Services>(
+  path: string,
+  use: (handle: HeldFile) => Effect.Effect<Value, Failure, Services>
+): Effect.Effect<Value, Failure | Cause.UnknownError, Services> =>
+  Effect.acquireUseRelease(openHeldFile(path), use, (handle) => Effect.sync(() => closeHeldFile(handle)))
+
 const revalidateAndRemoveHeldFile = ({
   path,
   handle,
@@ -127,20 +161,30 @@ const revalidateAndRemoveHeldFile = ({
   let currentDescriptor: number | undefined
   try {
     currentDescriptor = fs.openSync(path, 'r')
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return false
+    }
+    throw error
+  }
+  try {
     const currentStat = fs.fstatSync(currentDescriptor)
-    const currentContent = fs.readFileSync(currentDescriptor, 'utf8')
-    if (held.stat.dev !== currentStat.dev || held.stat.ino !== currentStat.ino || !contentMatches(currentContent)) {
+    if (held.stat.dev !== currentStat.dev || held.stat.ino !== currentStat.ino) {
+      return false
+    }
+    if (!contentMatches(readHeldContent(currentDescriptor, currentStat.size))) {
       return false
     }
     // Ponytail: check-then-unlink syscall ceiling; use an OS advisory lock or transactional store if hostile replacement after final validation must be fenced.
     fs.unlinkSync(path)
     return true
-  } catch {
-    return false
-  } finally {
-    if (currentDescriptor !== undefined) {
-      fs.closeSync(currentDescriptor)
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return false
     }
+    throw error
+  } finally {
+    fs.closeSync(currentDescriptor)
   }
 }
 
@@ -154,10 +198,10 @@ export const removeHeldFileIfUnchanged = ({
   handle: HeldFile
   contentMatches: (content: string) => boolean
   beforeRevalidate?: (path: string) => Effect.Effect<void, Cause.UnknownError>
-}): Effect.Effect<boolean> =>
+}): Effect.Effect<boolean, Cause.UnknownError> =>
   Effect.gen(function* () {
     if (beforeRevalidate !== undefined) {
       yield* beforeRevalidate(path)
     }
-    return revalidateAndRemoveHeldFile({ contentMatches, handle, path })
-  }).pipe(Effect.orElseSucceed(() => false))
+    return yield* Effect.try({ catch: unknownError, try: () => revalidateAndRemoveHeldFile({ contentMatches, handle, path }) })
+  })

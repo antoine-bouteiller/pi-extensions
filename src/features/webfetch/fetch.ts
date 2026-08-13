@@ -168,13 +168,15 @@ const requestHeaders = (format: WebfetchFormat): Record<string, string> => ({
 })
 
 /**
- * `HttpClientResponse` never exposes `statusText` or the post-redirect `url` (effect v4
- * beta.102 has no client-side accessor for either). `FetchHttpClient.Fetch` runs exactly
- * once per request (no retry), so wrapping it here to capture the raw values alongside the
- * real fetch call is safe and does not change what is sent over the wire.
+ * `HttpClientResponse` exposes neither `statusText` nor the raw body needed to cancel an
+ * abandoned redirect hop (effect v4 beta.102 has no client-side accessor for either).
+ * `FetchHttpClient.Fetch` runs exactly once per request (no retry), so wrapping it here to
+ * capture the raw values alongside the real fetch call is safe and does not change what is
+ * sent over the wire.
  */
 interface RawResponseMeta {
   readonly statusText: string
+  readonly body: ReadableStream<Uint8Array> | null
   readonly url: string
 }
 
@@ -182,16 +184,18 @@ const capturingFetch = (raw: typeof fetch, box: { current?: RawResponseMeta }): 
   // oxlint-disable-next-line effecttsgo/async-function -- Must stay assignable to `typeof fetch` for the callers that receive it.
   const wrapped = async (input: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1]): ReturnType<typeof fetch> => {
     const response = await raw(input, init)
-    box.current = { statusText: response.statusText, url: response.url }
+    box.current = { body: response.body, statusText: response.statusText, url: response.url }
     return response
   }
   return Object.assign(wrapped, { preconnect: raw.preconnect })
 }
 
+/** Redirects are followed by `fetch` itself; `response.url` is the hop the body finally came from. */
 const executeRequest = (
-  request: HttpClientRequest.HttpClientRequest
+  url: URL,
+  format: WebfetchFormat
 ): Effect.Effect<
-  { meta: RawResponseMeta | undefined; response: HttpClientResponse.HttpClientResponse },
+  { finalUrl: string; meta: RawResponseMeta | undefined; response: HttpClientResponse.HttpClientResponse },
   HttpClientError.HttpClientError,
   HttpClient.HttpClient
 > =>
@@ -199,17 +203,28 @@ const executeRequest = (
     const client = yield* HttpClient.HttpClient
     const rawFetch = yield* FetchHttpClient.Fetch
     const box: { current?: RawResponseMeta } = {}
-    const response = yield* client.execute(request).pipe(Effect.provideService(FetchHttpClient.Fetch, capturingFetch(rawFetch, box)))
-    return { meta: box.current, response }
+    const response = yield* client
+      .execute(HttpClientRequest.get(url, { headers: requestHeaders(format) }))
+      .pipe(Effect.provideService(FetchHttpClient.Fetch, capturingFetch(rawFetch, box)))
+    const meta = box.current
+    return { finalUrl: isNullOrUndefined(meta) || isEmptyString(meta.url) ? url.href : meta.url, meta, response }
   })
 
 const isEmptyBodyError = (error: unknown): error is HttpClientError.HttpClientError =>
   HttpClientError.isHttpClientError(error) && error.reason._tag === 'EmptyBodyError'
 
-const readCappedBody = (response: HttpClientResponse.HttpClientResponse): Effect.Effect<Uint8Array, ToolFailure | HttpClientError.HttpClientError> =>
+const readCappedBody = (
+  response: HttpClientResponse.HttpClientResponse,
+  meta: RawResponseMeta | undefined
+): Effect.Effect<Uint8Array, ToolFailure | HttpClientError.HttpClientError> =>
   Effect.gen(function* () {
     const declaredLength = Number(response.headers['content-length'])
     if (Number.isFinite(declaredLength) && declaredLength > MAX_DOWNLOAD_BYTES) {
+      /*
+       * Rejecting on the declared length alone leaves the body unread, so it is cancelled here for
+       * the same reason an abandoned redirect hop is: otherwise the connection is held until GC.
+       */
+      yield* Effect.promise(() => meta?.body?.cancel() ?? Promise.resolve()).pipe(Effect.ignore)
       return yield* ToolFailure.make({
         message: `Response is too large: ${formatSize(declaredLength)} exceeds the ${formatSize(MAX_DOWNLOAD_BYTES)} download limit`,
       })
@@ -334,14 +349,12 @@ const fetchResult = ({
       details: {},
     })
 
-    const request = HttpClientRequest.get(url, { headers: requestHeaders(format) })
-
     const main = Effect.gen(function* () {
-      const { meta, response } = yield* executeRequest(request)
-      const body = yield* readCappedBody(response)
+      const { finalUrl, meta, response } = yield* executeRequest(url, format)
+      const body = yield* readCappedBody(response, meta)
       return yield* buildFetchResult({
         body,
-        finalUrl: meta?.url || url.href,
+        finalUrl,
         format,
         response,
         statusText: meta?.statusText ?? '',

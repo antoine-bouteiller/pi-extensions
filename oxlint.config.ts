@@ -21,19 +21,50 @@ export default defineConfig({
   overrides: [
     {
       /*
-       * Each feature's `index.ts` is the only Pi boundary: it registers tools, commands, and hooks
-       * and bridges them onto Effect. Pi awaits those callbacks and types some of them as nullable,
-       * so both rules are relaxed for that file alone.
+       * Each feature's `index.ts` owns that feature's Pi registration: it registers tools, commands,
+       * and hooks and bridges them onto Effect. Pi awaits those callbacks, so this rule is relaxed
+       * for the registration files only.
        */
       files: ['src/features/*/index.ts'],
       rules: {
         'effecttsgo/async-function': 'off',
+      },
+    },
+    {
+      // Only the MCP gateway registration has to hand `null` back to a Pi API that requires it.
+      files: ['src/features/mcp/index.ts'],
+      rules: {
         'unicorn/no-null': 'off',
       },
     },
     {
-      files: ['tests/**/*.ts'],
+      /*
+       * The only sanctioned ambient environment reads: module-level constants resolved at import
+       * time, synchronous Pi/TUI callbacks, and the child-process environment `sub_agents` builds.
+       * `Config` can only be read from an Effect context, so these cannot go through it. Every
+       * other module must keep environment access inside an Effect.
+       */
+      files: [
+        'src/features/caffeinate/keep_awake.ts',
+        'src/features/mcp/gateway.ts',
+        'src/features/mcp/manager.ts',
+        'src/features/meridian_session_affinity/affinity.ts',
+        'src/features/status_panel/index.ts',
+        'src/features/status_panel/panel.ts',
+        'src/features/status_panel/sidebar.ts',
+        'src/features/sub_agents/agents.ts',
+        'src/features/sub_agents/core.ts',
+        'src/shared/state/azure_quota.ts',
+      ],
       rules: {
+        'effecttsgo/process-env': 'off',
+      },
+    },
+    {
+      files: ['tests/**'],
+      rules: {
+        // Specs drive features that read the environment; `withProcessEnv` restores it afterwards.
+        'effecttsgo/process-env': 'off',
         // Tests are application entry points: each spec provides its own layer, so scope lifetimes don't apply.
         'effecttsgo/strict-effect-provide': 'off',
       },
@@ -43,7 +74,7 @@ export default defineConfig({
   rules: {
     // Restriction
     complexity: ['error', 15],
-    // Pi calls tool `execute(toolCallId, params, signal, onUpdate, ctx)` positionally, so 5 is the framework"s floor.
+    // Pi calls tool `execute(toolCallId, params, signal, onUpdate, ctx)` positionally, so 5 is the framework's floor.
     'max-params': ['error', 5],
     'no-array-for-each': 'error',
     'no-console': 'error',
@@ -63,7 +94,7 @@ export default defineConfig({
 
     // Suspicious
     'no-unassigned-import': 'off',
-    // `_tag` is Effect"s discriminant on Exit, Cause, and tagged errors — reading it is public API.
+    // `_tag` is Effect's discriminant on Exit, Cause, and tagged errors — reading it is public API.
     'no-underscore-dangle': ['error', { allow: ['_tag'] }],
 
     // Style
@@ -80,6 +111,7 @@ export default defineConfig({
     'no-magic-numbers': 'off',
     'no-named-export': 'off',
     'no-nodejs-modules': 'off',
+    // Synchronous Pi/TUI callbacks have to bridge through `Effect.runSync` and `Schema.*Sync`.
     'no-sync': 'off',
     'no-ternary': 'off',
     'prefer-default-export': 'off',
@@ -88,8 +120,7 @@ export default defineConfig({
     'throw-new-error': 'off',
     'unicorn/filename-case': ['error', { cases: { snakeCase: true } }],
 
-    // Off by design — default-on in standalone oxlint but not pertinent here:
-    // Zod schemas nest calls inherently; fs.ts exposes deliberate safe*Sync wrappers.
+    // Off by design — default-on in standalone oxlint: schema and Effect pipelines nest calls inherently.
     'unicorn/max-nested-calls': 'off',
 
     /*
@@ -97,11 +128,5 @@ export default defineConfig({
      * package is ever called data-last, so the rule only produced `Function.dual` boilerplate.
      */
     'effecttsgo/missing-pipeable-signature': 'off',
-
-    /*
-     * Every environment read in this package is either a module-level constant resolved at import
-     * time or a synchronous Pi/TUI callback, and `Config` can only be read from an Effect context.
-     */
-    'effecttsgo/process-env': 'off',
   },
 })

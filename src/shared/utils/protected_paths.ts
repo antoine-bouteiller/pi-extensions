@@ -13,6 +13,7 @@ const ALWAYS_PROTECTED_PATTERNS = [
   /(?<prefix>^|\/)(?:\.envrc|\.git-credentials|\.netrc|\.npmrc|\.pypirc|auth\.json)$/,
   /(?<prefix>^|\/)id_(?:ed25519|rsa)(?:\.pub)?$/,
   /(?<prefix>^|\/)\.aws\/(?:config|credentials)$/,
+  /(?<prefix>^|\/)\.docker\/config\.json$/,
   /(?<prefix>^|\/)\.kube\/config$/,
   /(?<prefix>^|\/)\.config\/(?:gcloud(?:\/|$)|gh\/hosts\.yml$)/,
   /\.(?:kdbx|key|p12|pem)$/,

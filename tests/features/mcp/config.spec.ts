@@ -197,6 +197,46 @@ describe('global MCP config parsing', () => {
     })
   )
 
+  it.effect('isolates malformed, non-http, and credential-bearing URLs as invalid config', () =>
+    Effect.sync(() => {
+      expect(
+        parseMcpConfig({
+          mcpServers: {
+            credentials: { url: 'https://user:secret@x.test/mcp' },
+            fileScheme: { url: 'file:///etc/passwd' },
+            loopback: { url: 'http://127.0.0.1:8080/mcp' },
+            notAUrl: { url: 'not a url' },
+            valid: { url: 'https://x.test/mcp' },
+          },
+        })
+      ).toEqual({
+        credentials: { invalid: true },
+        fileScheme: { invalid: true },
+        loopback: { type: 'http', url: 'http://127.0.0.1:8080/mcp' },
+        notAUrl: { invalid: true },
+        valid: { type: 'http', url: 'https://x.test/mcp' },
+      })
+    })
+  )
+
+  it.effect('accepts http and https URLs alike', () =>
+    Effect.sync(() => {
+      expect(
+        parseMcpConfig({
+          mcpServers: {
+            namedLoopback: { url: 'http://localhost:8080/mcp' },
+            remotePlaintext: { url: 'http://mcp.example.test/mcp' },
+            secure: { url: 'https://mcp.example.test/mcp' },
+          },
+        })
+      ).toEqual({
+        namedLoopback: { type: 'http', url: 'http://localhost:8080/mcp' },
+        remotePlaintext: { type: 'http', url: 'http://mcp.example.test/mcp' },
+        secure: { type: 'http', url: 'https://mcp.example.test/mcp' },
+      })
+    })
+  )
+
   it.effect('tolerates unknown root fields and marks unsupported nested fields invalid', () =>
     Effect.gen(function* () {
       expect(yield* parseMcpConfigEffect({ futureRootField: true, mcpServers: { broken: { command: 42 }, local: { command: 'server' } } })).toEqual({

@@ -5,7 +5,7 @@ import { FileSystem } from 'effect/FileSystem'
 import { Path } from 'effect/Path'
 import { type PlatformError } from 'effect/PlatformError'
 
-import { isEmptyString, isTrue } from '@/shared/utils/predicates.js'
+import { isEmptyString, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 
 import {
   type DisabledServerConfig,
@@ -82,6 +82,18 @@ const isObject = (value: unknown): value is Record<string, unknown> => {
 
 const fail = (path: string, message: string): never => {
   throw McpConfigError.from(path, message)
+}
+
+/** Rejected here so a bad URL is an isolated `invalid-config` entry, not a server that fails at connect time. */
+const httpUrl = (value: string, path: string): string => {
+  const url = URL.parse(value)
+  if (isNullOrUndefined(url) || (url.protocol !== 'http:' && url.protocol !== 'https:')) {
+    return fail(path, 'must be an http or https URL')
+  }
+  if (!isEmptyString(url.username) || !isEmptyString(url.password)) {
+    return fail(path, 'must not embed credentials; use headers or oauth')
+  }
+  return value
 }
 
 const optionalBoolean = (value: unknown, path: string): boolean | undefined => {
@@ -253,7 +265,7 @@ const parseHttpServer = (path: string, value: Record<string, unknown>, disabled:
 
   const server: HttpServerConfig = {
     type: 'http',
-    url: requiredString(value.url, `${path}.url`),
+    url: httpUrl(requiredString(value.url, `${path}.url`), `${path}.url`),
   }
   const headers = stringMap(value.headers, `${path}.headers`)
   const oauth = parseOAuth(value.oauth, `${path}.oauth`)
@@ -364,7 +376,7 @@ export const loadMcpConfigFile = (path: string): Effect.Effect<McpServerMap, Mcp
       Effect.catchIf(isMissingFile, () => Effect.void)
     )
     if (text === undefined) {
-      return missingConfig
+      return { ...missingConfig }
     }
     return yield* Effect.try({
       catch: (cause) =>

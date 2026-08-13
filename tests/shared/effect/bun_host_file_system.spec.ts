@@ -1,11 +1,14 @@
-import { Cause, Effect } from 'effect'
+import { Cause, Effect, Result } from 'effect'
 
 import {
   closeHeldFile,
   createHeldFile,
+  heldFileContent,
   lstatHostFile,
+  openHeldFile,
   readHostDirectoryEntries,
   removeHeldFileIfUnchanged,
+  withHeldFile,
 } from '@/shared/effect/bun_host_file_system.js'
 import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
 
@@ -23,7 +26,18 @@ describe('Bun host filesystem boundary', () => {
         'openHeldFile',
         'readHostDirectoryEntries',
         'removeHeldFileIfUnchanged',
+        'withHeldFile',
       ])
+    })
+  )
+
+  it.live('refuses to read a held file larger than the lock-record ceiling', () =>
+    Effect.gen(function* () {
+      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'bun-host-lock-' })
+      const path = bunPath.join(root, 'oversized')
+      yield* bunFileSystem.writeFileString(path, 'x'.repeat(64 * 1024 + 1))
+      const opened = yield* Effect.result(openHeldFile(path))
+      expect(Result.isFailure(opened)).toBe(true)
     })
   )
 
@@ -75,6 +89,42 @@ describe('Bun host filesystem boundary', () => {
       try {
         expect(yield* removeHeldFileIfUnchanged({ contentMatches: (content) => content === 'owned', handle: held, path })).toBe(true)
         expect(yield* bunFileSystem.exists(path)).toBe(false)
+      } finally {
+        closeHeldFile(held)
+      }
+    })
+  )
+
+  it.live('reads a held file through a scope that closes it on failure', () =>
+    Effect.gen(function* () {
+      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'bun-host-scoped-' })
+      const path = bunPath.join(root, 'lock')
+      yield* bunFileSystem.writeFileString(path, 'owned')
+
+      expect(yield* withHeldFile(path, (held) => Effect.succeed(heldFileContent(held)))).toBe('owned')
+      const outcome = yield* Effect.result(withHeldFile(path, () => Effect.fail('use failed')))
+      expect(Result.isFailure(outcome) && outcome.failure).toBe('use failed')
+    })
+  )
+
+  it.live('reports an absent file as unremoved but surfaces a revalidation failure', () =>
+    Effect.gen(function* () {
+      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'bun-host-absent-' })
+      const path = bunPath.join(root, 'lock')
+      const held = yield* createHeldFile({ content: 'owned', path })
+      try {
+        const failure = yield* Effect.result(
+          removeHeldFileIfUnchanged({
+            beforeRevalidate: () => Effect.fail(new Cause.UnknownError('revalidation unavailable')),
+            contentMatches: () => true,
+            handle: held,
+            path,
+          })
+        )
+        expect(Result.isFailure(failure)).toBe(true)
+
+        yield* bunFileSystem.remove(path)
+        expect(yield* removeHeldFileIfUnchanged({ contentMatches: () => true, handle: held, path })).toBe(false)
       } finally {
         closeHeldFile(held)
       }

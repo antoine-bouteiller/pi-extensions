@@ -21,12 +21,17 @@ export interface KeepAwake {
   readonly stop: () => Promise<void>
 }
 
+/** `stop()` must not be able to hang the session: the child is force-killed if SIGTERM is ignored. */
+const KILL_ESCALATION_MS = 1000
+const STOP_TIMEOUT_MS = 2000
+
 const spawnCaffeinate = (command: string, args: readonly string[]): Promise<CaffeinateProcess> => {
   const scope = Scope.makeUnsafe()
   const spawn = bunChildProcessSpawner
     .spawn(
       ChildProcess.make(command, args, {
         detached: false,
+        forceKillAfter: KILL_ESCALATION_MS,
         stderr: 'ignore',
         stdin: 'ignore',
         stdout: 'ignore',
@@ -102,7 +107,16 @@ export const makeKeepAwake = (dependencies: CaffeinateDependencies): KeepAwake =
     running = undefined
     current.cancelled = true
     void killCaffeinate(current)
-    return current.completion.promise
+    /*
+     * Bounded so `agent_settled` and `session_shutdown` always return: an unresolved spawn or a
+     * child that never reports exit would otherwise block the handler forever.
+     */
+    return Effect.runPromise(
+      Effect.raceFirst(
+        Effect.promise(() => current.completion.promise),
+        Effect.sleep(STOP_TIMEOUT_MS)
+      )
+    )
   }
 
   return { start, stop }

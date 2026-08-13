@@ -23,4 +23,6 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: 
   pi.registerCommand('subagent', feature.subagentCommand)
   pi.registerCommand('agents', feature.browseAgentsCommand)
   pi.registerCommand('subagents', feature.browseAgentsCommand)
+
+  pi.registerMessageRenderer(feature.completionMessageType, feature.renderCompletionMessage)
 }

@@ -1,5 +1,6 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
+import { type ProcessRuntime } from '@/config/runtime.js'
 import { register as askUser } from '@/features/ask_user/index.js'
 import { register as backgroundPoll } from '@/features/background_poll/index.js'
 import { register as caffeinate } from '@/features/caffeinate/index.js'
@@ -15,8 +16,6 @@ import { register as safetyGuard } from '@/features/safety_guard/index.js'
 import { register as statusPanel } from '@/features/status_panel/index.js'
 import { register as subAgents } from '@/features/sub_agents/index.js'
 import { register as webfetch } from '@/features/webfetch/index.js'
-
-import { type ProcessRuntime } from './runtime.js'
 
 export interface FeatureRegistration {
   readonly name: string

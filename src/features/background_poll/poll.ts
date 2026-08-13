@@ -52,9 +52,34 @@ interface PollCommandResult {
   readonly stdout: string
 }
 
+export type PollExec = (command: string, timeoutMs: number, cwd: string | undefined) => Effect.Effect<PollCommandResult, ToolFailure>
+
+/** `sh` reports a killed-by-timeout command the way GNU `timeout` does, so the loop retries it. */
+const TIMEOUT_EXIT_CODE = 124
+
+/**
+ * Delegated to Pi instead of spawned here: `pi.exec` already owns the child's lifetime, timeout,
+ * and teardown. A `killed` attempt is reported the way GNU `timeout` does, so a long attempt stays
+ * a not-ready-yet signal and the loop retries it instead of failing the poll.
+ */
+const makePollExec =
+  (pi: ExtensionAPI): PollExec =>
+  (command, timeoutMs, cwd) =>
+    Effect.tryPromise({
+      catch: (cause) => ToolFailure.make({ cause, message: cause instanceof Error ? cause.message : String(cause) }),
+      try: (signal) => pi.exec('sh', ['-lc', command], { signal, timeout: timeoutMs, ...(cwd === undefined ? {} : { cwd }) }),
+    }).pipe(
+      Effect.map((result) =>
+        isTrue(result.killed)
+          ? { code: TIMEOUT_EXIT_CODE, stderr: `Poll command did not finish within ${timeoutMs}ms`, stdout: result.stdout }
+          : result
+      )
+    )
+
 export interface PollLoopOptions {
   readonly command: string
-  readonly exec: (timeoutMs: number) => Effect.Effect<PollCommandResult, ToolFailure>
+  readonly cwd: string | undefined
+  readonly exec: PollExec
   readonly intervalMs: number
   readonly label: string
   readonly taskId: string
@@ -104,7 +129,9 @@ export const runPollLoop = (options: PollLoopOptions): Effect.Effect<PollLoopRes
       }
 
       attempts += 1
-      const commandResult = yield* Effect.result(options.exec(Math.min(POLL_COMMAND_TIMEOUT_MS, Math.max(1, deadline - now))))
+      const commandResult = yield* Effect.result(
+        options.exec(options.command, Math.min(POLL_COMMAND_TIMEOUT_MS, Math.max(1, deadline - now)), options.cwd)
+      )
       if (commandResult._tag === 'Failure') {
         const failedAt = yield* Clock.currentTimeMillis
         return {
@@ -235,6 +262,7 @@ const stopSession = (ctx: ExtensionContext): Effect.Effect<void, never, PollStat
 
 const registerPoll = (
   pi: ExtensionAPI,
+  exec: PollExec,
   toolCallId: string,
   params: BackgroundPollInput,
   ctx: ExtensionContext
@@ -259,11 +287,8 @@ const registerPoll = (
           Effect.andThen(
             runPollLoop({
               command: params.command,
-              exec: (timeoutMs) =>
-                Effect.tryPromise({
-                  catch: (cause) => ToolFailure.make({ cause, message: cause instanceof Error ? cause.message : String(cause) }),
-                  try: (signal) => pi.exec('sh', ['-lc', params.command], { signal, timeout: timeoutMs }),
-                }),
+              cwd: ctx.cwd,
+              exec,
               intervalMs: (params.interval_seconds ?? DEFAULT_INTERVAL_SECONDS) * 1000,
               label,
               taskId,
@@ -310,7 +335,7 @@ export interface PollHandlers {
   readonly stopSession: (ctx: ExtensionContext) => Effect.Effect<void>
 }
 
-export const makePollHandlers = (pi: ExtensionAPI): PollHandlers => {
+export const makePollHandlers = (pi: ExtensionAPI, exec: PollExec = makePollExec(pi)): PollHandlers => {
   const pollState: PollStateShape = Effect.runSync(
     Effect.gen(function* () {
       return {
@@ -327,7 +352,7 @@ export const makePollHandlers = (pi: ExtensionAPI): PollHandlers => {
       Effect.suspend(() =>
         isTrue(signal?.aborted)
           ? ToolFailure.make({ message: 'Background poll registration was cancelled' })
-          : registerPoll(pi, toolCallId, params, ctx)
+          : registerPoll(pi, exec, toolCallId, params, ctx)
       ).pipe(
         Effect.provideService(PollState, pollState),
         Effect.map(() => {

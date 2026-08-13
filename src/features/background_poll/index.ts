@@ -2,10 +2,10 @@ import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 
-import { BackgroundPollParams, makePollHandlers } from './poll.js'
+import { BackgroundPollParams, makePollHandlers, type PollExec } from './poll.js'
 
-export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
-  const handlers = makePollHandlers(pi)
+export const register = (pi: ExtensionAPI, runtime: AppRuntime, exec?: PollExec): void => {
+  const handlers = makePollHandlers(pi, exec)
 
   pi.registerTool({
     description:

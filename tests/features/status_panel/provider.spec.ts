@@ -213,6 +213,29 @@ describe('Anthropic quota polling lifecycle', () => {
     }).pipe(Effect.provide(FetchHttpClient.layer))
   )
 
+  it.effect('interrupts the in-flight request on stop so no late quota is published', () =>
+    Effect.gen(function* () {
+      const published: (ProviderQuota | undefined)[] = []
+      let interrupted = false
+      const poller = yield* makeQuotaPoller(
+        (quota) => {
+          published.push(quota)
+        },
+        {
+          fetchQuota: () => Effect.never.pipe(Effect.onInterrupt(() => Effect.sync(() => (interrupted = true)))),
+          refreshMs: 10,
+        }
+      )
+
+      yield* poller.start('http://gateway')
+      yield* poller.stop
+
+      expect(interrupted).toBeTrue()
+      yield* TestClock.adjust('60 millis')
+      expect(published).toEqual([])
+    }).pipe(Effect.provide(FetchHttpClient.layer))
+  )
+
   it.effect('continues polling when publishing a quota throws', () =>
     Effect.gen(function* () {
       let fetches = 0

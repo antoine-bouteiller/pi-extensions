@@ -5,7 +5,7 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { type Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import { Context, Data, Effect, Fiber, Layer, Result, Schema } from 'effect'
+import { Context, Data, Deferred, Effect, Fiber, Layer, Result, Schema } from 'effect'
 
 import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 import { isRecord } from '@/shared/utils/records.js'
@@ -25,6 +25,11 @@ import {
 } from './types.js'
 
 const CONNECT_TIMEOUT_MS = 30_000
+/** Caps the `tools/list` fan-out so a large configuration cannot open every server at once. */
+const DISCOVERY_CONCURRENCY = 8
+const MAX_TOOL_DISCOVERY_MS = 120_000
+const MAX_TOOL_PAGES = 100
+const MAX_TOOLS_PER_SERVER = 2000
 const REQUEST_TIMEOUT_MS = 60_000
 
 interface TransportOptions {
@@ -285,7 +290,14 @@ const abortFailure = (signal: AbortSignal): Effect.Effect<never, McpFailure> =>
 const waitWithSignal = <Value>(effect: Effect.Effect<Value, McpFailure>, signal?: AbortSignal): Effect.Effect<Value, McpFailure> =>
   signal === undefined ? effect : Effect.raceFirst(effect, abortFailure(signal))
 
-const closeQuietly = (client: ClientLike): Effect.Effect<void> => Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
+/**
+ * An SDK `close()` that never settles must not hold shutdown open, so it is bounded as well as
+ * ignored. Teardown cannot surface a failure, but it can refuse to wait forever for one.
+ */
+const CLIENT_CLOSE_TIMEOUT_MS = 5000
+
+const closeQuietly = (client: ClientLike): Effect.Effect<void> =>
+  Effect.tryPromise(() => client.close()).pipe(Effect.timeoutOrElse({ duration: CLIENT_CLOSE_TIMEOUT_MS, orElse: () => Effect.void }), Effect.ignore)
 
 const convertContentBlock = (item: unknown): GatewayContent | undefined => {
   if (typeof item !== 'object' || item === null || !('type' in item)) {
@@ -346,6 +358,7 @@ export class McpManager {
   private readonly authenticationByServer = new Map<string, AuthenticationRuntime>()
   private readonly options: McpManagerOptions
   private closed = false
+  private closing: Deferred.Deferred<void> | undefined
 
   constructor(config: McpServerMap, options: McpManagerOptions) {
     this.options = options
@@ -416,6 +429,20 @@ export class McpManager {
   private attemptConnection(runtime: ServerRuntime, controller: AbortController): Effect.Effect<ConnectedServer, McpFailure> {
     return Effect.gen({ self: this }, function* () {
       const connection = yield* this.establish(runtime, { signal: controller.signal })
+      // Fail-safe: an establish that settles in the same tick as `teardown`'s snapshot would be published after it, and nothing would close it.
+      if (this.closed) {
+        yield* closeQuietly(connection.client)
+        return yield* new McpError({ message: 'MCP manager is closed' })
+      }
+      /*
+       * A concurrent `authenticateServer` establishes outside this fiber, so whoever publishes
+       * second must close its own client instead of overwriting and orphaning the first.
+       */
+      const published = runtime.connection
+      if (published !== undefined) {
+        yield* closeQuietly(connection.client)
+        return published
+      }
       runtime.connection = connection
       const collision = this.globalCollision()
       if (collision !== undefined) {
@@ -462,7 +489,7 @@ export class McpManager {
           ? [yield* this.runtime(options.server)]
           : [...this.runtimes.values()].filter(isUsableRuntime)
       const settled = yield* Effect.forEach(runtimes, (runtime) => Effect.result(this.toolsForServer(runtime.name, options.signal)), {
-        concurrency: 'unbounded',
+        concurrency: DISCOVERY_CONCURRENCY,
       })
       const tools = settled.flatMap((result) => (Result.isSuccess(result) ? result.success : [])).filter((tool) => this.isAllowed(tool, 'search'))
       if (tools.length === 0) {
@@ -654,6 +681,10 @@ export class McpManager {
   ): Effect.Effect<PendingAuthorization | undefined, McpFailure> {
     return Effect.gen({ self: this }, function* () {
       const connected = yield* this.establish(runtime, { provider, retainAuthorization: true, signal })
+      if (runtime.connection !== undefined) {
+        yield* closeQuietly(connected.client)
+        return undefined
+      }
       runtime.connection = connected
       const collision = this.globalCollision()
       if (collision !== undefined) {
@@ -662,6 +693,8 @@ export class McpManager {
         return yield* collision
       }
       runtime.status = 'connected'
+      // `status()` surfaces any non-empty error regardless of status, so a stale one must be cleared.
+      runtime.error = undefined
       this.notify()
       return undefined
     }).pipe(Effect.catch((error) => (error instanceof PendingAuthorization ? Effect.succeed(error) : Effect.fail(error))))
@@ -678,7 +711,12 @@ export class McpManager {
         return undefined
       }
       yield* Effect.gen(function* () {
-        const code = yield* callback.waitForCode
+        /*
+         * The loopback listener is one-shot: released as soon as the code arrives so the fixed
+         * callback port is free during token exchange and the reconnect below, which may itself
+         * need to bind it.
+         */
+        const code = yield* callback.waitForCode.pipe(Effect.ensuring(callback.close))
         const { finishAuth } = pending.transport
         if (finishAuth === undefined) {
           return yield* new McpError({ message: 'The MCP HTTP transport cannot complete OAuth authorization' })
@@ -691,19 +729,35 @@ export class McpManager {
     })
   }
 
-  readonly close: Effect.Effect<void> = Effect.gen({ self: this }, function* () {
-    if (this.closed) {
-      return
+  /**
+   * Every caller awaits the same run: setting a `closed` flag and returning early let a second
+   * caller — or an interrupted first one — leave transports and stdio processes open forever.
+   */
+  readonly close: Effect.Effect<void> = Effect.suspend(() => {
+    const inFlight = this.closing
+    if (inFlight !== undefined) {
+      return Deferred.await(inFlight)
     }
+    const completed = Deferred.makeUnsafe<void>()
+    this.closing = completed
     this.closed = true
     this.lifecycle.abort()
+    return this.teardown.pipe(Effect.ensuring(Deferred.succeed(completed, undefined)), Effect.uninterruptible)
+  })
+
+  private readonly teardown: Effect.Effect<void> = Effect.gen({ self: this }, function* () {
     const pendingConnections = [...this.runtimes.values()]
       .map((runtime) => runtime.connecting)
       .filter((attempt): attempt is Fiber.Fiber<ConnectedServer, McpFailure> => attempt !== undefined)
     const pendingAuthentications = [...this.authentications]
       .map((authentication) => authentication.fiber)
       .filter((attempt): attempt is Fiber.Fiber<void, McpFailure> => attempt !== undefined)
-    yield* Fiber.awaitAll([...pendingConnections, ...pendingAuthentications])
+    /*
+     * Interrupted, not merely awaited: `lifecycle.abort()` only reaches SDK calls that honour the
+     * signal, so an in-flight `listTools` or token exchange would otherwise hold shutdown open for
+     * its full request timeout.
+     */
+    yield* Fiber.interruptAll([...pendingConnections, ...pendingAuthentications])
     const connections = [...this.runtimes.values()]
       .map((runtime) => runtime.connection)
       .filter((connection): connection is ConnectedServer => connection !== undefined)
@@ -783,7 +837,7 @@ export class McpManager {
 
       const runtimes = [...this.runtimes.values()].filter(isUsableRuntime)
       const settled = yield* Effect.forEach(runtimes, (runtime) => Effect.result(this.toolsForServer(runtime.name, options.signal)), {
-        concurrency: 'unbounded',
+        concurrency: DISCOVERY_CONCURRENCY,
       })
       const all = settled.flatMap((result) => (Result.isSuccess(result) ? result.success : []))
       if (all.length === 0) {
@@ -970,7 +1024,15 @@ export class McpManager {
       const names = new Set<string>()
       const cursors = new Set<string>()
       let cursor: string | undefined
+      let pages = 0
+      const exceededDiscoveryLimit = new McpError({
+        message: `MCP server ${server} exceeded the ${MAX_TOOL_PAGES}-page / ${MAX_TOOLS_PER_SERVER}-tool discovery limit`,
+      })
       do {
+        pages += 1
+        if (pages > MAX_TOOL_PAGES || tools.length > MAX_TOOLS_PER_SERVER) {
+          return yield* exceededDiscoveryLimit
+        }
         if (isNotNullOrUndefined(cursor) && isNotEmptyString(cursor)) {
           if (cursors.has(cursor)) {
             return yield* new McpError({ message: `MCP server ${server} repeated a tools cursor` })
@@ -982,6 +1044,13 @@ export class McpManager {
           catch: asError,
           try: () => client.listTools(request, { signal, timeout: this.requestTimeoutMs }),
         })
+        /*
+         * Checked against the remaining budget before the page is walked: measuring only between
+         * pages lets one oversized page allocate without bound before the next check runs.
+         */
+        if (page.tools.length > MAX_TOOLS_PER_SERVER - tools.length) {
+          return yield* exceededDiscoveryLimit
+        }
         for (const tool of page.tools) {
           const name = `${sanitizeToolPart(server)}_${sanitizeToolPart(tool.name)}`
           if (names.has(name)) {
@@ -1000,7 +1069,16 @@ export class McpManager {
         cursor = page.nextCursor
       } while (cursor)
       return tools
-    })
+      /*
+       * The per-page timeout does not bound the loop, so a server handing out fresh cursors
+       * forever needs an overall deadline as well as the page and tool caps above.
+       */
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: MAX_TOOL_DISCOVERY_MS,
+        orElse: () => new McpError({ message: `MCP server ${server} did not finish tool discovery within ${MAX_TOOL_DISCOVERY_MS}ms` }),
+      })
+    )
   }
 
   private globalCollision(): McpError | undefined {
@@ -1019,8 +1097,17 @@ export class McpManager {
     return undefined
   }
 
+  /**
+   * The host-supplied status callback is outside this module's error model: letting it throw
+   * would turn a UI failure into a defect that bypasses every typed `McpFailure` recovery and
+   * leave connection state half-updated.
+   */
   private notify(): void {
-    this.options.onStatusChange?.(this.status())
+    try {
+      this.options.onStatusChange?.(this.status())
+    } catch {
+      // A status listener that fails must not abort a connection or authentication.
+    }
   }
 
   private defaultTransport(

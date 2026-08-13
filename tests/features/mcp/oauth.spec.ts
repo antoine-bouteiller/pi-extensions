@@ -3,7 +3,7 @@ import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect
 import { asError } from '@tests/utils/casts.js'
 import { httpGet } from '@tests/utils/http.js'
 import { freeLoopbackPort } from '@tests/utils/loopback_port.js'
-import { Effect } from 'effect'
+import { Effect, Fiber } from 'effect'
 
 import { type CredentialStore, type OAuthCredentialPayload } from '@/features/mcp/keychain.js'
 import { KeychainOAuthProvider, createOAuthState, startOAuthCallback, type OAuthCallback, type OAuthCallbackOptions } from '@/features/mcp/oauth.js'
@@ -59,6 +59,24 @@ describe('OAuth callback', () => {
     })
   )
 
+  /*
+   * Mirrors how the manager consumes the callback: it must be able to rebind the fixed port for the
+   * reconnect while still inside the scope that owns the listener, so the close cannot be deferred
+   * to scope exit.
+   */
+  it.live('frees the port as soon as the code is consumed, before the enclosing scope exits', () =>
+    Effect.gen(function* () {
+      const port = yield* freePort()
+      yield* withCallback({ expectedState: 'right', port }, (callback) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(() => httpGet(`${callback.redirectUrl}?code=code-1&state=right`))
+          expect(yield* callback.waitForCode.pipe(Effect.ensuring(callback.close))).toBe('code-1')
+          yield* withCallback({ expectedState: 'reconnect', port }, () => Effect.void)
+        })
+      )
+    })
+  )
+
   it.live('explicit close is idempotent and releases the port', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -70,6 +88,28 @@ describe('OAuth callback', () => {
         yield* replacement.close
       })
     )
+  )
+
+  it.live('releases a waiter when the listener is closed before the code arrives', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const callback = yield* startOAuthCallback({ expectedState: 'state', port: yield* freePort() })
+        const waiter = yield* Effect.forkChild(Effect.flip(callback.waitForCode))
+        yield* callback.close
+        expect(asError(yield* Fiber.join(waiter)).message).toContain('cancelled')
+      })
+    )
+  )
+
+  it.live('adopts the configured callback port when the redirect URI omits one', () =>
+    Effect.gen(function* () {
+      const port = yield* freePort()
+      yield* withCallback({ expectedState: 'state', port, redirectUri: 'http://localhost/callback' }, (callback) =>
+        Effect.sync(() => {
+          expect(callback.redirectUrl).toBe(`http://localhost:${port}/callback`)
+        })
+      )
+    })
   )
 
   it.live('rejects a wrong state without consuming the legitimate callback', () =>
@@ -239,6 +279,12 @@ describe('Keychain OAuth provider', () => {
       expect(interactive.state()).toBe(state)
       yield* Effect.promise(() => interactive.redirectToAuthorization(new URL('https://auth.test/start')))
       expect(opened).toEqual(['https://auth.test/start'])
+
+      for (const hostile of ['file:///etc/passwd', 'vscode://extension/install', 'http://evil.test/start']) {
+        expect(interactive.redirectToAuthorization(new URL(hostile))).rejects.toThrow(/Refusing to open an OAuth authorization URL/)
+      }
+      yield* Effect.promise(() => interactive.redirectToAuthorization(new URL('http://localhost:3120/callback')))
+      expect(opened).toEqual(['https://auth.test/start', 'http://localhost:3120/callback'])
     })
   )
 })

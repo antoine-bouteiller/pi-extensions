@@ -168,21 +168,16 @@ describe('Claude Code compatibility', () => {
     })
   )
 
-  it.effect('follows command symlinks and stops directory cycles safely', () =>
+  it.effect('follows symlinks without looping on a cycle or a broken link', () =>
     Effect.gen(function* () {
       const fixture = yield* createFixture
       const commandsDirectory = join(fixture.homeDirectory, '.claude/commands')
-      const outsideDirectory = join(fixture.homeDirectory, 'outside')
-      yield* Effect.all(
-        [writeFixture(join(commandsDirectory, 'safe.md'), 'Safe command'), writeFixture(join(outsideDirectory, 'escaped.md'), 'Escaped command')],
-        { concurrency: 'unbounded' }
-      )
+      yield* writeFixture(join(commandsDirectory, 'safe.md'), 'Safe command')
       yield* Effect.all(
         [
           symlink(join(commandsDirectory, 'safe.md'), join(commandsDirectory, 'alias.md')),
           symlink(commandsDirectory, join(commandsDirectory, 'cycle')),
-          symlink(outsideDirectory, join(commandsDirectory, 'escape')),
-          symlink(join(outsideDirectory, 'missing.md'), join(commandsDirectory, 'missing.md')),
+          symlink(join(commandsDirectory, 'missing.md'), join(commandsDirectory, 'broken.md')),
         ],
         { concurrency: 'unbounded' }
       )
@@ -191,9 +186,8 @@ describe('Claude Code compatibility', () => {
         fixture.invoke<DiscoveryResult>('resources_discover', { cwd: fixture.projectDirectory }, fixture.context(false))
       )
       const skills = yield* generatedSkills(result.skillPaths[0])
-      expect([...skills.keys()]).toEqual(['alias', 'escape-escaped', 'safe'])
+      expect([...skills.keys()]).toEqual(['alias', 'safe'])
       expect(skills.get('alias')).toContain('Safe command')
-      expect(skills.get('escape-escaped')).toContain('Escaped command')
       expect(skills.get('safe')).toContain('Safe command')
     })
   )

@@ -1,27 +1,40 @@
 import { StringDecoder } from 'node:string_decoder'
 
+import { Data } from 'effect'
+
 import { isEmptyString } from '@/shared/utils/predicates.js'
+
+/**
+ * A child must not be able to grow the parent's heap without bound, whether it never terminates a
+ * line or terminates an arbitrarily long one. Every frame is measured, not just the pending tail.
+ */
+export const MAX_RPC_FRAME_CHARS = 16 * 1024 * 1024
+
+class RpcFrameTooLargeError extends Data.TaggedError('RpcFrameTooLargeError')<{ readonly message: string }> {}
+
+const withoutTrailingCr = (line: string): string => (line.endsWith('\r') ? line.slice(0, -1) : line)
+
+const frameTooLarge = (): never => {
+  throw new RpcFrameTooLargeError({ message: `Child Pi process sent an RPC frame over the ${MAX_RPC_FRAME_CHARS}-character limit.` })
+}
 
 export class RpcJsonlDecoder {
   private readonly decoder = new StringDecoder('utf8')
   private buffer = ''
 
+  /** Splits in one pass: repeated `slice` off the head is quadratic when a child emits many lines. */
   push(chunk: Buffer | string): string[] {
-    this.buffer += typeof chunk === 'string' ? chunk : this.decoder.write(chunk)
-    const lines: string[] = []
-    while (true) {
-      const index = this.buffer.indexOf('\n')
-      if (index === -1) {
-        break
-      }
-      let line = this.buffer.slice(0, index)
-      this.buffer = this.buffer.slice(index + 1)
-      if (line.endsWith('\r')) {
-        line = line.slice(0, -1)
-      }
-      lines.push(line)
+    const parts = (this.buffer + (typeof chunk === 'string' ? chunk : this.decoder.write(chunk))).split('\n')
+    this.buffer = parts.pop() ?? ''
+    /*
+     * A terminated frame is bounded exactly like the pending tail: splitting first would otherwise
+     * let a child hand `JSON.parse` a gigabyte simply by appending a newline.
+     */
+    if (this.buffer.length > MAX_RPC_FRAME_CHARS || parts.some((part) => part.length > MAX_RPC_FRAME_CHARS)) {
+      this.buffer = ''
+      return frameTooLarge()
     }
-    return lines
+    return parts.map(withoutTrailingCr)
   }
 
   end(): string[] {
@@ -29,8 +42,11 @@ export class RpcJsonlDecoder {
     if (isEmptyString(this.buffer)) {
       return []
     }
-    const line = this.buffer.endsWith('\r') ? this.buffer.slice(0, -1) : this.buffer
+    const line = withoutTrailingCr(this.buffer)
     this.buffer = ''
+    if (line.length > MAX_RPC_FRAME_CHARS) {
+      return frameTooLarge()
+    }
     return [line]
   }
 }
