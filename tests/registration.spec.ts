@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url'
 
-import { NodeFileSystem, NodePath } from '@effect/platform-node'
+import { BunFileSystem, BunPath } from '@effect/platform-bun'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asResult } from '@tests/utils/casts.js'
 import { Effect, FileSystem, Layer, Path } from 'effect'
@@ -52,7 +52,7 @@ const featureDirectories = (): Promise<string[]> =>
         .filter(({ info }) => info.type === 'Directory')
         .map(({ name }) => name)
         .toSorted()
-    }).pipe(Effect.provide(Layer.merge(NodeFileSystem.layer, NodePath.layer)))
+    }).pipe(Effect.provide(Layer.merge(BunFileSystem.layer, BunPath.layer)))
   )
 
 const toFeatureName = (directory: string): string => directory.replaceAll('_', '-')

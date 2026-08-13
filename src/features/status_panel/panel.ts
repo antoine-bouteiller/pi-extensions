@@ -55,13 +55,11 @@ export interface PanelHandlers {
 }
 
 export const recordSubagentQuota: {
-  (ctx: ExtensionContext): (event: ProviderResponsePayload) => void
-  (event: ProviderResponsePayload, ctx: ExtensionContext): void
-} = Function.dual(2, (event: ProviderResponsePayload, ctx: ExtensionContext): void => {
+  (ctx: ExtensionContext): (event: ProviderResponsePayload) => Effect.Effect<void>
+  (event: ProviderResponsePayload, ctx: ExtensionContext): Effect.Effect<void>
+} = Function.dual(2, (event: ProviderResponsePayload, ctx: ExtensionContext): Effect.Effect<void> => {
   const quota = quotaFromHeaders(ctx.model?.provider ?? '', event.headers)
-  if (quota !== undefined) {
-    writeSubagentAzureQuota(process.env.PI_SUBAGENT_OWNER_TOKEN ?? '', quota.percent)
-  }
+  return quota === undefined ? Effect.void : writeSubagentAzureQuota(process.env.PI_SUBAGENT_OWNER_TOKEN ?? '', quota.percent)
 })
 
 export const makePanelController = ({ dependencies, pi, runtime }: PanelControllerOptions): PanelHandlers => {

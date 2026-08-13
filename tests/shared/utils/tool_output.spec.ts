@@ -1,8 +1,8 @@
-import { NodeFileSystem } from '@effect/platform-node'
+import { BunFileSystem } from '@effect/platform-bun'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Effect, FileSystem } from 'effect'
 
-import { nodePath } from '@/shared/effect/node_path.js'
+import { bunPath } from '@/shared/effect/bun_services.js'
 import { boundToolTextEffect, truncateOutput, truncationNotice, writePrivateTempFileEffect } from '@/shared/utils/tool_output.js'
 
 const lines = (count: number) => Array.from({ length: count }, (_value, index) => `line ${index}`).join('\n')
@@ -63,9 +63,9 @@ describe('bounded tool output', () => {
       const path = yield* writePrivateTempFileEffect('secret', { prefix: 'tool-output-effect-' })
 
       expect(yield* fs.readFileString(path)).toBe('secret')
-      expect((yield* fs.stat(nodePath.dirname(path))).mode & 0o777).toBe(0o700)
+      expect((yield* fs.stat(bunPath.dirname(path))).mode & 0o777).toBe(0o700)
       expect((yield* fs.stat(path)).mode & 0o777).toBe(0o600)
-    }).pipe(Effect.provide(NodeFileSystem.layer))
+    }).pipe(Effect.provide(BunFileSystem.layer))
   )
 
   it.effect('boundToolTextEffect spills the complete text and keeps the notice inside the budget', () =>

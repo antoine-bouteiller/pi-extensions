@@ -1,5 +1,5 @@
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from '@earendil-works/pi-coding-agent'
-import { NodeFileSystem } from '@effect/platform-node'
+import { BunFileSystem } from '@effect/platform-bun'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Effect, FileSystem, Schema } from 'effect'
 
@@ -49,6 +49,6 @@ describe('MCP gateway output', () => {
       }
       expect(yield* fs.readFileString(path)).toBe(text)
       expect((yield* fs.stat(path)).mode & 0o777).toBe(0o600)
-    }).pipe(Effect.provide(NodeFileSystem.layer))
+    }).pipe(Effect.provide(BunFileSystem.layer))
   )
 })

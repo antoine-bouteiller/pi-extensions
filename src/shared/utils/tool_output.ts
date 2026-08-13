@@ -1,11 +1,9 @@
 import { formatSize, truncateHead, truncateTail } from '@earendil-works/pi-coding-agent'
-import { NodeFileSystem } from '@effect/platform-node'
-import { Cause, Effect, FileSystem, ManagedRuntime } from 'effect'
+import { Cause, Effect } from 'effect'
 import { dual } from 'effect/Function'
 
-import { nodePath } from '@/shared/effect/node_path.js'
+import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
 
-const nodeFileSystem = ManagedRuntime.make(NodeFileSystem.layer).runSync(FileSystem.FileSystem)
 const unknownError = (cause: unknown): Cause.UnknownError =>
   Cause.isUnknownError(cause) ? cause : new Cause.UnknownError(cause, cause instanceof Error ? cause.message : String(cause))
 
@@ -66,9 +64,9 @@ export const writePrivateTempFileEffect: {
   2,
   (content: string, { prefix, filename = 'output.txt' }: { prefix: string; filename?: string }): Effect.Effect<string, Cause.UnknownError> =>
     Effect.gen(function* () {
-      const directory = yield* nodeFileSystem.makeTempDirectory({ prefix })
-      const path = nodePath.join(directory, filename)
-      yield* nodeFileSystem.writeFileString(path, content, { mode: 0o600 })
+      const directory = yield* bunFileSystem.makeTempDirectory({ prefix })
+      const path = bunPath.join(directory, filename)
+      yield* bunFileSystem.writeFileString(path, content, { mode: 0o600 })
       return path
     }).pipe(Effect.mapError(unknownError))
 )

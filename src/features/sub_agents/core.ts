@@ -1,39 +1,47 @@
 import { createHash, randomUUID } from 'node:crypto'
-import {
-  chmodSync,
-  closeSync,
-  createWriteStream,
-  type Dirent,
-  existsSync,
-  fstatSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  rmdirSync,
-  rmSync,
-  type Stats,
-  statSync,
-  unlinkSync,
-  writeFileSync,
-  type WriteStream,
-  // oxlint-disable-next-line effecttsgo/node-builtin-import -- Atomic persistence and fd-identity locks require synchronous APIs and numeric descriptors unavailable from Effect FileSystem.
-} from 'node:fs'
 import { createServer, type Server, type Socket } from 'node:net'
 import { homedir, tmpdir, userInfo } from 'node:os'
 
-import { getAgentDir, SessionManager, type ThemeColor } from '@earendil-works/pi-coding-agent'
-import { type Cause, Clock, Data, DateTime, Deferred, Effect, Exit, Fiber, Function, HashMap, Option, Queue, Ref, Scope, Stream } from 'effect'
+import { getAgentDir, migrateSessionEntries, parseSessionEntries, type SessionEntry, type ThemeColor } from '@earendil-works/pi-coding-agent'
+import {
+  type Cause,
+  Clock,
+  Data,
+  DateTime,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Function,
+  HashMap,
+  Option,
+  Queue,
+  Ref,
+  Result,
+  Scope,
+  Stream,
+} from 'effect'
 import { ChildProcess } from 'effect/unstable/process'
 import { type ChildProcessHandle } from 'effect/unstable/process/ChildProcessSpawner'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
-import { nodePath } from '@/shared/effect/node_path.js'
-import { nodeChildProcessSpawner, type NodeChildProcessSpawner } from '@/shared/effect/node_process.js'
+import {
+  closeHeldFile,
+  createHeldFile,
+  createHostAppendStream,
+  heldFileContent,
+  hostFileSystemSync,
+  openHeldFile,
+  readHostDirectoryEntriesSync,
+  removeHeldFileIfUnchanged,
+  type HeldFile,
+  type HostAppendStream,
+  type HostDirectoryEntrySync,
+} from '@/shared/effect/bun_host_file_system.js'
+import { bunChildProcessSpawner, bunFileSystem, bunPath, type BunChildProcessSpawner } from '@/shared/effect/bun_services.js'
 import { azureQuota, consumeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
-import { jsonText } from '@/shared/utils/json.js'
+import { jsonText, parseJsonText } from '@/shared/utils/json.js'
 import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 import { isRecord } from '@/shared/utils/records.js'
 
@@ -58,7 +66,20 @@ import {
 } from './profiles.js'
 import { consumeFirstMatchingMailboxEvent, RpcJsonlDecoder } from './rpc.js'
 
-const { dirname, isAbsolute, join, resolve: resolvePath } = nodePath
+const { dirname, isAbsolute, join, resolve: resolvePath } = bunPath
+const {
+  chmod: chmodSync,
+  exists: existsSync,
+  makeDirectory: mkdirSync,
+  readDirectory: readdirSync,
+  readFile: readFileSync,
+  remove: rmSync,
+  removeDirectory: rmdirSync,
+  rename: renameSync,
+  stat: statSync,
+  unlink: unlinkSync,
+  writeFile: writeFileSync,
+} = hostFileSystemSync
 
 export { consumeFirstMatchingMailboxEvent, RpcJsonlDecoder } from './rpc.js'
 
@@ -303,7 +324,7 @@ export interface AgentManagerOptions {
   beforeReleaseTaskLockRemoval?: (lockFile: string) => void
   /** Override process identity inspection so tests can drive Linux/Darwin/Windows branches on any host. */
   processInspector?: ProcessInspectorShape
-  processSpawner?: NodeChildProcessSpawner
+  processSpawner?: BunChildProcessSpawner
   afterProcessSpawn?: () => Effect.Effect<void>
   /** Override the platform used to choose between POSIX signals and Windows taskkill for tests. */
   platform?: NodeJS.Platform
@@ -331,7 +352,7 @@ interface LaunchSpawnOptions extends SpawnExecution {
 }
 
 interface FollowUpClaim {
-  fd: number
+  handle: HeldFile
   file: string
   token: string
 }
@@ -356,6 +377,16 @@ class SubagentProcessError extends Data.TaggedError('SubagentProcessError')<{
 type SubagentFailure = SubagentError | SubagentProcessError
 
 const causeMessage = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause))
+
+const errorCode = (cause: unknown): unknown => {
+  if (typeof cause !== 'object' || cause === null) {
+    return undefined
+  }
+  if ('code' in cause) {
+    return cause.code
+  }
+  return 'cause' in cause ? errorCode(cause.cause) : undefined
+}
 
 const subagentError = (message: string, cause?: unknown): SubagentError => new SubagentError({ cause, message })
 
@@ -471,7 +502,7 @@ const isAgentArtifact = (name: string, agentId: string): boolean =>
   name === `${agentId}.follow-up` ||
   new RegExp(`^${agentId}[.]info[.]json[.][0-9]+[.]tmp$`).test(name)
 
-const latestArtifactMtime = (directory: string, agentEntries: Dirent[]): number => {
+const latestArtifactMtime = (directory: string, agentEntries: HostDirectoryEntrySync[]): number => {
   let latest = 0
   for (const artifact of agentEntries) {
     try {
@@ -483,7 +514,7 @@ const latestArtifactMtime = (directory: string, agentEntries: Dirent[]): number 
   return latest
 }
 
-const removeAgentArtifacts = (directory: string, artifacts: Dirent[]): boolean => {
+const removeAgentArtifacts = (directory: string, artifacts: HostDirectoryEntrySync[]): boolean => {
   let failed = false
   for (const artifact of artifacts) {
     try {
@@ -497,8 +528,8 @@ const removeAgentArtifacts = (directory: string, artifacts: Dirent[]): boolean =
 
 interface PruneAgentEntryParams {
   directory: string
-  entries: Dirent[]
-  entry: Dirent
+  entries: HostDirectoryEntrySync[]
+  entry: HostDirectoryEntrySync
   cutoff: number
 }
 
@@ -525,7 +556,7 @@ const pruneAgentEntry = ({ directory, entries, entry, cutoff }: PruneAgentEntryP
   }
 }
 
-const pruneStaleTaskLock = (directory: string, entry: Dirent, cutoff: number): void => {
+const pruneStaleTaskLock = (directory: string, entry: HostDirectoryEntrySync, cutoff: number): void => {
   const lockFile = join(directory, entry.name)
   try {
     if (statSync(lockFile).mtimeMs >= cutoff) {
@@ -538,7 +569,7 @@ const pruneStaleTaskLock = (directory: string, entry: Dirent, cutoff: number): v
 }
 
 const pruneScope = (directory: string, cutoff: number): void => {
-  const entries = readdirSync(directory, { withFileTypes: true })
+  const entries = readHostDirectoryEntriesSync(directory)
 
   for (const entry of entries) {
     if (entry.isFile() && entry.name.endsWith('.info.json')) {
@@ -560,9 +591,9 @@ const pruneScope = (directory: string, cutoff: number): void => {
 }
 
 const pruneOutputFiles = (target: string, cutoff: number): void => {
-  let outputs: Dirent[]
+  let outputs: HostDirectoryEntrySync[]
   try {
-    outputs = readdirSync(target, { withFileTypes: true })
+    outputs = readHostDirectoryEntriesSync(target)
   } catch {
     return
   }
@@ -582,9 +613,9 @@ const pruneOutputFiles = (target: string, cutoff: number): void => {
 }
 
 const pruneRunsRoot = (root: string, cutoff: number): void => {
-  let entries: Dirent[]
+  let entries: HostDirectoryEntrySync[]
   try {
-    entries = readdirSync(root, { withFileTypes: true })
+    entries = readHostDirectoryEntriesSync(root)
   } catch {
     return
   }
@@ -669,63 +700,39 @@ const parseTaskLockOwner = (content: string): TaskLockOwner => {
   }
 }
 
-const sameFileInstance = (first: Stats, second: Stats): boolean => first.dev === second.dev && first.ino === second.ino
-
 const reclaimDeadTaskLock = (lockFile: string, beforeRevalidate?: (lockFile: string) => void): boolean => {
-  let inspectedFd: number | undefined
-  let currentFd: number | undefined
+  let inspected: HeldFile | undefined
   try {
-    // Keep the inspected instance open, then reopen the pathname immediately before unlinking.
-    // Comparing both file identity and content prevents deleting a replacement lock that won a
-    // Race after the dead owner's record was read.
-    inspectedFd = openSync(lockFile, 'r')
-    const inspectedStat = fstatSync(inspectedFd)
-    const inspectedContent = readFileSync(inspectedFd, 'utf8')
-    const owner = parseTaskLockOwner(inspectedContent)
-    if (processOwnerIsActive(owner)) {
+    inspected = Effect.runSync(openHeldFile(lockFile))
+    const inspectedContent = heldFileContent(inspected)
+    if (processOwnerIsActive(parseTaskLockOwner(inspectedContent))) {
       return false
     }
-
-    beforeRevalidate?.(lockFile)
-
-    currentFd = openSync(lockFile, 'r')
-    const currentStat = fstatSync(currentFd)
-    const currentContent = readFileSync(currentFd, 'utf8')
-    if (!sameFileInstance(inspectedStat, currentStat) || inspectedContent !== currentContent) {
-      return false
-    }
-    unlinkSync(lockFile)
-    return true
+    return removeHeldFileIfUnchanged({
+      beforeRevalidate,
+      contentMatches: (content) => content === inspectedContent,
+      handle: inspected,
+      path: lockFile,
+    })
   } catch {
     return false
   } finally {
-    if (currentFd !== undefined) {
-      closeSync(currentFd)
-    }
-    if (inspectedFd !== undefined) {
-      closeSync(inspectedFd)
+    if (inspected !== undefined) {
+      closeHeldFile(inspected)
     }
   }
 }
 
-const releaseTaskLock = (lockFile: string, ownedFd: number, token: string, beforeRevalidate?: (lockFile: string) => void): void => {
-  let currentFd: number | undefined
+const releaseTaskLock = (lockFile: string, owned: HeldFile, token: string, beforeRevalidate?: (lockFile: string) => void): void => {
   try {
-    const ownedStat = fstatSync(ownedFd)
-    beforeRevalidate?.(lockFile)
-    currentFd = openSync(lockFile, 'r')
-    const currentStat = fstatSync(currentFd)
-    const currentOwner = parseTaskLockOwner(readFileSync(currentFd, 'utf8'))
-    if (sameFileInstance(ownedStat, currentStat) && currentOwner.token === token) {
-      unlinkSync(lockFile)
-    }
-  } catch {
-    // A missing or replaced pathname is no longer this caller's lock to release.
+    removeHeldFileIfUnchanged({
+      beforeRevalidate,
+      contentMatches: (content) => parseTaskLockOwner(content).token === token,
+      handle: owned,
+      path: lockFile,
+    })
   } finally {
-    if (currentFd !== undefined) {
-      closeSync(currentFd)
-    }
-    closeSync(ownedFd)
+    closeHeldFile(owned)
   }
 }
 
@@ -795,7 +802,7 @@ const readAllInfos = (): AgentInfo[] => {
     if (!existsSync(root)) {
       return []
     }
-    return readdirSync(root, { withFileTypes: true })
+    return readHostDirectoryEntriesSync(root)
       .filter((entry) => entry.isDirectory() && SCOPE_DIR_PATTERN.test(entry.name))
       .map((entry) => join(root, entry.name))
   })
@@ -870,7 +877,19 @@ const isActive = (agentId: string, kind: 'active' | 'peek'): boolean => {
 
 const isRunActive = (agentId: string): boolean => isActive(agentId, 'active') || isActive(agentId, 'peek')
 
-export const isPeekActive = (agentId: string): boolean => isActive(agentId, 'peek')
+export const isPeekActive = (agentId: string): Effect.Effect<boolean> =>
+  Effect.gen(function* () {
+    const file = markerPath(agentId, 'peek')
+    const marker = parseJsonText(yield* bunFileSystem.readFileString(file))
+    if (!Check(PeekMarkerSchema, marker)) {
+      return false
+    }
+    if (processAlive(marker.pid)) {
+      return true
+    }
+    yield* bunFileSystem.remove(file, { force: true })
+    return false
+  }).pipe(Effect.orElseSucceed(() => false))
 
 interface SubagentMessage {
   role?: string
@@ -943,7 +962,7 @@ const SubagentRpcEventSchema = Type.Object({
 })
 
 class SessionLogger {
-  private stream: WriteStream | undefined = undefined
+  private stream: HostAppendStream | undefined = undefined
   private readonly file: string
   constructor(file: string) {
     this.file = file
@@ -952,7 +971,7 @@ class SessionLogger {
     const { level, category, message, data } = entry
     mkdirSync(dirname(this.file), { recursive: true })
     if (this.stream === undefined) {
-      this.stream = createWriteStream(this.file, { flags: 'a' })
+      this.stream = createHostAppendStream(this.file)
     }
     this.stream.write(
       `${JSON.stringify({
@@ -1242,21 +1261,25 @@ const stopReasonError = (stopReason: string | undefined, errorMessage: string | 
 
 const targetMatches = (event: AgentCompletionEvent, targets?: Set<string>): boolean => targets === undefined || targets.has(event.agentName)
 
-const latestContextTokens = (sessionFile: string): number | undefined => {
-  try {
-    const latestAssistant = SessionManager.open(sessionFile)
-      .getBranch()
-      .toReversed()
-      .find((entry) => entry.type === 'message' && entry.message.role === 'assistant')
+const latestContextTokens = (sessionFile: string): Effect.Effect<number | undefined> =>
+  Effect.gen(function* () {
+    const entries = parseSessionEntries(yield* bunFileSystem.readFileString(sessionFile))
+    migrateSessionEntries(entries)
+    const sessionEntries = entries.filter((entry): entry is SessionEntry => entry.type !== 'session')
+    const byId = new Map(sessionEntries.map((entry) => [entry.id, entry]))
+    const branch: SessionEntry[] = []
+    let current = sessionEntries.at(-1)
+    while (current !== undefined) {
+      branch.push(current)
+      current = current.parentId === null ? undefined : byId.get(current.parentId)
+    }
+    const latestAssistant = branch.find((entry) => entry.type === 'message' && entry.message.role === 'assistant')
     if (latestAssistant?.type !== 'message' || latestAssistant.message.role !== 'assistant') {
       return undefined
     }
     const { input, cacheRead, cacheWrite } = latestAssistant.message.usage
     return [input, cacheRead, cacheWrite].every((value) => Number.isFinite(value) && value >= 0) ? input + cacheRead + cacheWrite : undefined
-  } catch {
-    return undefined
-  }
-}
+  }).pipe(Effect.orElseSucceed(() => undefined))
 
 const buildChildArgs = (launch: { command: string; prefixArgs: string[] }, info: AgentInfo): string[] => {
   const args = [
@@ -1369,7 +1392,7 @@ export class AgentManager {
   private readonly shutdownController = new AbortController()
   private readonly inspector: ProcessInspectorShape
   private readonly platform: NodeJS.Platform
-  private readonly processSpawner: NodeChildProcessSpawner
+  private readonly processSpawner: BunChildProcessSpawner
   private readonly ownerProcessIdentity: string | undefined
   private readonly reconciliation: Fiber.Fiber<void>
   /** Launches and terminations are forked here so an aborted caller leaves the child it started alone. */
@@ -1380,7 +1403,7 @@ export class AgentManager {
     this.options = options
     this.inspector = options.processInspector ?? processInspectorFromProbe(nodeProcessProbe)
     this.platform = options.platform ?? process.platform
-    this.processSpawner = options.processSpawner ?? nodeChildProcessSpawner
+    this.processSpawner = options.processSpawner ?? bunChildProcessSpawner
     this.ownerProcessIdentity = Effect.runSync(this.inspector.inspect(process.pid))?.identity
     ensureBaseDirs()
     pruneExpiredRuns()
@@ -1480,28 +1503,25 @@ export class AgentManager {
   }
 
   private assertContinuationAllowed(info: AgentInfo, live: LiveAgent | undefined): Effect.Effect<void, SubagentError> {
-    return Effect.suspend(() => {
+    return Effect.gen(function* () {
       if (info.followUpUsed) {
-        return Effect.fail(
-          subagentError(`Agent ${info.canonicalName} already used its single follow-up. Spawn a fresh agent with a narrow task instead.`)
-        )
+        return yield* subagentError(`Agent ${info.canonicalName} already used its single follow-up. Spawn a fresh agent with a narrow task instead.`)
       }
       if (!isClaudeModelId(info.modelId)) {
-        return Effect.void
+        return undefined
       }
-      const contextTokens = latestContextTokens(info.sessionFile)
+      const contextTokens = yield* latestContextTokens(info.sessionFile)
       if (contextTokens === undefined) {
-        return live === undefined
-          ? Effect.fail(subagentError(`Claude context usage is unavailable for ${info.canonicalName}. Spawn a fresh agent instead of continuing it.`))
+        return yield* live === undefined
+          ? subagentError(`Claude context usage is unavailable for ${info.canonicalName}. Spawn a fresh agent instead of continuing it.`)
           : Effect.void
       }
-      return contextTokens >= CLAUDE_CONTEXT_TOKEN_LIMIT
-        ? Effect.fail(
-            subagentError(
-              `Agent ${info.canonicalName} reached ${contextTokens} context input tokens. Spawn a fresh agent before continuing past ${CLAUDE_CONTEXT_TOKEN_LIMIT}.`
-            )
-          )
-        : Effect.void
+      if (contextTokens >= CLAUDE_CONTEXT_TOKEN_LIMIT) {
+        return yield* subagentError(
+          `Agent ${info.canonicalName} reached ${contextTokens} context input tokens. Spawn a fresh agent before continuing past ${CLAUDE_CONTEXT_TOKEN_LIMIT}.`
+        )
+      }
+      return undefined
     })
   }
 
@@ -1516,38 +1536,30 @@ export class AgentManager {
   }
 
   private claimFollowUp(info: AgentInfo, live: LiveAgent | undefined): Effect.Effect<FollowUpClaim, SubagentError> {
-    return Effect.suspend(() => {
-      const file = join(dirname(info.infoFile), `${info.id}.follow-up`)
-      const token = randomUUID()
-      let fd: number | undefined
-      try {
-        fd = openSync(file, 'wx')
-        writeFileSync(fd, jsonText({ token }))
+    const file = join(dirname(info.infoFile), `${info.id}.follow-up`)
+    const token = randomUUID()
+    return createHeldFile({ content: jsonText({ token }), path: file }).pipe(
+      Effect.map((handle) => {
         this.setFollowUpUsed(info, live, true)
-        return Effect.succeed({ fd, file, token })
-      } catch (error) {
-        if (fd !== undefined) {
-          releaseTaskLock(file, fd, token)
-        }
-        const alreadyUsed = error instanceof Error && 'code' in error && error.code === 'EEXIST'
-        return Effect.fail(
-          alreadyUsed
-            ? subagentError(`Agent ${info.canonicalName} already used its single follow-up. Spawn a fresh agent with a narrow task instead.`, error)
-            : subagentError(causeMessage(error), error)
-        )
-      }
-    })
+        return { file, handle, token }
+      }),
+      Effect.mapError((error) =>
+        errorCode(error) === 'EEXIST'
+          ? subagentError(`Agent ${info.canonicalName} already used its single follow-up. Spawn a fresh agent with a narrow task instead.`, error)
+          : subagentError(causeMessage(error), error)
+      )
+    )
   }
 
   private commitFollowUp(claim: FollowUpClaim): void {
-    closeSync(claim.fd)
+    closeHeldFile(claim.handle)
   }
 
   private rollbackFollowUp(info: AgentInfo, live: LiveAgent | undefined, claim: FollowUpClaim): void {
     try {
       this.setFollowUpUsed(info, live, false)
     } finally {
-      releaseTaskLock(claim.file, claim.fd, claim.token)
+      releaseTaskLock(claim.file, claim.handle, claim.token)
     }
   }
 
@@ -1733,40 +1745,35 @@ export class AgentManager {
   }
 
   /** Wins the per-task creation lock, retrying once after reclaiming a lock whose owner is gone. */
-  private acquireTaskLock(lockFile: string, lockToken: string, taskName: string): Effect.Effect<number, SubagentError> {
+  private acquireTaskLock(lockFile: string, lockToken: string, taskName: string): Effect.Effect<HeldFile, SubagentError> {
     return Effect.gen({ self: this }, function* () {
       for (let attempt = 0; attempt < 2; attempt++) {
-        const outcome = this.writeTaskLock(lockFile, lockToken)
-        if (typeof outcome === 'number') {
-          return outcome
+        const outcome = yield* Effect.result(this.writeTaskLock(lockFile, lockToken))
+        if (Result.isSuccess(outcome)) {
+          return outcome.success
         }
-        if (attempt === 0 && outcome.exists && reclaimDeadTaskLock(lockFile, this.options.beforeReclaimTaskLockRemoval)) {
+        const exists = errorCode(outcome.failure) === 'EEXIST'
+        if (attempt === 0 && exists && reclaimDeadTaskLock(lockFile, this.options.beforeReclaimTaskLockRemoval)) {
           continue
         }
-        return yield* outcome.exists
-          ? subagentError(`Agent ${taskName} is already being created.`, outcome.error)
-          : subagentError(causeMessage(outcome.error), outcome.error)
+        return yield* exists
+          ? subagentError(`Agent ${taskName} is already being created.`, outcome.failure)
+          : subagentError(causeMessage(outcome.failure), outcome.failure)
       }
       return yield* subagentError(`Unable to lock agent ${taskName} for creation.`)
     })
   }
 
-  private writeTaskLock(lockFile: string, lockToken: string): number | { exists: boolean; error: unknown } {
-    try {
-      const fd = openSync(lockFile, 'wx')
-      writeFileSync(
-        fd,
-        JSON.stringify({
-          createdAt: nowMs(),
-          pid: process.pid,
-          processIdentity: this.ownerProcessIdentity,
-          token: lockToken,
-        })
-      )
-      return fd
-    } catch (error: unknown) {
-      return { error, exists: error instanceof Error && 'code' in error && error.code === 'EEXIST' }
-    }
+  private writeTaskLock(lockFile: string, lockToken: string): Effect.Effect<HeldFile, Cause.UnknownError> {
+    return createHeldFile({
+      content: JSON.stringify({
+        createdAt: nowMs(),
+        pid: process.pid,
+        processIdentity: this.ownerProcessIdentity,
+        token: lockToken,
+      }),
+      path: lockFile,
+    })
   }
 
   private newAgentInfo(params: SpawnAgentParams, resolved: ReturnType<typeof resolveAgentConfig>, taskName: string, createdAt: number): AgentInfo {
@@ -1822,7 +1829,7 @@ export class AgentManager {
 
       const lockFile = taskLockFile(params.parentSessionId, taskName)
       const lockToken = randomUUID()
-      let lock: number | undefined
+      let lock: HeldFile | undefined
       let launchOwnsLock = false
       const releaseLock = (): void => {
         if (lock === undefined) {
@@ -1865,15 +1872,15 @@ export class AgentManager {
     })
   }
 
-  private consumeAzureQuota(live: LiveAgent): void {
+  private consumeAzureQuota(live: LiveAgent): Effect.Effect<void> {
     const token = live.info.childProcess?.token
     if (isNullOrUndefined(token) || isEmptyString(token)) {
-      return
+      return Effect.void
     }
-    const percent = consumeSubagentAzureQuota(token)
-    if (percent !== undefined) {
-      azureQuota.set(percent)
-    }
+    return consumeSubagentAzureQuota(token).pipe(
+      Effect.tap((percent) => Effect.sync(() => percent === undefined || azureQuota.set(percent))),
+      Effect.asVoid
+    )
   }
 
   private finishProcess(live: LiveAgent, error?: Error): Effect.Effect<void> {
@@ -1883,13 +1890,13 @@ export class AgentManager {
       }
       live.processFinished = true
       this.clearInactivityMonitor(live)
-      this.consumeAzureQuota(live)
-      const persisted = readInfoFile(live.info.infoFile)
-      if (persisted !== undefined && FINAL_STATUSES.has(persisted.status)) {
-        live.info = persisted
-        live.finalizedRun = true
-      }
       return Effect.gen({ self: this }, function* () {
+        yield* this.consumeAzureQuota(live)
+        const persisted = readInfoFile(live.info.infoFile)
+        if (persisted !== undefined && FINAL_STATUSES.has(persisted.status)) {
+          live.info = persisted
+          live.finalizedRun = true
+        }
         const pending = yield* Ref.getAndSet(live.pending, HashMap.empty())
         for (const [, deferred] of HashMap.entries(pending)) {
           yield* Deferred.fail(deferred, subagentProcessError(error?.message ?? 'Child Pi process exited before responding.', error))
@@ -2295,7 +2302,7 @@ export class AgentManager {
       live.logger.info('rpc', 'ignored invalid JSON line', { line: line.slice(0, 1000) })
       return
     }
-    this.consumeAzureQuota(live)
+    Effect.runFork(this.consumeAzureQuota(live))
     const event = parsed
     live.broadcaster.broadcast(event)
     if (event.type === 'response') {

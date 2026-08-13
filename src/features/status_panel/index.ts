@@ -7,13 +7,13 @@ import { makeEventHandler } from '@/shared/effect/runtime.js'
 import { makePanelController, recordSubagentQuota, type StatusPanelDependencies } from './panel.js'
 
 const registerImpl = (pi: ExtensionAPI, runtime: AppRuntime, dependencies: StatusPanelDependencies = {}): void => {
+  const onEvent = makeEventHandler(runtime)
   if (process.env.PI_SUBAGENT_OWNER_TOKEN !== undefined) {
-    pi.on('after_provider_response', recordSubagentQuota)
+    pi.on('after_provider_response', onEvent(recordSubagentQuota))
     return
   }
 
   const handlers = makePanelController({ dependencies, pi, runtime })
-  const onEvent = makeEventHandler(runtime)
 
   pi.on('session_start', onEvent(handlers.sessionStart))
   pi.on('model_select', onEvent(handlers.modelSelect))

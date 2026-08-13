@@ -1,4 +1,4 @@
-import { NodeFileSystem, NodePath } from '@effect/platform-node'
+import { BunFileSystem, BunPath } from '@effect/platform-bun'
 import { Layer, ManagedRuntime } from 'effect'
 import { FetchHttpClient } from 'effect/unstable/http'
 
@@ -11,13 +11,7 @@ import { AgentActivityLive, type AppRuntime, type AppServices, StatusBarLive } f
  * remain synchronously constructible because status-panel resolves its paint-loop stores with
  * `runtime.runSync` during registration.
  */
-const AppLayer: Layer.Layer<AppServices> = Layer.mergeAll(
-  NodeFileSystem.layer,
-  NodePath.layer,
-  FetchHttpClient.layer,
-  StatusBarLive,
-  AgentActivityLive
-)
+const AppLayer: Layer.Layer<AppServices> = Layer.mergeAll(BunFileSystem.layer, BunPath.layer, FetchHttpClient.layer, StatusBarLive, AgentActivityLive)
 
 let processRuntime: AppRuntime | undefined
 

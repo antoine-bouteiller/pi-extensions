@@ -1,4 +1,4 @@
-import { NodeFileSystem } from '@effect/platform-node'
+import { BunFileSystem } from '@effect/platform-bun'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { Effect, FileSystem } from 'effect'
@@ -21,7 +21,7 @@ const marker = process.env.PI_MCP_FIXTURE_PID
 if (marker !== undefined) {
   await FileSystem.FileSystem.pipe(
     Effect.flatMap((fs) => fs.writeFileString(marker, String(process.pid), { mode: 0o600 })),
-    Effect.provide(NodeFileSystem.layer),
+    Effect.provide(BunFileSystem.layer),
     Effect.runPromise
   )
 }

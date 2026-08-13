@@ -1,4 +1,4 @@
-import { NodeFileSystem } from '@effect/platform-node'
+import { BunFileSystem } from '@effect/platform-bun'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Effect, Fiber, Schema } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
@@ -52,13 +52,13 @@ describe('bun-effect shim', () => {
   )
 })
 
-describe('node platform layer', () => {
-  it.effect('reads a file through the Node FileSystem layer', () =>
+describe('bun platform layer', () => {
+  it.effect('reads a file through the Bun FileSystem layer', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem
       const pkg = yield* fs.readFileString('package.json')
       const parsed = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(pkg)
       expect(parsed).toMatchObject({ name: 'pi-extensions' })
-    }).pipe(Effect.provide(NodeFileSystem.layer))
+    }).pipe(Effect.provide(BunFileSystem.layer))
   )
 })

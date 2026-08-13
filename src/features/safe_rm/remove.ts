@@ -1,12 +1,3 @@
-/*
- * Deliberately Node's `fs`: deletion policy is decided from `lstat` (a symlink must never be
- * mistaken for the directory it points at) and from dirent entry types while walking a tree.
- * Effect's `FileSystem.stat` follows symlinks and its `readDirectory` returns plain names, so
- * neither check survives the translation.
- */
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- lstat/dirent semantics, see above.
-import { lstat, readdir, realpath, rm as remove } from 'node:fs/promises'
-
 import {
   isBashToolResult,
   isToolCallEventType,
@@ -22,7 +13,8 @@ import { type PlatformError } from 'effect/PlatformError'
 import { Type } from 'typebox'
 
 import { type AppRuntime } from '@/shared/effect/app_services.js'
-import { nodePath } from '@/shared/effect/node_path.js'
+import { lstatHostFile, readHostDirectoryEntries } from '@/shared/effect/bun_host_file_system.js'
+import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
 import { isEmptyString, isNotEmptyString } from '@/shared/utils/predicates.js'
 import { assertUnprotectedPathEffect, ProtectedPathError } from '@/shared/utils/protected_paths.js'
 
@@ -38,7 +30,7 @@ import {
   TargetChangedError,
 } from './errors.js'
 
-const { dirname, isAbsolute, join, relative, resolve, sep } = nodePath
+const { dirname, isAbsolute, join, relative, resolve, sep } = bunPath
 
 const MAX_TARGETS = 50
 const ROUTED_RM_SENTINEL = ': # pi-safe-rm'
@@ -161,15 +153,10 @@ const rejectMetadataPath = (absolutePath: string): Effect.Effect<void, GitMetada
 const unknownError = (cause: unknown): Cause.UnknownError =>
   Cause.isUnknownError(cause) ? cause : new Cause.UnknownError(cause, cause instanceof Error ? cause.message : String(cause))
 
-const lstatEffect = (path: string) => Effect.tryPromise({ catch: unknownError, try: () => lstat(path) })
-
-const realpathEffect = (path: string): Effect.Effect<string, Cause.UnknownError> =>
-  Effect.tryPromise({ catch: unknownError, try: () => realpath(path) })
-
-const readdirEffect = (path: string) => Effect.tryPromise({ catch: unknownError, try: () => readdir(path, { withFileTypes: true }) })
+const realpathEffect = (path: string): Effect.Effect<string, Cause.UnknownError> => bunFileSystem.realPath(path).pipe(Effect.mapError(unknownError))
 
 const removeEffect = (path: string, options: { force: boolean; recursive: boolean }): Effect.Effect<void, Cause.UnknownError> =>
-  Effect.tryPromise({ catch: unknownError, try: () => remove(path, options) })
+  bunFileSystem.remove(path, options).pipe(Effect.mapError(unknownError))
 
 /**
  * Recursive removal must not turn a harmless-looking parent directory into
@@ -187,7 +174,7 @@ const inspectDirectoryTree = (
 > =>
   Effect.gen(function* () {
     yield* checkCancelled(signal)
-    const entries = yield* readdirEffect(directory)
+    const entries = yield* readHostDirectoryEntries(directory)
     for (const entry of entries) {
       yield* checkCancelled(signal)
       const child = join(directory, entry.name)
@@ -196,7 +183,7 @@ const inspectDirectoryTree = (
       }
       yield* rejectMetadataPath(child)
       yield* assertUnprotectedPathEffect(child, cwd, 'remove')
-      if (entry.isDirectory() && !entry.isSymbolicLink()) {
+      if (entry.isDirectory && !entry.isSymbolicLink) {
         yield* inspectDirectoryTree(child, cwd, signal)
       }
     }
@@ -242,7 +229,7 @@ const validateTargetEffect = ({
 
     yield* rejectMetadataPath(absolute)
 
-    const statsOutcome = yield* Effect.result(lstatEffect(absolute))
+    const statsOutcome = yield* Effect.result(lstatHostFile(absolute))
     if (Result.isFailure(statsOutcome)) {
       if (isMissing(statsOutcome.failure)) {
         return { absolute, directory: false, input, missing: true }
@@ -256,7 +243,7 @@ const validateTargetEffect = ({
       return yield* SymlinkEscapeError.make({ message: `Deletion target escapes an allowed root through a symlink: ${input}` })
     }
 
-    const directory = stats.isDirectory() && !stats.isSymbolicLink()
+    const directory = stats.isDirectory && !stats.isSymbolicLink
     if (directory && !recursive) {
       return yield* RecursiveRequiredError.make({ message: `Directory deletion requires recursive: true: ${input}` })
     }
@@ -308,8 +295,8 @@ const revalidateTargetEffect = ({ target, roots, cwd, signal }: RevalidateTarget
       return yield* SymlinkEscapeError.make({ message: `Deletion target escapes an allowed root through a symlink: ${target.input}` })
     }
 
-    const stats = yield* lstatEffect(target.absolute)
-    const directory = stats.isDirectory() && !stats.isSymbolicLink()
+    const stats = yield* lstatHostFile(target.absolute)
+    const directory = stats.isDirectory && !stats.isSymbolicLink
     if (directory !== target.directory) {
       return yield* TargetChangedError.make({ message: `Deletion target changed after validation: ${target.input}` })
     }

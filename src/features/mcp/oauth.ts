@@ -1,10 +1,10 @@
 import { randomBytes } from 'node:crypto'
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- A loopback *server* for the OAuth redirect; `HttpClient` is a client and cannot receive the callback.
-import { createServer, type Server } from 'node:http'
 
+import { BunHttpServer } from '@effect/platform-bun'
 import { UnauthorizedError, type OAuthClientProvider, type OAuthDiscoveryState } from '@modelcontextprotocol/sdk/client/auth.js'
 import { type OAuthClientInformationMixed, type OAuthClientMetadata, type OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js'
-import { Deferred, Effect, Semaphore, type Scope } from 'effect'
+import { Cause, Deferred, Effect, Exit, Scope, Semaphore } from 'effect'
+import { HttpServerRequest, HttpServerResponse } from 'effect/unstable/http'
 
 import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 
@@ -65,54 +65,38 @@ const callbackUrl = (options: OAuthCallbackOptions): { url: URL; bindHost: strin
   }
 }
 
-const closeServer = (server: Server): Effect.Effect<void> =>
-  Effect.callback<void>((resume) => {
-    if (!server.listening) {
-      resume(Effect.void)
-      return
-    }
-    server.close(() => resume(Effect.void))
+const listenerError = (port: number, cause: Cause.Cause<unknown>): McpError => {
+  const error = Cause.squash(cause)
+  const message = String(error)
+  return new McpError({
+    cause: error,
+    message:
+      message.includes('EADDRINUSE') || message.toLowerCase().includes('in use')
+        ? `OAuth callback port ${port} is already in use`
+        : 'Could not start the OAuth callback listener',
   })
+}
 
-const listen = (server: Server, port: number, bindHost: string): Effect.Effect<void, McpError> =>
-  Effect.callback<void, McpError>((resume) => {
-    const onError = (error: Error) => {
-      server.off('listening', onListening)
-      const reason =
-        'code' in error && error.code === 'EADDRINUSE'
-          ? `OAuth callback port ${port} is already in use`
-          : 'Could not start the OAuth callback listener'
-      resume(Effect.fail(new McpError({ cause: error, message: reason })))
-    }
-    const onListening = () => {
-      server.off('error', onError)
-      resume(Effect.void)
-    }
-    server.once('error', onError)
-    server.once('listening', onListening)
-    server.listen(port, bindHost)
-  })
-
-const respondToCallback = (request: { method?: string; url?: string }, response: OAuthResponse, options: CallbackHandlerOptions): void => {
+const respondToCallback = (
+  request: Pick<HttpServerRequest.HttpServerRequest, 'method' | 'url'>,
+  options: CallbackHandlerOptions
+): HttpServerResponse.HttpServerResponse => {
   const { url, expectedState, code } = options
   let requested: URL
   try {
     requested = new URL(request.url ?? '/', url.origin)
   } catch {
-    response.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' })
-    response.end('Invalid OAuth callback request')
-    return
+    return HttpServerResponse.text('Invalid OAuth callback request', { contentType: 'text/plain; charset=utf-8', status: 400 })
   }
   if (request.method !== 'GET' || requested.pathname !== url.pathname) {
-    response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
-    response.end('Not found')
-    return
+    return HttpServerResponse.text('Not found', { contentType: 'text/plain; charset=utf-8', status: 404 })
   }
 
   if (requested.searchParams.get('state') !== expectedState) {
-    response.writeHead(400, { 'content-type': 'text/html; charset=utf-8' })
-    response.end('<!doctype html><title>OAuth error</title><p>Invalid OAuth state. Return to Pi and retry.</p>')
-    return
+    return HttpServerResponse.text('<!doctype html><title>OAuth error</title><p>Invalid OAuth state. Return to Pi and retry.</p>', {
+      contentType: 'text/html; charset=utf-8',
+      status: 400,
+    })
   }
 
   const oauthError = requested.searchParams.get('error')
@@ -121,28 +105,27 @@ const respondToCallback = (request: { method?: string; url?: string }, response:
     const message = `OAuth authorization failed: ${oauthError}${
       isNotNullOrUndefined(description) && isNotEmptyString(description) ? ` (${description})` : ''
     }`
-    response.writeHead(400, { 'content-type': 'text/html; charset=utf-8' })
-    response.end(`<!doctype html><title>OAuth error</title><p>${escaped(message)}</p>`)
     Deferred.doneUnsafe(code, Effect.fail(new McpError({ message })))
-    return
+    return HttpServerResponse.text(`<!doctype html><title>OAuth error</title><p>${escaped(message)}</p>`, {
+      contentType: 'text/html; charset=utf-8',
+      status: 400,
+    })
   }
 
   const authorizationCode = requested.searchParams.get('code')
   if (isNullOrUndefined(authorizationCode) || isEmptyString(authorizationCode)) {
-    response.writeHead(400, { 'content-type': 'text/html; charset=utf-8' })
-    response.end('<!doctype html><title>OAuth error</title><p>Missing authorization code.</p>')
     Deferred.doneUnsafe(code, Effect.fail(new McpError({ message: 'OAuth callback did not include an authorization code' })))
-    return
+    return HttpServerResponse.text('<!doctype html><title>OAuth error</title><p>Missing authorization code.</p>', {
+      contentType: 'text/html; charset=utf-8',
+      status: 400,
+    })
   }
 
-  response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-  response.end('<!doctype html><title>OAuth complete</title><p>Authentication succeeded. You can close this window and return to Pi.</p>')
   Deferred.doneUnsafe(code, Effect.succeed(authorizationCode))
-}
-
-interface OAuthResponse {
-  writeHead: (status: number, headers: Record<string, string>) => unknown
-  end: (body: string) => unknown
+  return HttpServerResponse.text(
+    '<!doctype html><title>OAuth complete</title><p>Authentication succeeded. You can close this window and return to Pi.</p>',
+    { contentType: 'text/html; charset=utf-8' }
+  )
 }
 
 interface CallbackHandlerOptions {
@@ -153,7 +136,7 @@ interface CallbackHandlerOptions {
 
 /**
  * One-shot, loopback-only OAuth callback listener, scoped so the port is released even when the
- * authorization flow fails: the code arrives on a Node request callback, so it is handed to the
+ * authorization flow fails: the code arrives through the Bun server handler and is handed to the
  * waiting fiber through a Deferred.
  */
 export const startOAuthCallback = (options: OAuthCallbackOptions): Effect.Effect<OAuthCallback, McpError, Scope.Scope> =>
@@ -166,14 +149,21 @@ export const startOAuthCallback = (options: OAuthCallbackOptions): Effect.Effect
       try: () => callbackUrl(options),
     })
     const code = yield* Deferred.make<string, McpError>()
-    const server = createServer((request, response) => {
-      respondToCallback(request, response, { code, expectedState: options.expectedState, url })
-    })
+    const listenerScope = yield* Effect.acquireRelease(Scope.make(), (scope) => Scope.close(scope, Exit.void))
+    const server = yield* BunHttpServer.make({ hostname: bindHost, port: options.port }).pipe(
+      Effect.provideService(Scope.Scope, listenerScope),
+      Effect.catchCause((cause) => Effect.fail(listenerError(options.port, cause)))
+    )
+    yield* server
+      .serve(
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest
+          return respondToCallback(request, { code, expectedState: options.expectedState, url })
+        })
+      )
+      .pipe(Effect.provideService(Scope.Scope, listenerScope))
 
-    yield* Effect.acquireRelease(listen(server, options.port, bindHost), () => closeServer(server))
-
-    const address = server.address()
-    if (address === null || typeof address === 'string') {
+    if (server.address._tag !== 'TcpAddress') {
       return yield* new McpError({ message: 'Could not determine the OAuth callback listener address' })
     }
 
@@ -194,7 +184,7 @@ export const startOAuthCallback = (options: OAuthCallbackOptions): Effect.Effect
       )
     )
 
-    return { close: closeServer(server), redirectUrl: url.href, waitForCode: Deferred.await(code) }
+    return { close: Scope.close(listenerScope, Exit.void), redirectUrl: url.href, waitForCode: Deferred.await(code) }
   })
 
 export interface KeychainOAuthProviderOptions {

@@ -36,7 +36,7 @@ See [`docs/project_structure.md`](docs/project_structure.md) for the full depend
 
 ## Effect
 
-This package is on an Effect v4 **beta** (`effect` and `@effect/platform-node` pinned to the exact same `4.0.0-beta.102` in `package.json`, not a range) while the API surface is still moving. Renovate remains enabled, but every proposed Effect update stays exact and must pass the full CI suite. `tests/utils/bun_effect.ts` is a local Bun-native `it.effect`/`it.scoped`/`it.live` shim standing in for `@effect/bun-test`, which does not exist yet ([Effect-TS/effect#5973](https://github.com/Effect-TS/effect/pull/5973)); replace it once that package ships.
+This package is on an Effect v4 **beta** (`effect` and `@effect/platform-bun` pinned to the exact same `4.0.0-beta.107` in `package.json`, not a range) while the API surface is still moving. Renovate remains enabled, but every proposed Effect update stays exact and must pass the full CI suite. `tests/utils/bun_effect.ts` is a local Bun-native `it.effect`/`it.scoped`/`it.live` shim standing in for `@effect/bun-test`, which does not exist yet ([Effect-TS/effect#5973](https://github.com/Effect-TS/effect/pull/5973)); replace it once that package ships.
 
 ## Features
 

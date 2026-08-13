@@ -1,5 +1,3 @@
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- The spec reserves a real loopback listener to verify ephemeral-port release; an HTTP client cannot create that server.
-import { createServer } from 'node:http'
 import { fileURLToPath } from 'node:url'
 
 import { DEFAULT_MAX_BYTES } from '@earendil-works/pi-coding-agent'
@@ -12,6 +10,7 @@ import { promiseFromEffect, tryEffect, describe, expect, it } from '@tests/utils
 import { asError, asNarrowed } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { httpGet } from '@tests/utils/http.js'
+import { freeLoopbackPort } from '@tests/utils/loopback_port.js'
 import { Effect, FileSystem, Path } from 'effect'
 
 import { readonlyMcpPolicy, type McpOperationOptions, type McpSearchOptions } from '@/features/mcp/gateway.js'
@@ -192,30 +191,7 @@ const promised = (manager: McpManager) => ({
   status: () => manager.status(),
 })
 
-const freePort = (): Effect.Effect<number> =>
-  Effect.gen(function* () {
-    const server = createServer()
-    yield* Effect.callback<void>((resume) => {
-      const onError = (error: Error) => resume(Effect.die(error))
-      server.once('error', onError)
-      server.listen(0, '127.0.0.1', () => {
-        server.off('error', onError)
-        resume(Effect.void)
-      })
-      return Effect.sync(() => {
-        server.close()
-      })
-    })
-    const address = server.address()
-    if (address === null || typeof address === 'string') {
-      return yield* Effect.die(new Error('missing address'))
-    }
-    const { port } = address
-    yield* Effect.callback<void>((resume) => {
-      server.close((error) => resume(error === undefined ? Effect.void : Effect.die(error)))
-    })
-    return port
-  })
+const freePort = () => freeLoopbackPort
 
 describe('MCP manager', () => {
   it.effect('construction and status are metadata-only', () =>

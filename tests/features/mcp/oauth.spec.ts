@@ -1,39 +1,14 @@
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- The spec asserts real loopback listener binding and cleanup; an HTTP client cannot create the server under test.
-import { createServer } from 'node:http'
-
 import { makeAbortController } from '@tests/utils/abort_controller.js'
 import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asError } from '@tests/utils/casts.js'
 import { httpGet } from '@tests/utils/http.js'
+import { freeLoopbackPort } from '@tests/utils/loopback_port.js'
 import { Effect } from 'effect'
 
 import { type CredentialStore, type OAuthCredentialPayload } from '@/features/mcp/keychain.js'
 import { KeychainOAuthProvider, createOAuthState, startOAuthCallback, type OAuthCallback, type OAuthCallbackOptions } from '@/features/mcp/oauth.js'
 
-const freePort = (): Effect.Effect<number> =>
-  Effect.gen(function* () {
-    const server = createServer()
-    yield* Effect.callback<void>((resume) => {
-      const onError = (error: Error) => resume(Effect.die(error))
-      server.once('error', onError)
-      server.listen(0, '127.0.0.1', () => {
-        server.off('error', onError)
-        resume(Effect.void)
-      })
-      return Effect.sync(() => {
-        server.close()
-      })
-    })
-    const address = server.address()
-    if (address === null || typeof address === 'string') {
-      return yield* Effect.die(new Error('missing address'))
-    }
-    const { port } = address
-    yield* Effect.callback<void>((resume) => {
-      server.close((error) => resume(error === undefined ? Effect.void : Effect.die(error)))
-    })
-    return port
-  })
+const freePort = () => freeLoopbackPort
 
 class MemoryStore implements CredentialStore {
   value?: OAuthCredentialPayload
@@ -82,6 +57,19 @@ describe('OAuth callback', () => {
 
       yield* withCallback({ expectedState: 'next', port }, () => Effect.void)
     })
+  )
+
+  it.live('explicit close is idempotent and releases the port', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const port = yield* freePort()
+        const callback = yield* startOAuthCallback({ expectedState: 'first', port })
+        yield* callback.close
+        yield* callback.close
+        const replacement = yield* startOAuthCallback({ expectedState: 'replacement', port })
+        yield* replacement.close
+      })
+    )
   )
 
   it.live('rejects a wrong state without consuming the legitimate callback', () =>

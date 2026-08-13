@@ -1,7 +1,7 @@
 import { Effect, Exit, Scope } from 'effect'
 import { ChildProcess } from 'effect/unstable/process'
 
-import { nodeChildProcessSpawner } from '@/shared/effect/node_process.js'
+import { bunChildProcessSpawner } from '@/shared/effect/bun_services.js'
 
 interface CaffeinateProcess {
   readonly exited: Promise<void>
@@ -23,7 +23,7 @@ export interface KeepAwake {
 
 const spawnCaffeinate = (command: string, args: readonly string[]): Promise<CaffeinateProcess> => {
   const scope = Scope.makeUnsafe()
-  const spawn = nodeChildProcessSpawner
+  const spawn = bunChildProcessSpawner
     .spawn(
       ChildProcess.make(command, args, {
         detached: false,

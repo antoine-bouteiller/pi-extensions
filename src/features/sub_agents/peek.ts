@@ -1,20 +1,22 @@
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- Synchronous session-file polling from TUI callbacks, which cannot await.
-import { existsSync, statSync } from 'node:fs'
 import { connect, type Socket } from 'node:net'
 
 import { type AssistantMessage, type Message } from '@earendil-works/pi-ai'
 import {
   AssistantMessageComponent,
+  buildSessionContext,
   getMarkdownTheme,
-  SessionManager,
+  migrateSessionEntries,
+  parseSessionEntries,
   ToolExecutionComponent,
   UserMessageComponent,
   type Theme,
+  type SessionEntry,
   type ThemeColor,
 } from '@earendil-works/pi-coding-agent'
 import { Container, matchesKey, truncateToWidth, visibleWidth, type TUI } from '@earendil-works/pi-tui'
-import { DateTime, Effect, Exit, Fiber, Schema, Scope } from 'effect'
+import { DateTime, Effect, Exit, Fiber, Schema, Scope, Semaphore } from 'effect'
 
+import { bunFileSystem } from '@/shared/effect/bun_services.js'
 import { isEmptyString, isNotEmptyString } from '@/shared/utils/predicates.js'
 
 import { getSocketPath, isPeekActive, type AgentInfo } from './core.js'
@@ -250,8 +252,10 @@ export class SubagentPeekOverlay {
   private readonly cwd: string
   private readonly sessionFile: string
   private readonly modelName: string
-  private sessionManager: SessionManager | undefined = undefined
+  private sessionMessages: ReturnType<typeof buildSessionContext>['messages'] = []
   private lastFileSize = 0
+  private loadGeneration = 0
+  private readonly reloadSemaphore = Semaphore.makeUnsafe(1)
   private readonly chatContainer = new Container()
   private scrollOffset = Number.MAX_SAFE_INTEGER
   private followMode = true
@@ -277,35 +281,53 @@ export class SubagentPeekOverlay {
     this.sessionFile = options.info.sessionFile
     this.cwd = options.info.cwd
     this.modelName = options.info.modelId || options.info.model
-    this.loadSession()
-    this.rebuildChat()
-    if (isPeekActive(options.info.id)) {
-      this.connectSocket()
-    }
-    this.pollFiber = Effect.runFork(Effect.forever(Effect.delay(Effect.sync(() => this.poll()).pipe(Effect.ignoreCause), 200)))
+    this.requestReload()
+    this.pollFiber = Effect.runFork(Effect.forever(Effect.delay(this.poll().pipe(Effect.ignoreCause), 200)))
   }
 
-  private loadSession(): void {
-    try {
-      if (!existsSync(this.sessionFile)) {
-        return
+  private loadSession(generation: number): Effect.Effect<boolean> {
+    return Effect.gen({ self: this }, function* () {
+      const content = yield* bunFileSystem.readFileString(this.sessionFile)
+      const info = yield* bunFileSystem.stat(this.sessionFile)
+      if (Buffer.byteLength(content, 'utf8') !== Number(info.size)) {
+        return false
       }
-      this.sessionManager = SessionManager.open(this.sessionFile)
-      this.lastFileSize = statSync(this.sessionFile).size
-    } catch {
-      this.sessionManager = undefined
-    }
+      const entries = parseSessionEntries(content)
+      migrateSessionEntries(entries)
+      if (this.disposed || generation !== this.loadGeneration) {
+        return false
+      }
+      this.sessionMessages = buildSessionContext(entries.filter((entry): entry is SessionEntry => entry.type !== 'session')).messages
+      this.lastFileSize = Number(info.size)
+      return true
+    }).pipe(Effect.orElseSucceed(() => false))
+  }
+
+  private requestReload(afterLoad?: () => void): void {
+    const generation = ++this.loadGeneration
+    Effect.runFork(
+      this.reloadSemaphore.withPermits(1)(
+        this.loadSession(generation).pipe(
+          Effect.tap((loaded) =>
+            Effect.sync(() => {
+              if (!loaded || this.disposed || generation !== this.loadGeneration) {
+                return
+              }
+              this.rebuildChat()
+              afterLoad?.()
+              this.tui.requestRender()
+            })
+          )
+        )
+      )
+    )
   }
 
   private rebuildChat(): void {
     this.invalidateCache()
     this.chatContainer.clear()
     this.pendingTools.clear()
-    if (this.sessionManager === undefined) {
-      return
-    }
-    const context = this.sessionManager.buildSessionContext()
-    for (const message of context.messages) {
+    for (const message of this.sessionMessages) {
       if (message.role === 'user') {
         const text = this.getUserText(message)
         if (isNotEmptyString(text)) {
@@ -405,9 +427,7 @@ export class SubagentPeekOverlay {
       }
       this.status = 'done'
       this.cleanupStreaming()
-      this.loadSession()
-      this.rebuildChat()
-      this.tui.requestRender()
+      this.requestReload()
     })
     socket.on('data', (data) => {
       this.socketBuffer += data.toString()
@@ -553,10 +573,11 @@ export class SubagentPeekOverlay {
   }
 
   private handleEvent(event: PeekSocketEvent): void {
+    if (event.type !== 'sync' && event.type !== 'agent_settled') {
+      this.loadGeneration++
+    }
     if (event.type === 'sync') {
-      this.loadSession()
-      this.rebuildChat()
-      this.handleSyncEvent(event)
+      this.requestReload(() => this.handleSyncEvent(event))
     } else if (event.type === 'message_start') {
       this.handleMessageStart(event)
     } else if (event.type === 'message_update') {
@@ -571,9 +592,8 @@ export class SubagentPeekOverlay {
       this.handleToolExecutionEnd(event)
     } else if (event.type === 'agent_settled') {
       this.cleanupStreaming()
-      this.loadSession()
-      this.rebuildChat()
       this.status = 'done'
+      this.requestReload()
     }
     this.invalidateCache()
     if (this.followMode) {
@@ -636,30 +656,29 @@ export class SubagentPeekOverlay {
     this.pendingTools.clear()
   }
 
-  private poll(): void {
-    if (this.disposed) {
-      return
-    }
-    if (this.socket === undefined && isPeekActive(this.info.id) && DateTime.toEpochMillis(DateTime.nowUnsafe()) - this.lastConnectAttemptAt >= 2000) {
-      this.connectSocket()
-    }
-    try {
-      const { size } = statSync(this.sessionFile)
-      if (size === this.lastFileSize) {
+  private poll(): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      if (this.disposed) {
         return
       }
-      this.loadSession()
-      if (this.streamingComponent === undefined) {
-        this.rebuildChat()
+      if (
+        this.socket === undefined &&
+        (yield* isPeekActive(this.info.id)) &&
+        DateTime.toEpochMillis(DateTime.nowUnsafe()) - this.lastConnectAttemptAt >= 2000
+      ) {
+        this.connectSocket()
       }
-      this.invalidateCache()
-      if (this.followMode) {
-        this.scrollOffset = Number.MAX_SAFE_INTEGER
+      const { size } = yield* bunFileSystem.stat(this.sessionFile)
+      if (Number(size) === this.lastFileSize) {
+        return
       }
-      this.tui.requestRender()
-    } catch {
-      // Best effort; a transient stat failure is retried on the next poll.
-    }
+      this.requestReload(() => {
+        this.invalidateCache()
+        if (this.followMode) {
+          this.scrollOffset = Number.MAX_SAFE_INTEGER
+        }
+      })
+    }).pipe(Effect.ignore)
   }
 
   private handleNavigationInput(data: string): boolean {

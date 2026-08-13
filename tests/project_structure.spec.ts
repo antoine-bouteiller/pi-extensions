@@ -1,13 +1,17 @@
 import { fileURLToPath } from 'node:url'
 
-import { NodeFileSystem, NodePath } from '@effect/platform-node'
+import { BunFileSystem, BunPath } from '@effect/platform-bun'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Effect, FileSystem, Layer, Path } from 'effect'
+import { parseSync } from 'oxc-parser'
 
+import { isRecord } from '@/shared/utils/records.js'
+
+const ROOT = fileURLToPath(new URL('../', import.meta.url))
 const SRC = fileURLToPath(new URL('../src/', import.meta.url))
 const TESTS = fileURLToPath(new URL('./', import.meta.url))
 
-const platformLayer = Layer.merge(NodeFileSystem.layer, NodePath.layer)
+const platformLayer = Layer.merge(BunFileSystem.layer, BunPath.layer)
 
 const descendants = (root: string): Effect.Effect<string[], never, FileSystem.FileSystem | Path.Path> =>
   Effect.gen(function* () {
@@ -23,6 +27,58 @@ const descendants = (root: string): Effect.Effect<string[], never, FileSystem.Fi
     }
     return paths
   }).pipe(Effect.orDie)
+
+const targetBuiltin = (specifier: string): boolean => {
+  const normalized = specifier.replace(/^node:/, '').replace(/\/promises$/, '')
+  return new Set(['child_process', 'fs', 'http', 'path']).has(normalized)
+}
+
+const literalValue = (value: unknown): string | undefined => (isRecord(value) && typeof value.value === 'string' ? value.value : undefined)
+
+const callSpecifier = (node: Record<string, unknown>): string | undefined => {
+  if (node.type !== 'CallExpression' || !Array.isArray(node.arguments) || !isRecord(node.callee)) {
+    return undefined
+  }
+  const { callee } = node
+  const direct = callee.type === 'Identifier' && (callee.name === 'require' || callee.name === 'createRequire')
+  const member =
+    callee.type === 'MemberExpression' &&
+    isRecord(callee.property) &&
+    (callee.property.name === 'require' || callee.property.name === 'getBuiltinModule')
+  return direct || member ? literalValue(node.arguments[0]) : undefined
+}
+
+const externalModuleSpecifier = (node: Record<string, unknown>): string | undefined =>
+  node.type === 'TSExternalModuleReference' ? literalValue(node.expression) : undefined
+
+const builtinSpecifiers = (source: string, filename: string): string[] => {
+  const parsed = parseSync(filename, source)
+  const specifiers = [
+    ...parsed.module.staticImports.map((entry) => entry.moduleRequest.value),
+    ...parsed.module.staticExports.flatMap((entry) => entry.entries.flatMap((item) => item.moduleRequest?.value ?? [])),
+    ...parsed.module.dynamicImports.map((entry) => source.slice(entry.moduleRequest.start + 1, entry.moduleRequest.end - 1)),
+  ].filter(targetBuiltin)
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        visit(item)
+      }
+      return
+    }
+    if (!isRecord(value)) {
+      return
+    }
+    const specifier = callSpecifier(value) ?? externalModuleSpecifier(value)
+    if (specifier !== undefined && targetBuiltin(specifier)) {
+      specifiers.push(specifier)
+    }
+    for (const child of Object.values(value)) {
+      visit(child)
+    }
+  }
+  visit(parsed.program)
+  return specifiers
+}
 
 const namesByKind = (root: string) =>
   Effect.gen(function* () {
@@ -100,6 +156,37 @@ describe('project structure', () => {
     Effect.gen(function* () {
       const rootTests = yield* namesByKind(TESTS)
       expect(rootTests.files).toEqual(['bun_effect.spec.ts', 'project_structure.spec.ts', 'registration.spec.ts'])
+    }).pipe(Effect.provide(platformLayer))
+  )
+
+  it.effect('keeps one audited Node builtin boundary', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const path = yield* Path.Path
+      const files = [...(yield* descendants(SRC)), ...(yield* descendants(TESTS))].filter((file) => /\.[jt]s$/.test(file))
+      const imports: string[] = []
+      const directives: string[] = []
+      for (const file of files) {
+        const source = yield* fs.readFileString(file)
+        for (const specifier of builtinSpecifiers(source, file)) {
+          imports.push(`${path.relative(ROOT, file)}:${specifier}`)
+        }
+        for (const directive of source.matchAll(/oxlint-disable effecttsgo\/node-builtin-import -- [^\n]+/g)) {
+          directives.push(`${path.relative(ROOT, file)}:${directive[0]}`)
+        }
+      }
+      expect(imports).toEqual(['src/shared/effect/bun_host_file_system.ts:node:fs'])
+      expect(directives).toHaveLength(1)
+      expect(directives[0]).toContain('src/shared/effect/bun_host_file_system.ts:')
+      expect(directives[0]).toContain('no-follow metadata')
+      expect(directives[0]).toContain('typed directory entries')
+      expect(directives[0]).toContain('descriptor identity')
+      expect((yield* fs.readDirectory(ROOT)).filter((name) => /^oxlint[.].*config/.test(name))).toEqual(['oxlint.config.ts'])
+
+      const packageJson = yield* fs.readFileString(path.join(ROOT, 'package.json'))
+      expect(packageJson).toContain('"@effect/platform-bun": "4.0.0-beta.107"')
+      expect(packageJson).not.toContain(['@effect/platform', 'node'].join('-'))
+      expect(packageJson).toContain('"lint": "oxlint --deny-warnings --report-unused-disable-directives"')
     }).pipe(Effect.provide(platformLayer))
   )
 })

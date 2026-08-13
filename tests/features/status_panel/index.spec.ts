@@ -1,4 +1,6 @@
 import { afterEach, beforeEach } from 'bun:test'
+import { randomUUID } from 'node:crypto'
+import { tmpdir, userInfo } from 'node:os'
 
 import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
@@ -9,8 +11,9 @@ import { Effect } from 'effect'
 import { register as statusPanel } from '@/features/status_panel/index.js'
 import { columns, formatTokens, progressBar } from '@/features/status_panel/render.js'
 import { emptyGitInfoState, emptyModelInfoState } from '@/features/status_panel/state.js'
+import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
 import { runningAgents } from '@/shared/state/agent_activity.js'
-import { azureQuota, consumeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
+import { azureQuota, consumeSubagentAzureQuota, writeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
 
 beforeEach(() => azureQuota.set(undefined))
 
@@ -48,9 +51,29 @@ describe('status panel registration', () => {
 
         expect(dependencyReads).toBe(0)
         expect([...state.handlers.keys()]).toEqual(['after_provider_response'])
-        expect(consumeSubagentAzureQuota(ownerToken)).toBe(75)
+        expect(yield* consumeSubagentAzureQuota(ownerToken)).toBe(75)
       })
     )
+  })
+
+  it.effect('claims a quota handoff once across concurrent consumers', () => {
+    const temporaryRoot = process.env.PI_SUBAGENT_TEMP_DIR || tmpdir()
+    return Effect.gen(function* () {
+      const token = randomUUID()
+      yield* writeSubagentAzureQuota(token, 150)
+      const directory = bunPath.join(temporaryRoot, 'pi-codex-subagents', userInfo().username, 'quota')
+      const target = bunPath.join(directory, `${token}.json`)
+      if (process.platform !== 'win32') {
+        expect((yield* bunFileSystem.stat(directory)).mode & 0o777).toBe(0o700)
+        expect((yield* bunFileSystem.stat(target)).mode & 0o777).toBe(0o600)
+      }
+      expect((yield* bunFileSystem.readDirectory(directory)).some((name) => name.includes('.tmp'))).toBe(false)
+      const claimed = yield* Effect.all([consumeSubagentAzureQuota(token), consumeSubagentAzureQuota(token)], { concurrency: 2 })
+      expect(claimed.filter((value) => value === 100)).toHaveLength(1)
+      expect(claimed.filter((value) => value === undefined)).toHaveLength(1)
+      expect(yield* consumeSubagentAzureQuota(token)).toBeUndefined()
+      expect(yield* consumeSubagentAzureQuota('invalid')).toBeUndefined()
+    })
   })
 
   it.effect('registers the normal main-session lifecycle handlers', () =>

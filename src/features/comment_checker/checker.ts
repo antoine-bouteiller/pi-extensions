@@ -3,7 +3,7 @@ import { Cause, Context, Effect, Stream } from 'effect'
 import { type PlatformError } from 'effect/PlatformError'
 import { ChildProcess } from 'effect/unstable/process'
 
-import { nodeChildProcessSpawner } from '@/shared/effect/node_process.js'
+import { bunChildProcessSpawner } from '@/shared/effect/bun_services.js'
 import { jsonText } from '@/shared/utils/json.js'
 import { isEmptyString } from '@/shared/utils/predicates.js'
 import { isRecord } from '@/shared/utils/records.js'
@@ -118,7 +118,7 @@ const runCommentChecker = (input: HookInput, executable = 'comment-checker'): Ef
         stdin: { endOnDone: true, stream: Stream.succeed(new TextEncoder().encode(jsonText(input))) },
         stdout: 'pipe',
       })
-      const child = yield* nodeChildProcessSpawner.spawn(command)
+      const child = yield* bunChildProcessSpawner.spawn(command)
       const { exitCode, stderr, stdout } = yield* Effect.all(
         {
           exitCode: child.exitCode,

@@ -1,11 +1,8 @@
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- Synchronous `ps`/PowerShell ownership probes with captured stdio and a timeout; the Effect service wraps them, it cannot replace them.
-import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- Byte-exact synchronous `/proc` reads used by the same ownership probes.
-import { readFileSync } from 'node:fs'
 
 import { Context, Effect, Function, Layer } from 'effect'
 
+import { hostFileSystemSync } from '@/shared/effect/bun_host_file_system.js'
 import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined } from '@/shared/utils/predicates.js'
 
 export interface ProcessSnapshot {
@@ -42,8 +39,8 @@ export interface ProcessProbeShape {
   readonly processAlive: (pid: number) => boolean
   readonly readFileUtf8: (path: string) => string
   readonly readFileBuffer: (path: string) => Buffer
-  readonly runPowerShell: (script: string) => { status: number | null; stdout: string }
-  readonly runPs: (args: string[]) => { status: number | null; stdout: string }
+  readonly runPowerShell: (script: string) => { status: number | undefined; stdout: string }
+  readonly runPs: (args: string[]) => { status: number | undefined; stdout: string }
 }
 
 const inspectLinuxProcess = (probe: ProcessProbeShape, pid: number, token?: string): ProcessSnapshot | undefined => {
@@ -131,21 +128,25 @@ const processOwnerIsActiveWith = (
   )
 }
 
-const runPowerShellScript = (script: string): { status: number | null; stdout: string } => {
-  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', timeout: 3000 })
-  return { status: result.status, stdout: result.stdout }
+const runCommand = (command: string, args: string[]): { status: number | undefined; stdout: string } => {
+  try {
+    const result = Bun.spawnSync([command, ...args], { stderr: 'ignore', stdout: 'pipe', timeout: 3000 })
+    return { status: result.exitCode, stdout: result.stdout.toString() }
+  } catch {
+    return { status: undefined, stdout: '' }
+  }
 }
 
-const runPsCommand = (args: string[]): { status: number | null; stdout: string } => {
-  const result = spawnSync('ps', args, { encoding: 'utf8', timeout: 3000 })
-  return { status: result.status, stdout: result.stdout }
-}
+const runPowerShellScript = (script: string): { status: number | undefined; stdout: string } =>
+  runCommand('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script])
+
+const runPsCommand = (args: string[]): { status: number | undefined; stdout: string } => runCommand('ps', args)
 
 export const nodeProcessProbe: ProcessProbeShape = {
   platform: process.platform,
   processAlive,
-  readFileBuffer: (path) => readFileSync(path),
-  readFileUtf8: (path) => readFileSync(path, 'utf8'),
+  readFileBuffer: (path) => hostFileSystemSync.readFile(path),
+  readFileUtf8: (path) => hostFileSystemSync.readFile(path, 'utf8'),
   runPowerShell: runPowerShellScript,
   runPs: runPsCommand,
 }
