@@ -6,42 +6,49 @@ import { Effect } from 'effect'
 import { register as caffeinate } from '@/features/caffeinate/index.js'
 
 interface FakeChild {
-  readonly events: Map<string, () => void>
+  readonly exit: PromiseWithResolvers<void>
   killCalls: number
   unrefCalls: number
 }
 
-const createHarness = (platform: NodeJS.Platform = 'darwin', exitOnKill = true, isSubagent = false) => {
+const createHarness = (platform: NodeJS.Platform = 'darwin', exitOnKill = true, isSubagent = false, deferSpawn = false, failSpawns = 0) => {
   const fixture = createFakePi()
   const children: FakeChild[] = []
   const spawns: { args: readonly string[]; command: string }[] = []
+  const spawnGate = deferSpawn ? Promise.withResolvers<void>() : undefined
+  let remainingFailures = failSpawns
 
   caffeinate(fixture.pi, runtime, {
     isSubagent,
     pid: 1234,
     platform,
     spawn: (command, args) => {
-      const child: FakeChild = { events: new Map(), killCalls: 0, unrefCalls: 0 }
-      children.push(child)
       spawns.push({ args, command })
-      return {
+      if (remainingFailures > 0) {
+        remainingFailures -= 1
+        return Promise.reject(new Error('spawn failed'))
+      }
+      const child: FakeChild = { exit: Promise.withResolvers<void>(), killCalls: 0, unrefCalls: 0 }
+      children.push(child)
+      return (spawnGate?.promise ?? Promise.resolve()).then(() => ({
+        exited: child.exit.promise,
         kill: () => {
           child.killCalls += 1
           if (exitOnKill) {
-            child.events.get('exit')?.()
+            child.exit.resolve()
           }
-          return true
+          return Promise.resolve()
         },
-        once: (event, listener) => child.events.set(event, listener),
         unref: () => {
           child.unrefCalls += 1
+          return Promise.resolve()
         },
-      }
+      }))
     },
   })
 
   const settle = (isIdle = true) => fixture.emit('agent_settled', {}, { isIdle: () => isIdle })
-  return { children, fixture, settle, spawns }
+  return { children, fixture, settle, spawnGate, spawns }
 }
 
 describe('caffeinate', () => {
@@ -124,13 +131,49 @@ describe('caffeinate', () => {
       yield* Effect.promise(() => Promise.resolve())
       expect(stopped).toBeFalse()
 
-      harness.children[0]?.events.get('exit')?.()
+      harness.children[0]?.exit.resolve()
       yield* Effect.promise(() => settled)
 
       expect(stopped).toBeTrue()
     })
   )
 
+  it.effect('reserves a pending spawn and kills it when settlement wins the race', () =>
+    Effect.gen(function* () {
+      const harness = createHarness('darwin', true, false, true)
+
+      yield* Effect.promise(() => harness.fixture.emit('agent_start'))
+      yield* Effect.promise(() => harness.fixture.emit('agent_start'))
+      expect(harness.spawns).toHaveLength(1)
+
+      let stopped = false
+      const settled = harness.settle().then(() => {
+        stopped = true
+      })
+      yield* Effect.promise(() => Promise.resolve())
+      expect(stopped).toBeFalse()
+
+      harness.spawnGate?.resolve()
+      yield* Effect.promise(() => settled)
+
+      expect(harness.children[0]?.killCalls).toBe(1)
+      expect(stopped).toBeTrue()
+    })
+  )
+  it.effect('clears a failed spawn reservation so the next run can retry', () =>
+    Effect.gen(function* () {
+      const harness = createHarness('darwin', true, false, false, 1)
+
+      yield* Effect.promise(() => harness.fixture.emit('agent_start'))
+      yield* Effect.promise(() => Promise.resolve())
+      yield* Effect.promise(() => Promise.resolve())
+      yield* Effect.promise(() => harness.fixture.emit('agent_start'))
+      yield* Effect.promise(() => harness.settle())
+
+      expect(harness.spawns).toHaveLength(2)
+      expect(harness.children[0]?.killCalls).toBe(1)
+    })
+  )
   it.effect('keeps caffeinate running when settlement already triggered follow-up work', () =>
     Effect.gen(function* () {
       const harness = createHarness()

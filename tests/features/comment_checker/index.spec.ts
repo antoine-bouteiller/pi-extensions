@@ -1,14 +1,23 @@
 import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
-import { Effect } from 'effect'
+import { Effect, FileSystem, Path } from 'effect'
 
-import { type CheckerRunner } from '@/features/comment_checker/checker.js'
+import { makeCommentCheckerRunner, type CheckerRunner } from '@/features/comment_checker/checker.js'
 import { register as commentChecker } from '@/features/comment_checker/index.js'
+import { jsonText } from '@/shared/utils/json.js'
 
 const context = {
   cwd: '/workspace',
   sessionManager: { getSessionId: () => 'session-1' },
+}
+const checkerInput: Parameters<CheckerRunner>[0] = {
+  cwd: '/workspace',
+  hook_event_name: 'PostToolUse',
+  session_id: 'session-1',
+  tool_input: { content: 'const value = 1;', file_path: 'src/main.ts' },
+  tool_name: 'Write',
+  transcript_path: '',
 }
 
 describe('comment checker', () => {
@@ -155,6 +164,31 @@ describe('comment checker', () => {
       )
 
       expect(calls).toBe(0)
+    })
+  )
+  it.scoped('runs the Effect child process with bounded output and JSON stdin', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const path = yield* Path.Path
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: 'comment-checker-' })
+      const executable = path.join(directory, 'comment-checker')
+      yield* fs.writeFileString(
+        executable,
+        `#!/usr/bin/env bun
+let input = ''
+for await (const chunk of Bun.stdin.stream()) input += new TextDecoder().decode(chunk)
+if (input.includes('overflow')) process.stdout.write('x'.repeat(${64 * 1024 + 1}))
+else process.stdout.write(input)
+process.exit(2)
+`,
+        { mode: 0o700 }
+      )
+
+      const runner = makeCommentCheckerRunner(executable)
+      expect(yield* Effect.promise(() => runner(checkerInput))).toEqual({ exitCode: 2, stderr: '', stdout: jsonText(checkerInput) })
+      expect(
+        yield* Effect.promise(() => runner({ ...checkerInput, tool_input: { content: 'overflow', file_path: checkerInput.tool_input.file_path } }))
+      ).toEqual({ exitCode: undefined, stderr: '', stdout: '' })
     })
   )
 })

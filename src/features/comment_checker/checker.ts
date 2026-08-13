@@ -1,15 +1,16 @@
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- Needs stdin hand-off plus `maxBuffer`/`timeout`; it is already bridged through `Effect.callback`, which kills the child on interrupt.
-import { execFile } from 'node:child_process'
-
 import { type ExtensionContext, type ToolResultEvent } from '@earendil-works/pi-coding-agent'
-import { type Cause, Context, Effect } from 'effect'
+import { Cause, Context, Effect, Stream } from 'effect'
+import { type PlatformError } from 'effect/PlatformError'
+import { ChildProcess } from 'effect/unstable/process'
 
+import { nodeChildProcessSpawner } from '@/shared/effect/node_process.js'
 import { jsonText } from '@/shared/utils/json.js'
 import { isEmptyString } from '@/shared/utils/predicates.js'
 import { isRecord } from '@/shared/utils/records.js'
 
 const MAX_OUTPUT_BYTES = 64 * 1024
 const PROCESS_TIMEOUT_MS = 30_000
+const EMPTY_CHECKER_RESULT: CheckerResult = { exitCode: undefined, stderr: '', stdout: '' }
 
 interface CheckerEdit {
   old_string: string
@@ -90,28 +91,53 @@ const hookInput = (event: ToolResultEvent, ctx: ExtensionContext): HookInput | u
   }
 }
 
-const runCommentChecker = (input: HookInput): Effect.Effect<CheckerResult> =>
-  Effect.callback<CheckerResult>((resume) => {
-    const child = execFile('comment-checker', ['check'], { maxBuffer: MAX_OUTPUT_BYTES, timeout: PROCESS_TIMEOUT_MS }, (error, stdout, stderr) => {
-      let exitCode: number | undefined = 0
-      if (typeof error?.code === 'number') {
-        exitCode = error.code
-      } else if (error !== null) {
-        exitCode = undefined
-      }
-      resume(Effect.succeed({ exitCode, stderr, stdout }))
+interface OutputChunks {
+  readonly chunks: Uint8Array[]
+  readonly size: number
+}
+
+const collectOutput = (stream: Stream.Stream<Uint8Array, PlatformError>): Effect.Effect<string, PlatformError | Cause.UnknownError> =>
+  Stream.runFoldEffect(
+    stream,
+    (): OutputChunks => ({ chunks: [], size: 0 }),
+    (output, chunk) => {
+      const size = output.size + chunk.byteLength
+      return size > MAX_OUTPUT_BYTES
+        ? Effect.fail(new Cause.UnknownError(undefined, `Comment checker output exceeded ${MAX_OUTPUT_BYTES} bytes`))
+        : Effect.succeed({ chunks: [...output.chunks, chunk], size })
+    }
+  ).pipe(Effect.map(({ chunks }) => Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString()))
+
+const runCommentChecker = (input: HookInput, executable = 'comment-checker'): Effect.Effect<CheckerResult> =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const command = ChildProcess.make(executable, ['check'], {
+        detached: false,
+        forceKillAfter: 1000,
+        stderr: 'pipe',
+        stdin: { endOnDone: true, stream: Stream.succeed(new TextEncoder().encode(jsonText(input))) },
+        stdout: 'pipe',
+      })
+      const child = yield* nodeChildProcessSpawner.spawn(command)
+      const { exitCode, stderr, stdout } = yield* Effect.all(
+        {
+          exitCode: child.exitCode,
+          stderr: collectOutput(child.stderr),
+          stdout: collectOutput(child.stdout),
+        },
+        { concurrency: 'unbounded' }
+      )
+      return { exitCode: Number(exitCode), stderr, stdout }
     })
-    child.stdin?.on('error', () => undefined)
-    child.stdin?.end(jsonText(input))
-    return Effect.sync(() => {
-      child.kill()
-    })
-  }).pipe(
-    Effect.timeoutOrElse({
-      duration: PROCESS_TIMEOUT_MS,
-      orElse: () => Effect.succeed({ exitCode: undefined, stderr: '', stdout: '' }),
-    })
+  ).pipe(
+    Effect.timeoutOrElse({ duration: PROCESS_TIMEOUT_MS, orElse: () => Effect.succeed(EMPTY_CHECKER_RESULT) }),
+    Effect.orElseSucceed(() => EMPTY_CHECKER_RESULT)
   )
+
+export const makeCommentCheckerRunner =
+  (executable: string): CheckerRunner =>
+  (input) =>
+    Effect.runPromise(runCommentChecker(input, executable))
 
 const productionRunner: CommandRunnerShape = { run: runCommentChecker }
 

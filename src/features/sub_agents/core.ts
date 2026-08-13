@@ -1,5 +1,3 @@
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- The manager depends on raw child stream events, persisted PID ownership, and imperative process-tree teardown.
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import {
   chmodSync,
@@ -20,17 +18,20 @@ import {
   unlinkSync,
   writeFileSync,
   type WriteStream,
-  // oxlint-disable-next-line effecttsgo/node-builtin-import -- Atomic temp-write/rename persistence and fd-identity lock files, driven from synchronous child-stdout callbacks; `FileSystem` has no synchronous variants and no numeric fd.
+  // oxlint-disable-next-line effecttsgo/node-builtin-import -- Atomic persistence and fd-identity locks require synchronous APIs and numeric descriptors unavailable from Effect FileSystem.
 } from 'node:fs'
 import { createServer, type Server, type Socket } from 'node:net'
 import { homedir, tmpdir, userInfo } from 'node:os'
 
 import { getAgentDir, SessionManager, type ThemeColor } from '@earendil-works/pi-coding-agent'
-import { Clock, Data, DateTime, Deferred, Effect, Exit, Fiber, Function, HashMap, Option, Ref, Scope } from 'effect'
+import { type Cause, Clock, Data, DateTime, Deferred, Effect, Exit, Fiber, Function, HashMap, Option, Queue, Ref, Scope, Stream } from 'effect'
+import { ChildProcess } from 'effect/unstable/process'
+import { type ChildProcessHandle } from 'effect/unstable/process/ChildProcessSpawner'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
 import { nodePath } from '@/shared/effect/node_path.js'
+import { nodeChildProcessSpawner, type NodeChildProcessSpawner } from '@/shared/effect/node_process.js'
 import { azureQuota, consumeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
 import { jsonText } from '@/shared/utils/json.js'
 import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
@@ -227,13 +228,15 @@ export interface SpawnAgentResult {
 
 interface LiveAgent {
   info: AgentInfo
-  proc: ChildProcessWithoutNullStreams
+  proc: ChildProcessHandle
+  stdin: Queue.Queue<Uint8Array, Cause.Done>
   broadcaster: EventBroadcaster
   logger: SessionLogger
   pending: Ref.Ref<HashMap.HashMap<string, Deferred.Deferred<unknown, SubagentProcessError>>>
   childToken: string
   reqId: number
   stderr: string
+  streamError?: SubagentProcessError
   expectedExit: boolean
   processFinished: boolean
   finalizedRun: boolean
@@ -300,6 +303,8 @@ export interface AgentManagerOptions {
   beforeReleaseTaskLockRemoval?: (lockFile: string) => void
   /** Override process identity inspection so tests can drive Linux/Darwin/Windows branches on any host. */
   processInspector?: ProcessInspectorShape
+  processSpawner?: NodeChildProcessSpawner
+  afterProcessSpawn?: () => Effect.Effect<void>
   /** Override the platform used to choose between POSIX signals and Windows taskkill for tests. */
   platform?: NodeJS.Platform
 }
@@ -1364,6 +1369,7 @@ export class AgentManager {
   private readonly shutdownController = new AbortController()
   private readonly inspector: ProcessInspectorShape
   private readonly platform: NodeJS.Platform
+  private readonly processSpawner: NodeChildProcessSpawner
   private readonly ownerProcessIdentity: string | undefined
   private readonly reconciliation: Fiber.Fiber<void>
   /** Launches and terminations are forked here so an aborted caller leaves the child it started alone. */
@@ -1374,6 +1380,7 @@ export class AgentManager {
     this.options = options
     this.inspector = options.processInspector ?? processInspectorFromProbe(nodeProcessProbe)
     this.platform = options.platform ?? process.platform
+    this.processSpawner = options.processSpawner ?? nodeChildProcessSpawner
     this.ownerProcessIdentity = Effect.runSync(this.inspector.inspect(process.pid))?.identity
     ensureBaseDirs()
     pruneExpiredRuns()
@@ -1612,12 +1619,18 @@ export class AgentManager {
 
   /** `taskkill` is the only reliable way to take down a detached Windows tree. */
   private killWindowsTree(pid: number): Effect.Effect<void> {
-    return Effect.callback<void>((resume) => {
-      const killer = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' })
-      killer.once('error', () => resume(Effect.void))
-      killer.once('exit', () => resume(Effect.void))
-      return Effect.void
+    const command = ChildProcess.make('taskkill', ['/pid', String(pid), '/T', '/F'], {
+      detached: false,
+      stderr: 'ignore',
+      stdin: 'ignore',
+      stdout: 'ignore',
     })
+    return Effect.scoped(
+      this.processSpawner.spawn(command).pipe(
+        Effect.flatMap((child) => child.exitCode),
+        Effect.ignore
+      )
+    )
   }
 
   private markInterrupted(info: AgentInfo, options: { notify: boolean }): Effect.Effect<void> {
@@ -1852,28 +1865,6 @@ export class AgentManager {
     })
   }
 
-  private teardownChildStreams(live: LiveAgent): void {
-    live.proc.stdin.removeAllListeners()
-    live.proc.stdout.removeAllListeners()
-    live.proc.stderr.removeAllListeners()
-    live.proc.removeAllListeners()
-    try {
-      live.proc.stdin.destroy()
-    } catch {
-      // Best effort; the stream may already be destroyed.
-    }
-    try {
-      live.proc.stdout.destroy()
-    } catch {
-      // Best effort; the stream may already be destroyed.
-    }
-    try {
-      live.proc.stderr.destroy()
-    } catch {
-      // Best effort; the stream may already be destroyed.
-    }
-  }
-
   private consumeAzureQuota(live: LiveAgent): void {
     const token = live.info.childProcess?.token
     if (isNullOrUndefined(token) || isEmptyString(token)) {
@@ -1885,75 +1876,110 @@ export class AgentManager {
     }
   }
 
-  private finishProcess(live: LiveAgent, error?: Error): void {
-    if (live.processFinished) {
-      return
-    }
-    live.processFinished = true
-    this.clearInactivityMonitor(live)
-    this.consumeAzureQuota(live)
-    const persisted = readInfoFile(live.info.infoFile)
-    if (persisted !== undefined && FINAL_STATUSES.has(persisted.status)) {
-      live.info = persisted
-      live.finalizedRun = true
-    }
-    Effect.runSync(
-      Effect.gen(function* () {
+  private finishProcess(live: LiveAgent, error?: Error): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      if (live.processFinished) {
+        return Effect.void
+      }
+      live.processFinished = true
+      this.clearInactivityMonitor(live)
+      this.consumeAzureQuota(live)
+      const persisted = readInfoFile(live.info.infoFile)
+      if (persisted !== undefined && FINAL_STATUSES.has(persisted.status)) {
+        live.info = persisted
+        live.finalizedRun = true
+      }
+      return Effect.gen({ self: this }, function* () {
         const pending = yield* Ref.getAndSet(live.pending, HashMap.empty())
         for (const [, deferred] of HashMap.entries(pending)) {
           yield* Deferred.fail(deferred, subagentProcessError(error?.message ?? 'Child Pi process exited before responding.', error))
         }
+        if (!live.expectedExit && !live.finalizedRun && !FINAL_STATUSES.has(live.info.status)) {
+          this.markFailed(live, error?.message ?? 'Child Pi process exited unexpectedly.')
+        }
+        const ownership = live.info.childProcess
+        if (ownership !== undefined) {
+          this.clearChildOwnership(live.info, ownership.token)
+        }
+        if (this.live.get(live.info.id) === live) {
+          this.live.delete(live.info.id)
+        }
+        yield* Scope.close(live.scope, Exit.void)
+        yield* Deferred.succeed(live.exit, undefined)
       })
-    )
-    if (!live.expectedExit && !live.finalizedRun && !FINAL_STATUSES.has(live.info.status)) {
-      this.markFailed(live, error?.message ?? 'Child Pi process exited unexpectedly.')
-    }
-    const ownership = live.info.childProcess
-    if (ownership !== undefined) {
-      this.clearChildOwnership(live.info, ownership.token)
-    }
-    if (this.live.get(live.info.id) === live) {
-      this.live.delete(live.info.id)
-    }
-    Effect.runSync(Scope.close(live.scope, Exit.void))
-    Deferred.doneUnsafe(live.exit, Effect.void)
+    })
   }
 
-  private wireChildProcess(live: LiveAgent, decoder: RpcJsonlDecoder): void {
-    const { proc, logger } = live
-    proc.stdout.on('data', (chunk) => {
-      for (const line of decoder.push(chunk)) {
-        this.handleLine(live, line)
-      }
+  private handleProcessStreamError(live: LiveAgent, source: string, cause: unknown): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      const error = subagentProcessError(`${source}: ${causeMessage(cause)}`, cause)
+      live.streamError ??= error
+      yield* Queue.end(live.stdin)
+      yield* Effect.forkIn(this.terminateProcess(live).pipe(Effect.ignore), this.detachedScope)
     })
-    proc.stdout.on('end', () => {
-      for (const line of decoder.end()) {
-        this.handleLine(live, line)
-      }
-    })
-    proc.stderr.on('data', (data) => {
-      const chunk = data.toString()
-      live.stderr = `${live.stderr}${chunk}`.slice(-64 * 1024)
-      logger.stderr(chunk)
-    })
-    proc.stdin.on('error', (error) => {
-      logger.info('stdin', 'child stdin error', { error: error.message })
-      if (!live.expectedExit) {
-        const persisted = readInfoFile(live.info.infoFile)
-        if (persisted !== undefined && FINAL_STATUSES.has(persisted.status)) {
-          live.info = persisted
-          live.finalizedRun = true
-        } else if (!live.finalizedRun) {
-          this.markFailed(live, error.message)
-        }
-        Effect.runFork(this.terminateProcess(live).pipe(Effect.ignore))
-      }
-    })
-    proc.on('error', (error) => this.finishProcess(live, error))
-    proc.on('exit', (code, signal) => {
-      logger.info('exit', 'child exited', { code, signal })
-      const suffix = isNotEmptyString(live.stderr.trim()) ? `: ${live.stderr.trim().slice(-1000)}` : ''
-      this.finishProcess(live, live.expectedExit ? undefined : subagentProcessError(`Child Pi exited (code=${code}, signal=${signal})${suffix}`))
+  }
+
+  private wireChildProcess(live: LiveAgent, decoder: RpcJsonlDecoder): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      const { proc, logger } = live
+      const stdoutDone = yield* Deferred.make<void>()
+      const stderrDone = yield* Deferred.make<void>()
+      const stdout = Stream.runForEach(proc.stdout, (chunk) =>
+        Effect.sync(() => {
+          for (const line of decoder.push(Buffer.from(chunk))) {
+            this.handleLine(live, line)
+          }
+        })
+      ).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            for (const line of decoder.end()) {
+              this.handleLine(live, line)
+            }
+          })
+        ),
+        Effect.catch((error) => this.handleProcessStreamError(live, 'child stdout failed', error)),
+        Effect.ensuring(Deferred.succeed(stdoutDone, undefined))
+      )
+      const stderr = Stream.runForEach(proc.stderr, (data) =>
+        Effect.sync(() => {
+          const chunk = Buffer.from(data).toString()
+          live.stderr = `${live.stderr}${chunk}`.slice(-64 * 1024)
+          logger.stderr(chunk)
+        })
+      ).pipe(
+        Effect.catch((error) => this.handleProcessStreamError(live, 'child stderr failed', error)),
+        Effect.ensuring(Deferred.succeed(stderrDone, undefined))
+      )
+      const stdin = Stream.run(Stream.fromQueue(live.stdin), proc.stdin).pipe(
+        Effect.catch((error) => this.handleProcessStreamError(live, 'child stdin failed', error))
+      )
+      const awaitOutput = Effect.all([Deferred.await(stdoutDone), Deferred.await(stderrDone)], { concurrency: 2 }).pipe(Effect.asVoid)
+      const exit = Effect.matchEffect(proc.exitCode, {
+        onFailure: (cause) =>
+          Effect.gen({ self: this }, function* () {
+            yield* awaitOutput
+            logger.info('exit', 'child exited', { error: causeMessage(cause) })
+            const suffix = isNotEmptyString(live.stderr.trim()) ? `: ${live.stderr.trim().slice(-1000)}` : ''
+            const error =
+              live.streamError ?? (live.expectedExit ? undefined : subagentProcessError(`Child Pi exited (${causeMessage(cause)})${suffix}`, cause))
+            yield* this.finishProcess(live, error)
+          }),
+        onSuccess: (code) =>
+          Effect.gen({ self: this }, function* () {
+            yield* awaitOutput
+            logger.info('exit', 'child exited', { code: Number(code), signal: undefined })
+            const suffix = isNotEmptyString(live.stderr.trim()) ? `: ${live.stderr.trim().slice(-1000)}` : ''
+            const error =
+              live.streamError ??
+              (live.expectedExit ? undefined : subagentProcessError(`Child Pi exited (code=${Number(code)}, signal=null)${suffix}`))
+            yield* this.finishProcess(live, error)
+          }),
+      })
+      yield* Effect.forkIn(stdout, live.scope)
+      yield* Effect.forkIn(stderr, live.scope)
+      yield* Effect.forkIn(stdin, live.scope)
+      yield* Effect.forkIn(exit, this.detachedScope)
     })
   }
 
@@ -1977,62 +2003,83 @@ export class AgentManager {
     })
   }
 
-  private spawnLiveAgent(info: AgentInfo): Effect.Effect<LiveAgent> {
+  private spawnLiveAgent(info: AgentInfo): Effect.Effect<LiveAgent, SubagentProcessError> {
     return Effect.gen({ self: this }, function* () {
-      const logger = new SessionLogger(info.logFile)
-      const broadcaster = new EventBroadcaster(info.id)
-      broadcaster.start()
       const launch = getPiCommand(this.options.piCommand)
       const args = buildChildArgs(launch, info)
       const childToken = randomUUID()
-      logger.info('spawn', 'starting child pi', { args, command: launch.command, cwd: info.cwd })
       const childEnv = buildChildEnv(info, childToken, this.options.childEnv)
-      const proc = spawn(launch.command, args, {
-        cwd: info.cwd,
-        detached: process.platform !== 'win32',
-        env: childEnv,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      })
-      const scope = Scope.makeUnsafe()
-      const live: LiveAgent = {
-        broadcaster,
-        candidateResponse: '',
-        childToken,
-        exit: Deferred.makeUnsafe<void>(),
-        expectedExit: false,
-        finalizedRun: false,
-        inactivityTimeoutMs: this.options.inactivityTimeoutMs ?? (loadSubagentConfig().inactivityMinutes ?? DEFAULT_INACTIVITY_MINUTES) * 60_000,
-        info,
-        logger,
-        pending: Ref.makeUnsafe(HashMap.empty()),
-        proc,
-        processFinished: false,
-        reqId: 0,
-        scope,
-        stderr: '',
-      }
-      yield* Scope.addFinalizer(
-        scope,
-        Effect.sync(() => {
-          live.broadcaster.stop()
-          live.logger.close()
-          this.teardownChildStreams(live)
+      const scope = yield* Scope.make()
+      const stdin = yield* Queue.unbounded<Uint8Array, Cause.Done>()
+      let transferred = false
+      return yield* Effect.gen({ self: this }, function* () {
+        const { broadcaster, logger } = yield* Effect.uninterruptible(
+          Effect.gen(function* () {
+            const createdLogger = new SessionLogger(info.logFile)
+            const createdBroadcaster = new EventBroadcaster(info.id)
+            yield* Scope.addFinalizer(
+              scope,
+              Effect.gen(function* () {
+                yield* Queue.end(stdin)
+                createdBroadcaster.stop()
+                createdLogger.close()
+              })
+            )
+            createdBroadcaster.start()
+            return { broadcaster: createdBroadcaster, logger: createdLogger }
+          })
+        )
+        logger.info('spawn', 'starting child pi', { args, command: launch.command, cwd: info.cwd })
+        const command = ChildProcess.make(launch.command, args, {
+          cwd: info.cwd,
+          detached: process.platform !== 'win32',
+          env: childEnv,
+          forceKillAfter: 1000,
+          stderr: 'pipe',
+          stdin: { endOnDone: true, stream: 'pipe' },
+          stdout: 'pipe',
+          windowsHide: false,
         })
-      )
-      this.live.set(info.id, live)
-      this.resetInactivityMonitor(live)
-      this.wireChildProcess(live, new RpcJsonlDecoder())
-      return live
+        const proc = yield* this.processSpawner.spawn(command).pipe(
+          Effect.provideService(Scope.Scope, scope),
+          Effect.mapError((cause) => subagentProcessError(causeMessage(cause), cause))
+        )
+        if (this.options.afterProcessSpawn !== undefined) {
+          yield* this.options.afterProcessSpawn()
+        }
+        const live: LiveAgent = {
+          broadcaster,
+          candidateResponse: '',
+          childToken,
+          exit: Deferred.makeUnsafe<void>(),
+          expectedExit: false,
+          finalizedRun: false,
+          inactivityTimeoutMs: this.options.inactivityTimeoutMs ?? (loadSubagentConfig().inactivityMinutes ?? DEFAULT_INACTIVITY_MINUTES) * 60_000,
+          info,
+          logger,
+          pending: Ref.makeUnsafe(HashMap.empty()),
+          proc,
+          processFinished: false,
+          reqId: 0,
+          scope,
+          stderr: '',
+          stdin,
+        }
+        yield* this.wireChildProcess(live, new RpcJsonlDecoder())
+        if (!live.processFinished) {
+          this.live.set(info.id, live)
+          this.resetInactivityMonitor(live)
+        }
+        transferred = true
+        return live
+      }).pipe(Effect.ensuring(Effect.suspend(() => (transferred ? Effect.void : Scope.close(scope, Exit.void)))))
     })
   }
 
   private handshake(live: LiveAgent, initialMessage?: string, displayMessage?: string): Effect.Effect<LiveAgent, SubagentFailure> {
     return Effect.gen({ self: this }, function* () {
       const { info } = live
-      const { pid } = live.proc
-      if (pid === undefined) {
-        return yield* subagentProcessError('Child Pi process did not provide a PID.')
-      }
+      const pid = Number(live.proc.pid)
       const snapshot = yield* verifyChildOwnership(this.inspector, pid, live.childToken)
       // Persist ownership before the first RPC round trip. If this process crashes while
       // The child is starting, the next manager can identify and terminate the orphan.
@@ -2080,16 +2127,12 @@ export class AgentManager {
       const commandType = typeof command.type === 'string' ? command.type : 'unknown'
       const payload = `${jsonText({ id, ...command })}\n`
       const wait = Effect.gen(function* () {
-        const context = yield* Effect.context()
         const deferred = yield* Deferred.make<unknown, SubagentProcessError>()
         yield* Ref.update(live.pending, HashMap.set(id, deferred))
-        yield* Effect.sync(() => {
-          live.proc.stdin.write(payload, (error) => {
-            if (isNotNullOrUndefined(error)) {
-              Effect.runSyncWith(context)(Deferred.fail(deferred, subagentProcessError(error.message, error)))
-            }
-          })
-        })
+        const accepted = yield* Queue.offer(live.stdin, new TextEncoder().encode(payload))
+        if (!accepted) {
+          return yield* subagentProcessError('Child Pi stdin is not available.')
+        }
         return yield* Deferred.await(deferred)
       })
       return Effect.timeoutOrElse(wait, {
@@ -2624,20 +2667,18 @@ export class AgentManager {
     })
   }
 
-  private signalProcessTree(live: LiveAgent, signal: NodeJS.Signals): void {
-    try {
-      if (this.platform !== 'win32' && live.proc.pid !== undefined) {
-        process.kill(-live.proc.pid, signal)
-      } else {
-        live.proc.kill(signal)
-      }
-    } catch {
-      try {
-        live.proc.kill(signal)
-      } catch {
-        // Best effort; the process may have already exited.
-      }
+  private signalProcessTree(live: LiveAgent, signal: ChildProcess.Signal): Effect.Effect<void> {
+    const direct = live.proc.kill({ killSignal: signal }).pipe(Effect.ignore)
+    if (this.platform === 'win32') {
+      return direct
     }
+    return Effect.try({
+      catch: () => undefined,
+      try: () => process.kill(-Number(live.proc.pid), signal),
+    }).pipe(
+      Effect.asVoid,
+      Effect.catch(() => direct)
+    )
   }
 
   private awaitChildExit(live: LiveAgent, timeoutMs: number): Effect.Effect<void> {
@@ -2652,24 +2693,14 @@ export class AgentManager {
       live.expectedExit = true
       this.clearInactivityMonitor(live)
       yield* abortRequest
-      yield* Effect.sync(() => {
-        try {
-          live.proc.stdin.end()
-        } catch {
-          // Best effort; the stream may already be closed.
-        }
-      })
+      yield* Queue.end(live.stdin)
       yield* this.awaitChildExit(live, 500)
       if (!live.processFinished) {
-        this.signalProcessTree(live, 'SIGTERM')
+        yield* this.signalProcessTree(live, 'SIGTERM')
         yield* this.awaitChildExit(live, 1000)
       }
       if (!live.processFinished) {
-        if (this.platform === 'win32' && live.proc.pid !== undefined) {
-          yield* this.killWindowsTree(live.proc.pid)
-        } else {
-          this.signalProcessTree(live, 'SIGKILL')
-        }
+        yield* this.platform === 'win32' ? this.killWindowsTree(Number(live.proc.pid)) : this.signalProcessTree(live, 'SIGKILL')
         yield* this.awaitChildExit(live, 1000)
       }
       return live.processFinished

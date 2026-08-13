@@ -1,17 +1,19 @@
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- The synchronous injectable process facade preserves immediate start/stop ordering; Effect spawning is asynchronous and needs lifecycle race handling.
-import { spawn } from 'node:child_process'
+import { Effect, Exit, Scope } from 'effect'
+import { ChildProcess } from 'effect/unstable/process'
+
+import { nodeChildProcessSpawner } from '@/shared/effect/node_process.js'
 
 interface CaffeinateProcess {
-  readonly kill: () => boolean
-  readonly once: (event: 'error' | 'exit', listener: () => void) => unknown
-  readonly unref: () => void
+  readonly exited: Promise<void>
+  readonly kill: () => Promise<void>
+  readonly unref: () => Promise<void>
 }
 
 export interface CaffeinateDependencies {
   readonly isSubagent: boolean
   readonly pid: number
   readonly platform: NodeJS.Platform
-  readonly spawn: (command: string, args: readonly string[]) => CaffeinateProcess
+  readonly spawn: (command: string, args: readonly string[]) => Promise<CaffeinateProcess>
 }
 
 export interface KeepAwake {
@@ -19,35 +21,77 @@ export interface KeepAwake {
   readonly stop: () => Promise<void>
 }
 
+const spawnCaffeinate = (command: string, args: readonly string[]): Promise<CaffeinateProcess> => {
+  const scope = Scope.makeUnsafe()
+  const spawn = nodeChildProcessSpawner
+    .spawn(
+      ChildProcess.make(command, args, {
+        detached: false,
+        stderr: 'ignore',
+        stdin: 'ignore',
+        stdout: 'ignore',
+      })
+    )
+    .pipe(Effect.provideService(Scope.Scope, scope))
+  return Effect.runPromise(spawn).then(
+    (child) => ({
+      exited: Effect.runPromise(child.exitCode.pipe(Effect.ignore, Effect.ensuring(Scope.close(scope, Exit.void)))),
+      kill: () => Effect.runPromise(child.kill().pipe(Effect.ignore)),
+      unref: () => Effect.runPromise(child.unref.pipe(Effect.asVoid, Effect.ignore)),
+    }),
+    (error) => Effect.runPromise(Scope.close(scope, Exit.void)).then(() => Promise.reject(error))
+  )
+}
+
 export const productionDependencies: CaffeinateDependencies = {
   isSubagent: process.env.PI_SUBAGENT_OWNER_TOKEN !== undefined,
   pid: process.pid,
   platform: process.platform,
-  spawn: (command, args) => spawn(command, args, { stdio: 'ignore' }),
+  spawn: spawnCaffeinate,
+}
+
+interface RunningCaffeinate {
+  readonly completion: PromiseWithResolvers<void>
+  child?: CaffeinateProcess
+  cancelled: boolean
+  kill?: Promise<void>
+}
+const killCaffeinate = (current: RunningCaffeinate): Promise<void> | undefined => {
+  if (current.child === undefined) {
+    return undefined
+  }
+  return (current.kill ??= current.child.kill().catch(() => undefined))
 }
 
 export const makeKeepAwake = (dependencies: CaffeinateDependencies): KeepAwake => {
-  let running: { child: CaffeinateProcess; exited: Promise<void> } | undefined
+  let running: RunningCaffeinate | undefined
 
   const start = (): void => {
     if (dependencies.platform !== 'darwin' || running !== undefined) {
       return
     }
 
-    const child = dependencies.spawn('/usr/bin/caffeinate', ['-w', String(dependencies.pid)])
-    const exit = Promise.withResolvers<void>()
-    const started = { child, exited: exit.promise }
-    running = started
-    child.unref()
-
-    const clear = (): void => {
-      exit.resolve()
-      if (running === started) {
-        running = undefined
-      }
-    }
-    child.once('error', clear)
-    child.once('exit', clear)
+    const current: RunningCaffeinate = { cancelled: false, completion: Promise.withResolvers<void>() }
+    running = current
+    void dependencies
+      .spawn('/usr/bin/caffeinate', ['-w', String(dependencies.pid)])
+      .then((child) => {
+        current.child = child
+        return child
+          .unref()
+          .catch(() => {
+            current.cancelled = true
+          })
+          .then(() => (current.cancelled || running !== current ? killCaffeinate(current) : undefined))
+          .then(() => child.exited.catch(() => undefined))
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        current.completion.resolve()
+        if (running === current) {
+          running = undefined
+        }
+      })
   }
 
   const stop = (): Promise<void> => {
@@ -56,8 +100,9 @@ export const makeKeepAwake = (dependencies: CaffeinateDependencies): KeepAwake =
       return Promise.resolve()
     }
     running = undefined
-    current.child.kill()
-    return current.exited
+    current.cancelled = true
+    void killCaffeinate(current)
+    return current.completion.promise
   }
 
   return { start, stop }

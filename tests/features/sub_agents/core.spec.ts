@@ -9,7 +9,7 @@ import { makeAbortController } from '@tests/utils/abort_controller.js'
 import { promiseFromEffect, tryPromiseEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asError, asExtensionApi, asNarrowed, asResult, asTheme, asTui } from '@tests/utils/casts.js'
 import { withProcessEnv } from '@tests/utils/process_env.js'
-import { Data, DateTime, Effect } from 'effect'
+import { Data, DateTime, Deferred, Effect, Fiber } from 'effect'
 
 import { nodePath } from '@/shared/effect/node_path.js'
 import { jsonText, parseJsonText, prettyJsonText } from '@/shared/utils/json.js'
@@ -1072,6 +1072,86 @@ describe('child process lifecycle', () => {
           force: true,
           recursive: true,
         })
+      }
+    })
+  )
+
+  processTest('drains final output before handling immediate child exit', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'lifecycle-exit-after-output'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      rmSync(scope, { force: true, recursive: true })
+      const manager = createAgentManager()
+      try {
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'exit-after-output')))
+        yield* Effect.promise(() =>
+          waitUntil(() => {
+            const info = manager.getAgentInfo('worker', parentSessionId)
+            return info.status === 'completed' && info.childProcess === undefined
+          })
+        )
+        const info = manager.getAgentInfo('worker', parentSessionId)
+        expect(manager.readAgentResponse('worker', parentSessionId).finalResponse).toHaveLength(60 * 1024)
+        expect(readFileSync(info.logFile, 'utf8')).toContain('final stderr before exit')
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
+    })
+  )
+  processTest('fails and terminates a child that closes stdin while remaining alive', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'lifecycle-closed-stdin'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      rmSync(scope, { force: true, recursive: true })
+      const manager = createAgentManager()
+      try {
+        yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'close-stdin')))
+        const sendError = yield* Effect.promise(() => manager.sendMessage(parentSessionId, 'worker', 'follow-up').then(() => undefined, asError))
+        expect(sendError).toBeInstanceOf(Error)
+        yield* Effect.promise(() =>
+          waitUntil(() => {
+            const info = manager.getAgentInfo('worker', parentSessionId)
+            return info.status === 'failed' && info.childProcess === undefined
+          })
+        )
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
+      }
+    })
+  )
+  processTest('closes a spawned child when setup is interrupted before publication', () =>
+    Effect.gen(function* () {
+      const parentSessionId = 'lifecycle-interrupted-setup'
+      const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
+      rmSync(scope, { force: true, recursive: true })
+      const spawned = yield* Deferred.make<void>()
+      const blocked = yield* Deferred.make<void>()
+      const manager = createAgentManager({
+        afterProcessSpawn: () => Deferred.succeed(spawned, undefined).pipe(Effect.andThen(Deferred.await(blocked))),
+      })
+      try {
+        const launch = yield* Effect.forkChild(manager.instance.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold setup')))
+        yield* Deferred.await(spawned)
+        const info = manager.getAgentInfo('worker', parentSessionId)
+        yield* Effect.promise(() =>
+          waitUntil(() => existsSync(info.sessionFile) && readFileSync(info.sessionFile, 'utf8').includes('"type":"started"'))
+        )
+        const started = readFileSync(info.sessionFile, 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => parseJsonText(line))
+          .find((entry) => typeof entry === 'object' && entry !== null && 'type' in entry && entry.type === 'started')
+        if (typeof started !== 'object' || started === null || !('pid' in started) || typeof started.pid !== 'number') {
+          throw new Error('expected the fake child PID')
+        }
+        const { pid } = started
+        yield* Fiber.interrupt(launch)
+        yield* Effect.promise(() => waitUntil(() => !pidAlive(pid)))
+      } finally {
+        yield* Effect.promise(() => manager.shutdown())
+        rmSync(scope, { force: true, recursive: true })
       }
     })
   )

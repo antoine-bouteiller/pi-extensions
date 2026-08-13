@@ -3,7 +3,7 @@
 /* oxlint-disable effecttsgo/node-builtin-import -- Stands in for the child Pi binary: `AgentManager` spawns this file as a bare `node` process, so it has no Effect runtime and may depend only on Node builtins. */
 /* oxlint-disable effecttsgo/global-timers -- Same boundary: this fake child schedules its scripted replies with plain timers. */
 
-import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -57,6 +57,12 @@ input.on('line', (line) => {
     }
     send({ data: {}, id: command.id, success: true, type: 'response' })
     send({ type: 'agent_start' })
+    if (String(command.message).startsWith('close-stdin')) {
+      input.close()
+      closeSync(0)
+      setInterval(() => undefined, 1000)
+      return
+    }
     if (String(command.message).startsWith('quota')) {
       const directory = join(process.env.PI_SUBAGENT_TEMP_DIR || tmpdir(), 'pi-codex-subagents', userInfo().username, 'quota')
       mkdirSync(directory, { recursive: true })
@@ -72,8 +78,8 @@ input.on('line', (line) => {
     const message = String(command.message)
     const settle = () => {
       const failing = message.startsWith('fail')
-      const response = message.startsWith('large') ? 'x'.repeat(60 * 1024) : `response:${message}`
-      send({
+      const response = message.startsWith('large') || message.startsWith('exit-after-output') ? 'x'.repeat(60 * 1024) : `response:${message}`
+      const messageEnd = {
         message: {
           content: [{ text: response, type: 'text' }],
           role: 'assistant',
@@ -81,7 +87,13 @@ input.on('line', (line) => {
           ...(failing ? { errorMessage: 'fake failure' } : {}),
         },
         type: 'message_end',
-      })
+      }
+      if (message.startsWith('exit-after-output')) {
+        process.stderr.write('final stderr before exit')
+        process.stdout.write(`${JSON.stringify(messageEnd)}\n${JSON.stringify({ type: 'agent_settled' })}\n`, () => process.exit(0))
+        return
+      }
+      send(messageEnd)
       send({ type: 'agent_settled' })
     }
     if (message.startsWith('immediate')) {
