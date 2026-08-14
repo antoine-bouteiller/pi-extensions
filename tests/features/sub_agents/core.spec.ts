@@ -1183,10 +1183,10 @@ describe('child process lifecycle', () => {
         const info = manager.getAgentInfo('worker', parentSessionId)
         yield* writeText(
           info.infoFile,
-          prettyJsonText({ ...info, agentType: 'implementer', allowedTools: ['write'], isReadonly: false, profile: 'implementer' })
+          prettyJsonText({ ...info, agentType: 'retired', allowedTools: ['write'], isReadonly: false, profile: 'retired' })
         )
 
-        expect(manager.sendMessage(parentSessionId, 'worker', 'must not restart')).rejects.toThrow('unavailable profile: implementer')
+        expect(manager.sendMessage(parentSessionId, 'worker', 'must not restart')).rejects.toThrow('unavailable profile: retired')
         expect(manager.getAgentInfo('worker', parentSessionId).childProcess).toBeUndefined()
       } finally {
         yield* Effect.promise(() => manager.shutdown())
@@ -2085,7 +2085,7 @@ describe('extension completion delivery and status activity', () => {
         expect(spawnTool.parameters.required).toContain('agent_type')
         expect(spawnTool.parameters.required).not.toContain('run_in_background')
         expect(spawnTool.parameters.properties.skills).toBeUndefined()
-        expect(spawnTool.parameters.properties.agent_type.enum).toEqual(['scout', 'librarian', 'reviewer'])
+        expect(spawnTool.parameters.properties.agent_type.enum).toEqual(['scout', 'librarian', 'implementer', 'reviewer'])
         expect(spawnTool.parameters.properties.run_in_background.type).toBe('boolean')
         expect(spawnTool.description).toContain('Foreground is the default')
         expect(requireTool('wait_agent').description).toContain('background')

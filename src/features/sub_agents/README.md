@@ -24,7 +24,7 @@ Agent names are unique within their parent session. The same task name can exist
 
 ## Source-defined agent profiles
 
-Agent profiles live only in [`profiles.ts`](./profiles.ts). `agent_type` is required. User JSON/Markdown agents, omitted generic agent types, and caller-added skills are intentionally unsupported. The built-in profiles are `scout`, `librarian`, and `reviewer`; adding another profile requires one registry entry using this generic contract:
+Agent profiles live only in [`profiles.ts`](./profiles.ts). `agent_type` is required. User JSON/Markdown agents, omitted generic agent types, and caller-added skills are intentionally unsupported. The built-in profiles are `scout`, `librarian`, `implementer`, and `reviewer`; adding another profile requires one registry entry using this generic contract:
 
 ```ts
 type AgentConfig = {
@@ -56,7 +56,7 @@ Children rediscover normally configured global and project extensions on every l
 
 Skills, prompt templates, context files, `AGENTS.md`, and `CLAUDE.md` remain isolated. Children start fresh sessions with Pi's normal system prompt plus the profile prompt. Conversation and parent context are never copied. The normalized profile, provider/model, thinking level, prompt, tools, color, and read-only metadata are persisted, so a hibernated child restarts deterministically while rediscovering extensions afresh.
 
-`isReadonly` adds generic prompt guidance and selects the MCP gateway policy; it is metadata, not a local filesystem or shell sandbox. It does not inspect `bash` commands or rewrite `allowedTools`. In read-only mode MCP permits tools annotated `readOnlyHint: true` and not destructive, plus the four unannotated DBX metadata operations `dbx_list_connections`, `dbx_list_tables`, `dbx_describe_table`, and `dbx_get_schema_context`. Other unannotated, mutating, or destructive MCP operations are hidden and denied. All built-in profiles are read-only.
+`isReadonly` adds generic prompt guidance and selects the MCP gateway policy; it is metadata, not a local filesystem or shell sandbox. It does not inspect `bash` commands or rewrite `allowedTools`. In read-only mode MCP permits tools annotated `readOnlyHint: true` and not destructive, plus the four unannotated DBX metadata operations `dbx_list_connections`, `dbx_list_tables`, `dbx_describe_table`, and `dbx_get_schema_context`. Other unannotated, mutating, or destructive MCP operations are hidden and denied. False mode is unrestricted; the `implementer` profile does not allow MCP at all.
 
 Every child receives `PI_SUBAGENT_OWNER_TOKEN`, `PI_SUBAGENT_PROFILE`, and `PI_SUBAGENT_READONLY` (`1` or `0`). Parent session/provider/model environment variables are removed. The owner token limits the custom status panel to forwarding Azure response quota; it does not render UI, poll Claude quota, or fetch Git state in children. Profile identity uses theme-aware colors across spawn, completion, activity, browser, and peek surfaces while lifecycle status retains independent semantic colors.
 

@@ -24,6 +24,7 @@ const availableModels = [
   { id: 'claude-sonnet-5', provider: 'anthropic' },
   { id: 'claude-opus-5', provider: 'anthropic' },
   { id: 'gpt-5.6-sol', provider: 'openai' },
+  { id: 'gpt-5.6-terra', provider: 'openai' },
 ] as const
 
 const context = {
@@ -78,9 +79,9 @@ describe('model selectors', () => {
 })
 
 describe('generic agent registry', () => {
-  it.effect('contains the three built-ins and generates descriptions from registry keys', () =>
+  it.effect('contains the four built-ins and generates descriptions from registry keys', () =>
     Effect.sync(() => {
-      expect(AGENT_PROFILE_NAMES).toEqual(['scout', 'librarian', 'reviewer'])
+      expect(AGENT_PROFILE_NAMES).toEqual(['scout', 'librarian', 'implementer', 'reviewer'])
       const description = getAgentProfilesDescription()
       for (const key of AGENT_PROFILE_NAMES) {
         expect(description).toContain(`\`${key}\``)
@@ -140,6 +141,12 @@ describe('generic agent registry', () => {
   it.effect('resolves every built-in solely from its config', () =>
     Effect.sync(() => {
       const expected = {
+        implementer: {
+          color: 'success',
+          isReadonly: false,
+          modelId: 'gpt-5.6-terra',
+          thinking: 'medium',
+        },
         librarian: {
           color: 'mdLink',
           isReadonly: true,

@@ -42,6 +42,15 @@ export interface ResolvedAgentConfig {
 const EXPLORATION_TOOLS = ['read', 'bash', 'grep', 'find', 'ls', 'mcp', 'fffind', 'ffgrep', 'fff-multi-grep'] as const
 
 export const AGENT_CONFIGS = {
+  implementer: {
+    allowedTools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'hashline_read', 'hashline_write', 'safe_rm'],
+    color: 'success',
+    description: 'Scoped code implementation and verification',
+    isReadonly: false,
+    model: 'gpt-5.6-terra',
+    prompt: `You are an implementation subagent. Make the requested code changes within the assigned scope, preserve existing conventions, and verify the result with focused tests and typechecking. Report changed files, verification performed, and any remaining risks. Do not expand the task beyond the request.`,
+    thinking: 'medium',
+  },
   librarian: {
     allowedTools: ['webfetch', 'mcp'],
     color: 'mdLink',
@@ -75,7 +84,7 @@ export const AGENT_CONFIGS = {
 export type AgentProfileName = keyof typeof AGENT_CONFIGS
 
 // Order is semantic, so it is declared here rather than read back from the sorted lookup table.
-export const AGENT_PROFILE_NAMES = Object.freeze(['scout', 'librarian', 'reviewer'] as const satisfies readonly AgentProfileName[])
+export const AGENT_PROFILE_NAMES = Object.freeze(['scout', 'librarian', 'implementer', 'reviewer'] as const satisfies readonly AgentProfileName[])
 
 const GOOGLE_PROVIDER_PATTERN = /(?:^|[-_])(?<provider>google|gemini)(?:$|[-_])/i
 const GOOGLE_MODEL_PATTERN = /^gemini(?:$|[-_.])/i

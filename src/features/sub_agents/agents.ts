@@ -165,7 +165,7 @@ Subagents are available through \`spawn_agent\`. Prefer delegation over pulling 
 - Never repeat a pending child's files, symbols, or question in the parent. After a background spawn, continue only with clearly non-overlapping work; call \`wait_agent\`/\`wait_all_agents\` if the next action would overlap.
 - Parallelize independent questions, but keep Claude-backed children to at most three live agents. Prefer Claude for short research and review tasks.
 - Prefer spawning a fresh child over repeatedly steering an existing one. Each logical agent accepts at most one \`send_message\` follow-up; Claude continuations are refused at 112k context input tokens.
-- Use \`reviewer\` for a fresh-context check of a plan or finished change.
+- Give each \`implementer\` a narrow goal with non-overlapping file ownership and focused verification; use \`reviewer\` for a fresh-context check of a plan or finished change.
 
 Keep work in your own context when it depends on conversation history that is expensive to restate or when the user is waiting on one quick answer. Available profiles: ${AGENT_PROFILE_NAMES.join(', ')}.`
 
