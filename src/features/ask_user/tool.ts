@@ -19,7 +19,7 @@ import { ToolFailure } from '@/shared/effect/errors.js'
 import { PiCtx } from '@/shared/effect/pi_services.js'
 import { isEmptyString, isTrue } from '@/shared/utils/predicates.js'
 
-import { ASK_USER_PARAMETER_DESCRIPTIONS, buildAskUserResultMessage } from './prompt.js'
+import { ASK_USER_MALFORMED_CALL_MESSAGE, ASK_USER_PARAMETER_DESCRIPTIONS, buildAskUserResultMessage } from './prompt.js'
 
 const MIN_OPTIONS = 2
 const MAX_OPTIONS = 5
@@ -35,12 +35,14 @@ const OptionSchema = Type.Object({
   }),
 })
 
+const OptionsSchema = Type.Array(OptionSchema, {
+  description: ASK_USER_PARAMETER_DESCRIPTIONS.options,
+  maxItems: MAX_OPTIONS,
+  minItems: MIN_OPTIONS,
+})
+
 export const AskUserParams = Type.Object({
-  options: Type.Array(OptionSchema, {
-    description: ASK_USER_PARAMETER_DESCRIPTIONS.options,
-    maxItems: MAX_OPTIONS,
-    minItems: MIN_OPTIONS,
-  }),
+  options: Type.Optional(OptionsSchema),
   question: Type.String({
     description: ASK_USER_PARAMETER_DESCRIPTIONS.question,
   }),
@@ -290,9 +292,50 @@ const showQuestion = (
       }),
   })
 
-export const askUserEffect = (params: Static<typeof AskUserParams>, signal: AbortSignal | undefined) =>
+/*
+ * Models sometimes emit XML tool-call syntax inside the JSON arguments, which drops `options`
+ * entirely and appends `</question><parameter name="options">[...]` to the question instead.
+ * ponytail: only that shape is recovered; anything else gets ASK_USER_MALFORMED_CALL_MESSAGE.
+ */
+const LEAKED_OPTIONS_PATTERN = /<parameter\s+name="options"\s*>\s*(?<options>\[[\s\S]*])/
+const TRAILING_TAG_PATTERN = /\s*<\/(?:question|parameter)>\s*$/
+
+const recoverAskUserParams = (params: Static<typeof AskUserParams>): Static<typeof AskUserParams> => {
+  if (params.options !== undefined) {
+    return params
+  }
+
+  const match = LEAKED_OPTIONS_PATTERN.exec(params.question)
+  if (match?.groups?.options === undefined) {
+    return params
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(match.groups.options)
+  } catch {
+    return params
+  }
+
+  if (!Check(OptionsSchema, parsed)) {
+    return params
+  }
+
+  return {
+    options: parsed,
+    question: params.question.slice(0, match.index).replace(TRAILING_TAG_PATTERN, ''),
+  }
+}
+
+export const askUserEffect = (rawParams: Static<typeof AskUserParams>, signal: AbortSignal | undefined) =>
   Effect.gen(function* () {
-    const optionCount = params.options.length
+    const params = recoverAskUserParams(rawParams)
+    const { options } = params
+    if (options === undefined) {
+      return yield* ToolFailure.make({ message: ASK_USER_MALFORMED_CALL_MESSAGE })
+    }
+
+    const optionCount = options.length
     if (optionCount < MIN_OPTIONS || optionCount > MAX_OPTIONS) {
       return yield* ToolFailure.make({
         message: `ask_user requires between ${MIN_OPTIONS} and ${MAX_OPTIONS} options (got ${optionCount}). Retry with a valid number of options.`,
@@ -304,7 +347,7 @@ export const askUserEffect = (params: Static<typeof AskUserParams>, signal: Abor
       details: {
         answer,
         cancelled: answer === undefined,
-        options: params.options.map((option) => option.label),
+        options: options.map((option) => option.label),
         question: params.question,
         wasCustom,
       },
@@ -320,7 +363,7 @@ export const askUserEffect = (params: Static<typeof AskUserParams>, signal: Abor
       return reply(buildAskUserResultMessage({ kind: 'cancelled' }))
     }
 
-    const allOptions: DisplayOption[] = [...params.options, { isOther: true, label: 'Write my own answer…' }]
+    const allOptions: DisplayOption[] = [...options, { isOther: true, label: 'Write my own answer…' }]
 
     const result = yield* showQuestion(ctx, params.question, allOptions, signal)
 

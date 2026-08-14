@@ -7,6 +7,7 @@ import { runtime } from '@tests/utils/runtime.js'
 import { Effect } from 'effect'
 
 import { register as askUser } from '@/features/ask_user/index.js'
+import { ASK_USER_MALFORMED_CALL_MESSAGE } from '@/features/ask_user/prompt.js'
 
 interface AskUserResult {
   content: { type: 'text'; text: string }[]
@@ -24,7 +25,7 @@ interface AskUserTool {
     toolCallId: string,
     params: {
       question: string
-      options: { label: string; description?: string }[]
+      options?: { label: string; description?: string }[]
     },
     signal: AbortSignal | undefined,
     onUpdate: undefined,
@@ -178,6 +179,46 @@ describe('ask_user tool behavior', () => {
       )
 
       expect(rejection).toMatchObject({ _tag: 'AskUserUiError', cause, message: 'UI exploded' })
+    })
+  )
+})
+
+describe('ask_user malformed calls', () => {
+  it.effect('recovers options leaked into the question as XML tool-call syntax', () =>
+    Effect.gen(function* () {
+      const fixture = setup()
+      const pending = fixture.tool.execute(
+        'leaked',
+        {
+          question: 'Which scope?</question>\n<parameter name="options">[{"label": "Now"}, {"label": "Tomorrow", "description": "later"}]',
+        },
+        undefined,
+        undefined,
+        fixture.tuiContext
+      )
+
+      expect(fixture.component.render(40).join('\n')).toContain('Which scope?')
+      fixture.component.handleInput?.('2')
+      const result = yield* Effect.promise(() => pending)
+
+      expect(result.content[0].text).toBe('User selected option 2: Tomorrow')
+      expect(result.details.question).toBe('Which scope?')
+    })
+  )
+
+  it.effect('fails with recovery guidance when options are missing entirely', () =>
+    Effect.gen(function* () {
+      const fixture = setup()
+
+      const rejection = yield* Effect.promise(() =>
+        fixture.tool.execute('missing', { question: 'Which scope?' }, undefined, undefined, fixture.tuiContext).then(
+          () => undefined,
+          (error: unknown) => error
+        )
+      )
+
+      expect(rejection).toMatchObject({ message: ASK_USER_MALFORMED_CALL_MESSAGE })
+      expect(fixture.customCalls).toBe(0)
     })
   )
 })

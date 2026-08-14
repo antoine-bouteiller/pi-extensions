@@ -2,13 +2,18 @@
 export const ASK_USER_PARAMETER_DESCRIPTIONS = {
   optionDescription: 'Optional one-line description shown below the label',
   optionLabel: 'Short display label for this option',
-  options: "Between 2 and 5 answer options. A free-form 'write my own answer' option is always appended automatically - never include one yourself.",
+  options:
+    "Required. Between 2 and 5 answer options, as a JSON array. A free-form 'write my own answer' option is always appended automatically - never include one yourself.",
   question: 'The question to ask the user',
 }
 
 /** Describes the ask_user tool's question shape and dismissible free-form fallback. */
 export const ASK_USER_TOOL_DESCRIPTION =
   "Ask the user a single multiple-choice question (2-5 options). A free-form 'write my own answer' option is always added automatically, and the user may dismiss the question without answering. Ask exactly one question per call."
+
+/** Returned when `options` never arrived and could not be recovered from the question text. */
+export const ASK_USER_MALFORMED_CALL_MESSAGE =
+  'The `options` array was missing from the call. Retry with `question` and `options` as separate JSON fields; keep the question to one short line and move any detail into the option descriptions.'
 
 /** Adds ask_user's multiple-choice capability to the model's available-tools prompt. */
 export const ASK_USER_PROMPT_SNIPPET = 'Ask the user a multiple-choice question (2-5 options plus a free-form answer)'
