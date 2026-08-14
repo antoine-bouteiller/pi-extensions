@@ -4,7 +4,8 @@ This repository is one Pi package and one Pi extension. `src/index.ts` is the on
 entrypoint: it default-exports the single Pi extension factory that Pi loads, both from the
 packaged manifest and from the linked local-development `src/` directory. Every capability
 under `src/features/` is an internal module, not a separately installed or auto-loaded Pi
-extension.
+extension. How those modules bridge Pi's callbacks onto Effect is specified in
+[`effect_pi_boundary.spec.md`](./effect_pi_boundary.spec.md).
 
 ## Layout
 
