@@ -1,14 +1,15 @@
 import { randomBytes } from 'node:crypto'
-import { createServer } from 'node:http'
 
+import { BunHttpServer } from '@effect/platform-bun'
 import { UnauthorizedError, type OAuthClientProvider, type OAuthDiscoveryState } from '@modelcontextprotocol/sdk/client/auth.js'
 import { type OAuthClientInformationMixed, type OAuthClientMetadata, type OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js'
-import { type Cause, Effect, Semaphore, type Scope } from 'effect'
+import { Cause, Deferred, Effect, Exit, Scope, Semaphore } from 'effect'
+import { HttpServerRequest, HttpServerResponse } from 'effect/unstable/http'
 
 import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 
 import { type CredentialStore, type OAuthCredentialPayload } from './keychain.js'
-import { type OAuthConfig } from './types.js'
+import { assertOpenableAuthorizationUrl, McpError, type OAuthConfig } from './types.js'
 
 const CALLBACK_TIMEOUT_MS = 5 * 60 * 1000
 const DEFAULT_CALLBACK_PORT = 3334
@@ -16,9 +17,9 @@ const DEFAULT_CALLBACK_PORT = 3334
 export type OpenUrl = (url: string, signal?: AbortSignal) => Promise<void>
 
 export interface OAuthCallback {
-  redirectUrl: string
-  waitForCode: () => Promise<string>
-  close: () => Promise<void>
+  readonly redirectUrl: string
+  readonly waitForCode: Effect.Effect<string, McpError>
+  readonly close: Effect.Effect<void>
 }
 
 export interface OAuthCallbackOptions {
@@ -29,11 +30,7 @@ export interface OAuthCallbackOptions {
   timeoutMs?: number
 }
 
-const abortError = (message: string): Error => {
-  const error = new Error(message)
-  error.name = 'AbortError'
-  return error
-}
+const abortError = (message: string): McpError => new McpError({ cause: Object.assign(new Error(message), { name: 'AbortError' }), message })
 
 const escaped = (value: string): string =>
   value.replaceAll(/[&<>"']/g, (character) => {
@@ -58,8 +55,9 @@ const callbackUrl = (options: OAuthCallbackOptions): { url: URL; bindHost: strin
   if (isNotEmptyString(url.username) || isNotEmptyString(url.password) || isNotEmptyString(url.search) || isNotEmptyString(url.hash)) {
     throw new Error('OAuth redirectUri must not contain credentials, a query, or a fragment')
   }
-  const configuredPort = isEmptyString(url.port) ? 80 : Number(url.port)
-  if (configuredPort !== options.port) {
+  if (isEmptyString(url.port)) {
+    url.port = String(options.port)
+  } else if (Number(url.port) !== options.port) {
     throw new Error('OAuth redirectUri port must match callbackPort')
   }
   return {
@@ -68,153 +66,132 @@ const callbackUrl = (options: OAuthCallbackOptions): { url: URL; bindHost: strin
   }
 }
 
-/** Start a one-shot, loopback-only OAuth callback listener. */
-export const startOAuthCallback = async (options: OAuthCallbackOptions): Promise<OAuthCallback> => {
-  if (isTrue(options.signal?.aborted)) {
-    throw abortError('OAuth authentication was cancelled')
-  }
-  const { url, bindHost } = callbackUrl(options)
-  const timeoutMs = options.timeoutMs ?? CALLBACK_TIMEOUT_MS
-  let settled = false
-  let closePromise: Promise<void> | undefined
-  let resolveCode!: (code: string) => void
-  let rejectCode!: (error: Error) => void
-  const codePromise = new Promise<string>((resolve, reject) => {
-    resolveCode = resolve
-    rejectCode = reject
+const listenerError = (port: number, cause: Cause.Cause<unknown>): McpError => {
+  const error = Cause.squash(cause)
+  const message = String(error)
+  return new McpError({
+    cause: error,
+    message:
+      message.includes('EADDRINUSE') || message.toLowerCase().includes('in use')
+        ? `OAuth callback port ${port} is already in use`
+        : 'Could not start the OAuth callback listener',
   })
-  // Avoid an unhandled rejection when listener startup itself fails.
-  void codePromise.catch(() => undefined)
-
-  const finish = (error?: Error, code?: string) => {
-    if (settled) {
-      return
-    }
-    settled = true
-    if (timer !== undefined) {
-      clearTimeout(timer)
-    }
-    options.signal?.removeEventListener('abort', onAbort)
-    if (error !== undefined) {
-      rejectCode(error)
-      void close()
-      return
-    }
-    if (code !== undefined) {
-      resolveCode(code)
-      void close()
-      return
-    }
-    rejectCode(new Error('OAuth callback finished without a code or an error'))
-    void close()
-  }
-
-  const server = createServer((request, response) => {
-    let requested: URL
-    try {
-      requested = new URL(request.url ?? '/', url.origin)
-    } catch {
-      response.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' })
-      response.end('Invalid OAuth callback request')
-      return
-    }
-    if (request.method !== 'GET' || requested.pathname !== url.pathname) {
-      response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
-      response.end('Not found')
-      return
-    }
-
-    const state = requested.searchParams.get('state')
-    if (state !== options.expectedState) {
-      response.writeHead(400, { 'content-type': 'text/html; charset=utf-8' })
-      response.end('<!doctype html><title>OAuth error</title><p>Invalid OAuth state. Return to Pi and retry.</p>')
-      return
-    }
-
-    const oauthError = requested.searchParams.get('error')
-    if (isNotNullOrUndefined(oauthError) && isNotEmptyString(oauthError)) {
-      const description = requested.searchParams.get('error_description')
-      const message = `OAuth authorization failed: ${oauthError}${
-        isNotNullOrUndefined(description) && isNotEmptyString(description) ? ` (${description})` : ''
-      }`
-      response.writeHead(400, { 'content-type': 'text/html; charset=utf-8' })
-      response.end(`<!doctype html><title>OAuth error</title><p>${escaped(message)}</p>`)
-      finish(new Error(message))
-      return
-    }
-
-    const code = requested.searchParams.get('code')
-    if (isNullOrUndefined(code) || isEmptyString(code)) {
-      response.writeHead(400, { 'content-type': 'text/html; charset=utf-8' })
-      response.end('<!doctype html><title>OAuth error</title><p>Missing authorization code.</p>')
-      finish(new Error('OAuth callback did not include an authorization code'))
-      return
-    }
-
-    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-    response.end('<!doctype html><title>OAuth complete</title><p>Authentication succeeded. You can close this window and return to Pi.</p>')
-    finish(undefined, code)
-  })
-
-  const close = (): Promise<void> => {
-    if (closePromise !== undefined) {
-      return closePromise
-    }
-    if (timer !== undefined) {
-      clearTimeout(timer)
-    }
-    options.signal?.removeEventListener('abort', onAbort)
-    closePromise = server.listening ? new Promise<void>((resolve) => server.close(() => resolve())) : Promise.resolve()
-    return closePromise
-  }
-
-  const onAbort = () => finish(abortError('OAuth authentication was cancelled'))
-  options.signal?.addEventListener('abort', onAbort, { once: true })
-  const timer = setTimeout(() => finish(new Error('OAuth callback timed out after five minutes')), timeoutMs)
-  timer.unref?.()
-
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const onError = (error: Error) => {
-        server.off('listening', onListening)
-        reject(error)
-      }
-      const onListening = () => {
-        server.off('error', onError)
-        resolve()
-      }
-      server.once('error', onError)
-      server.once('listening', onListening)
-      server.listen(options.port, bindHost)
-    })
-  } catch (error) {
-    if (timer !== undefined) {
-      clearTimeout(timer)
-    }
-    options.signal?.removeEventListener('abort', onAbort)
-    await close()
-    const reason =
-      error instanceof Error && 'code' in error && error.code === 'EADDRINUSE'
-        ? `OAuth callback port ${options.port} is already in use`
-        : 'Could not start the OAuth callback listener'
-    throw new Error(reason, { cause: error })
-  }
-
-  const address = server.address()
-  if (address === null || typeof address === 'string') {
-    await close()
-    throw new Error('Could not determine the OAuth callback listener address')
-  }
-
-  return { close, redirectUrl: url.href, waitForCode: () => codePromise }
 }
 
-/** Scoped callback resource used by Effect-native authentication flows. */
-export const startOAuthCallbackScoped = (options: OAuthCallbackOptions): Effect.Effect<OAuthCallback, Cause.UnknownError, Scope.Scope> =>
-  Effect.acquireRelease(
-    Effect.tryPromise(() => startOAuthCallback(options)),
-    (callback) => Effect.tryPromise(() => callback.close()).pipe(Effect.ignore)
+const respondToCallback = (
+  request: Pick<HttpServerRequest.HttpServerRequest, 'method' | 'url'>,
+  options: CallbackHandlerOptions
+): HttpServerResponse.HttpServerResponse => {
+  const { url, expectedState, code } = options
+  let requested: URL
+  try {
+    requested = new URL(request.url ?? '/', url.origin)
+  } catch {
+    return HttpServerResponse.text('Invalid OAuth callback request', { contentType: 'text/plain; charset=utf-8', status: 400 })
+  }
+  if (request.method !== 'GET' || requested.origin !== url.origin || requested.pathname !== url.pathname) {
+    return HttpServerResponse.text('Not found', { contentType: 'text/plain; charset=utf-8', status: 404 })
+  }
+
+  if (requested.searchParams.get('state') !== expectedState) {
+    return HttpServerResponse.text('<!doctype html><title>OAuth error</title><p>Invalid OAuth state. Return to Pi and retry.</p>', {
+      contentType: 'text/html; charset=utf-8',
+      status: 400,
+    })
+  }
+
+  const oauthError = requested.searchParams.get('error')
+  if (isNotNullOrUndefined(oauthError) && isNotEmptyString(oauthError)) {
+    const description = requested.searchParams.get('error_description')
+    const message = `OAuth authorization failed: ${oauthError}${
+      isNotNullOrUndefined(description) && isNotEmptyString(description) ? ` (${description})` : ''
+    }`
+    Deferred.doneUnsafe(code, Effect.fail(new McpError({ message })))
+    return HttpServerResponse.text(`<!doctype html><title>OAuth error</title><p>${escaped(message)}</p>`, {
+      contentType: 'text/html; charset=utf-8',
+      status: 400,
+    })
+  }
+
+  const authorizationCode = requested.searchParams.get('code')
+  if (isNullOrUndefined(authorizationCode) || isEmptyString(authorizationCode)) {
+    Deferred.doneUnsafe(code, Effect.fail(new McpError({ message: 'OAuth callback did not include an authorization code' })))
+    return HttpServerResponse.text('<!doctype html><title>OAuth error</title><p>Missing authorization code.</p>', {
+      contentType: 'text/html; charset=utf-8',
+      status: 400,
+    })
+  }
+
+  Deferred.doneUnsafe(code, Effect.succeed(authorizationCode))
+  return HttpServerResponse.text(
+    '<!doctype html><title>OAuth complete</title><p>Authentication succeeded. You can close this window and return to Pi.</p>',
+    { contentType: 'text/html; charset=utf-8' }
   )
+}
+
+interface CallbackHandlerOptions {
+  url: URL
+  expectedState: string
+  code: Deferred.Deferred<string, McpError>
+}
+
+/**
+ * One-shot, loopback-only OAuth callback listener, scoped so the port is released even when the
+ * authorization flow fails: the code arrives through the Bun server handler and is handed to the
+ * waiting fiber through a Deferred.
+ */
+export const startOAuthCallback = (options: OAuthCallbackOptions): Effect.Effect<OAuthCallback, McpError, Scope.Scope> =>
+  Effect.gen(function* () {
+    if (isTrue(options.signal?.aborted)) {
+      return yield* abortError('OAuth authentication was cancelled')
+    }
+    const { url, bindHost } = yield* Effect.try({
+      catch: (cause) => new McpError({ cause, message: cause instanceof Error ? cause.message : String(cause) }),
+      try: () => callbackUrl(options),
+    })
+    const code = yield* Deferred.make<string, McpError>()
+    const listenerScope = yield* Effect.acquireRelease(Scope.make(), (scope) => Scope.close(scope, Exit.void))
+    const server = yield* BunHttpServer.make({ hostname: bindHost, port: options.port }).pipe(
+      Effect.provideService(Scope.Scope, listenerScope),
+      Effect.catchCause((cause) => Effect.fail(listenerError(options.port, cause)))
+    )
+    yield* server
+      .serve(
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest
+          return respondToCallback(request, { code, expectedState: options.expectedState, url })
+        })
+      )
+      .pipe(Effect.provideService(Scope.Scope, listenerScope))
+
+    if (server.address._tag !== 'TcpAddress') {
+      return yield* new McpError({ message: 'Could not determine the OAuth callback listener address' })
+    }
+
+    const { signal } = options
+    if (signal !== undefined) {
+      const onAbort = () => {
+        Deferred.doneUnsafe(code, Effect.fail(abortError('OAuth authentication was cancelled')))
+      }
+      yield* Effect.acquireRelease(
+        Effect.sync(() => signal.addEventListener('abort', onAbort, { once: true })),
+        () => Effect.sync(() => signal.removeEventListener('abort', onAbort))
+      )
+    }
+
+    yield* Effect.forkIn(
+      Effect.sleep(options.timeoutMs ?? CALLBACK_TIMEOUT_MS).pipe(
+        Effect.andThen(Deferred.fail(code, new McpError({ message: 'OAuth callback timed out after five minutes' })))
+      ),
+      listenerScope
+    )
+
+    return {
+      close: Deferred.fail(code, abortError('OAuth authentication was cancelled')).pipe(Effect.andThen(Scope.close(listenerScope, Exit.void))),
+      redirectUrl: url.href,
+      waitForCode: Deferred.await(code),
+    }
+  })
 
 export interface KeychainOAuthProviderOptions {
   serverName: string
@@ -263,6 +240,7 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
     return this.options.state
   }
 
+  // oxlint-disable-next-line effecttsgo/async-function -- Implements the MCP SDK's `OAuthClientProvider`, which declares promise-returning members.
   async clientInformation(): Promise<OAuthClientInformationMixed | undefined> {
     if (isNotNullOrUndefined(this.options.config.clientId) && isNotEmptyString(this.options.config.clientId)) {
       return {
@@ -276,6 +254,7 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
     return credential?.clientInformation
   }
 
+  // oxlint-disable-next-line effecttsgo/async-function -- Implements the MCP SDK's `OAuthClientProvider`, which declares promise-returning members.
   async saveClientInformation(clientInformation: OAuthClientInformationMixed): Promise<void> {
     await this.update((credential) => ({
       serverUrl: this.options.serverUrl,
@@ -284,11 +263,13 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
     }))
   }
 
+  // oxlint-disable-next-line effecttsgo/async-function -- Implements the MCP SDK's `OAuthClientProvider`, which declares promise-returning members.
   async tokens(): Promise<OAuthTokens | undefined> {
     const credential = await this.load()
     return credential?.tokens
   }
 
+  // oxlint-disable-next-line effecttsgo/async-function -- Implements the MCP SDK's `OAuthClientProvider`, which declares promise-returning members.
   async saveTokens(tokens: OAuthTokens): Promise<void> {
     await this.update((credential) => ({
       serverUrl: this.options.serverUrl,
@@ -297,11 +278,12 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
     }))
   }
 
+  // oxlint-disable-next-line effecttsgo/async-function -- Implements the MCP SDK's `OAuthClientProvider`, which declares promise-returning members.
   async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
     if (!isTrue(this.options.interactive) || isNullOrUndefined(this.options.openUrl)) {
       throw new UnauthorizedError('OAuth authorization is required; use /mcp-auth <server>')
     }
-    await this.options.openUrl(authorizationUrl.href, this.options.signal)
+    await this.options.openUrl(assertOpenableAuthorizationUrl(authorizationUrl.href).href, this.options.signal)
   }
 
   saveCodeVerifier(codeVerifier: string): void {
@@ -323,6 +305,7 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
     return this.discovery
   }
 
+  // oxlint-disable-next-line effecttsgo/async-function -- Implements the MCP SDK's `OAuthClientProvider`, which declares promise-returning members.
   async invalidateCredentials(scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery'): Promise<void> {
     if (scope === 'verifier') {
       this.verifier = undefined
@@ -357,13 +340,17 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
   private update(updater: (current: OAuthCredentialPayload | undefined) => OAuthCredentialPayload | undefined): Promise<void> {
     return Effect.runPromise(
       this.mutation.withPermits(1)(
-        Effect.tryPromise(async () => {
-          const next = updater(await this.load())
-          await (next === undefined
-            ? this.options.store.delete(this.options.serverName, this.options.signal)
-            : this.options.store.set(this.options.serverName, next, this.options.signal))
+        Effect.gen({ self: this }, function* () {
+          const current = yield* Effect.tryPromise(() => this.load())
+          const next = updater(current)
+          yield* Effect.tryPromise(() =>
+            next === undefined
+              ? this.options.store.delete(this.options.serverName, this.options.signal)
+              : this.options.store.set(this.options.serverName, next, this.options.signal)
+          )
         })
-      )
+      ),
+      { signal: this.options.signal }
     )
   }
 }

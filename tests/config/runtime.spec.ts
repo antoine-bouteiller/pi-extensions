@@ -1,14 +1,16 @@
-import { describe, expect, it } from 'bun:test'
 import { fileURLToPath } from 'node:url'
 
-import { NodeFileSystem, NodePath } from '@effect/platform-node'
+import { BunFileSystem, BunPath } from '@effect/platform-bun'
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
+import { withProcessEnv } from '@tests/utils/process_env.js'
 import { Effect, Layer, ManagedRuntime } from 'effect'
 import { FetchHttpClient } from 'effect/unstable/http'
 
 import { getOrCreateProcessRuntime } from '@/config/runtime.js'
-import { register as registerStatusPanel } from '@/features/status_panel/feature.js'
+import { register as registerStatusPanel } from '@/features/status_panel/index.js'
 import { AgentActivity, type AgentActivityShape, type AppRuntime, StatusBarLive } from '@/shared/effect/app_services.js'
+import { parseJsonText } from '@/shared/utils/json.js'
 
 const sharedActivityScript = (paths: { aggregate: string; activity: string; runtime: string; statusPanel: string }): string => `
   const { Effect } = await import('effect');
@@ -21,7 +23,7 @@ const sharedActivityScript = (paths: { aggregate: string; activity: string; runt
     const handlers = new Map();
     const pi = {
       events: { emit() {}, on() {} },
-      async exec() { return { code: 0, killed: false, stderr: '', stdout: '' }; },
+      exec() { return Effect.runPromise(Effect.succeed({ code: 0, killed: false, stderr: '', stdout: '' })); },
       getActiveTools: () => [], getAllTools: () => [], getThinkingLevel: () => 'off',
       on(name, handler) { const list = handlers.get(name) || []; list.push(handler); handlers.set(name, list); },
       registerCommand() {}, registerEntryRenderer() {}, registerFlag() {}, registerMessageRenderer() {},
@@ -65,54 +67,55 @@ const sharedActivityScript = (paths: { aggregate: string; activity: string; runt
 `
 
 describe('process-wide runtime', () => {
-  it('memoises to one instance across repeated lookups', () => {
-    expect(getOrCreateProcessRuntime()).toBe(getOrCreateProcessRuntime())
-  })
+  it.effect('memoises to one instance across repeated lookups', () =>
+    Effect.sync(() => {
+      expect(getOrCreateProcessRuntime()).toBe(getOrCreateProcessRuntime())
+    })
+  )
 
-  it('uses the runtime supplied to a feature register function', async () => {
-    let subscriptions = 0
-    const sentinelActivity: AgentActivityShape = {
-      list: () => [],
-      publish: () => Effect.void,
-      subscribe: () => {
-        subscriptions += 1
-        return () => undefined
-      },
-    }
-    const runtime: AppRuntime = ManagedRuntime.make(
-      Layer.mergeAll(NodeFileSystem.layer, NodePath.layer, FetchHttpClient.layer, StatusBarLive, Layer.succeed(AgentActivity)(sentinelActivity))
-    )
-    const originalOwnerToken = process.env.PI_SUBAGENT_OWNER_TOKEN
-    delete process.env.PI_SUBAGENT_OWNER_TOKEN
-    try {
-      registerStatusPanel(createFakePi().pi, runtime)
-      expect(subscriptions).toBe(1)
-    } finally {
-      if (originalOwnerToken === undefined) {
-        delete process.env.PI_SUBAGENT_OWNER_TOKEN
-      } else {
-        process.env.PI_SUBAGENT_OWNER_TOKEN = originalOwnerToken
+  it.effect('uses the runtime supplied to a feature register function', () =>
+    Effect.gen(function* () {
+      let subscriptions = 0
+      const sentinelActivity: AgentActivityShape = {
+        list: () => [],
+        publish: () => Effect.void,
+        subscribe: () => {
+          subscriptions += 1
+          return () => undefined
+        },
       }
-      await runtime.dispose()
-    }
-  })
-
-  it('makes AgentActivity observable through aggregate and explicit feature registration', async () => {
-    const script = sharedActivityScript({
-      activity: fileURLToPath(new URL('../../src/shared/effect/app_services.ts', import.meta.url)),
-      aggregate: fileURLToPath(new URL('../../src/index.ts', import.meta.url)),
-      runtime: fileURLToPath(new URL('../../src/config/runtime.ts', import.meta.url)),
-      statusPanel: fileURLToPath(new URL('../../src/features/status_panel/feature.ts', import.meta.url)),
+      const runtime: AppRuntime = ManagedRuntime.make(
+        Layer.mergeAll(BunFileSystem.layer, BunPath.layer, FetchHttpClient.layer, StatusBarLive, Layer.succeed(AgentActivity)(sentinelActivity))
+      )
+      yield* withProcessEnv('PI_SUBAGENT_OWNER_TOKEN', undefined, () =>
+        Effect.sync(() => {
+          registerStatusPanel(createFakePi().pi, runtime)
+          expect(subscriptions).toBe(1)
+        })
+      ).pipe(Effect.ensuring(Effect.promise(() => runtime.dispose())))
     })
-    const { PI_SUBAGENT_OWNER_TOKEN: _ownerToken, ...env } = process.env
-    const child = Bun.spawn([process.execPath, '--eval', script], { env, stderr: 'pipe', stdout: 'pipe' })
-    const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+  )
 
-    expect(exitCode, stderr).toBe(0)
-    const result: unknown = JSON.parse(stdout.trim())
-    expect(result).toEqual({
-      aggregate: expect.stringContaining('shared-agent'),
-      explicit: expect.stringContaining('shared-agent'),
+  it.effect('makes AgentActivity observable through aggregate and explicit feature registration', () =>
+    Effect.gen(function* () {
+      const script = sharedActivityScript({
+        activity: fileURLToPath(new URL('../../src/shared/effect/app_services.ts', import.meta.url)),
+        aggregate: fileURLToPath(new URL('../../src/index.ts', import.meta.url)),
+        runtime: fileURLToPath(new URL('../../src/config/runtime.ts', import.meta.url)),
+        statusPanel: fileURLToPath(new URL('../../src/features/status_panel/index.ts', import.meta.url)),
+      })
+      const { PI_SUBAGENT_OWNER_TOKEN: _ownerToken, ...env } = process.env
+      const child = Bun.spawn([process.execPath, '--eval', script], { env, stderr: 'pipe', stdout: 'pipe' })
+      const [stdout, stderr, exitCode] = yield* Effect.promise(() =>
+        Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+      )
+
+      expect(exitCode, stderr).toBe(0)
+      const result = parseJsonText(stdout.trim())
+      expect(result).toEqual({
+        aggregate: expect.stringContaining('shared-agent'),
+        explicit: expect.stringContaining('shared-agent'),
+      })
     })
-  })
+  )
 })

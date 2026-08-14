@@ -1,39 +1,31 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import {
-  chmodSync,
-  closeSync,
-  createWriteStream,
-  type Dirent,
-  existsSync,
-  fstatSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  rmdirSync,
-  rmSync,
-  type Stats,
-  statSync,
-  unlinkSync,
-  writeFileSync,
-  type WriteStream,
-} from 'node:fs'
 import { createServer, type Server, type Socket } from 'node:net'
 import { homedir, tmpdir, userInfo } from 'node:os'
-import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path'
-import { setTimeout as delay } from 'node:timers/promises'
 
-import { getAgentDir, SessionManager, type ThemeColor } from '@earendil-works/pi-coding-agent'
-import { Clock, Data, Deferred, Effect, Exit, Function, HashMap, Option, Ref, Scope } from 'effect'
+import { getAgentDir, migrateSessionEntries, parseSessionEntries, type SessionEntry, type ThemeColor } from '@earendil-works/pi-coding-agent'
+import { Cause, Clock, Data, DateTime, Deferred, Effect, Exit, Fiber, HashMap, Option, Queue, Ref, Result, Scope, Semaphore, Stream } from 'effect'
+import { ChildProcess } from 'effect/unstable/process'
+import { type ChildProcessHandle } from 'effect/unstable/process/ChildProcessSpawner'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
+import {
+  closeHeldFile,
+  createHeldFile,
+  heldFileContent,
+  readHostDirectoryEntries,
+  removeHeldFileIfUnchanged,
+  withHeldFile,
+  type HeldFile,
+  type HostDirectoryEntry,
+} from '@/shared/effect/bun_host_file_system.js'
+import { bunChildProcessSpawner, bunFileSystem, bunPath, type BunChildProcessSpawner } from '@/shared/effect/bun_services.js'
 import { azureQuota, consumeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
+import { jsonText, parseJsonText, prettyJsonText } from '@/shared/utils/json.js'
 import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 import { isRecord } from '@/shared/utils/records.js'
 
+import { buildChildEnv } from './child_env.js'
 import {
   nodeProcessProbe,
   processAlive,
@@ -55,7 +47,8 @@ import {
 } from './profiles.js'
 import { consumeFirstMatchingMailboxEvent, RpcJsonlDecoder } from './rpc.js'
 
-export { consumeFirstMatchingMailboxEvent, RpcJsonlDecoder } from './rpc.js'
+const { dirname, isAbsolute, join, resolve: resolvePath, sep } = bunPath
+export { consumeFirstMatchingMailboxEvent, MAX_RPC_FRAME_CHARS, RpcJsonlDecoder } from './rpc.js'
 
 const PACKAGE_BASENAME = 'pi-codex-subagents'
 const SUBAGENT_DIR = join(getAgentDir(), PACKAGE_BASENAME)
@@ -65,6 +58,14 @@ const LEGACY_RUNS_DIR = join(TEMP_ROOT, 'runs')
 const SOCKET_DIR = join(TEMP_ROOT, 'sockets')
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 15_000
+const STDIN_BUFFER_CAPACITY = 64
+const SHUTDOWN_LAUNCH_DRAIN_MS = 5000
+/*
+ * A grandchild that inherited the child's stdout or stderr keeps those pipes open after the child
+ * itself exits, so waiting for EOF unconditionally would pin the live entry, its pending RPCs, and
+ * its fibers until shutdown. Draining is bounded; closing `live.scope` then interrupts the readers.
+ */
+const POST_EXIT_DRAIN_MS = 2000
 const DEFAULT_INACTIVITY_MINUTES = 5
 const DEFAULT_RETENTION_DAYS = 7
 const MAX_LIVE_CLAUDE_AGENTS = 3
@@ -223,18 +224,23 @@ export interface SpawnAgentResult {
 
 interface LiveAgent {
   info: AgentInfo
-  proc: ChildProcessWithoutNullStreams
+  proc: ChildProcessHandle
+  stdin: Queue.Queue<Uint8Array, Cause.Done>
   broadcaster: EventBroadcaster
   logger: SessionLogger
   pending: Ref.Ref<HashMap.HashMap<string, Deferred.Deferred<unknown, SubagentProcessError>>>
+  childToken: string
   reqId: number
   stderr: string
+  streamError?: SubagentProcessError
   expectedExit: boolean
+  /** The OS process is gone. Flipped before output drains, unlike `processFinished`. */
+  processExited: boolean
   processFinished: boolean
   finalizedRun: boolean
-  exitPromise: Promise<void>
-  resolveExit: () => void
-  termination?: Promise<void>
+  exit: Deferred.Deferred<void>
+  exited: Deferred.Deferred<void>
+  termination?: Fiber.Fiber<void, SubagentError>
   inactivityTimeoutMs: number
   inactivityTimer?: NodeJS.Timeout
   candidateResponse: string
@@ -291,11 +297,13 @@ export interface AgentManagerOptions {
   /** Override the configured inactivity delay for tests. Set to 0 to disable monitoring. */
   inactivityTimeoutMs?: number
   /** Test hook invoked after a dead lock is inspected but before its instance is revalidated. */
-  beforeReclaimTaskLockRemoval?: (lockFile: string) => void
+  beforeReclaimTaskLockRemoval?: (lockFile: string) => Effect.Effect<void, Cause.UnknownError>
   /** Test hook invoked after a held lock is released normally but before its instance is revalidated. */
-  beforeReleaseTaskLockRemoval?: (lockFile: string) => void
+  beforeReleaseTaskLockRemoval?: (lockFile: string) => Effect.Effect<void, Cause.UnknownError>
   /** Override process identity inspection so tests can drive Linux/Darwin/Windows branches on any host. */
   processInspector?: ProcessInspectorShape
+  processSpawner?: BunChildProcessSpawner
+  afterProcessSpawn?: () => Effect.Effect<void>
   /** Override the platform used to choose between POSIX signals and Windows taskkill for tests. */
   platform?: NodeJS.Platform
 }
@@ -304,51 +312,112 @@ interface Waiter {
   foreground: boolean
   parentSessionId: string
   targets?: Set<string>
-  resolve: (event: AgentCompletionEvent) => void
+  deferred: Deferred.Deferred<AgentCompletionEvent, SubagentError>
 }
 
 interface WaiterClaim {
-  promise: Promise<AgentCompletionEvent>
-  cancel: (reason?: unknown) => void
+  /** Settles with the first matching completion, or fails with the caller's abort reason. */
+  readonly await: Effect.Effect<AgentCompletionEvent, SubagentError>
+  /** Withdraws the claim, returning false when a completion was already delivered to it. */
+  readonly withdraw: () => boolean
 }
 
 interface SpawnExecution {
   foreground: boolean
   signal: AbortSignal
+  shutdownSignal: AbortSignal
 }
 
 interface LaunchSpawnOptions extends SpawnExecution {
-  releaseLock: () => void
+  releaseLock: () => Effect.Effect<void>
 }
 
 interface FollowUpClaim {
-  fd: number
+  handle: HeldFile
   file: string
   token: string
+  settled: boolean
 }
+
+interface WaitAllClaim {
+  parentSessionId: string
+  targets: Set<string>
+  suppressedEventIds: Set<string>
+}
+
+/** Every `AgentManager` effect fails with this; `cause` carries the caller's abort reason or the underlying error. */
+class SubagentError extends Data.TaggedError('SubagentError')<{
+  readonly message: string
+  readonly cause?: unknown
+}> {}
+
+class SubagentProcessError extends Data.TaggedError('SubagentProcessError')<{
+  readonly message: string
+  readonly cause?: unknown
+}> {}
+
+type SubagentFailure = SubagentError | SubagentProcessError
+
+const causeMessage = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause))
+
+const errorCode = (cause: unknown): unknown => {
+  if (typeof cause !== 'object' || cause === null) {
+    return undefined
+  }
+  if ('code' in cause) {
+    return cause.code
+  }
+  return 'cause' in cause ? errorCode(cause.cause) : undefined
+}
+
+const subagentError = (message: string, cause?: unknown): SubagentError => new SubagentError({ cause, message })
+
+const claudeLaunchLimitError = (): SubagentError =>
+  subagentError(`At most ${MAX_LIVE_CLAUDE_AGENTS} Claude-backed subagents may run at once. Wait for one to finish or use a non-Claude profile.`)
+
+const subagentProcessError = (message: string, cause?: unknown): SubagentProcessError => new SubagentProcessError({ cause, message })
+
+/*
+ * The single wall-clock read for this module's synchronous layers: atomic persistence, the child-stdout
+ * callbacks, and the predicates Pi calls from TUI paint passes. Effect paths read `Clock` instead.
+ */
+const nowMs = (): number => DateTime.toEpochMillis(DateTime.nowUnsafe())
 
 const abortError = (signal?: AbortSignal): unknown => signal?.reason ?? new Error('Wait canceled.')
 
-const throwIfAborted = (signal?: AbortSignal): void => {
-  if (isTrue(signal?.aborted)) {
-    throw abortError(signal)
-  }
+/** Keeps the caller's abort reason as `cause`, so callers can still compare it against `signal.reason`. */
+const abortFailure = (signal?: AbortSignal): SubagentError => {
+  const reason = abortError(signal)
+  return subagentError(causeMessage(reason), reason)
 }
 
-const spawnExecution = (options: SpawnAgentOptions, shutdownSignal: AbortSignal): SpawnExecution => {
-  const foreground = isTrue(options.waitForCompletion)
-  const signal = options.signal === undefined ? shutdownSignal : AbortSignal.any([options.signal, shutdownSignal])
-  if (foreground) {
-    throwIfAborted(signal)
-  }
-  return { foreground, signal }
-}
+const failIfAborted = (signal: AbortSignal): Effect.Effect<void, SubagentError> =>
+  Effect.suspend(() => (signal.aborted ? Effect.fail(abortFailure(signal)) : Effect.void))
 
-const throwIfForegroundAborted = (execution: SpawnExecution): void => {
-  if (execution.foreground) {
-    throwIfAborted(execution.signal)
-  }
-}
+const awaitAbort = (signal: AbortSignal): Effect.Effect<never, SubagentError> =>
+  Effect.callback<never, SubagentError>((resume) => {
+    const abort = (): void => resume(Effect.fail(abortFailure(signal)))
+    if (signal.aborted) {
+      abort()
+      return Effect.void
+    }
+    signal.addEventListener('abort', abort, { once: true })
+    return Effect.sync(() => signal.removeEventListener('abort', abort))
+  })
+
+const spawnExecution = (options: SpawnAgentOptions, shutdownSignal: AbortSignal): SpawnExecution => ({
+  foreground: isTrue(options.waitForCompletion),
+  shutdownSignal,
+  signal: options.signal === undefined ? shutdownSignal : AbortSignal.any([options.signal, shutdownSignal]),
+})
+
+/*
+ * A background launch deliberately outlives its caller's abort, but never the manager: once shutdown
+ * has started it must not publish a child, whose lifecycle fibers would attach to a scope shutdown
+ * has already scanned and closed.
+ */
+const failIfLaunchAborted = (execution: SpawnExecution): Effect.Effect<void, SubagentError> =>
+  failIfAborted(execution.foreground ? execution.signal : execution.shutdownSignal)
 
 const expandHome = (value: string): string => {
   if (value === '~') {
@@ -378,39 +447,45 @@ const normalizeConfig = (value: unknown): SubagentConfig => {
   }
 }
 
-const loadSubagentConfig = (): SubagentConfig => {
-  try {
-    if (existsSync(CONFIG_PATH)) {
-      return normalizeConfig(JSON.parse(readFileSync(CONFIG_PATH, 'utf8')))
-    }
-  } catch {
-    // Best effort; a missing or unreadable config file falls back to defaults.
-  }
-  return {}
-}
+/** An absent or malformed config file means defaults; an unreadable one is a real failure and must not be hidden. */
+const loadSubagentConfigEffect = (): Effect.Effect<SubagentConfig> =>
+  bunFileSystem.readFileString(CONFIG_PATH).pipe(
+    Effect.matchEffect({
+      onFailure: (error) => (isMissingFileError(error) ? Effect.succeed<SubagentConfig>({}) : Effect.die(error)),
+      onSuccess: (content) => Effect.try(() => normalizeConfig(parseJsonText(content))).pipe(Effect.orElseSucceed((): SubagentConfig => ({}))),
+    })
+  )
 
-export const getRunsDir = (): string => {
-  const configured = loadSubagentConfig().storageDir
+const DEFAULT_RUNS_DIR = join(SUBAGENT_DIR, 'runs')
+let configuredRunsDir = DEFAULT_RUNS_DIR
+
+const runsDirFromConfig = (config: SubagentConfig): string => {
+  const configured = config.storageDir
   if (isNotNullOrUndefined(configured) && isNotEmptyString(configured)) {
     const expanded = expandHome(configured)
     return isAbsolute(expanded) ? expanded : resolvePath(SUBAGENT_DIR, expanded)
   }
-  return join(SUBAGENT_DIR, 'runs')
+  return DEFAULT_RUNS_DIR
 }
 
-const ensurePrivateDir = (directory: string, enforceMode = false): void => {
-  const existed = existsSync(directory)
-  mkdirSync(directory, { mode: 0o700, recursive: true })
-  if (process.platform !== 'win32' && (enforceMode || !existed)) {
-    chmodSync(directory, 0o700)
-  }
-}
+export const getRunsDir = (): string => configuredRunsDir
 
-const ensureBaseDirs = (): void => {
-  const { storageDir } = loadSubagentConfig()
-  ensurePrivateDir(getRunsDir(), isNullOrUndefined(storageDir) || isEmptyString(storageDir))
-  ensurePrivateDir(SOCKET_DIR, true)
-}
+const ensurePrivateDirEffect = (directory: string, enforceMode = false): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const existed = yield* bunFileSystem.exists(directory)
+    yield* bunFileSystem.makeDirectory(directory, { mode: 0o700, recursive: true })
+    if (process.platform !== 'win32' && (enforceMode || !existed)) {
+      yield* bunFileSystem.chmod(directory, 0o700)
+    }
+  }).pipe(Effect.orDie)
+
+const ensureBaseDirsEffect = (config: SubagentConfig): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    configuredRunsDir = runsDirFromConfig(config)
+    const { storageDir } = config
+    yield* ensurePrivateDirEffect(getRunsDir(), isNullOrUndefined(storageDir) || isEmptyString(storageDir))
+    yield* ensurePrivateDirEffect(SOCKET_DIR, true)
+  })
 
 const SCOPE_DIR_PATTERN = /^[0-9a-f]{24}$/
 const AGENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -424,150 +499,117 @@ const isAgentArtifact = (name: string, agentId: string): boolean =>
   name === `${agentId}.follow-up` ||
   new RegExp(`^${agentId}[.]info[.]json[.][0-9]+[.]tmp$`).test(name)
 
-const latestArtifactMtime = (directory: string, agentEntries: Dirent[]): number => {
-  let latest = 0
-  for (const artifact of agentEntries) {
-    try {
-      latest = Math.max(latest, statSync(join(directory, artifact.name)).mtimeMs)
-    } catch {
-      // Missing files between the readdir snapshot and stat don't affect staleness.
-    }
-  }
-  return latest
-}
+const fileMtimeMs = (path: string): Effect.Effect<number> =>
+  bunFileSystem.stat(path).pipe(
+    Effect.map((info) => Option.match(info.mtime, { onNone: () => 0, onSome: (mtime) => mtime.getTime() })),
+    Effect.orElseSucceed(() => 0)
+  )
 
-const removeAgentArtifacts = (directory: string, artifacts: Dirent[]): boolean => {
-  let failed = false
-  for (const artifact of artifacts) {
-    try {
-      rmSync(join(directory, artifact.name), { force: true })
-    } catch {
-      failed = true
-    }
-  }
-  return failed
-}
+const latestArtifactMtime = (directory: string, agentEntries: HostDirectoryEntry[]): Effect.Effect<number> =>
+  Effect.all(agentEntries.map((artifact) => fileMtimeMs(join(directory, artifact.name)))).pipe(Effect.map((mtimes) => Math.max(0, ...mtimes)))
+
+const removeAgentArtifacts = (directory: string, artifacts: HostDirectoryEntry[]): Effect.Effect<boolean> =>
+  Effect.all(artifacts.map((artifact) => Effect.exit(bunFileSystem.remove(join(directory, artifact.name), { force: true })))).pipe(
+    Effect.map((exits) => exits.some((exit) => Exit.isFailure(exit)))
+  )
 
 interface PruneAgentEntryParams {
   directory: string
-  entries: Dirent[]
-  entry: Dirent
+  entries: HostDirectoryEntry[]
+  entry: HostDirectoryEntry
   cutoff: number
 }
 
-const pruneAgentEntry = ({ directory, entries, entry, cutoff }: PruneAgentEntryParams): void => {
-  const agentId = entry.name.slice(0, -'.info.json'.length)
-  if (!AGENT_ID_PATTERN.test(agentId)) {
-    return
-  }
-  const info = readInfoFile(join(directory, entry.name))
-  const agentEntries = entries.filter((candidate) => candidate.isFile() && isAgentArtifact(candidate.name, agentId))
-  const baseline = Math.max(info?.lastActivity ?? 0, info?.updatedAt ?? 0, info?.createdAt ?? 0)
-  const latest = Math.max(baseline, latestArtifactMtime(directory, agentEntries))
-  if (isRunActive(agentId) || latest >= cutoff) {
-    return
-  }
-  const otherArtifacts = agentEntries.filter((candidate) => candidate.name !== entry.name)
-  if (removeAgentArtifacts(directory, otherArtifacts)) {
-    return
-  }
-  try {
-    rmSync(join(directory, entry.name), { force: true })
-  } catch {
-    // Best effort cleanup; a concurrent deletion is not an error.
-  }
-}
-
-const pruneStaleTaskLock = (directory: string, entry: Dirent, cutoff: number): void => {
-  const lockFile = join(directory, entry.name)
-  try {
-    if (statSync(lockFile).mtimeMs >= cutoff) {
+const pruneAgentEntry = ({ directory, entries, entry, cutoff }: PruneAgentEntryParams): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const agentId = entry.name.slice(0, -'.info.json'.length)
+    if (!AGENT_ID_PATTERN.test(agentId)) {
       return
     }
-  } catch {
-    return
-  }
-  reclaimDeadTaskLock(lockFile)
-}
-
-const pruneScope = (directory: string, cutoff: number): void => {
-  const entries = readdirSync(directory, { withFileTypes: true })
-
-  for (const entry of entries) {
-    if (entry.isFile() && entry.name.endsWith('.info.json')) {
-      pruneAgentEntry({ cutoff, directory, entries, entry })
+    const info = yield* readInfoFileEffect(join(directory, entry.name))
+    const agentEntries = entries.filter((candidate) => candidate.isFile && isAgentArtifact(candidate.name, agentId))
+    const baseline = Math.max(info?.lastActivity ?? 0, info?.updatedAt ?? 0, info?.createdAt ?? 0)
+    const latest = Math.max(baseline, yield* latestArtifactMtime(directory, agentEntries))
+    if ((yield* isRunActive(agentId)) || latest >= cutoff) {
+      return
     }
-  }
+    const otherArtifacts = agentEntries.filter((candidate) => candidate.name !== entry.name)
+    if (yield* removeAgentArtifacts(directory, otherArtifacts)) {
+      return
+    }
+    yield* bunFileSystem.remove(join(directory, entry.name), { force: true }).pipe(Effect.ignore)
+  })
 
-  for (const entry of entries) {
-    if (entry.isFile() && TASK_LOCK_PATTERN.test(entry.name)) {
-      pruneStaleTaskLock(directory, entry, cutoff)
+const pruneStaleTaskLock = (directory: string, entry: HostDirectoryEntry, cutoff: number): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const lockFile = join(directory, entry.name)
+    if ((yield* fileMtimeMs(lockFile)) >= cutoff) {
+      return
     }
-  }
+    yield* reclaimDeadTaskLock(lockFile)
+  })
 
-  try {
-    rmdirSync(directory)
-  } catch {
-    // Best effort cleanup; a non-empty or already-removed directory is not an error.
-  }
-}
+const pruneScope = (directory: string, cutoff: number): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const entries = yield* readHostDirectoryEntries(directory)
+    yield* Effect.forEach(
+      entries.filter((entry) => entry.isFile && entry.name.endsWith('.info.json')),
+      (entry) => pruneAgentEntry({ cutoff, directory, entries, entry }),
+      { discard: true }
+    )
+    yield* Effect.forEach(
+      entries.filter((entry) => entry.isFile && TASK_LOCK_PATTERN.test(entry.name)),
+      (entry) => pruneStaleTaskLock(directory, entry, cutoff),
+      { discard: true }
+    )
+    yield* bunFileSystem.remove(directory).pipe(Effect.ignore)
+  }).pipe(Effect.ignore)
 
-const pruneOutputFiles = (target: string, cutoff: number): void => {
-  let outputs: Dirent[]
-  try {
-    outputs = readdirSync(target, { withFileTypes: true })
-  } catch {
-    return
-  }
-  for (const output of outputs) {
-    if (!output.isFile() || !OUTPUT_FILE_PATTERN.test(output.name)) {
-      continue
-    }
-    const outputPath = join(target, output.name)
-    try {
-      if (statSync(outputPath).mtimeMs < cutoff) {
-        rmSync(outputPath, { force: true })
-      }
-    } catch {
-      // Best effort cleanup; a concurrent deletion is not an error.
-    }
-  }
-}
+const pruneOutputFiles = (target: string, cutoff: number): Effect.Effect<void> =>
+  readHostDirectoryEntries(target).pipe(
+    Effect.flatMap((outputs) =>
+      Effect.forEach(
+        outputs.filter((output) => output.isFile && OUTPUT_FILE_PATTERN.test(output.name)),
+        (output) =>
+          Effect.gen(function* () {
+            const outputPath = join(target, output.name)
+            if ((yield* fileMtimeMs(outputPath)) < cutoff) {
+              yield* bunFileSystem.remove(outputPath, { force: true }).pipe(Effect.ignore)
+            }
+          }),
+        { discard: true }
+      )
+    ),
+    Effect.ignore
+  )
 
-const pruneRunsRoot = (root: string, cutoff: number): void => {
-  let entries: Dirent[]
-  try {
-    entries = readdirSync(root, { withFileTypes: true })
-  } catch {
-    return
-  }
-  for (const entry of entries) {
-    const target = join(root, entry.name)
-    if (entry.name === '_outputs' && entry.isDirectory()) {
-      pruneOutputFiles(target, cutoff)
-      continue
-    }
-    if (!entry.isDirectory() || !SCOPE_DIR_PATTERN.test(entry.name)) {
-      continue
-    }
-    try {
-      pruneScope(target, cutoff)
-    } catch {
-      // Best effort cleanup; a partially-removed scope directory is not an error.
-    }
-  }
-}
+const pruneRunsRoot = (root: string, cutoff: number): Effect.Effect<void> =>
+  readHostDirectoryEntries(root).pipe(
+    Effect.flatMap((entries) =>
+      Effect.forEach(
+        entries,
+        (entry) => {
+          const target = join(root, entry.name)
+          if (entry.name === '_outputs' && entry.isDirectory) {
+            return pruneOutputFiles(target, cutoff)
+          }
+          return entry.isDirectory && SCOPE_DIR_PATTERN.test(entry.name) ? pruneScope(target, cutoff) : Effect.void
+        },
+        { discard: true }
+      )
+    ),
+    Effect.ignore
+  )
 
-const pruneExpiredRuns = (): void => {
-  const retentionDays = loadSubagentConfig().retentionDays ?? DEFAULT_RETENTION_DAYS
-  if (retentionDays === 0) {
-    return
-  }
-  const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000
-  for (const root of runsRoots()) {
-    pruneRunsRoot(root, cutoff)
-  }
-}
+const pruneExpiredRuns = (config: SubagentConfig): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const retentionDays = config.retentionDays ?? DEFAULT_RETENTION_DAYS
+    if (retentionDays === 0) {
+      return
+    }
+    const cutoff = (yield* Clock.currentTimeMillis) - retentionDays * 24 * 60 * 60 * 1000
+    yield* Effect.forEach(runsRoots(), (root) => pruneRunsRoot(root, cutoff), { discard: true })
+  })
 
 export const parentScopeKey = (parentSessionId: string): string => createHash('sha256').update(parentSessionId).digest('hex').slice(0, 24)
 
@@ -598,14 +640,13 @@ const TaskLockOwnerSchema = Type.Object({
   token: Type.Optional(Type.String()),
 })
 
-const taskLockIsActive = (parentSessionId: string, taskName: string): boolean => {
-  try {
-    const owner: unknown = JSON.parse(readFileSync(taskLockFile(parentSessionId, taskName), 'utf8'))
-    return Check(TaskLockOwnerSchema, owner) && processOwnerIsActive(owner)
-  } catch {
-    return false
-  }
-}
+const taskLockIsActive = (parentSessionId: string, taskName: string): Effect.Effect<boolean> =>
+  Effect.gen(function* () {
+    const content = yield* bunFileSystem.readFileString(taskLockFile(parentSessionId, taskName))
+    // A half-written lock is a normal race, not a defect: `Effect.try` keeps it a typed failure the fallback below recovers.
+    const owner = yield* Effect.try(() => parseJsonText(content))
+    return Check(TaskLockOwnerSchema, owner) && (yield* processOwnerIsActive(owner))
+  }).pipe(Effect.orElseSucceed(() => false))
 
 interface TaskLockOwner {
   pid?: number
@@ -622,73 +663,63 @@ const parseTaskLockOwner = (content: string): TaskLockOwner => {
   }
 }
 
-const sameFileInstance = (first: Stats, second: Stats): boolean => first.dev === second.dev && first.ino === second.ino
+const reclaimDeadTaskLock = (
+  lockFile: string,
+  beforeRevalidate?: (lockFile: string) => Effect.Effect<void, Cause.UnknownError>
+): Effect.Effect<boolean> =>
+  withHeldFile(
+    lockFile,
+    (inspected) =>
+      Effect.gen(function* () {
+        const inspectedContent = heldFileContent(inspected)
+        if (yield* processOwnerIsActive(parseTaskLockOwner(inspectedContent))) {
+          return false
+        }
+        return yield* removeHeldFileIfUnchanged({
+          beforeRevalidate,
+          contentMatches: (content) => content === inspectedContent,
+          handle: inspected,
+          path: lockFile,
+        })
+      })
+    // A lock this pass could not reclaim is left for the next one.
+  ).pipe(Effect.orElseSucceed(() => false))
 
-const reclaimDeadTaskLock = (lockFile: string, beforeRevalidate?: (lockFile: string) => void): boolean => {
-  let inspectedFd: number | undefined
-  let currentFd: number | undefined
-  try {
-    // Keep the inspected instance open, then reopen the pathname immediately before unlinking.
-    // Comparing both file identity and content prevents deleting a replacement lock that won a
-    // Race after the dead owner's record was read.
-    inspectedFd = openSync(lockFile, 'r')
-    const inspectedStat = fstatSync(inspectedFd)
-    const inspectedContent = readFileSync(inspectedFd, 'utf8')
-    const owner = parseTaskLockOwner(inspectedContent)
-    if (processOwnerIsActive(owner)) {
-      return false
-    }
+const releaseTaskLock = (
+  lockFile: string,
+  owned: HeldFile,
+  token: string,
+  beforeRevalidate?: (lockFile: string) => Effect.Effect<void, Cause.UnknownError>
+): Effect.Effect<void> =>
+  removeHeldFileIfUnchanged({
+    beforeRevalidate,
+    contentMatches: (content) => parseTaskLockOwner(content).token === token,
+    handle: owned,
+    path: lockFile,
+  }).pipe(
+    Effect.asVoid,
+    // A lock file that cannot be removed is reclaimed by the next creation attempt once this pid is gone.
+    Effect.ignore,
+    Effect.ensuring(Effect.sync(() => closeHeldFile(owned)))
+  )
 
-    beforeRevalidate?.(lockFile)
+const infoWrites = Semaphore.makeUnsafe(1)
+const infoCache = new Map<string, AgentInfo>()
 
-    currentFd = openSync(lockFile, 'r')
-    const currentStat = fstatSync(currentFd)
-    const currentContent = readFileSync(currentFd, 'utf8')
-    if (!sameFileInstance(inspectedStat, currentStat) || inspectedContent !== currentContent) {
-      return false
-    }
-    unlinkSync(lockFile)
-    return true
-  } catch {
-    return false
-  } finally {
-    if (currentFd !== undefined) {
-      closeSync(currentFd)
-    }
-    if (inspectedFd !== undefined) {
-      closeSync(inspectedFd)
-    }
-  }
-}
-
-const releaseTaskLock = (lockFile: string, ownedFd: number, token: string, beforeRevalidate?: (lockFile: string) => void): void => {
-  let currentFd: number | undefined
-  try {
-    const ownedStat = fstatSync(ownedFd)
-    beforeRevalidate?.(lockFile)
-    currentFd = openSync(lockFile, 'r')
-    const currentStat = fstatSync(currentFd)
-    const currentOwner = parseTaskLockOwner(readFileSync(currentFd, 'utf8'))
-    if (sameFileInstance(ownedStat, currentStat) && currentOwner.token === token) {
-      unlinkSync(lockFile)
-    }
-  } catch {
-    // A missing or replaced pathname is no longer this caller's lock to release.
-  } finally {
-    if (currentFd !== undefined) {
-      closeSync(currentFd)
-    }
-    closeSync(ownedFd)
-  }
-}
-
-const saveInfo = (info: AgentInfo): void => {
-  mkdirSync(dirname(info.infoFile), { recursive: true })
-  info.updatedAt = Date.now()
-  const temporary = `${info.infoFile}.${process.pid}.tmp`
-  writeFileSync(temporary, JSON.stringify(info, undefined, 2))
-  renameSync(temporary, info.infoFile)
-}
+const saveInfo = (info: AgentInfo): Effect.Effect<void> =>
+  infoWrites
+    .withPermits(1)(
+      Effect.gen(function* () {
+        yield* bunFileSystem.makeDirectory(dirname(info.infoFile), { mode: 0o700, recursive: true })
+        info.updatedAt = yield* Clock.currentTimeMillis
+        const snapshot = structuredClone(info)
+        const temporary = `${info.infoFile}.${process.pid}.tmp`
+        yield* bunFileSystem.writeFileString(temporary, prettyJsonText(snapshot), { mode: 0o600 })
+        yield* bunFileSystem.rename(temporary, info.infoFile)
+        infoCache.set(info.infoFile, snapshot)
+      })
+    )
+    .pipe(Effect.orDie)
 
 const closedStoredStatus = (parsed: Static<typeof StoredAgentInfoSchema>): AgentRuntimeStatus => {
   if (isNotNullOrUndefined(parsed.error) && isNotEmptyString(parsed.error)) {
@@ -697,71 +728,126 @@ const closedStoredStatus = (parsed: Static<typeof StoredAgentInfoSchema>): Agent
   return parsed.finalResponse === undefined ? 'interrupted' : 'completed'
 }
 
-const readInfoFile = (file: string): AgentInfo | undefined => {
+const parseInfoFile = (file: string, content: string): AgentInfo | undefined => {
+  let parsed: unknown
   try {
-    const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'))
-    if (!Check(StoredAgentInfoSchema, parsed)) {
-      return undefined
-    }
-    const status: AgentRuntimeStatus = parsed.status === 'closed' ? closedStoredStatus(parsed) : parsed.status
-    const info: AgentInfo & { closedAt?: number } = {
-      ...parsed,
-      canonicalName: parsed.canonicalName ?? canonicalAgentName(parsed.taskName),
-      cwd: parsed.cwd ?? '',
-      followUpUsed: parsed.followUpUsed ?? false,
-      infoFile: parsed.infoFile ?? file,
-      logFile: parsed.logFile ?? '',
-      messageCount: parsed.messageCount ?? 0,
-      model: parsed.model ?? '',
-      modelId: parsed.modelId ?? '',
-      parentSessionId: parsed.parentSessionId ?? '',
-      provider: parsed.provider ?? '',
-      sessionFile: parsed.sessionFile ?? '',
-      status,
-    }
-    delete info.closedAt
-    return info
+    parsed = JSON.parse(content)
   } catch {
     return undefined
   }
+  if (!Check(StoredAgentInfoSchema, parsed)) {
+    return undefined
+  }
+  const status: AgentRuntimeStatus = parsed.status === 'closed' ? closedStoredStatus(parsed) : parsed.status
+  const info: AgentInfo & { closedAt?: number } = {
+    ...parsed,
+    canonicalName: parsed.canonicalName ?? canonicalAgentName(parsed.taskName),
+    cwd: parsed.cwd ?? '',
+    followUpUsed: parsed.followUpUsed ?? false,
+    infoFile: parsed.infoFile ?? file,
+    logFile: parsed.logFile ?? '',
+    messageCount: parsed.messageCount ?? 0,
+    model: parsed.model ?? '',
+    modelId: parsed.modelId ?? '',
+    parentSessionId: parsed.parentSessionId ?? '',
+    provider: parsed.provider ?? '',
+    sessionFile: parsed.sessionFile ?? '',
+    status,
+  }
+  delete info.closedAt
+  return info
 }
 
-const readInfos = (directory: string): AgentInfo[] => {
-  if (!existsSync(directory)) {
-    return []
+const publishInfoSnapshot = (file: string, info: AgentInfo | undefined): void => {
+  if (info === undefined) {
+    return
   }
-  return readdirSync(directory)
-    .filter((name) => name.endsWith('.info.json'))
-    .flatMap((name) => {
-      const info = readInfoFile(join(directory, name))
-      return info === undefined ? [] : [info]
-    })
+  const current = infoCache.get(file)
+  if (current === undefined || info.updatedAt > current.updatedAt) {
+    infoCache.set(file, info)
+  }
 }
+
+const isMissingFileError = (error: unknown): boolean => {
+  const candidate = Cause.isUnknownError(error) ? error.cause : error
+  return (
+    isRecord(candidate) &&
+    ((isRecord(candidate.reason) && candidate.reason._tag === 'NotFound') || candidate.code === 'ENOENT' || candidate.code === 'ENOTDIR')
+  )
+}
+
+const readInfoFileEffect = (file: string) =>
+  bunFileSystem.readFileString(file).pipe(
+    Effect.map((content) => parseInfoFile(file, content)),
+    Effect.tap((info) => Effect.sync(() => publishInfoSnapshot(file, info))),
+    Effect.catch((error) => (isMissingFileError(error) ? Effect.as(Effect.void, undefined as AgentInfo | undefined) : Effect.die(error)))
+  )
+
+const readInfos = (directory: string) =>
+  bunFileSystem.readDirectory(directory).pipe(
+    Effect.flatMap((names) =>
+      Effect.forEach(
+        names.filter((name) => name.endsWith('.info.json')),
+        (name) => readInfoFileEffect(join(directory, name))
+      )
+    ),
+    Effect.map((infos) => infos.filter(isNotNullOrUndefined)),
+    Effect.catch((error) => (isMissingFileError(error) ? Effect.succeed([]) : Effect.die(error)))
+  )
 
 const sortInfos = (infos: AgentInfo[]): AgentInfo[] =>
   infos.toSorted((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))
 
-const readScopeInfos = (parentSessionId: string): AgentInfo[] => sortInfos(scopeDirs(parentSessionId).flatMap(readInfos))
+const readScopeInfos = (parentSessionId: string) =>
+  infoWrites.withPermits(1)(
+    Effect.forEach(scopeDirs(parentSessionId), readInfos).pipe(
+      Effect.map((infos) => sortInfos(infos.flat())),
+      Effect.tap((infos) =>
+        Effect.sync(() => {
+          const observed = new Set(infos.map((info) => info.infoFile))
+          for (const [file, cached] of infoCache) {
+            if (cached.parentSessionId === parentSessionId && !observed.has(file)) {
+              infoCache.delete(file)
+            }
+          }
+        })
+      )
+    )
+  )
 
-const readAllInfos = (): AgentInfo[] => {
-  const directories = runsRoots().flatMap((root) => {
-    if (!existsSync(root)) {
-      return []
-    }
-    return readdirSync(root, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && SCOPE_DIR_PATTERN.test(entry.name))
-      .map((entry) => join(root, entry.name))
-  })
-  return sortInfos(directories.flatMap(readInfos))
+const readAllInfos = () => {
+  const roots = runsRoots()
+  return infoWrites.withPermits(1)(
+    Effect.all(
+      roots.map((root) =>
+        readHostDirectoryEntries(root).pipe(
+          Effect.map((entries) =>
+            entries.filter((entry) => entry.isDirectory && SCOPE_DIR_PATTERN.test(entry.name)).map((entry) => join(root, entry.name))
+          ),
+          Effect.catch((error) => (isMissingFileError(error) ? Effect.succeed([]) : Effect.die(error)))
+        )
+      )
+    ).pipe(
+      Effect.flatMap((directories) => Effect.forEach(directories.flat(), readInfos)),
+      Effect.map((infos) => sortInfos(infos.flat())),
+      Effect.tap((infos) =>
+        Effect.sync(() => {
+          const observed = new Set(infos.map((info) => info.infoFile))
+          for (const file of infoCache.keys()) {
+            if (roots.some((root) => file.startsWith(`${root}${sep}`)) && !observed.has(file)) {
+              infoCache.delete(file)
+            }
+          }
+        })
+      )
+    )
+  )
 }
 
-export const getAgent: {
-  (parentSessionId: string): (name: string) => AgentInfo | undefined
-  (name: string, parentSessionId: string): AgentInfo | undefined
-} = Function.dual(2, (name: string, parentSessionId: string): AgentInfo | undefined => {
+export const getAgent = (name: string, parentSessionId: string): Effect.Effect<AgentInfo | undefined> => {
   const taskName = normalizeTaskName(name)
-  return readScopeInfos(parentSessionId).find((info) => info.taskName === taskName)
-})
+  return readScopeInfos(parentSessionId).pipe(Effect.map((infos) => infos.find((info) => info.taskName === taskName)))
+}
 
 interface PeekMarker {
   pid: number
@@ -782,48 +868,60 @@ export const getSocketPath = (agentId: string): string =>
 
 const markerPath = (agentId: string, kind: 'active' | 'peek'): string => join(SOCKET_DIR, `${agentId}.${kind}.json`)
 
-const markActive = (agentId: string, kind: 'active' | 'peek', marker: PeekMarker): void => {
-  writeFileSync(markerPath(agentId, kind), JSON.stringify(marker, undefined, 2))
-}
+const markActive = (agentId: string, kind: 'active' | 'peek', marker: PeekMarker): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const file = markerPath(agentId, kind)
+    const temporary = `${file}.${marker.token}.tmp`
+    yield* bunFileSystem.writeFileString(temporary, prettyJsonText(marker), { mode: 0o600 })
+    yield* bunFileSystem.rename(temporary, file)
+  }).pipe(Effect.orDie)
 
-const clearActive = (agentId: string, kind: 'active' | 'peek', owner?: Pick<PeekMarker, 'pid' | 'token'>): void => {
+const clearActive = (agentId: string, kind: 'active' | 'peek', owner?: Pick<PeekMarker, 'pid' | 'token'>): Effect.Effect<void> => {
   const file = markerPath(agentId, kind)
-  try {
-    if (owner !== undefined && existsSync(file)) {
-      const current: unknown = JSON.parse(readFileSync(file, 'utf8'))
-      if (!Check(PeekMarkerPartialSchema, current) || current.pid !== owner.pid || current.token !== owner.token) {
+  return withHeldFile(file, (held) =>
+    Effect.gen(function* () {
+      const inspectedContent = heldFileContent(held)
+      const current = yield* Effect.try(() => parseJsonText(inspectedContent))
+      if (owner !== undefined && (!Check(PeekMarkerPartialSchema, current) || current.pid !== owner.pid || current.token !== owner.token)) {
         return
       }
-    }
-    unlinkSync(file)
-  } catch {
-    // Best effort cleanup; a missing or already-removed marker is not an error.
-  }
+      yield* removeHeldFileIfUnchanged({
+        contentMatches: (content) => content === inspectedContent,
+        handle: held,
+        path: file,
+      })
+    })
+  ).pipe(Effect.ignore)
 }
 
-const isActive = (agentId: string, kind: 'active' | 'peek'): boolean => {
+const markerIsActive = (agentId: string, kind: 'active' | 'peek'): Effect.Effect<boolean> => {
   const file = markerPath(agentId, kind)
-  try {
-    if (!existsSync(file)) {
+  return withHeldFile(file, (held) =>
+    Effect.gen(function* () {
+      const inspectedContent = heldFileContent(held)
+      const marker = yield* Effect.try(() => parseJsonText(inspectedContent))
+      if (!Check(PeekMarkerSchema, marker)) {
+        return false
+      }
+      if (yield* processAlive(marker.pid)) {
+        return true
+      }
+      yield* removeHeldFileIfUnchanged({
+        contentMatches: (content) => content === inspectedContent,
+        handle: held,
+        path: file,
+      })
       return false
-    }
-    const marker: unknown = JSON.parse(readFileSync(file, 'utf8'))
-    if (!Check(PeekMarkerSchema, marker)) {
-      return false
-    }
-    if (processAlive(marker.pid)) {
-      return true
-    }
-    clearActive(agentId, kind, marker)
-  } catch {
-    // Best effort; treat an unreadable marker file as inactive.
-  }
-  return false
+    })
+  ).pipe(Effect.orElseSucceed(() => false))
 }
 
-const isRunActive = (agentId: string): boolean => isActive(agentId, 'active') || isActive(agentId, 'peek')
+const isRunActive = (agentId: string): Effect.Effect<boolean> =>
+  Effect.all([markerIsActive(agentId, 'active'), markerIsActive(agentId, 'peek')], { concurrency: 2 }).pipe(
+    Effect.map(([active, peek]) => active || peek)
+  )
 
-export const isPeekActive = (agentId: string): boolean => isActive(agentId, 'peek')
+export const isPeekActive = (agentId: string): Effect.Effect<boolean> => markerIsActive(agentId, 'peek')
 
 interface SubagentMessage {
   role?: string
@@ -896,45 +994,44 @@ const SubagentRpcEventSchema = Type.Object({
 })
 
 class SessionLogger {
-  private stream: WriteStream | undefined = undefined
   private readonly file: string
+  private readonly writes = Semaphore.makeUnsafe(1)
   constructor(file: string) {
     this.file = file
   }
-  private write(entry: { level: string; category: string; message: string; data?: unknown }): void {
+  private write(entry: { level: string; category: string; message: string; data?: unknown }): Effect.Effect<void> {
     const { level, category, message, data } = entry
-    mkdirSync(dirname(this.file), { recursive: true })
-    if (this.stream === undefined) {
-      this.stream = createWriteStream(this.file, { flags: 'a' })
-    }
-    this.stream.write(
-      `${JSON.stringify({
-        category,
-        level,
-        message,
-        ts: new Date().toISOString(),
-        ...(data === undefined ? {} : { data }),
-      })}\n`
+    const line = `${JSON.stringify({
+      category,
+      level,
+      message,
+      ts: DateTime.formatIso(DateTime.nowUnsafe()),
+      ...(data === undefined ? {} : { data }),
+    })}\n`
+    return this.writes.withPermits(1)(
+      bunFileSystem
+        .makeDirectory(dirname(this.file), { mode: 0o700, recursive: true })
+        .pipe(Effect.andThen(bunFileSystem.writeFileString(this.file, line, { flag: 'a', mode: 0o600 })), Effect.ignore)
     )
   }
-  info(category: string, message: string, data?: unknown): void {
-    this.write({ category, data, level: 'INFO', message })
+  info(category: string, message: string, data?: unknown): Effect.Effect<void> {
+    return this.write({ category, data, level: 'INFO', message })
   }
-  stderr(chunk: string): void {
-    this.write({ category: 'pi-process', level: 'STDERR', message: chunk.trim() })
-  }
-  close(): void {
-    this.stream?.end()
-    this.stream = undefined
+  stderr(chunk: string): Effect.Effect<void> {
+    return this.write({ category: 'pi-process', level: 'STDERR', message: chunk.trim() })
   }
 }
+
+const broadcasterOwners = new Map<string, string>()
+const broadcasterMutations = Semaphore.makeUnsafe(1)
+const MAX_PEEK_PENDING_BYTES = 4 * 1024 * 1024
 
 class EventBroadcaster {
   private server: Server | undefined = undefined
   private connections: Socket[] = []
   private readonly marker: PeekMarker = {
     pid: process.pid,
-    startedAt: Date.now(),
+    startedAt: nowMs(),
     token: randomUUID(),
   }
   private status: 'thinking' | 'streaming' | 'tool' | 'done' = 'thinking'
@@ -948,47 +1045,80 @@ class EventBroadcaster {
     this.agentId = agentId
   }
 
-  start(): void {
-    ensurePrivateDir(SOCKET_DIR, true)
-    markActive(this.agentId, 'active', this.marker)
-    const socketPath = getSocketPath(this.agentId)
-    if (process.platform !== 'win32') {
-      try {
-        if (existsSync(socketPath)) {
-          unlinkSync(socketPath)
-        }
-      } catch {
-        // Best effort; a missing stale socket file is not an error.
+  start(): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      broadcasterOwners.set(this.agentId, this.marker.token)
+      yield* broadcasterMutations.withPermits(1)(
+        Effect.suspend(() => {
+          if (!this.isCurrentOwner()) {
+            return Effect.void
+          }
+          return Effect.gen({ self: this }, function* () {
+            yield* ensurePrivateDirEffect(SOCKET_DIR, true)
+            yield* markActive(this.agentId, 'active', this.marker)
+            const socketPath = getSocketPath(this.agentId)
+            if (process.platform !== 'win32') {
+              yield* bunFileSystem.remove(socketPath, { force: true }).pipe(Effect.ignore)
+            }
+            this.openSocket(socketPath)
+          })
+        })
+      )
+    })
+  }
+
+  private isCurrentOwner(): boolean {
+    return broadcasterOwners.get(this.agentId) === this.marker.token
+  }
+
+  private publishPeekMarker(): Effect.Effect<void> {
+    return broadcasterMutations.withPermits(1)(
+      Effect.suspend(() => (this.isCurrentOwner() ? markActive(this.agentId, 'peek', this.marker) : Effect.void))
+    )
+  }
+
+  /**
+   * A peek overlay that stops reading would otherwise let events pile up in its socket buffer.
+   * Dropping the slow client bounds the parent's memory; peek is a best-effort view and the
+   * overlay can reconnect.
+   */
+  private writeBounded(connection: Socket, line: string): void {
+    try {
+      connection.write(line)
+      if (connection.writableLength > MAX_PEEK_PENDING_BYTES) {
+        connection.destroy()
       }
+    } catch {
+      // Best effort; a connection that closed mid-write is not an error.
     }
+  }
+
+  private openSocket(socketPath: string): void {
     this.server = createServer((connection) => {
       this.connections.push(connection)
-      try {
-        connection.write(
-          `${JSON.stringify({
-            activeTools: [...this.activeTools.values()],
-            partialMessage: this.partialMessage,
-            status: this.status,
-            toolName: this.toolName,
-            type: 'sync',
-            userMessage: this.userMessage,
-          } satisfies SyncBroadcastEvent)}\n`
-        )
-      } catch {
-        // Best effort; a connection that closed before the sync write is not an error.
-      }
+      this.writeBounded(
+        connection,
+        `${JSON.stringify({
+          activeTools: [...this.activeTools.values()],
+          partialMessage: this.partialMessage,
+          status: this.status,
+          toolName: this.toolName,
+          type: 'sync',
+          userMessage: this.userMessage,
+        } satisfies SyncBroadcastEvent)}\n`
+      )
       const remove = () => {
         this.connections = this.connections.filter((candidate) => candidate !== connection)
       }
       connection.on('close', remove)
       connection.on('error', remove)
     })
-    this.server.on('listening', () => markActive(this.agentId, 'peek', this.marker))
-    this.server.on('error', () => this.stopSocket())
+    this.server.on('listening', () => Effect.runFork(this.publishPeekMarker()))
+    this.server.on('error', () => Effect.runFork(this.stopSocket()))
     try {
       this.server.listen(socketPath)
     } catch {
-      this.stopSocket()
+      Effect.runFork(this.stopSocket())
     }
   }
 
@@ -1087,16 +1217,18 @@ class EventBroadcaster {
     }
     const line = `${JSON.stringify(event)}\n`
     for (const connection of this.connections) {
-      try {
-        connection.write(line)
-      } catch {
-        // Best effort; a connection that closed mid-broadcast is not an error.
-      }
+      this.writeBounded(connection, line)
     }
   }
 
-  private stopSocket(): void {
-    clearActive(this.agentId, 'peek', this.marker)
+  private stopSocket(): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      yield* clearActive(this.agentId, 'peek', this.marker)
+      yield* Effect.sync(() => this.closeConnections())
+    })
+  }
+
+  private closeConnections(): void {
     for (const connection of this.connections) {
       try {
         connection.destroy()
@@ -1111,20 +1243,19 @@ class EventBroadcaster {
       // Best effort; a server that is already closed is not an error.
     }
     this.server = undefined
-    if (process.platform !== 'win32') {
-      try {
-        if (existsSync(getSocketPath(this.agentId))) {
-          unlinkSync(getSocketPath(this.agentId))
-        }
-      } catch {
-        // Best effort; a missing stale socket file is not an error.
-      }
-    }
   }
 
-  stop(): void {
-    clearActive(this.agentId, 'active', this.marker)
-    this.stopSocket()
+  stop(): Effect.Effect<void> {
+    return clearActive(this.agentId, 'active', this.marker).pipe(
+      Effect.andThen(this.stopSocket()),
+      Effect.andThen(
+        Effect.sync(() => {
+          if (this.isCurrentOwner()) {
+            broadcasterOwners.delete(this.agentId)
+          }
+        })
+      )
+    )
   }
 }
 
@@ -1165,23 +1296,20 @@ const agentMetadata = (
   ...(info.isReadonly === undefined ? {} : { isReadonly: info.isReadonly }),
 })
 
-const getPiCommand = (
-  override?: AgentManagerOptions['piCommand']
-): {
-  command: string
-  prefixArgs: string[]
-} => {
-  if (override !== undefined) {
-    return { command: override.command, prefixArgs: override.prefixArgs ?? [] }
-  }
-  if (isNotNullOrUndefined(process.env.PI_SUBAGENT_PI_BIN) && isNotEmptyString(process.env.PI_SUBAGENT_PI_BIN)) {
-    return { command: process.env.PI_SUBAGENT_PI_BIN, prefixArgs: [] }
-  }
-  const [, currentEntry] = process.argv
-  if (isNotEmptyString(currentEntry) && existsSync(currentEntry)) {
-    return { command: process.execPath, prefixArgs: [currentEntry] }
-  }
-  return { command: process.execPath, prefixArgs: [] }
+const getPiCommand = (override?: AgentManagerOptions['piCommand']) => {
+  const configuredPiBin = process.env.PI_SUBAGENT_PI_BIN
+  return Effect.gen(function* () {
+    if (override !== undefined) {
+      return { command: override.command, prefixArgs: override.prefixArgs ?? [] }
+    }
+    if (isNotNullOrUndefined(configuredPiBin) && isNotEmptyString(configuredPiBin)) {
+      return { command: configuredPiBin, prefixArgs: [] }
+    }
+    const [, currentEntry] = process.argv
+    return isNotEmptyString(currentEntry) && (yield* bunFileSystem.exists(currentEntry).pipe(Effect.orElseSucceed(() => false)))
+      ? { command: process.execPath, prefixArgs: [currentEntry] }
+      : { command: process.execPath, prefixArgs: [] }
+  })
 }
 
 const canonicalAgentName = (target: string): string => (target.startsWith('/') ? target : `/${target}`)
@@ -1195,21 +1323,25 @@ const stopReasonError = (stopReason: string | undefined, errorMessage: string | 
 
 const targetMatches = (event: AgentCompletionEvent, targets?: Set<string>): boolean => targets === undefined || targets.has(event.agentName)
 
-const latestContextTokens = (sessionFile: string): number | undefined => {
-  try {
-    const latestAssistant = SessionManager.open(sessionFile)
-      .getBranch()
-      .toReversed()
-      .find((entry) => entry.type === 'message' && entry.message.role === 'assistant')
+const latestContextTokens = (sessionFile: string): Effect.Effect<number | undefined> =>
+  Effect.gen(function* () {
+    const entries = parseSessionEntries(yield* bunFileSystem.readFileString(sessionFile))
+    migrateSessionEntries(entries)
+    const sessionEntries = entries.filter((entry): entry is SessionEntry => entry.type !== 'session')
+    const byId = new Map(sessionEntries.map((entry) => [entry.id, entry]))
+    const branch: SessionEntry[] = []
+    let current = sessionEntries.at(-1)
+    while (current !== undefined) {
+      branch.push(current)
+      current = current.parentId === null ? undefined : byId.get(current.parentId)
+    }
+    const latestAssistant = branch.find((entry) => entry.type === 'message' && entry.message.role === 'assistant')
     if (latestAssistant?.type !== 'message' || latestAssistant.message.role !== 'assistant') {
       return undefined
     }
     const { input, cacheRead, cacheWrite } = latestAssistant.message.usage
     return [input, cacheRead, cacheWrite].every((value) => Number.isFinite(value) && value >= 0) ? input + cacheRead + cacheWrite : undefined
-  } catch {
-    return undefined
-  }
-}
+  }).pipe(Effect.orElseSucceed(() => undefined))
 
 const buildChildArgs = (launch: { command: string; prefixArgs: string[] }, info: AgentInfo): string[] => {
   const args = [
@@ -1249,23 +1381,17 @@ const buildChildArgs = (launch: { command: string; prefixArgs: string[] }, info:
   return args
 }
 
-class SubagentProcessError extends Data.TaggedError('SubagentProcessError')<{
-  readonly message: string
-  readonly cause?: unknown
-}> {}
-
-const subagentProcessError = (message: string, cause?: unknown): SubagentProcessError => new SubagentProcessError({ cause, message })
-
-const waitForOwnedExitEffect = (inspector: ProcessInspectorShape, ownership: ChildProcessOwnership, timeoutMs: number): Effect.Effect<boolean> =>
+/** Only a definite `mismatch` proves the child is gone; an unverifiable probe keeps us waiting. */
+const waitForOwnedExit = (inspector: ProcessInspectorShape, ownership: ChildProcessOwnership, timeoutMs: number): Effect.Effect<boolean> =>
   Effect.gen(function* () {
     const deadline = (yield* Clock.currentTimeMillis) + timeoutMs
     while ((yield* Clock.currentTimeMillis) < deadline) {
-      if (!(yield* inspector.ownershipMatches(ownership))) {
+      if ((yield* inspector.ownershipVerdict(ownership)) === 'mismatch') {
         return true
       }
       yield* Effect.sleep(25)
     }
-    return !(yield* inspector.ownershipMatches(ownership))
+    return (yield* inspector.ownershipVerdict(ownership)) === 'mismatch'
   })
 
 /**
@@ -1273,11 +1399,7 @@ const waitForOwnedExitEffect = (inspector: ProcessInspectorShape, ownership: Chi
  * script or a bin shim replaces the command line in place while keeping the PID, so the
  * first readable identity can describe the launcher instead of the child Pi process.
  */
-const verifyChildOwnershipEffect = (
-  inspector: ProcessInspectorShape,
-  pid: number,
-  token: string
-): Effect.Effect<ProcessSnapshot, SubagentProcessError> =>
+const verifyChildOwnership = (inspector: ProcessInspectorShape, pid: number, token: string): Effect.Effect<ProcessSnapshot, SubagentProcessError> =>
   Effect.gen(function* () {
     let previous: ProcessSnapshot | undefined
     for (let attempt = 0; attempt < 20; attempt++) {
@@ -1291,55 +1413,60 @@ const verifyChildOwnershipEffect = (
     return yield* new SubagentProcessError({ message: 'Unable to verify child Pi process ownership.' })
   })
 
-const ownerProcessStillActive = (ownership: ChildProcessOwnership, ownerSnapshot: ProcessSnapshot | undefined): boolean =>
-  ownership.ownerPid !== process.pid &&
-  ownerSnapshot !== undefined &&
-  (isNullOrUndefined(ownership.ownerProcessIdentity) ||
-    isEmptyString(ownership.ownerProcessIdentity) ||
-    ownerSnapshot.identity === ownership.ownerProcessIdentity)
-
-const buildChildEnv = (info: AgentInfo, childToken: string, extraChildEnv: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv => {
-  const childEnv = { ...process.env, ...extraChildEnv }
-  delete childEnv.PI_SESSION_ID
-  delete childEnv.PI_SESSION_FILE
-  delete childEnv.PI_PROVIDER
-  delete childEnv.PI_MODEL
-  delete childEnv.PI_REASONING_LEVEL
-  childEnv.PI_SUBAGENT_OWNER_TOKEN = childToken
-  childEnv.PI_SUBAGENT_PROFILE = info.profile ?? ''
-  childEnv.PI_SUBAGENT_READONLY = isTrue(info.isReadonly) ? '1' : '0'
-  return childEnv
+/** Signals the whole detached group first, then the bare PID, because only the group reaches the child's own children. */
+const signalProcessGroup = (pid: number, signal: NodeJS.Signals, useGroup: boolean): void => {
+  try {
+    process.kill(useGroup ? -pid : pid, signal)
+  } catch {
+    try {
+      process.kill(pid, signal)
+    } catch {
+      // Best effort; the process may have already exited.
+    }
+  }
 }
 
 export class AgentManager {
   private readonly live = new Map<string, LiveAgent>()
   private readonly mailbox: AgentCompletionEvent[] = []
   private waiters: Waiter[] = []
-  private readonly waitAllClaims = new Set<{
-    parentSessionId: string
-    targets: Set<string>
-    suppressedEventIds: Set<string>
-  }>()
+  private reservedClaudeLaunches = 0
+  private readonly waitAllClaims = new Set<WaitAllClaim>()
   private readonly defaultWaitAllTargets = new Map<string, Set<string>>()
   private readonly shutdownController = new AbortController()
+  private shuttingDown?: Deferred.Deferred<void>
   private readonly inspector: ProcessInspectorShape
   private readonly platform: NodeJS.Platform
-  private readonly ownerProcessIdentity: string | undefined
-  private readonly reconciliation: Promise<void>
+  private readonly processSpawner: BunChildProcessSpawner
+  private ownerProcessIdentity: string | undefined
+  private readonly reconciliation: Fiber.Fiber<void>
+  /** Launches and terminations are forked here so an aborted caller leaves the child it started alone. */
+  private readonly detachedScope: Scope.Closeable = Scope.makeUnsafe()
+  private readonly launchesInFlight = new Set<Deferred.Deferred<void>>()
   private readonly options: AgentManagerOptions
+  private config: SubagentConfig = {}
 
   constructor(options: AgentManagerOptions = {}) {
     this.options = options
     this.inspector = options.processInspector ?? processInspectorFromProbe(nodeProcessProbe)
     this.platform = options.platform ?? process.platform
-    this.ownerProcessIdentity = Effect.runSync(this.inspector.inspect(process.pid))?.identity
-    ensureBaseDirs()
-    pruneExpiredRuns()
-    this.reconciliation = this.reconcilePersistedChildren()
+    this.processSpawner = options.processSpawner ?? bunChildProcessSpawner
+    this.reconciliation = Effect.runFork(this.initialize())
   }
 
-  async ready(): Promise<void> {
-    await this.reconciliation
+  private initialize(): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      this.ownerProcessIdentity = (yield* this.inspector.inspect(process.pid))?.identity
+      this.config = yield* loadSubagentConfigEffect()
+      yield* ensureBaseDirsEffect(this.config)
+      yield* pruneExpiredRuns(this.config)
+      infoCache.clear()
+      yield* this.reconcilePersistedChildren()
+    })
+  }
+
+  ready(): Effect.Effect<void> {
+    return Fiber.join(this.reconciliation)
   }
 
   private notifyStatusChange(info: AgentInfo): void {
@@ -1374,7 +1501,8 @@ export class AgentManager {
     if (timeoutMs <= 0 || live.processFinished || live.expectedExit || FINAL_STATUSES.has(live.info.status)) {
       return
     }
-    const lastActivity = live.info.lastActivity ?? Date.now()
+    const lastActivity = live.info.lastActivity ?? nowMs()
+    // oxlint-disable-next-line effecttsgo/global-timers -- `Effect.sleep` cannot unref its timer, and this monitor must never keep Pi alive; the handle is unref'd below.
     live.inactivityTimer = setTimeout(
       () => {
         live.inactivityTimer = undefined
@@ -1382,7 +1510,7 @@ export class AgentManager {
           return
         }
         const currentLastActivity = live.info.lastActivity ?? lastActivity
-        const inactiveForMs = Date.now() - currentLastActivity
+        const inactiveForMs = nowMs() - currentLastActivity
         if (inactiveForMs < timeoutMs) {
           this.resetInactivityMonitor(live)
           return
@@ -1399,17 +1527,19 @@ export class AgentManager {
           // Best effort; a throwing extension callback must not break the running agent.
         }
       },
-      Math.max(1, timeoutMs - (Date.now() - lastActivity))
+      Math.max(1, timeoutMs - (nowMs() - lastActivity))
     )
     live.inactivityTimer.unref()
   }
 
-  private recordActivity(live: LiveAgent, persist = true): void {
-    live.info.lastActivity = Date.now()
-    if (persist) {
-      saveInfo(live.info)
-    }
-    this.resetInactivityMonitor(live)
+  private recordActivity(live: LiveAgent, persist = true): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      live.info.lastActivity = yield* Clock.currentTimeMillis
+      if (persist) {
+        yield* saveInfo(live.info)
+      }
+      this.resetInactivityMonitor(live)
+    })
   }
 
   private countLiveClaudeAgents(excludeAgentId?: string): number {
@@ -1417,640 +1547,884 @@ export class AgentManager {
       .length
   }
 
-  private assertClaudeLaunchAllowed(info: Pick<AgentInfo, 'id' | 'modelId'>): void {
-    if (!isClaudeModelId(info.modelId)) {
-      return
-    }
-    if (this.countLiveClaudeAgents(info.id) >= MAX_LIVE_CLAUDE_AGENTS) {
-      throw new Error(
-        `At most ${MAX_LIVE_CLAUDE_AGENTS} Claude-backed subagents may run at once. Wait for one to finish or use a non-Claude profile.`
-      )
-    }
+  private claudeLaunchLimitReached(excludeAgentId?: string): boolean {
+    return this.countLiveClaudeAgents(excludeAgentId) + this.reservedClaudeLaunches >= MAX_LIVE_CLAUDE_AGENTS
   }
 
-  private assertContinuationAllowed(info: AgentInfo, live: LiveAgent | undefined): void {
-    if (info.followUpUsed) {
-      throw new Error(`Agent ${info.canonicalName} already used its single follow-up. Spawn a fresh agent with a narrow task instead.`)
-    }
+  private assertClaudeLaunchAllowed(info: Pick<AgentInfo, 'id' | 'modelId'>): Effect.Effect<void, SubagentError> {
+    return Effect.suspend(() =>
+      isClaudeModelId(info.modelId) && this.claudeLaunchLimitReached(info.id) ? Effect.fail(claudeLaunchLimitError()) : Effect.void
+    )
+  }
+
+  /**
+   * Admission counts published agents, but publication only happens after asynchronous setup, so
+   * concurrent launches would otherwise all pass the check. The reservation is taken in the same
+   * synchronous step as the check and released on every exit; a launch therefore counts twice
+   * between publication and release, which can only reject too eagerly, never over-admit.
+   */
+  private withClaudeLaunchSlot<Value, Failure>(
+    info: Pick<AgentInfo, 'id' | 'modelId'>,
+    launch: Effect.Effect<Value, Failure>
+  ): Effect.Effect<Value, Failure | SubagentError> {
     if (!isClaudeModelId(info.modelId)) {
-      return
+      return launch
     }
-    const contextTokens = latestContextTokens(info.sessionFile)
-    if (contextTokens === undefined) {
-      if (live === undefined) {
-        throw new Error(`Claude context usage is unavailable for ${info.canonicalName}. Spawn a fresh agent instead of continuing it.`)
+    return Effect.acquireUseRelease(
+      Effect.suspend(() => {
+        if (this.claudeLaunchLimitReached(info.id)) {
+          return Effect.fail(claudeLaunchLimitError())
+        }
+        this.reservedClaudeLaunches += 1
+        return Effect.void
+      }),
+      () => launch,
+      () =>
+        Effect.sync(() => {
+          this.reservedClaudeLaunches -= 1
+        })
+    )
+  }
+
+  private assertContinuationAllowed(info: AgentInfo, live: LiveAgent | undefined): Effect.Effect<void, SubagentError> {
+    return Effect.gen(function* () {
+      if (info.followUpUsed) {
+        return yield* subagentError(`Agent ${info.canonicalName} already used its single follow-up. Spawn a fresh agent with a narrow task instead.`)
       }
-      return
-    }
-    if (contextTokens >= CLAUDE_CONTEXT_TOKEN_LIMIT) {
-      throw new Error(
-        `Agent ${info.canonicalName} reached ${contextTokens} context input tokens. Spawn a fresh agent before continuing past ${CLAUDE_CONTEXT_TOKEN_LIMIT}.`
-      )
-    }
+      if (!isClaudeModelId(info.modelId)) {
+        return undefined
+      }
+      const contextTokens = yield* latestContextTokens(info.sessionFile)
+      if (contextTokens === undefined) {
+        return yield* live === undefined
+          ? subagentError(`Claude context usage is unavailable for ${info.canonicalName}. Spawn a fresh agent instead of continuing it.`)
+          : Effect.void
+      }
+      if (contextTokens >= CLAUDE_CONTEXT_TOKEN_LIMIT) {
+        return yield* subagentError(
+          `Agent ${info.canonicalName} reached ${contextTokens} context input tokens. Spawn a fresh agent before continuing past ${CLAUDE_CONTEXT_TOKEN_LIMIT}.`
+        )
+      }
+      return undefined
+    })
   }
 
-  private setFollowUpUsed(info: AgentInfo, live: LiveAgent | undefined, used: boolean): void {
+  private setFollowUpUsed(info: AgentInfo, live: LiveAgent | undefined, used: boolean): Effect.Effect<void> {
     info.followUpUsed = used
     if (live === undefined) {
-      saveInfo(info)
-    } else {
-      live.info.followUpUsed = used
-      saveInfo(live.info)
+      return saveInfo(info)
     }
+    live.info.followUpUsed = used
+    return saveInfo(live.info)
   }
 
-  private claimFollowUp(info: AgentInfo, live: LiveAgent | undefined): FollowUpClaim {
+  private claimFollowUp(info: AgentInfo, live: LiveAgent | undefined): Effect.Effect<FollowUpClaim, SubagentError> {
     const file = join(dirname(info.infoFile), `${info.id}.follow-up`)
     const token = randomUUID()
-    let fd: number | undefined
-    try {
-      fd = openSync(file, 'wx')
-      writeFileSync(fd, JSON.stringify({ token }))
-      this.setFollowUpUsed(info, live, true)
-      return { fd, file, token }
-    } catch (error) {
-      if (fd !== undefined) {
-        releaseTaskLock(file, fd, token)
-      }
-      if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
-        throw new Error(`Agent ${info.canonicalName} already used its single follow-up. Spawn a fresh agent with a narrow task instead.`, {
-          cause: error,
-        })
-      }
-      throw error
-    }
+    return createHeldFile({ content: jsonText({ token }), path: file }).pipe(
+      Effect.mapError((error) =>
+        errorCode(error) === 'EEXIST'
+          ? subagentError(`Agent ${info.canonicalName} already used its single follow-up. Spawn a fresh agent with a narrow task instead.`, error)
+          : subagentError(causeMessage(error), error)
+      ),
+      Effect.flatMap((handle) =>
+        this.setFollowUpUsed(info, live, true).pipe(
+          Effect.as({ file, handle, settled: false, token }),
+          // Anything short of a claimed follow-up must give the claim back, defects and interruption included.
+          Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : releaseTaskLock(file, handle, token)))
+        )
+      ),
+      /*
+       * The descriptor is caller-owned, so acquiring it and installing the release above must be one
+       * atomic step: an interrupt landing between them would strand both the descriptor and the file.
+       */
+      Effect.uninterruptible
+    )
   }
 
   private commitFollowUp(claim: FollowUpClaim): void {
-    closeSync(claim.fd)
+    claim.settled = true
+    closeHeldFile(claim.handle)
   }
 
-  private rollbackFollowUp(info: AgentInfo, live: LiveAgent | undefined, claim: FollowUpClaim): void {
-    try {
-      this.setFollowUpUsed(info, live, false)
-    } finally {
-      releaseTaskLock(claim.file, claim.fd, claim.token)
+  /*
+   * Spans claim to commit so interruption or a defect in the window after the message is accepted but
+   * before it is committed still gives the single follow-up back instead of burning it and leaking
+   * the held descriptor. A no-op once the call site has already settled the claim itself, which lets
+   * those sites keep ordering their own recovery around the rollback.
+   */
+  private withFollowUpClaim<Value, Failure>(
+    info: AgentInfo,
+    claim: FollowUpClaim,
+    body: Effect.Effect<Value, Failure>
+  ): Effect.Effect<Value, Failure> {
+    return body.pipe(Effect.onExit(() => this.rollbackFollowUp(info, this.live.get(info.id), claim)))
+  }
+
+  private rollbackFollowUp(info: AgentInfo, live: LiveAgent | undefined, claim: FollowUpClaim): Effect.Effect<void> {
+    if (claim.settled) {
+      return Effect.void
     }
+    claim.settled = true
+    return this.setFollowUpUsed(info, live, false).pipe(Effect.ensuring(releaseTaskLock(claim.file, claim.handle, claim.token)))
   }
 
-  private async restartForFollowUp(info: AgentInfo, claim: FollowUpClaim): Promise<LiveAgent> {
-    try {
+  private restartForFollowUp(info: AgentInfo): Effect.Effect<LiveAgent, SubagentFailure> {
+    return Effect.gen({ self: this }, function* () {
       if (info.childProcess !== undefined) {
-        await this.terminateOwnedChild(info)
+        yield* this.terminateOwnedChild(info)
       }
-      if (info.status === 'starting' || info.status === 'running') {
-        info.status = 'interrupted'
-        info.lastActivity = Date.now()
-        saveInfo(info)
+      yield* this.markInterruptedIfRunning(info, { notify: false })
+      return yield* this.startLiveAgent(info)
+    })
+  }
+
+  private steerFollowUp(
+    info: AgentInfo,
+    live: LiveAgent,
+    message: string,
+    claim: FollowUpClaim
+  ): Effect.Effect<{ delivery: 'steer' }, SubagentFailure> {
+    return Effect.gen({ self: this }, function* () {
+      /*
+       * Once the child has accepted the message the follow-up is spent, so the commit cannot be
+       * skipped by an interrupt arriving between acceptance and the claim being settled.
+       */
+      yield* Effect.uninterruptible(
+        this.sendCommand(live, { message, type: 'steer' }).pipe(Effect.tap(() => Effect.sync(() => this.commitFollowUp(claim))))
+      )
+      live.info.lastTaskMessage = message
+      yield* this.recordActivity(live)
+      return { delivery: 'steer' as const }
+    })
+  }
+
+  private promptFollowUp(
+    info: AgentInfo,
+    live: LiveAgent,
+    message: string,
+    claim: FollowUpClaim
+  ): Effect.Effect<{ delivery: 'prompt' }, SubagentFailure> {
+    return Effect.gen({ self: this }, function* () {
+      yield* Effect.uninterruptible(
+        this.prompt(live, message, message).pipe(
+          Effect.tap(() => Effect.sync(() => this.commitFollowUp(claim))),
+          Effect.tapError(() =>
+            Effect.gen({ self: this }, function* () {
+              yield* this.rollbackFollowUp(info, live, claim)
+              yield* this.terminateProcess(live).pipe(Effect.ignore)
+            })
+          )
+        )
+      )
+      return { delivery: 'prompt' as const }
+    })
+  }
+
+  private clearChildOwnership(info: AgentInfo, expectedToken: string): Effect.Effect<void> {
+    return Effect.gen(function* () {
+      const persisted = yield* readInfoFileEffect(info.infoFile)
+      if (persisted?.childProcess?.token === expectedToken) {
+        delete persisted.childProcess
+        yield* saveInfo(persisted)
       }
-      return await this.startLiveAgent(info)
-    } catch (error) {
-      this.rollbackFollowUp(info, undefined, claim)
-      throw error
-    }
-  }
-
-  private async steerFollowUp(info: AgentInfo, live: LiveAgent, message: string, claim: FollowUpClaim): Promise<{ delivery: 'steer' }> {
-    try {
-      await this.sendCommand(live, { message, type: 'steer' })
-    } catch (error) {
-      this.rollbackFollowUp(info, live, claim)
-      throw error
-    }
-    this.commitFollowUp(claim)
-    live.info.lastTaskMessage = message
-    this.recordActivity(live)
-    return { delivery: 'steer' }
-  }
-
-  private async promptFollowUp(info: AgentInfo, live: LiveAgent, message: string, claim: FollowUpClaim): Promise<{ delivery: 'prompt' }> {
-    try {
-      await this.prompt(live, message, message)
-    } catch (error) {
-      this.rollbackFollowUp(info, live, claim)
-      await this.terminateProcess(live)
-      throw error
-    }
-    this.commitFollowUp(claim)
-    return { delivery: 'prompt' }
-  }
-
-  private clearChildOwnership(info: AgentInfo, expectedToken: string): void {
-    const persisted = readInfoFile(info.infoFile)
-    if (persisted?.childProcess?.token === expectedToken) {
-      delete persisted.childProcess
-      saveInfo(persisted)
-    }
-    if (info.childProcess?.token === expectedToken) {
-      delete info.childProcess
-    }
-  }
-
-  private waitForOwnedExit(ownership: ChildProcessOwnership, timeoutMs: number): Promise<boolean> {
-    return Effect.runPromise(waitForOwnedExitEffect(this.inspector, ownership, timeoutMs))
-  }
-
-  private signalOwnedProcess(ownership: ChildProcessOwnership, signal: NodeJS.Signals): void {
-    if (!Effect.runSync(this.inspector.ownershipMatches(ownership))) {
-      return
-    }
-    try {
-      if (this.platform === 'win32') {
-        process.kill(ownership.pid, signal)
-      } else {
-        process.kill(-ownership.pid, signal)
+      if (info.childProcess?.token === expectedToken) {
+        delete info.childProcess
       }
-    } catch {
-      try {
-        process.kill(ownership.pid, signal)
-      } catch {
-        // Best effort; the process may have already exited.
-      }
-    }
+    })
   }
 
-  private async terminateOwnedChild(info: AgentInfo): Promise<void> {
-    const ownership = info.childProcess
-    if (ownership === undefined) {
-      return
-    }
-    if (!Effect.runSync(this.inspector.ownershipMatches(ownership))) {
-      this.clearChildOwnership(info, ownership.token)
-      return
-    }
-    if (this.platform === 'win32') {
-      await new Promise<void>((finished) => {
-        const killer = spawn('taskkill', ['/pid', String(ownership.pid), '/T', '/F'], {
-          stdio: 'ignore',
-        })
-        killer.once('error', () => finished())
-        killer.once('exit', () => finished())
-      })
-      await this.waitForOwnedExit(ownership, 2000)
-    } else {
-      this.signalOwnedProcess(ownership, 'SIGTERM')
-      if (!(await this.waitForOwnedExit(ownership, 1000))) {
-        this.signalOwnedProcess(ownership, 'SIGKILL')
-        await this.waitForOwnedExit(ownership, 1000)
+  private signalOwnedProcess(ownership: ChildProcessOwnership, signal: NodeJS.Signals): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      if ((yield* this.inspector.ownershipVerdict(ownership)) === 'match') {
+        signalProcessGroup(ownership.pid, signal, this.platform !== 'win32')
       }
-    }
-    if (Effect.runSync(this.inspector.ownershipMatches(ownership))) {
-      throw new Error(`Unable to terminate owned child process for ${info.canonicalName}.`)
-    }
-    this.clearChildOwnership(info, ownership.token)
+    })
   }
 
-  private async reconcilePersistedChildren(): Promise<void> {
-    for (const info of readAllInfos()) {
+  /** `taskkill` is the only reliable way to take down a detached Windows tree. */
+  private killWindowsTree(pid: number): Effect.Effect<void> {
+    const command = ChildProcess.make('taskkill', ['/pid', String(pid), '/T', '/F'], {
+      detached: false,
+      stderr: 'ignore',
+      stdin: 'ignore',
+      stdout: 'ignore',
+    })
+    return Effect.scoped(
+      this.processSpawner.spawn(command).pipe(
+        Effect.flatMap((child) => child.exitCode),
+        Effect.ignore
+      )
+    )
+  }
+
+  private markInterrupted(info: AgentInfo, options: { notify: boolean }): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      info.status = 'interrupted'
+      info.lastActivity = yield* Clock.currentTimeMillis
+      yield* saveInfo(info)
+      if (options.notify) {
+        this.notifyStatusChange(info)
+      }
+    })
+  }
+
+  private markInterruptedIfRunning(info: AgentInfo, options: { notify: boolean } = { notify: true }): Effect.Effect<void> {
+    return info.status === 'starting' || info.status === 'running' ? this.markInterrupted(info, options) : Effect.void
+  }
+
+  private terminateOwnedChild(info: AgentInfo): Effect.Effect<void, SubagentError> {
+    return Effect.gen({ self: this }, function* () {
       const ownership = info.childProcess
       if (ownership === undefined) {
-        if (info.status === 'starting' && !taskLockIsActive(info.parentSessionId, info.taskName)) {
-          reclaimDeadTaskLock(taskLockFile(info.parentSessionId, info.taskName), this.options.beforeReclaimTaskLockRemoval)
-          info.status = 'interrupted'
-          info.lastActivity = Date.now()
-          saveInfo(info)
-          this.notifyStatusChange(info)
-        }
-        continue
+        return true
       }
-      try {
-        if (!Effect.runSync(this.inspector.ownershipMatches(ownership))) {
-          if (info.status === 'starting' || info.status === 'running') {
-            info.status = 'interrupted'
-            info.lastActivity = Date.now()
-            saveInfo(info)
-            this.notifyStatusChange(info)
-          }
-          this.clearChildOwnership(info, ownership.token)
-          continue
-        }
-        const ownerSnapshot = Effect.runSync(this.inspector.inspect(ownership.ownerPid))
-        if (ownerProcessStillActive(ownership, ownerSnapshot)) {
-          continue
-        }
-        if (info.status === 'starting' || info.status === 'running') {
-          info.status = 'interrupted'
-          info.lastActivity = Date.now()
-          saveInfo(info)
-          this.notifyStatusChange(info)
-        }
-        await this.terminateOwnedChild(info)
-      } catch {
-        // Best effort reconciliation; a failure here is retried on the next manager start.
+      const verdict = yield* this.inspector.ownershipVerdict(ownership)
+      if (verdict === 'mismatch') {
+        yield* this.clearChildOwnership(info, ownership.token)
+        return true
       }
-    }
+      if (verdict === 'unverifiable') {
+        return false
+      }
+      if (this.platform === 'win32') {
+        yield* this.killWindowsTree(ownership.pid)
+        yield* waitForOwnedExit(this.inspector, ownership, 2000)
+      } else {
+        yield* this.signalOwnedProcess(ownership, 'SIGTERM')
+        if (!(yield* waitForOwnedExit(this.inspector, ownership, 1000))) {
+          yield* this.signalOwnedProcess(ownership, 'SIGKILL')
+          yield* waitForOwnedExit(this.inspector, ownership, 1000)
+        }
+      }
+      if ((yield* this.inspector.ownershipVerdict(ownership)) !== 'mismatch') {
+        return false
+      }
+      yield* this.clearChildOwnership(info, ownership.token)
+      return true
+    }).pipe(
+      Effect.flatMap((terminated) => (terminated ? Effect.void : subagentError(`Unable to terminate owned child process for ${info.canonicalName}.`)))
+    )
   }
 
-  private async launchSpawn(
+  private reconcilePersistedChildren(): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      for (const info of yield* readAllInfos()) {
+        // Best effort reconciliation; a failure here is retried on the next manager start.
+        yield* this.reconcilePersistedChild(info).pipe(Effect.ignore)
+      }
+    })
+  }
+
+  private reconcilePersistedChild(info: AgentInfo): Effect.Effect<void, SubagentError> {
+    return Effect.gen({ self: this }, function* () {
+      const ownership = info.childProcess
+      if (ownership === undefined) {
+        if (info.status === 'starting' && !(yield* taskLockIsActive(info.parentSessionId, info.taskName))) {
+          yield* reclaimDeadTaskLock(taskLockFile(info.parentSessionId, info.taskName), this.options.beforeReclaimTaskLockRemoval)
+          yield* this.markInterrupted(info, { notify: true })
+        }
+        return
+      }
+      const verdict = yield* this.inspector.ownershipVerdict(ownership)
+      if (verdict === 'unverifiable') {
+        return
+      }
+      if (verdict === 'mismatch') {
+        yield* this.markInterruptedIfRunning(info)
+        yield* this.clearChildOwnership(info, ownership.token)
+        return
+      }
+      /*
+       * `ownerIsActive` treats an unreadable probe as "still active", where `inspect` reports it as
+       * `undefined`: a transient `ps` failure must not be read as "the other manager is gone" and
+       * let this manager terminate a child that is still owned.
+       */
+      const ownedByAnotherProcess =
+        ownership.ownerPid !== process.pid &&
+        (yield* this.inspector.ownerIsActive({
+          pid: ownership.ownerPid,
+          ...(isNullOrUndefined(ownership.ownerProcessIdentity) ? {} : { processIdentity: ownership.ownerProcessIdentity }),
+        }))
+      if (ownedByAnotherProcess) {
+        return
+      }
+      yield* this.markInterruptedIfRunning(info)
+      yield* this.terminateOwnedChild(info)
+    })
+  }
+
+  /**
+   * A launch is manager-owned from before the shutdown check until the child is published in
+   * `this.live`. Without that window, shutdown can scan an empty map and close `detachedScope`
+   * while a background setup is still about to publish a child nothing will then terminate.
+   */
+  private duringLaunch<Success, Failure>(body: Effect.Effect<Success, Failure>): Effect.Effect<Success, Failure> {
+    return Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const done = Deferred.makeUnsafe<void>()
+        this.launchesInFlight.add(done)
+        return done
+      }),
+      () => body,
+      (done) => Effect.sync(() => this.launchesInFlight.delete(done)).pipe(Effect.andThen(Deferred.succeed(done, undefined)))
+    )
+  }
+
+  private launchSpawn(
     info: AgentInfo,
     message: string,
     metadata: Omit<SpawnAgentResult, 'completion' | 'execution'>,
     options: LaunchSpawnOptions
-  ): Promise<SpawnAgentResult> {
-    if (!options.foreground) {
-      await this.startLiveAgent(info, message, message)
-      return { ...metadata, execution: 'background' }
-    }
-
-    const claim = this.registerWaiter(info.parentSessionId, new Set([info.canonicalName]), options.signal, true)
-    const launch = this.startLiveAgent(info, message, message).finally(options.releaseLock)
-    try {
-      const [, completion] = await Promise.all([launch, claim.promise])
-      return { ...metadata, completion, execution: 'foreground' }
-    } catch (error) {
-      claim.cancel(error)
-      throw error
-    } finally {
-      claim.cancel()
-    }
-  }
-
-  async spawnAgent(params: SpawnAgentParams, options: SpawnAgentOptions = {}): Promise<SpawnAgentResult> {
-    const execution = spawnExecution(options, this.shutdownController.signal)
-    await this.reconciliation
-    throwIfForegroundAborted(execution)
-    const taskName = normalizeTaskName(params.task_name)
-    const resolved = resolveAgentConfig(params.agent_type, {
-      availableModels: params.availableModels,
-      parentModel: params.parentModel,
-    })
-    if (isClaudeModelId(resolved.modelId) && this.countLiveClaudeAgents() >= MAX_LIVE_CLAUDE_AGENTS) {
-      throw new Error(
-        `At most ${MAX_LIVE_CLAUDE_AGENTS} Claude-backed subagents may run at once. Wait for one to finish or use a non-Claude profile.`
-      )
-    }
-    const cwd = resolvePath(params.cwd)
-    const directory = scopeDir(params.parentSessionId)
-    ensurePrivateDir(directory, true)
-
-    const lockFile = taskLockFile(params.parentSessionId, taskName)
-    const lockToken = randomUUID()
-    let lock: number | undefined
-    let launchOwnsLock = false
-    const releaseLock = (): void => {
-      if (lock === undefined) {
-        return
-      }
-      const descriptor = lock
-      lock = undefined
-      releaseTaskLock(lockFile, descriptor, lockToken, this.options.beforeReleaseTaskLockRemoval)
-    }
-    const releaseUnownedLock = (): void => {
-      if (!launchOwnsLock) {
-        releaseLock()
-      }
-    }
-    try {
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          lock = openSync(lockFile, 'wx')
-          writeFileSync(
-            lock,
-            JSON.stringify({
-              createdAt: Date.now(),
-              pid: process.pid,
-              processIdentity: this.ownerProcessIdentity,
-              token: lockToken,
-            })
-          )
-          break
-        } catch (error: unknown) {
-          if (!(error instanceof Error) || !('code' in error) || error.code !== 'EEXIST') {
-            throw error
-          }
-          if (attempt === 0 && reclaimDeadTaskLock(lockFile, this.options.beforeReclaimTaskLockRemoval)) {
-            continue
-          }
-          throw new Error(`Agent ${taskName} is already being created.`, { cause: error })
+  ): Effect.Effect<SpawnAgentResult, SubagentFailure> {
+    return this.duringLaunch(
+      Effect.gen({ self: this }, function* () {
+        if (!options.foreground) {
+          yield* failIfLaunchAborted(options)
+          yield* this.startLiveAgent(info, message, message)
+          return { ...metadata, execution: 'background' as const }
         }
+        const claim = this.registerWaiter(info.parentSessionId, new Set([info.canonicalName]), options.signal, true)
+        const launch = yield* Effect.forkIn(
+          this.startLiveAgent(info, message, message).pipe(Effect.ensuring(options.releaseLock())),
+          this.detachedScope
+        )
+        const [, completion] = yield* Effect.all([Fiber.join(launch), claim.await], { concurrency: 2 })
+        return { ...metadata, completion, execution: 'foreground' as const }
+      })
+    )
+  }
+
+  /** Wins the per-task creation lock, retrying once after reclaiming a lock whose owner is gone. */
+  private acquireTaskLock(lockFile: string, lockToken: string, taskName: string): Effect.Effect<HeldFile, SubagentError> {
+    return Effect.gen({ self: this }, function* () {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const outcome = yield* Effect.result(this.writeTaskLock(lockFile, lockToken))
+        if (Result.isSuccess(outcome)) {
+          return outcome.success
+        }
+        const exists = errorCode(outcome.failure) === 'EEXIST'
+        if (attempt === 0 && exists && (yield* reclaimDeadTaskLock(lockFile, this.options.beforeReclaimTaskLockRemoval))) {
+          continue
+        }
+        return yield* exists
+          ? subagentError(`Agent ${taskName} is already being created.`, outcome.failure)
+          : subagentError(causeMessage(outcome.failure), outcome.failure)
       }
-      if (lock === undefined) {
-        throw new Error(`Unable to lock agent ${taskName} for creation.`)
-      }
-      if (readScopeInfos(params.parentSessionId).some((info) => info.taskName === taskName)) {
-        throw new Error(`Agent ${taskName} already exists in this parent session. Use a new task_name.`)
-      }
-      const id = randomUUID()
-      const info: AgentInfo = {
-        agentType: resolved.key,
-        allowedTools: [...resolved.allowedTools],
-        canonicalName: `/${taskName}`,
-        color: resolved.color,
-        createdAt: Date.now(),
-        cwd,
-        followUpUsed: false,
-        id,
-        infoFile: join(directory, `${id}.info.json`),
-        isReadonly: resolved.isReadonly,
-        lastActivity: Date.now(),
-        lastTaskMessage: params.message,
-        logFile: join(directory, `${id}.log`),
-        messageCount: 0,
-        model: `${resolved.provider}:${resolved.modelId}`,
-        modelId: resolved.modelId,
-        parentSessionFile: params.parentSessionFile,
-        parentSessionId: params.parentSessionId,
-        profile: resolved.key,
-        prompt: resolved.prompt,
-        provider: resolved.provider,
-        sessionFile: join(directory, `${id}.jsonl`),
-        startedAt: Date.now(),
-        status: 'starting',
-        taskName,
-        thinking: resolved.thinking,
-        updatedAt: Date.now(),
-      }
-      saveInfo(info)
-      this.notifyStatusChange(info)
-      const targets = this.defaultWaitAllTargets.get(params.parentSessionId) ?? new Set<string>()
-      targets.add(info.canonicalName)
-      this.defaultWaitAllTargets.set(params.parentSessionId, targets)
-      const metadata = {
-        color: resolved.color,
-        is_readonly: resolved.isReadonly,
-        nickname: undefined,
-        profile: resolved.key,
-        task_name: info.canonicalName,
-      }
-      launchOwnsLock = execution.foreground
-      return await this.launchSpawn(info, params.message, metadata, { ...execution, releaseLock })
-    } finally {
-      releaseUnownedLock()
+      return yield* subagentError(`Unable to lock agent ${taskName} for creation.`)
+    })
+  }
+
+  private writeTaskLock(lockFile: string, lockToken: string): Effect.Effect<HeldFile, Cause.UnknownError> {
+    return createHeldFile({
+      content: JSON.stringify({
+        createdAt: nowMs(),
+        pid: process.pid,
+        processIdentity: this.ownerProcessIdentity,
+        token: lockToken,
+      }),
+      path: lockFile,
+    })
+  }
+
+  private newAgentInfo(params: SpawnAgentParams, resolved: ReturnType<typeof resolveAgentConfig>, taskName: string, createdAt: number): AgentInfo {
+    const id = randomUUID()
+    const directory = scopeDir(params.parentSessionId)
+    return {
+      agentType: resolved.key,
+      allowedTools: [...resolved.allowedTools],
+      canonicalName: `/${taskName}`,
+      color: resolved.color,
+      createdAt,
+      cwd: resolvePath(params.cwd),
+      followUpUsed: false,
+      id,
+      infoFile: join(directory, `${id}.info.json`),
+      isReadonly: resolved.isReadonly,
+      lastActivity: createdAt,
+      lastTaskMessage: params.message,
+      logFile: join(directory, `${id}.log`),
+      messageCount: 0,
+      model: `${resolved.provider}:${resolved.modelId}`,
+      modelId: resolved.modelId,
+      parentSessionFile: params.parentSessionFile,
+      parentSessionId: params.parentSessionId,
+      profile: resolved.key,
+      prompt: resolved.prompt,
+      provider: resolved.provider,
+      sessionFile: join(directory, `${id}.jsonl`),
+      startedAt: createdAt,
+      status: 'starting',
+      taskName,
+      thinking: resolved.thinking,
+      updatedAt: createdAt,
     }
   }
 
-  private teardownChildStreams(live: LiveAgent): void {
-    live.proc.stdin.removeAllListeners()
-    live.proc.stdout.removeAllListeners()
-    live.proc.stderr.removeAllListeners()
-    live.proc.removeAllListeners()
-    try {
-      live.proc.stdin.destroy()
-    } catch {
-      // Best effort; the stream may already be destroyed.
-    }
-    try {
-      live.proc.stdout.destroy()
-    } catch {
-      // Best effort; the stream may already be destroyed.
-    }
-    try {
-      live.proc.stderr.destroy()
-    } catch {
-      // Best effort; the stream may already be destroyed.
-    }
+  spawnAgent(params: SpawnAgentParams, options: SpawnAgentOptions = {}): Effect.Effect<SpawnAgentResult, SubagentFailure> {
+    return Effect.gen({ self: this }, function* () {
+      const execution = spawnExecution(options, this.shutdownController.signal)
+      yield* failIfLaunchAborted(execution)
+      yield* this.ready()
+      yield* failIfLaunchAborted(execution)
+      const taskName = yield* Effect.try({
+        catch: (cause) => subagentError(causeMessage(cause), cause),
+        try: () => normalizeTaskName(params.task_name),
+      })
+      const resolved = yield* Effect.try({
+        catch: (cause) => subagentError(causeMessage(cause), cause),
+        try: () =>
+          resolveAgentConfig(params.agent_type, {
+            availableModels: params.availableModels,
+            parentModel: params.parentModel,
+          }),
+      })
+      yield* this.assertClaudeLaunchAllowed({ id: '', modelId: resolved.modelId })
+      yield* ensurePrivateDirEffect(scopeDir(params.parentSessionId), true)
+
+      const lockFile = taskLockFile(params.parentSessionId, taskName)
+      const lockToken = randomUUID()
+      let lock: HeldFile | undefined
+      let launchOwnsLock = false
+      const releaseLock = (): Effect.Effect<void> =>
+        Effect.suspend(() => {
+          if (lock === undefined) {
+            return Effect.void
+          }
+          const descriptor = lock
+          lock = undefined
+          return releaseTaskLock(lockFile, descriptor, lockToken, this.options.beforeReleaseTaskLockRemoval)
+        })
+      const create = Effect.gen({ self: this }, function* () {
+        lock = yield* this.acquireTaskLock(lockFile, lockToken, taskName)
+        if ((yield* readScopeInfos(params.parentSessionId)).some((info) => info.taskName === taskName)) {
+          return yield* subagentError(`Agent ${taskName} already exists in this parent session. Use a new task_name.`)
+        }
+        const info = this.newAgentInfo(params, resolved, taskName, yield* Clock.currentTimeMillis)
+        yield* saveInfo(info)
+        this.notifyStatusChange(info)
+        const targets = this.defaultWaitAllTargets.get(params.parentSessionId) ?? new Set<string>()
+        targets.add(info.canonicalName)
+        this.defaultWaitAllTargets.set(params.parentSessionId, targets)
+        const metadata = {
+          color: resolved.color,
+          is_readonly: resolved.isReadonly,
+          nickname: undefined,
+          profile: resolved.key,
+          task_name: info.canonicalName,
+        }
+        launchOwnsLock = execution.foreground
+        return yield* this.launchSpawn(info, params.message, metadata, { ...execution, releaseLock })
+      })
+      return yield* create.pipe(Effect.ensuring(Effect.suspend(() => (launchOwnsLock ? Effect.void : releaseLock()))))
+    })
   }
 
-  private consumeAzureQuota(live: LiveAgent): void {
+  private consumeAzureQuota(live: LiveAgent): Effect.Effect<void> {
     const token = live.info.childProcess?.token
     if (isNullOrUndefined(token) || isEmptyString(token)) {
-      return
+      return Effect.void
     }
-    const percent = consumeSubagentAzureQuota(token)
-    if (percent !== undefined) {
-      azureQuota.set(percent)
-    }
+    return consumeSubagentAzureQuota(token).pipe(
+      Effect.tap((percent) => Effect.sync(() => percent === undefined || azureQuota.set(percent))),
+      Effect.asVoid
+    )
   }
 
-  private finishProcess(live: LiveAgent, error?: Error): void {
-    if (live.processFinished) {
-      return
-    }
-    live.processFinished = true
-    this.clearInactivityMonitor(live)
-    this.consumeAzureQuota(live)
-    const persisted = readInfoFile(live.info.infoFile)
-    if (persisted !== undefined && FINAL_STATUSES.has(persisted.status)) {
-      live.info = persisted
-      live.finalizedRun = true
-    }
-    Effect.runSync(
-      Effect.gen(function* () {
+  private finishProcess(live: LiveAgent, error?: Error, options: { retainOwnership?: boolean } = {}): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      if (live.processFinished) {
+        return Effect.void
+      }
+      live.processFinished = true
+      this.clearInactivityMonitor(live)
+      const markExited = this.markProcessExited(live)
+      /*
+       * `processFinished` is already true, so a later termination call returns immediately: the
+       * teardown below must therefore run even if persistence or ownership clearing dies, or the
+       * scope, map entry, pending requests, and exit waiters would be stranded forever.
+       */
+      const release = Effect.gen({ self: this }, function* () {
+        yield* markExited
         const pending = yield* Ref.getAndSet(live.pending, HashMap.empty())
         for (const [, deferred] of HashMap.entries(pending)) {
           yield* Deferred.fail(deferred, subagentProcessError(error?.message ?? 'Child Pi process exited before responding.', error))
         }
-      })
-    )
-    if (!live.expectedExit && !live.finalizedRun && !FINAL_STATUSES.has(live.info.status)) {
-      this.markFailed(live, error?.message ?? 'Child Pi process exited unexpectedly.')
-    }
-    const ownership = live.info.childProcess
-    if (ownership !== undefined) {
-      this.clearChildOwnership(live.info, ownership.token)
-    }
-    if (this.live.get(live.info.id) === live) {
-      this.live.delete(live.info.id)
-    }
-    Effect.runSync(Scope.close(live.scope, Exit.void))
-    live.resolveExit()
-  }
+        if (this.live.get(live.info.id) === live) {
+          this.live.delete(live.info.id)
+        }
+        yield* Scope.close(live.scope, Exit.void)
+        yield* Deferred.succeed(live.exit, undefined)
+      }).pipe(Effect.uninterruptible)
 
-  private wireChildProcess(live: LiveAgent, decoder: RpcJsonlDecoder): void {
-    const { proc, logger } = live
-    proc.stdout.on('data', (chunk) => {
-      for (const line of decoder.push(chunk)) {
-        this.handleLine(live, line)
-      }
-    })
-    proc.stdout.on('end', () => {
-      for (const line of decoder.end()) {
-        this.handleLine(live, line)
-      }
-    })
-    proc.stderr.on('data', (data) => {
-      const chunk = data.toString()
-      live.stderr = `${live.stderr}${chunk}`.slice(-64 * 1024)
-      logger.stderr(chunk)
-    })
-    proc.stdin.on('error', (error) => {
-      logger.info('stdin', 'child stdin error', { error: error.message })
-      if (!live.expectedExit) {
-        const persisted = readInfoFile(live.info.infoFile)
+      return Effect.gen({ self: this }, function* () {
+        yield* this.consumeAzureQuota(live)
+        const persisted = yield* readInfoFileEffect(live.info.infoFile)
         if (persisted !== undefined && FINAL_STATUSES.has(persisted.status)) {
           live.info = persisted
           live.finalizedRun = true
-        } else if (!live.finalizedRun) {
-          this.markFailed(live, error.message)
         }
-        void this.terminateProcess(live)
-      }
-    })
-    proc.on('error', (error) => this.finishProcess(live, error))
-    proc.on('exit', (code, signal) => {
-      logger.info('exit', 'child exited', { code, signal })
-      const suffix = isNotEmptyString(live.stderr.trim()) ? `: ${live.stderr.trim().slice(-1000)}` : ''
-      this.finishProcess(live, live.expectedExit ? undefined : subagentProcessError(`Child Pi exited (code=${code}, signal=${signal})${suffix}`))
+        if (!live.expectedExit && !live.finalizedRun && !FINAL_STATUSES.has(live.info.status)) {
+          yield* this.markFailed(live, error?.message ?? 'Child Pi process exited unexpectedly.')
+        }
+        /*
+         * A child that survived termination stays reconcilable: its ownership record is the only
+         * handle the next manager start has for reaping it, so it must outlive this teardown.
+         */
+        const ownership = live.info.childProcess
+        if (ownership !== undefined && options.retainOwnership !== true) {
+          yield* this.clearChildOwnership(live.info, ownership.token)
+        }
+      }).pipe(Effect.ensuring(release))
     })
   }
 
-  private async startLiveAgent(info: AgentInfo, initialMessage?: string, displayMessage?: string): Promise<LiveAgent> {
-    this.assertClaudeLaunchAllowed(info)
-    if (info.status !== 'starting' && info.status !== 'running') {
-      this.notifyStatusChange({ ...info, lastActivity: Date.now(), status: 'starting' })
-    }
-    const logger = new SessionLogger(info.logFile)
-    const broadcaster = new EventBroadcaster(info.id)
-    broadcaster.start()
-    const launch = getPiCommand(this.options.piCommand)
-    const args = buildChildArgs(launch, info)
-    const childToken = randomUUID()
-    logger.info('spawn', 'starting child pi', { args, command: launch.command, cwd: info.cwd })
-    const childEnv = buildChildEnv(info, childToken, this.options.childEnv)
-    const proc = spawn(launch.command, args, {
-      cwd: info.cwd,
-      detached: process.platform !== 'win32',
-      env: childEnv,
-      stdio: ['pipe', 'pipe', 'pipe'],
+  private handleProcessStreamError(live: LiveAgent, source: string, cause: unknown): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      const error = subagentProcessError(`${source}: ${causeMessage(cause)}`, cause)
+      live.streamError ??= error
+      yield* Queue.end(live.stdin)
+      yield* Effect.forkIn(this.terminateProcess(live).pipe(Effect.ignore), this.detachedScope)
     })
-    let resolveExit!: () => void
-    const exitPromise = new Promise<void>((markExited) => {
-      resolveExit = markExited
-    })
-    const scope = Scope.makeUnsafe()
-    const live: LiveAgent = {
-      broadcaster,
-      candidateResponse: '',
-      exitPromise,
-      expectedExit: false,
-      finalizedRun: false,
-      inactivityTimeoutMs: this.options.inactivityTimeoutMs ?? (loadSubagentConfig().inactivityMinutes ?? DEFAULT_INACTIVITY_MINUTES) * 60_000,
-      info,
-      logger,
-      pending: Ref.makeUnsafe(HashMap.empty()),
-      proc,
-      processFinished: false,
-      reqId: 0,
-      resolveExit,
-      scope,
-      stderr: '',
-    }
-    Effect.runSync(
-      Scope.addFinalizer(
-        scope,
-        Effect.sync(() => {
-          live.broadcaster.stop()
-          live.logger.close()
-          this.teardownChildStreams(live)
-        })
-      )
-    )
-    this.live.set(info.id, live)
-    this.resetInactivityMonitor(live)
-    const decoder = new RpcJsonlDecoder()
-    this.wireChildProcess(live, decoder)
+  }
 
-    try {
-      if (proc.pid === undefined) {
-        throw subagentProcessError('Child Pi process did not provide a PID.')
+  private wireChildProcess(live: LiveAgent, decoder: RpcJsonlDecoder): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      const { proc, logger } = live
+      const stdoutDone = yield* Deferred.make<void>()
+      const stderrDone = yield* Deferred.make<void>()
+      const stdout = Stream.runForEach(proc.stdout, (chunk) =>
+        Effect.try({ catch: (cause) => subagentProcessError(causeMessage(cause), cause), try: () => decoder.push(Buffer.from(chunk)) }).pipe(
+          Effect.flatMap((lines) => Effect.forEach(lines, (line) => this.handleLine(live, line), { discard: true }))
+        )
+      ).pipe(
+        /*
+         * `Effect.try` keeps `decoder.end()` lazy. Called eagerly it runs while the pipeline is
+         * still being built, flushes an empty buffer, and loses an unterminated final frame.
+         */
+        Effect.andThen(
+          Effect.try({ catch: (cause) => subagentProcessError(causeMessage(cause), cause), try: () => decoder.end() }).pipe(
+            Effect.flatMap((lines) => Effect.forEach(lines, (line) => this.handleLine(live, line), { discard: true }))
+          )
+        ),
+        Effect.catch((error) => this.handleProcessStreamError(live, 'child stdout failed', error)),
+        Effect.ensuring(Deferred.succeed(stdoutDone, undefined))
+      )
+      const stderr = Stream.runForEach(proc.stderr, (data) =>
+        Effect.gen(function* () {
+          const chunk = Buffer.from(data).toString()
+          live.stderr = `${live.stderr}${chunk}`.slice(-64 * 1024)
+          yield* logger.stderr(chunk)
+        })
+      ).pipe(
+        Effect.catch((error) => this.handleProcessStreamError(live, 'child stderr failed', error)),
+        Effect.ensuring(Deferred.succeed(stderrDone, undefined))
+      )
+      const stdin = Stream.run(Stream.fromQueue(live.stdin), proc.stdin).pipe(
+        Effect.catch((error) => this.handleProcessStreamError(live, 'child stdin failed', error))
+      )
+      const awaitOutput = Effect.all([Deferred.await(stdoutDone), Deferred.await(stderrDone)], { concurrency: 2 }).pipe(
+        Effect.timeoutOption(POST_EXIT_DRAIN_MS),
+        Effect.asVoid
+      )
+      const exit = Effect.matchEffect(proc.exitCode, {
+        onFailure: (cause) =>
+          Effect.gen({ self: this }, function* () {
+            yield* this.markProcessExited(live)
+            yield* awaitOutput
+            yield* logger.info('exit', 'child exited', { error: causeMessage(cause) })
+            const suffix = isNotEmptyString(live.stderr.trim()) ? `: ${live.stderr.trim().slice(-1000)}` : ''
+            const error =
+              live.streamError ?? (live.expectedExit ? undefined : subagentProcessError(`Child Pi exited (${causeMessage(cause)})${suffix}`, cause))
+            yield* this.finishProcess(live, error)
+          }),
+        onSuccess: (code) =>
+          Effect.gen({ self: this }, function* () {
+            yield* this.markProcessExited(live)
+            yield* awaitOutput
+            yield* logger.info('exit', 'child exited', { code: Number(code), signal: undefined })
+            const suffix = isNotEmptyString(live.stderr.trim()) ? `: ${live.stderr.trim().slice(-1000)}` : ''
+            const error =
+              live.streamError ??
+              (live.expectedExit ? undefined : subagentProcessError(`Child Pi exited (code=${Number(code)}, signal=null)${suffix}`))
+            yield* this.finishProcess(live, error)
+          }),
+      })
+      yield* Effect.forkIn(stdout, live.scope)
+      yield* Effect.forkIn(stderr, live.scope)
+      yield* Effect.forkIn(stdin, live.scope)
+      yield* Effect.forkIn(exit, this.detachedScope)
+    })
+  }
+
+  /**
+   * Setup that ends without publishing a live agent would otherwise leave the persisted record at
+   * `starting` forever, so spawn and handshake share one exit handler.
+   */
+  private finalizeAbandonedSetup(info: AgentInfo, exit: Exit.Exit<LiveAgent, SubagentFailure>): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      if (Exit.isSuccess(exit) || this.live.has(info.id) || FINAL_STATUSES.has(info.status)) {
+        return Effect.void
       }
-      const snapshot = await Effect.runPromise(verifyChildOwnershipEffect(this.inspector, proc.pid, childToken))
+      if (Exit.hasInterrupts(exit)) {
+        return this.markInterruptedIfRunning(info)
+      }
+      const error = Exit.findErrorOption<LiveAgent, SubagentFailure>(exit)
+      return this.markSetupFailed(info, Option.isSome(error) ? error.value.message : 'Child Pi process setup failed.')
+    })
+  }
+
+  private abandonHandshake(live: LiveAgent, exit: Exit.Exit<unknown, SubagentFailure>): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      const error = Exit.findErrorOption(exit)
+      if (!live.finalizedRun && !Exit.hasInterrupts(exit)) {
+        yield* this.markFailed(live, Option.isSome(error) ? error.value.message : 'Child Pi process setup failed.').pipe(Effect.ignoreCause)
+      }
+      // A kill that fails here leaves the persisted ownership record in place, so
+      // `reconcilePersistedChildren` reaps the child on the next manager start.
+      yield* this.terminateProcess(live).pipe(Effect.ignoreCause)
+    }).pipe(Effect.uninterruptible)
+  }
+
+  private markSetupFailed(info: AgentInfo, error: string): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      info.status = 'failed'
+      info.error = error
+      info.completedAt = yield* Clock.currentTimeMillis
+      info.lastActivity = info.completedAt
+      yield* saveInfo(info)
+      this.notifyStatusChange(info)
+    })
+  }
+
+  private startLiveAgent(info: AgentInfo, initialMessage?: string, displayMessage?: string): Effect.Effect<LiveAgent, SubagentFailure> {
+    const launch = Effect.gen({ self: this }, function* () {
+      if (info.status !== 'starting' && info.status !== 'running') {
+        this.notifyStatusChange({ ...info, lastActivity: yield* Clock.currentTimeMillis, status: 'starting' })
+      }
+      const live = yield* this.spawnLiveAgent(info)
+      return yield* this.handshake(live, initialMessage, displayMessage).pipe(
+        /*
+         * Exit-based, not `tapError`: persistence dies as a defect, and an interrupted handshake
+         * must not leave a spawned child running either.
+         */
+        Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : this.abandonHandshake(live, exit)))
+      )
+    }).pipe(Effect.onExit((exit) => this.finalizeAbandonedSetup(info, exit)))
+    return this.withClaudeLaunchSlot(info, launch)
+  }
+
+  private spawnLiveAgent(info: AgentInfo): Effect.Effect<LiveAgent, SubagentProcessError> {
+    return Effect.gen({ self: this }, function* () {
+      const launch = yield* getPiCommand(this.options.piCommand)
+      const args = buildChildArgs(launch, info)
+      const childToken = randomUUID()
+      const childEnv = buildChildEnv({ childToken, isReadonly: info.isReadonly, profile: info.profile }, this.options.childEnv, process.env)
+      const scope = yield* Scope.make()
+      // Bounded so a child that stops reading backs pressure up into `dispatchCommand`, whose
+      // `Effect.timeoutOrElse` then fails the send instead of buffering payloads without limit.
+      const stdin = yield* Queue.bounded<Uint8Array, Cause.Done>(STDIN_BUFFER_CAPACITY)
+      let transferred = false
+      return yield* Effect.gen({ self: this }, function* () {
+        const { broadcaster, logger } = yield* Effect.uninterruptible(
+          Effect.gen(function* () {
+            const createdLogger = new SessionLogger(info.logFile)
+            const createdBroadcaster = new EventBroadcaster(info.id)
+            yield* Scope.addFinalizer(
+              scope,
+              Effect.gen(function* () {
+                yield* Queue.end(stdin)
+                yield* createdBroadcaster.stop()
+              })
+            )
+            yield* createdBroadcaster.start()
+            return { broadcaster: createdBroadcaster, logger: createdLogger }
+          })
+        )
+        yield* logger.info('spawn', 'starting child pi', { args, command: launch.command, cwd: info.cwd })
+        const command = ChildProcess.make(launch.command, args, {
+          cwd: info.cwd,
+          detached: process.platform !== 'win32',
+          env: childEnv,
+          forceKillAfter: 1000,
+          stderr: 'pipe',
+          stdin: { endOnDone: true, stream: 'pipe' },
+          stdout: 'pipe',
+          windowsHide: false,
+        })
+        /*
+         * The spawner's own finalizer signals `-pid` (the whole detached group) on scope close and
+         * on any non-zero exit, without the `ownershipVerdict` check every other signal in this
+         * module passes.
+         *
+         * ponytail: known ceiling — between the child exiting and `finishProcess` closing `scope`,
+         * a recycled PGID could be signalled instead. Replace this with an ownership-verified
+         * spawner adapter once the platform exposes an opt-out, or if a stray termination is
+         * ever observed.
+         */
+        const proc = yield* this.processSpawner.spawn(command).pipe(
+          Effect.provideService(Scope.Scope, scope),
+          Effect.mapError((cause) => subagentProcessError(causeMessage(cause), cause))
+        )
+        if (this.options.afterProcessSpawn !== undefined) {
+          yield* this.options.afterProcessSpawn()
+        }
+        const live: LiveAgent = {
+          broadcaster,
+          candidateResponse: '',
+          childToken,
+          exit: Deferred.makeUnsafe<void>(),
+          exited: Deferred.makeUnsafe<void>(),
+          expectedExit: false,
+          finalizedRun: false,
+          inactivityTimeoutMs: this.options.inactivityTimeoutMs ?? (this.config.inactivityMinutes ?? DEFAULT_INACTIVITY_MINUTES) * 60_000,
+          info,
+          logger,
+          pending: Ref.makeUnsafe(HashMap.empty()),
+          proc,
+          processExited: false,
+          processFinished: false,
+          reqId: 0,
+          scope,
+          stderr: '',
+          stdin,
+        }
+        yield* this.wireChildProcess(live, new RpcJsonlDecoder())
+        if (!live.processFinished) {
+          /*
+           * Shutdown waits for launches only for `SHUTDOWN_LAUNCH_DRAIN_MS`. Past that it has
+           * already scanned `this.live`, so publishing now would strand a child nothing terminates.
+           * Leaving `transferred` false instead tears the freshly spawned child down with the scope.
+           */
+          if (this.shutdownController.signal.aborted) {
+            return yield* subagentProcessError('Agent manager is shutting down.')
+          }
+          this.live.set(info.id, live)
+          this.resetInactivityMonitor(live)
+        }
+        transferred = true
+        return live
+      }).pipe(Effect.ensuring(Effect.suspend(() => (transferred ? Effect.void : Scope.close(scope, Exit.void)))))
+    })
+  }
+
+  private handshake(live: LiveAgent, initialMessage?: string, displayMessage?: string): Effect.Effect<LiveAgent, SubagentFailure> {
+    return Effect.gen({ self: this }, function* () {
+      const { info } = live
+      const pid = Number(live.proc.pid)
+      const snapshot = yield* verifyChildOwnership(this.inspector, pid, live.childToken)
       // Persist ownership before the first RPC round trip. If this process crashes while
       // The child is starting, the next manager can identify and terminate the orphan.
-      info.childProcess = {
+      const provisionalOwnership: ChildProcessOwnership = {
         ownerPid: process.pid,
         ownerProcessIdentity: this.ownerProcessIdentity,
-        pid: proc.pid,
+        pid,
         processIdentity: snapshot.identity,
-        startedAt: Date.now(),
-        token: childToken,
+        startedAt: yield* Clock.currentTimeMillis,
+        token: live.childToken,
       }
-      const provisionalOwnership = info.childProcess
-      saveInfo(info)
-      await this.sendCommand(live, { type: 'get_state' }, DEFAULT_STARTUP_TIMEOUT_MS)
+      info.childProcess = provisionalOwnership
+      yield* saveInfo(info)
+      yield* this.sendCommand(live, { type: 'get_state' }, DEFAULT_STARTUP_TIMEOUT_MS)
       // The answered round trip proves the child reached its final program.
       // Its identity can no longer change underneath a later reconciliation.
-      const settled = await Effect.runPromise(this.inspector.inspect(proc.pid, childToken))
+      const settled = yield* this.inspector.inspect(pid, live.childToken)
       if (isNotNullOrUndefined(settled) && !isFalse(settled.tokenMatches) && settled.identity !== provisionalOwnership.processIdentity) {
         info.childProcess = { ...provisionalOwnership, processIdentity: settled.identity }
-        saveInfo(info)
+        yield* saveInfo(info)
       }
       if (isNotNullOrUndefined(initialMessage) && isNotEmptyString(initialMessage)) {
-        await this.prompt(live, initialMessage, displayMessage)
+        yield* this.prompt(live, initialMessage, displayMessage)
       }
       return live
-    } catch (error) {
-      if (!live.finalizedRun) {
-        this.markFailed(live, error instanceof Error ? error.message : String(error))
-      }
-      await this.terminateProcess(live)
-      throw error
-    }
+    })
   }
 
-  private sendCommand(live: LiveAgent, command: Record<string, unknown>, timeoutMs = DEFAULT_STARTUP_TIMEOUT_MS): Promise<unknown> {
-    if (live.processFinished || live.expectedExit) {
-      return Promise.reject(subagentProcessError(`Agent ${live.info.taskName} process is not available.`))
-    }
-    const id = `req-${++live.reqId}`
-    const commandType = typeof command.type === 'string' ? command.type : 'unknown'
-    const payload = `${JSON.stringify({ id, ...command })}\n`
-    const wait = Effect.gen(function* () {
-      const context = yield* Effect.context()
-      const deferred = yield* Deferred.make<unknown, SubagentProcessError>()
-      yield* Ref.update(live.pending, HashMap.set(id, deferred))
-      yield* Effect.sync(() => {
-        live.proc.stdin.write(payload, (error) => {
-          if (isNotNullOrUndefined(error)) {
-            Effect.runSyncWith(context)(Deferred.fail(deferred, subagentProcessError(error.message, error)))
-          }
-        })
+  private sendCommand(
+    live: LiveAgent,
+    command: Record<string, unknown>,
+    timeoutMs = DEFAULT_STARTUP_TIMEOUT_MS
+  ): Effect.Effect<unknown, SubagentProcessError> {
+    return Effect.suspend(() =>
+      live.processFinished || live.expectedExit
+        ? Effect.fail(subagentProcessError(`Agent ${live.info.taskName} process is not available.`))
+        : this.dispatchCommand(live, command, timeoutMs)
+    )
+  }
+
+  /** Skips the availability guard so `terminateProcess` can still deliver its abort round trip. */
+  private dispatchCommand(live: LiveAgent, command: Record<string, unknown>, timeoutMs: number): Effect.Effect<unknown, SubagentProcessError> {
+    return Effect.suspend(() => {
+      const id = `req-${++live.reqId}`
+      const commandType = typeof command.type === 'string' ? command.type : 'unknown'
+      const payload = `${jsonText({ id, ...command })}\n`
+      const wait = Effect.gen(function* () {
+        const deferred = yield* Deferred.make<unknown, SubagentProcessError>()
+        yield* Ref.update(live.pending, HashMap.set(id, deferred))
+        const accepted = yield* Queue.offer(live.stdin, new TextEncoder().encode(payload))
+        if (!accepted) {
+          return yield* subagentProcessError('Child Pi stdin is not available.')
+        }
+        return yield* Deferred.await(deferred)
       })
-      return yield* Deferred.await(deferred)
-    })
-    return Effect.runPromise(
-      Effect.timeoutOrElse(wait, {
+      return Effect.timeoutOrElse(wait, {
         duration: timeoutMs,
         orElse: () => subagentProcessError(`Timed out waiting for child Pi RPC command: ${commandType}`),
       }).pipe(Effect.ensuring(Ref.update(live.pending, HashMap.remove(id))))
-    )
+    })
   }
 
-  private async prompt(live: LiveAgent, message: string, displayMessage?: string): Promise<void> {
-    const previousFinalState = {
-      completedAt: live.info.completedAt,
-      error: live.info.error,
-      finalResponse: live.info.finalResponse,
-      status: live.info.status,
-    }
-    this.removeMailboxEvents(live.info.parentSessionId, live.info.canonicalName)
-    const targets = this.defaultWaitAllTargets.get(live.info.parentSessionId) ?? new Set<string>()
-    targets.add(live.info.canonicalName)
-    this.defaultWaitAllTargets.set(live.info.parentSessionId, targets)
-    live.info.status = 'running'
-    live.info.lastTaskMessage = displayMessage ?? message
-    live.info.messageCount += 1
-    live.finalizedRun = false
-    live.candidateResponse = ''
-    live.candidateError = undefined
-    delete live.info.finalResponse
-    delete live.info.error
-    delete live.info.completedAt
-    this.recordActivity(live)
-    this.notifyStatusChange(live.info)
-    try {
-      await this.sendCommand(live, { message, type: 'prompt' })
-    } catch (error) {
-      live.info.status = previousFinalState.status
-      if (previousFinalState.finalResponse === undefined) {
+  private prompt(live: LiveAgent, message: string, displayMessage?: string): Effect.Effect<void, SubagentProcessError> {
+    return Effect.gen({ self: this }, function* () {
+      const previousFinalState = {
+        completedAt: live.info.completedAt,
+        error: live.info.error,
+        finalResponse: live.info.finalResponse,
+        status: live.info.status,
+      }
+      this.removeMailboxEvents(live.info.parentSessionId, live.info.canonicalName)
+      const targets = this.defaultWaitAllTargets.get(live.info.parentSessionId) ?? new Set<string>()
+      targets.add(live.info.canonicalName)
+      this.defaultWaitAllTargets.set(live.info.parentSessionId, targets)
+      live.info.status = 'running'
+      live.info.lastTaskMessage = displayMessage ?? message
+      live.info.messageCount += 1
+      live.finalizedRun = false
+      live.candidateResponse = ''
+      live.candidateError = undefined
+      delete live.info.finalResponse
+      delete live.info.error
+      delete live.info.completedAt
+      yield* this.recordActivity(live)
+      this.notifyStatusChange(live.info)
+      yield* this.sendCommand(live, { message, type: 'prompt' }).pipe(Effect.tapError(() => this.restorePreviousFinalState(live, previousFinalState)))
+    })
+  }
+
+  private restorePreviousFinalState(
+    live: LiveAgent,
+    previous: Pick<AgentInfo, 'completedAt' | 'error' | 'finalResponse' | 'status'>
+  ): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      live.info.status = previous.status
+      if (previous.finalResponse === undefined) {
         delete live.info.finalResponse
       } else {
-        live.info.finalResponse = previousFinalState.finalResponse
+        live.info.finalResponse = previous.finalResponse
       }
-      if (previousFinalState.error === undefined) {
+      if (previous.error === undefined) {
         delete live.info.error
       } else {
-        live.info.error = previousFinalState.error
+        live.info.error = previous.error
       }
-      if (previousFinalState.completedAt === undefined) {
+      if (previous.completedAt === undefined) {
         delete live.info.completedAt
       } else {
-        live.info.completedAt = previousFinalState.completedAt
+        live.info.completedAt = previous.completedAt
       }
-      saveInfo(live.info)
+      yield* saveInfo(live.info)
       this.notifyStatusChange(live.info)
-      throw error
-    }
+    })
   }
 
   private handleResponseEvent(live: LiveAgent, event: SubagentRpcEvent): void {
@@ -2073,12 +2447,11 @@ export class AgentManager {
     )
   }
 
-  private handleAgentStart(live: LiveAgent): void {
+  private handleAgentStart(live: LiveAgent): Effect.Effect<void> {
     live.info.status = 'running'
     live.candidateResponse = ''
     live.candidateError = undefined
-    saveInfo(live.info)
-    this.notifyStatusChange(live.info)
+    return saveInfo(live.info).pipe(Effect.tap(() => Effect.sync(() => this.notifyStatusChange(live.info))))
   }
 
   private handleMessageEnd(live: LiveAgent, event: SubagentRpcEvent): void {
@@ -2098,30 +2471,36 @@ export class AgentManager {
     live.candidateError = stopReasonError(lastAssistant.stopReason, lastAssistant.errorMessage)
   }
 
-  private handleAgentSettled(live: LiveAgent): void {
+  private handleAgentSettled(live: LiveAgent): Effect.Effect<void> {
     if (live.info.status === 'interrupted' || live.finalizedRun) {
-      return
+      return Effect.void
     }
-    if (isNotNullOrUndefined(live.candidateError) && isNotEmptyString(live.candidateError)) {
-      this.markFailed(live, live.candidateError)
-    } else {
-      this.markCompleted(live)
-    }
-    void this.terminateProcess(live).catch((error) => {
-      live.logger.info('hibernate', 'failed to terminate settled child', {
-        error: error instanceof Error ? error.message : String(error),
-      })
+    const finalize =
+      isNotNullOrUndefined(live.candidateError) && isNotEmptyString(live.candidateError)
+        ? this.markFailed(live, live.candidateError)
+        : this.markCompleted(live)
+    return Effect.gen({ self: this }, function* () {
+      yield* finalize
+      yield* Effect.forkIn(
+        this.terminateProcess(live).pipe(
+          Effect.tapError((error) => live.logger.info('hibernate', 'failed to terminate settled child', { error: error.message })),
+          Effect.ignore
+        ),
+        this.detachedScope
+      )
     })
   }
 
-  private dispatchLiveEvent(live: LiveAgent, event: SubagentRpcEvent): void {
+  private dispatchLiveEvent(live: LiveAgent, event: SubagentRpcEvent): Effect.Effect<void> {
     const runningStatusEvents = new Set(['message_update', 'tool_execution_start', 'tool_execution_update', 'tool_execution_end'])
     if (event.type === 'agent_start') {
-      this.handleAgentStart(live)
-    } else if (runningStatusEvents.has(event.type)) {
+      return this.handleAgentStart(live)
+    }
+    if (runningStatusEvents.has(event.type)) {
       live.info.status = 'running'
-      saveInfo(live.info)
-    } else if (event.type === 'message_end') {
+      return saveInfo(live.info)
+    }
+    if (event.type === 'message_end') {
       this.handleMessageEnd(live, event)
     } else if (event.type === 'agent_end') {
       this.handleAgentEnd(live, event)
@@ -2133,89 +2512,92 @@ export class AgentManager {
     ) {
       live.candidateError = event.finalError
     } else if (event.type === 'agent_settled') {
-      this.handleAgentSettled(live)
+      return this.handleAgentSettled(live)
     }
+    return Effect.void
   }
 
-  private handleLine(live: LiveAgent, line: string): void {
-    if (isEmptyString(line.trim())) {
-      return
-    }
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(line)
-    } catch {
-      parsed = undefined
-    }
-    if (!Check(SubagentRpcEventSchema, parsed)) {
-      live.logger.info('rpc', 'ignored invalid JSON line', { line: line.slice(0, 1000) })
-      return
-    }
-    this.consumeAzureQuota(live)
-    const event = parsed
-    live.broadcaster.broadcast(event)
-    if (event.type === 'response') {
-      this.handleResponseEvent(live, event)
-      return
-    }
-    const persisted = readInfoFile(live.info.infoFile)
-    if (persisted !== undefined && FINAL_STATUSES.has(persisted.status) && persisted.status !== live.info.status) {
-      live.info = persisted
-      live.finalizedRun = true
-      return
-    }
-    if (live.finalizedRun || live.expectedExit) {
-      return
-    }
-    this.recordActivity(live, false)
-    this.dispatchLiveEvent(live, event)
-  }
-
-  private markCompleted(live: LiveAgent): void {
-    if (live.finalizedRun) {
-      return
-    }
-    live.finalizedRun = true
-    this.clearInactivityMonitor(live)
-    live.info.status = 'completed'
-    live.info.finalResponse = live.candidateResponse
-    delete live.info.error
-    live.info.completedAt = Date.now()
-    live.info.lastActivity = Date.now()
-    saveInfo(live.info)
-    this.notifyStatusChange(live.info)
-    this.pushMailbox({
-      agentName: live.info.canonicalName,
-      createdAt: Date.now(),
-      finalResponse: live.info.finalResponse,
-      id: randomUUID(),
-      parentSessionId: live.info.parentSessionId,
-      status: 'completed',
-      ...agentMetadata(live.info),
+  private handleLine(live: LiveAgent, line: string): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      if (isEmptyString(line.trim())) {
+        return
+      }
+      // A malformed frame must not end stdout consumption, so parsing stays a typed failure and falls through to the log below.
+      const parsed = yield* Effect.try(() => parseJsonText(line)).pipe(Effect.orElseSucceed(() => undefined))
+      if (!Check(SubagentRpcEventSchema, parsed)) {
+        yield* live.logger.info('rpc', 'ignored invalid JSON line', { line: line.slice(0, 1000) })
+        return
+      }
+      yield* this.consumeAzureQuota(live)
+      const event = parsed
+      live.broadcaster.broadcast(event)
+      if (event.type === 'response') {
+        this.handleResponseEvent(live, event)
+        return
+      }
+      const persisted = yield* readInfoFileEffect(live.info.infoFile)
+      if (persisted !== undefined && FINAL_STATUSES.has(persisted.status) && persisted.status !== live.info.status) {
+        live.info = persisted
+        live.finalizedRun = true
+        return
+      }
+      if (live.finalizedRun || live.expectedExit) {
+        return
+      }
+      yield* this.recordActivity(live, false)
+      yield* this.dispatchLiveEvent(live, event)
     })
   }
 
-  private markFailed(live: LiveAgent, error: string): void {
+  private markCompleted(live: LiveAgent): Effect.Effect<void> {
     if (live.finalizedRun) {
-      return
+      return Effect.void
     }
-    live.finalizedRun = true
-    this.clearInactivityMonitor(live)
-    live.info.status = 'failed'
-    live.info.error = error
-    delete live.info.finalResponse
-    live.info.completedAt = Date.now()
-    live.info.lastActivity = Date.now()
-    saveInfo(live.info)
-    this.notifyStatusChange(live.info)
-    this.pushMailbox({
-      agentName: live.info.canonicalName,
-      createdAt: Date.now(),
-      error,
-      id: randomUUID(),
-      parentSessionId: live.info.parentSessionId,
-      status: 'failed',
-      ...agentMetadata(live.info),
+    return Effect.gen({ self: this }, function* () {
+      live.finalizedRun = true
+      this.clearInactivityMonitor(live)
+      live.info.status = 'completed'
+      live.info.finalResponse = live.candidateResponse
+      delete live.info.error
+      live.info.completedAt = yield* Clock.currentTimeMillis
+      live.info.lastActivity = live.info.completedAt
+      yield* saveInfo(live.info)
+      this.notifyStatusChange(live.info)
+      this.pushMailbox({
+        agentName: live.info.canonicalName,
+        createdAt: yield* Clock.currentTimeMillis,
+        finalResponse: live.info.finalResponse,
+        id: randomUUID(),
+        parentSessionId: live.info.parentSessionId,
+        status: 'completed',
+        ...agentMetadata(live.info),
+      })
+    })
+  }
+
+  private markFailed(live: LiveAgent, error: string): Effect.Effect<void> {
+    if (live.finalizedRun) {
+      return Effect.void
+    }
+    return Effect.gen({ self: this }, function* () {
+      live.finalizedRun = true
+      this.clearInactivityMonitor(live)
+      live.info.status = 'failed'
+      live.info.error = error
+      delete live.info.finalResponse
+      live.info.completedAt = yield* Clock.currentTimeMillis
+      live.info.lastActivity = live.info.completedAt
+      yield* saveInfo(live.info)
+      this.notifyStatusChange(live.info)
+      this.pushMailbox({
+        agentName: live.info.canonicalName,
+        createdAt: yield* Clock.currentTimeMillis,
+        error,
+        id: randomUUID(),
+        parentSessionId: live.info.parentSessionId,
+        status: 'failed',
+        ...agentMetadata(live.info),
+      })
     })
   }
 
@@ -2235,7 +2617,7 @@ export class AgentManager {
     const waiterIndex = foregroundIndex === -1 ? this.waiters.findIndex(matches) : foregroundIndex
     if (waiterIndex !== -1) {
       const [waiter] = this.waiters.splice(waiterIndex, 1)
-      waiter.resolve(event)
+      Deferred.doneUnsafe(waiter.deferred, Effect.succeed(event))
       return
     }
     this.mailbox.push(event)
@@ -2252,10 +2634,10 @@ export class AgentManager {
     }
   }
 
-  listAgents(pathPrefix: string | undefined, parentSessionId: string, includeAll = false): AgentListEntry[] {
+  private agentListEntries(infos: AgentInfo[], pathPrefix: string | undefined, parentSessionId: string, includeAll: boolean): AgentListEntry[] {
     const prefix = pathPrefix?.trim().replace(/^\/+/, '')
-    const infos = includeAll ? readAllInfos() : readScopeInfos(parentSessionId)
-    return infos
+    return sortInfos(infos)
+      .filter((info) => includeAll || info.parentSessionId === parentSessionId)
       .filter((info) => isNullOrUndefined(prefix) || isEmptyString(prefix) || info.taskName.startsWith(prefix))
       .map((info) => ({
         agent_name: info.canonicalName,
@@ -2268,16 +2650,36 @@ export class AgentManager {
       }))
   }
 
+  listAgents(pathPrefix: string | undefined, parentSessionId: string, includeAll = false): AgentListEntry[] {
+    return this.agentListEntries([...infoCache.values()], pathPrefix, parentSessionId, includeAll)
+  }
+
+  listAgentsFromDisk(pathPrefix: string | undefined, parentSessionId: string, includeAll = false): Effect.Effect<AgentListEntry[], SubagentError> {
+    return (includeAll ? readAllInfos() : readScopeInfos(parentSessionId)).pipe(
+      Effect.map((infos) => this.agentListEntries(infos, pathPrefix, parentSessionId, includeAll)),
+      Effect.catchCause((cause) => Effect.fail(subagentError(causeMessage(Cause.squash(cause)), Cause.squash(cause))))
+    )
+  }
+
   getAgentInfo(target: string, parentSessionId: string): AgentInfo {
-    const info = getAgent(target, parentSessionId)
+    const taskName = normalizeTaskName(target)
+    const info = [...infoCache.values()].find((candidate) => candidate.parentSessionId === parentSessionId && candidate.taskName === taskName)
     if (info === undefined) {
       throw new Error(`Agent not found in this parent session: ${target}`)
     }
     return info
   }
 
+  getAgentInfoFromDisk(target: string, parentSessionId: string): Effect.Effect<AgentInfo, SubagentError> {
+    return this.requireAgent(target, parentSessionId)
+  }
+
   readAgentResponse(target: string, parentSessionId: string): AgentResponseEntry {
     return this.agentResponse(this.getAgentInfo(target, parentSessionId))
+  }
+
+  readAgentResponseFromDisk(target: string, parentSessionId: string): Effect.Effect<AgentResponseEntry, SubagentError> {
+    return this.getAgentInfoFromDisk(target, parentSessionId).pipe(Effect.map((info) => this.agentResponse(info)))
   }
 
   private agentResponse(info: AgentInfo): AgentResponseEntry {
@@ -2298,297 +2700,412 @@ export class AgentManager {
   }
 
   private registerWaiter(parentSessionId: string, targets: Set<string> | undefined, signal: AbortSignal, foreground = false): WaiterClaim {
-    let cancel!: (reason?: unknown) => void
-    const promise = new Promise<AgentCompletionEvent>((resolve, reject) => {
-      let settled = false
-      const settle = (callback: () => void): void => {
-        if (settled) {
-          return
-        }
-        settled = true
-        signal.removeEventListener('abort', onAbort)
-        this.waiters = this.waiters.filter((candidate) => candidate !== waiter)
-        callback()
-      }
-      const onAbort = (): void => settle(() => reject(abortError(signal)))
-      const waiter: Waiter = {
-        foreground,
-        parentSessionId,
-        resolve: (event) => settle(() => resolve(event)),
-        targets,
-      }
-      cancel = (reason = new Error('Wait canceled.')) => settle(() => reject(reason))
-      this.waiters.push(waiter)
-      signal.addEventListener('abort', onAbort, { once: true })
-      if (signal.aborted) {
-        onAbort()
-      }
-    })
-    return { cancel, promise }
+    const deferred = Deferred.makeUnsafe<AgentCompletionEvent, SubagentError>()
+    const waiter: Waiter = { deferred, foreground, parentSessionId, targets }
+    this.waiters.push(waiter)
+    const remove = (): boolean => {
+      const remaining = this.waiters.filter((candidate) => candidate !== waiter)
+      const wasRegistered = remaining.length !== this.waiters.length
+      this.waiters = remaining
+      return wasRegistered
+    }
+    return {
+      await: Effect.raceFirst(Deferred.await(deferred), awaitAbort(signal)).pipe(Effect.ensuring(Effect.sync(remove))),
+      withdraw: remove,
+    }
   }
 
-  async waitAgent(parentSessionId: string, targets?: string[], signal?: AbortSignal): Promise<{ message: string; event?: AgentCompletionEvent }> {
-    const waitSignal = signal === undefined ? this.shutdownController.signal : AbortSignal.any([signal, this.shutdownController.signal])
-    throwIfAborted(waitSignal)
-    const normalizedTargets = targets !== undefined && targets.length > 0 ? new Set(targets.map(canonicalAgentName)) : undefined
-    const existing = consumeFirstMatchingMailboxEvent(this.mailbox, parentSessionId, normalizedTargets)
-    if (existing !== undefined) {
-      this.finishWaitTarget(parentSessionId, existing.agentName)
-      return {
-        event: existing,
-        message: `Wait completed: ${existing.agentName} ${existing.status}.`,
-      }
-    }
-    if (normalizedTargets !== undefined) {
-      const targetInfos = readScopeInfos(parentSessionId).filter((info) => normalizedTargets.has(info.canonicalName))
+  private waitSignal(signal?: AbortSignal): AbortSignal {
+    return signal === undefined ? this.shutdownController.signal : AbortSignal.any([signal, this.shutdownController.signal])
+  }
+
+  private settledTargetWait(
+    parentSessionId: string,
+    normalizedTargets: Set<string>
+  ): Effect.Effect<{ message: string; event?: AgentCompletionEvent } | undefined, SubagentError> {
+    return Effect.gen({ self: this }, function* () {
+      const targetInfos = (yield* readScopeInfos(parentSessionId)).filter((info) => normalizedTargets.has(info.canonicalName))
       if (targetInfos.length === 0) {
-        throw new Error(`Agent not found in this parent session: ${[...normalizedTargets].join(', ')}`)
+        return yield* subagentError(`Agent not found in this parent session: ${[...normalizedTargets].join(', ')}`)
       }
       const finalInfo = targetInfos.find((info) => FINAL_STATUSES.has(info.status))
-      if (finalInfo !== undefined) {
-        this.finishWaitTarget(parentSessionId, finalInfo.canonicalName)
-        return {
-          event: {
-            agentName: finalInfo.canonicalName,
-            createdAt: Date.now(),
-            error: finalInfo.error,
-            finalResponse: finalInfo.finalResponse,
-            id: randomUUID(),
-            parentSessionId,
-            status: finalInfo.status,
-            ...agentMetadata(finalInfo),
-          },
-          message: `Wait completed: ${finalInfo.canonicalName} ${finalInfo.status}.`,
-        }
+      if (finalInfo === undefined) {
+        return undefined
       }
-    }
-    const claim = this.registerWaiter(parentSessionId, normalizedTargets, waitSignal)
-    const event = await claim.promise
-    this.finishWaitTarget(parentSessionId, event.agentName)
-    return { event, message: `Wait completed: ${event.agentName} ${event.status}.` }
+      this.finishWaitTarget(parentSessionId, finalInfo.canonicalName)
+      return {
+        event: {
+          agentName: finalInfo.canonicalName,
+          createdAt: yield* Clock.currentTimeMillis,
+          error: finalInfo.error,
+          finalResponse: finalInfo.finalResponse,
+          id: randomUUID(),
+          parentSessionId,
+          status: finalInfo.status,
+          ...agentMetadata(finalInfo),
+        },
+        message: `Wait completed: ${finalInfo.canonicalName} ${finalInfo.status}.`,
+      }
+    })
   }
 
-  async waitAllAgents(
+  waitAgent(
     parentSessionId: string,
     targets?: string[],
     signal?: AbortSignal
-  ): Promise<{ message: string; responses: AgentResponseEntry[] }> {
-    const waitSignal = signal === undefined ? this.shutdownController.signal : AbortSignal.any([signal, this.shutdownController.signal])
-    throwIfAborted(waitSignal)
-    const explicitTargets = targets !== undefined && targets.length > 0 ? new Set(targets.map(canonicalAgentName)) : undefined
-    const defaultTargets = this.defaultWaitAllTargets.get(parentSessionId) ?? new Set<string>()
-    const targetSet = explicitTargets ?? new Set(defaultTargets)
-    if (explicitTargets !== undefined) {
-      const infos = readScopeInfos(parentSessionId)
-      const missing = [...explicitTargets].filter((target) => !infos.some((info) => target === info.canonicalName))
-      if (missing.length > 0) {
-        throw new Error(`Agent not found in this parent session: ${missing.join(', ')}`)
-      }
-    }
-    const matchingInfos = () => readScopeInfos(parentSessionId).filter((info) => targetSet.has(info.canonicalName))
-    const pendingNames = () =>
-      matchingInfos()
-        .filter((info) => !FINAL_STATUSES.has(info.status))
-        .map((info) => info.canonicalName)
-    const finalize = () => {
-      const responses = matchingInfos()
-        .filter((info) => FINAL_STATUSES.has(info.status))
-        .map((info) => this.agentResponse(info))
-      for (const response of responses) {
-        this.finishWaitTarget(parentSessionId, response.agent_name)
-      }
-      for (let index = this.mailbox.length - 1; index >= 0; index--) {
-        const event = this.mailbox[index]
-        if (event.parentSessionId === parentSessionId && targetSet.has(event.agentName)) {
-          this.mailbox.splice(index, 1)
+  ): Effect.Effect<{ message: string; event?: AgentCompletionEvent }, SubagentError> {
+    return Effect.gen({ self: this }, function* () {
+      const waitSignal = this.waitSignal(signal)
+      yield* failIfAborted(waitSignal)
+      const normalizedTargets = targets !== undefined && targets.length > 0 ? new Set(targets.map(canonicalAgentName)) : undefined
+      /*
+       * Registered before the disk read: a completion arriving during it is delivered to this
+       * waiter instead of the mailbox, so a later registration would block forever. `withdraw`
+       * then reports whether the waiter is still unclaimed and may be replaced by a pre-check.
+       */
+      const waiter = this.registerWaiter(parentSessionId, normalizedTargets, waitSignal)
+      const existing = consumeFirstMatchingMailboxEvent(this.mailbox, parentSessionId, normalizedTargets)
+      if (existing !== undefined && waiter.withdraw()) {
+        this.finishWaitTarget(parentSessionId, existing.agentName)
+        return {
+          event: existing,
+          message: `Wait completed: ${existing.agentName} ${existing.status}.`,
         }
       }
-      return {
-        message: 'All target agents reached final status.',
-        responses,
-      }
-    }
-    const claim = { parentSessionId, suppressedEventIds: new Set<string>(), targets: targetSet }
-    this.waitAllClaims.add(claim)
-    try {
-      while (true) {
-        throwIfAborted(waitSignal)
-        if (pendingNames().length === 0) {
-          return finalize()
-        }
-        await delay(250, undefined, { signal: waitSignal })
-      }
-    } finally {
-      this.waitAllClaims.delete(claim)
-      for (const eventId of claim.suppressedEventIds) {
-        const event = this.mailbox.find((candidate) => candidate.id === eventId)
-        if (event === undefined) {
-          continue
-        }
-        const claimedElsewhere = [...this.waitAllClaims].some(
-          (candidate) => candidate.parentSessionId === event.parentSessionId && candidate.targets.has(event.agentName)
+      if (existing === undefined && normalizedTargets !== undefined) {
+        const settled = yield* this.settledTargetWait(parentSessionId, normalizedTargets).pipe(
+          Effect.tapError(() => Effect.sync(() => waiter.withdraw()))
         )
-        if (!claimedElsewhere) {
-          this.notifyUnclaimedCompletion(event)
+        if (settled !== undefined && waiter.withdraw()) {
+          return settled
         }
       }
-    }
-  }
-
-  async sendMessage(parentSessionId: string, target: string, message: string): Promise<{ delivery: 'steer' | 'prompt' }> {
-    await this.reconciliation
-    let info = this.getAgentInfo(target, parentSessionId)
-    const assertProfileAvailable = (): void => {
-      const profile = info.profile ?? info.agentType
-      if (isNotNullOrUndefined(profile) && isNotEmptyString(profile) && !Object.hasOwn(AGENT_CONFIGS, profile)) {
-        throw new Error(`Agent ${info.canonicalName} uses an unavailable profile: ${profile}`)
-      }
-    }
-    assertProfileAvailable()
-    let live = this.live.get(info.id)
-    if (isTrue(live?.expectedExit)) {
-      await live.termination
-      live = undefined
-      info = this.getAgentInfo(target, parentSessionId)
-      assertProfileAvailable()
-    }
-    this.assertClaudeLaunchAllowed(info)
-    this.assertContinuationAllowed(info, live)
-    const wasLive = Boolean(live)
-    const claim = this.claimFollowUp(info, live)
-    live ??= await this.restartForFollowUp(info, claim)
-    return wasLive && (info.status === 'starting' || info.status === 'running')
-      ? this.steerFollowUp(info, live, message, claim)
-      : this.promptFollowUp(info, live, message, claim)
-  }
-
-  async interruptAgent(parentSessionId: string, target: string): Promise<{ previous_status: AgentRuntimeStatus }> {
-    await this.reconciliation
-    const info = this.getAgentInfo(target, parentSessionId)
-    const previous = info.status
-    if (previous !== 'starting' && previous !== 'running') {
-      return { previous_status: previous }
-    }
-    const live = this.live.get(info.id)
-    info.status = 'interrupted'
-    info.lastActivity = Date.now()
-    saveInfo(info)
-    this.notifyStatusChange(info)
-    if (live === undefined) {
-      await this.terminateOwnedChild(info)
-    } else {
-      live.info.status = 'interrupted'
-      live.info.lastActivity = info.lastActivity
-      live.finalizedRun = true
-      await this.terminateProcess(live)
-    }
-    this.finishWaitTarget(parentSessionId, info.canonicalName)
-    this.pushMailbox(
-      {
-        agentName: info.canonicalName,
-        createdAt: Date.now(),
-        id: randomUUID(),
-        parentSessionId,
-        status: 'interrupted',
-        ...agentMetadata(info),
-      },
-      false
-    )
-    return { previous_status: previous }
-  }
-
-  private signalProcessTree(live: LiveAgent, signal: NodeJS.Signals): void {
-    try {
-      if (this.platform !== 'win32' && live.proc.pid !== undefined) {
-        process.kill(-live.proc.pid, signal)
-      } else {
-        live.proc.kill(signal)
-      }
-    } catch {
-      try {
-        live.proc.kill(signal)
-      } catch {
-        // Best effort; the process may have already exited.
-      }
-    }
-  }
-
-  private async forceKillWindowsTree(live: LiveAgent): Promise<void> {
-    if (this.platform !== 'win32' || live.proc.pid === undefined) {
-      return
-    }
-    await new Promise<void>((resolve) => {
-      const killer = spawn('taskkill', ['/pid', String(live.proc.pid), '/T', '/F'], {
-        stdio: 'ignore',
-      })
-      killer.once('error', () => resolve())
-      killer.once('exit', () => resolve())
+      const event = yield* waiter.await
+      this.finishWaitTarget(parentSessionId, event.agentName)
+      return { event, message: `Wait completed: ${event.agentName} ${event.status}.` }
     })
   }
 
-  private terminateProcess(live: LiveAgent): Promise<void> {
-    if (live.processFinished) {
-      return Promise.resolve()
+  private releaseWaitAllClaim(claim: WaitAllClaim): void {
+    this.waitAllClaims.delete(claim)
+    for (const eventId of claim.suppressedEventIds) {
+      const event = this.mailbox.find((candidate) => candidate.id === eventId)
+      if (event === undefined) {
+        continue
+      }
+      const claimedElsewhere = [...this.waitAllClaims].some(
+        (candidate) => candidate.parentSessionId === event.parentSessionId && candidate.targets.has(event.agentName)
+      )
+      if (!claimedElsewhere) {
+        this.notifyUnclaimedCompletion(event)
+      }
     }
-    if (live.termination !== undefined) {
-      return live.termination
-    }
-    live.termination = (async () => {
-      const abortRequest = this.sendCommand(live, { type: 'abort' }, 1000)
-      live.expectedExit = true
-      this.clearInactivityMonitor(live)
-      try {
-        await abortRequest
-      } catch {
-        // Best effort; the child may already be exiting.
-      }
-      try {
-        live.proc.stdin.end()
-      } catch {
-        // Best effort; the stream may already be closed.
-      }
-      await Promise.race([live.exitPromise, delay(500)])
-      if (!live.processFinished) {
-        this.signalProcessTree(live, 'SIGTERM')
-        await Promise.race([live.exitPromise, delay(1000)])
-      }
-      if (!live.processFinished) {
-        if (this.platform === 'win32') {
-          await this.forceKillWindowsTree(live)
-        } else {
-          this.signalProcessTree(live, 'SIGKILL')
-        }
-        await Promise.race([live.exitPromise, delay(1000)])
-      }
-      if (!live.processFinished) {
-        throw new Error(`Unable to terminate child Pi process for ${live.info.canonicalName}.`)
-      }
-    })()
-    return live.termination
   }
 
-  async shutdown(): Promise<void> {
+  waitAllAgents(
+    parentSessionId: string,
+    targets?: string[],
+    signal?: AbortSignal
+  ): Effect.Effect<{ message: string; responses: AgentResponseEntry[] }, SubagentError> {
+    return Effect.gen({ self: this }, function* () {
+      const waitSignal = this.waitSignal(signal)
+      yield* failIfAborted(waitSignal)
+      const explicitTargets = targets !== undefined && targets.length > 0 ? new Set(targets.map(canonicalAgentName)) : undefined
+      const defaultTargets = this.defaultWaitAllTargets.get(parentSessionId) ?? new Set<string>()
+      const targetSet = explicitTargets ?? new Set(defaultTargets)
+      /*
+       * Claimed before target validation reads the disk: a target completing during that read
+       * would otherwise be auto-delivered and then also returned here, breaking exactly-once
+       * completion delivery.
+       */
+      const claim: WaitAllClaim = { parentSessionId, suppressedEventIds: new Set<string>(), targets: targetSet }
+      this.waitAllClaims.add(claim)
+      const matchingInfos = () =>
+        readScopeInfos(parentSessionId).pipe(Effect.map((infos) => infos.filter((info) => targetSet.has(info.canonicalName))))
+      const pendingNames = () =>
+        matchingInfos().pipe(Effect.map((infos) => infos.filter((info) => !FINAL_STATUSES.has(info.status)).map((info) => info.canonicalName)))
+      const finalize = Effect.gen({ self: this }, function* () {
+        const responses = (yield* matchingInfos()).filter((info) => FINAL_STATUSES.has(info.status)).map((info) => this.agentResponse(info))
+        for (const response of responses) {
+          this.finishWaitTarget(parentSessionId, response.agent_name)
+        }
+        for (let index = this.mailbox.length - 1; index >= 0; index--) {
+          const event = this.mailbox[index]
+          if (event.parentSessionId === parentSessionId && targetSet.has(event.agentName)) {
+            this.mailbox.splice(index, 1)
+          }
+        }
+        return {
+          message: 'All target agents reached final status.',
+          responses,
+        }
+      })
+      const claimed = Effect.gen({ self: this }, function* () {
+        if (explicitTargets !== undefined) {
+          const infos = yield* readScopeInfos(parentSessionId)
+          const missing = [...explicitTargets].filter((target) => !infos.some((info) => target === info.canonicalName))
+          if (missing.length > 0) {
+            return yield* subagentError(`Agent not found in this parent session: ${missing.join(', ')}`)
+          }
+        }
+        while (true) {
+          if ((yield* pendingNames()).length === 0) {
+            return yield* finalize
+          }
+          yield* Effect.raceFirst(Effect.sleep(250), awaitAbort(waitSignal))
+        }
+      })
+      return yield* claimed.pipe(Effect.ensuring(Effect.sync(() => this.releaseWaitAllClaim(claim))))
+    })
+  }
+
+  private assertProfileAvailable(info: AgentInfo): Effect.Effect<void, SubagentError> {
+    return Effect.suspend(() => {
+      const profile = info.profile ?? info.agentType
+      return isNotNullOrUndefined(profile) && isNotEmptyString(profile) && !Object.hasOwn(AGENT_CONFIGS, profile)
+        ? Effect.fail(subagentError(`Agent ${info.canonicalName} uses an unavailable profile: ${profile}`))
+        : Effect.void
+    })
+  }
+
+  private requireAgent(target: string, parentSessionId: string): Effect.Effect<AgentInfo, SubagentError> {
+    return Effect.try(() => getAgent(target, parentSessionId)).pipe(
+      Effect.flatten,
+      Effect.catchCause((cause) => Effect.fail(subagentError(causeMessage(Cause.squash(cause)), Cause.squash(cause)))),
+      Effect.flatMap((info) =>
+        info === undefined ? Effect.fail(subagentError(`Agent not found in this parent session: ${target}`)) : Effect.succeed(info)
+      )
+    )
+  }
+
+  sendMessage(parentSessionId: string, target: string, message: string): Effect.Effect<{ delivery: 'steer' | 'prompt' }, SubagentFailure> {
+    return Effect.gen({ self: this }, function* () {
+      yield* this.ready()
+      let info = yield* this.requireAgent(target, parentSessionId)
+      yield* this.assertProfileAvailable(info)
+      let live = this.live.get(info.id)
+      if (isTrue(live?.expectedExit)) {
+        yield* live.termination === undefined ? Effect.void : Fiber.join(live.termination).pipe(Effect.ignore)
+        live = undefined
+        info = yield* this.requireAgent(target, parentSessionId)
+        yield* this.assertProfileAvailable(info)
+      }
+      yield* this.assertClaudeLaunchAllowed(info)
+      yield* this.assertContinuationAllowed(info, live)
+      const wasLive = live !== undefined
+      const claim = yield* this.claimFollowUp(info, live)
+      return yield* this.withFollowUpClaim(
+        info,
+        claim,
+        Effect.gen({ self: this }, function* () {
+          const liveAgent = live ?? (yield* this.restartForFollowUp(info))
+          return yield* wasLive && (info.status === 'starting' || info.status === 'running')
+            ? this.steerFollowUp(info, liveAgent, message, claim)
+            : this.promptFollowUp(info, liveAgent, message, claim)
+        })
+      )
+    })
+  }
+
+  interruptAgent(parentSessionId: string, target: string): Effect.Effect<{ previous_status: AgentRuntimeStatus }, SubagentFailure> {
+    return Effect.gen({ self: this }, function* () {
+      yield* this.ready()
+      const info = yield* this.requireAgent(target, parentSessionId)
+      const previous = info.status
+      if (previous !== 'starting' && previous !== 'running') {
+        return { previous_status: previous }
+      }
+      const live = this.live.get(info.id)
+      if (live !== undefined) {
+        live.info.status = 'interrupted'
+        live.finalizedRun = true
+      }
+      const interruptedAt = yield* Clock.currentTimeMillis
+      const interrupted = live?.info ?? info
+      interrupted.status = 'interrupted'
+      interrupted.lastActivity = interruptedAt
+      yield* saveInfo(interrupted)
+      this.notifyStatusChange(interrupted)
+      yield* live === undefined ? this.terminateOwnedChild(interrupted) : this.terminateProcess(live)
+      this.finishWaitTarget(parentSessionId, info.canonicalName)
+      this.pushMailbox(
+        {
+          agentName: info.canonicalName,
+          createdAt: interruptedAt,
+          id: randomUUID(),
+          parentSessionId,
+          status: 'interrupted',
+          ...agentMetadata(info),
+        },
+        false
+      )
+      return { previous_status: previous }
+    })
+  }
+
+  /**
+   * The child can already be gone and its PID reused by the time this runs. The child handle is always safe, but a
+   * process-group signal and a Windows tree kill reach unrelated processes, so both are gated on
+   * a freshly re-verified ownership identity.
+   */
+  private killVerifiedTree(live: LiveAgent, kill: (ownership: ChildProcessOwnership) => Effect.Effect<void>): Effect.Effect<void> {
+    const ownership = live.info.childProcess
+    if (ownership === undefined) {
+      return Effect.void
+    }
+    return Effect.gen({ self: this }, function* () {
+      if ((yield* this.inspector.ownershipVerdict(ownership)) === 'match') {
+        yield* kill(ownership)
+      }
+    })
+  }
+
+  /*
+   * The child handle is not the safe fallback it looks like: the spawner kills the detached process
+   * group (`process.kill(-pid)`, `taskkill /T` on Windows) before it ever falls back to the bare
+   * PID, so an ungated `proc.kill` reaches whatever reused that PID. Every signal is therefore
+   * gated on a re-verified identity, and the handle is used only before one exists to verify.
+   */
+  private signalProcessTree(live: LiveAgent, signal: ChildProcess.Signal): Effect.Effect<void> {
+    if (live.info.childProcess === undefined) {
+      // Pre-handshake: ownership has not been recorded yet, so the handle is the only reference.
+      return live.proc.kill({ killSignal: signal }).pipe(Effect.ignore)
+    }
+    return this.killVerifiedTree(live, (ownership) =>
+      this.platform === 'win32'
+        ? live.proc.kill({ killSignal: signal }).pipe(Effect.ignore)
+        : Effect.sync(() => signalProcessGroup(ownership.pid, signal, true))
+    )
+  }
+
+  /**
+   * Signalling waits on process death alone: `live.exit` additionally waits for the post-exit
+   * output drain, so a child whose descendants hold the pipes open would look alive after it died.
+   */
+  private markProcessExited(live: LiveAgent): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      live.processExited = true
+      return Deferred.succeed(live.exited, undefined).pipe(Effect.asVoid)
+    })
+  }
+
+  private awaitChildExit(live: LiveAgent, timeoutMs: number): Effect.Effect<void> {
+    return Deferred.await(live.exited).pipe(Effect.timeoutOption(timeoutMs), Effect.asVoid)
+  }
+
+  private awaitChildCleanup(live: LiveAgent, timeoutMs: number): Effect.Effect<void> {
+    return Deferred.await(live.exit).pipe(Effect.timeoutOption(timeoutMs), Effect.asVoid)
+  }
+
+  private terminationSequence(live: LiveAgent): Effect.Effect<void, SubagentError> {
+    return Effect.gen({ self: this }, function* () {
+      // Built before `expectedExit` flips so the abort request still reaches the child.
+      // Awaited only after the flip, so a child exiting mid-round-trip is not reported as an unexpected exit.
+      const abortRequest = this.dispatchCommand(live, { type: 'abort' }, 1000).pipe(Effect.ignore)
+      live.expectedExit = true
+      this.clearInactivityMonitor(live)
+      yield* abortRequest
+      yield* Queue.end(live.stdin)
+      yield* this.awaitChildExit(live, 500)
+      if (!live.processExited) {
+        yield* this.signalProcessTree(live, 'SIGTERM')
+        yield* this.awaitChildExit(live, 1000)
+      }
+      if (!live.processExited) {
+        yield* this.platform === 'win32'
+          ? this.killVerifiedTree(live, (ownership) => this.killWindowsTree(ownership.pid))
+          : this.signalProcessTree(live, 'SIGKILL')
+        yield* this.awaitChildExit(live, 1000)
+      }
+      if (live.processExited) {
+        // The child is already gone; callers still expect its artifacts cleared, which only happens once output has drained.
+        yield* this.awaitChildCleanup(live, POST_EXIT_DRAIN_MS + 1000)
+      }
+      return live.processExited
+    }).pipe(
+      Effect.flatMap((finished) => (finished ? Effect.void : subagentError(`Unable to terminate child Pi process for ${live.info.canonicalName}.`)))
+    )
+  }
+
+  private terminateProcess(live: LiveAgent): Effect.Effect<void, SubagentError> {
+    return Effect.suspend(() => {
+      if (live.processFinished) {
+        return Effect.void
+      }
+      if (live.termination !== undefined) {
+        return Fiber.join(live.termination)
+      }
+      return Effect.gen({ self: this }, function* () {
+        const fiber = yield* Effect.forkIn(this.terminationSequence(live), this.detachedScope)
+        live.termination = fiber
+        return yield* Fiber.join(fiber)
+      })
+    }).pipe(
+      // A failed attempt must not be cached, or interrupt and shutdown would only rejoin the failure.
+      Effect.tapError(() =>
+        Effect.sync(() => {
+          live.termination = undefined
+        })
+      )
+    )
+  }
+
+  /**
+   * Every caller awaits the same run: an interrupted first caller would otherwise abort the
+   * controller and then leave children, scopes, and exit watchers alive with nothing to reclaim them.
+   */
+  shutdown(): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      const inFlight = this.shuttingDown
+      if (inFlight !== undefined) {
+        return Deferred.await(inFlight)
+      }
+      const completed = Deferred.makeUnsafe<void>()
+      this.shuttingDown = completed
+      return this.teardown.pipe(Effect.ensuring(Deferred.succeed(completed, undefined)), Effect.uninterruptible)
+    })
+  }
+
+  private readonly teardown: Effect.Effect<void> = Effect.gen({ self: this }, function* () {
     this.shutdownController.abort(new Error('Agent manager shut down.'))
-    await this.reconciliation
-    const terminations: Promise<void>[] = []
+    yield* this.ready()
+    // Bounded: a launch that ignores the abort must delay shutdown, not block it forever.
+    yield* Effect.forEach([...this.launchesInFlight], Deferred.await, { concurrency: 'unbounded' }).pipe(
+      Effect.timeoutOrElse({ duration: SHUTDOWN_LAUNCH_DRAIN_MS, orElse: () => Effect.void })
+    )
+    const stoppedAt = yield* Clock.currentTimeMillis
+    const stopping: { live: LiveAgent; terminate: Effect.Effect<void, SubagentError> }[] = []
     for (const live of this.live.values()) {
       if (live.info.status === 'starting' || live.info.status === 'running') {
         live.info.status = 'interrupted'
-        live.info.lastActivity = Date.now()
+        live.info.lastActivity = stoppedAt
         live.finalizedRun = true
-        saveInfo(live.info)
+        yield* saveInfo(live.info)
         this.notifyStatusChange(live.info)
       }
-      terminations.push(this.terminateProcess(live))
+      stopping.push({ live, terminate: this.terminateProcess(live) })
     }
-    await Promise.allSettled(terminations)
-  }
+    /*
+     * Exit watchers live in `detachedScope`, so closing it interrupts any watcher still waiting on
+     * a child that refused to die, stranding that child's `live.scope` and its output readers.
+     * `finishProcess` is idempotent, so agents whose watcher already ran are unaffected, and a
+     * child that failed to terminate keeps its ownership record for the next start to reconcile.
+     */
+    yield* Effect.forEach(
+      stopping,
+      ({ live, terminate }) =>
+        Effect.exit(terminate).pipe(Effect.flatMap((exit) => this.finishProcess(live, undefined, { retainOwnership: Exit.isFailure(exit) }))),
+      { concurrency: 'unbounded', discard: true }
+    )
+    yield* Scope.close(this.detachedScope, Exit.void)
+  })
 }
 
-export const writeFullToolOutput = (content: string): string => {
-  const directory = join(getRunsDir(), '_outputs')
-  ensurePrivateDir(directory, true)
-  const file = join(directory, `${Date.now()}-${randomUUID()}.txt`)
-  writeFileSync(file, content)
-  return file
-}
+export const writeFullToolOutput = (content: string) =>
+  Effect.gen(function* () {
+    const directory = join(getRunsDir(), '_outputs')
+    yield* ensurePrivateDirEffect(directory, true)
+    const file = join(directory, `${yield* Clock.currentTimeMillis}-${randomUUID()}.txt`)
+    yield* bunFileSystem.writeFileString(file, content)
+    return file
+  })

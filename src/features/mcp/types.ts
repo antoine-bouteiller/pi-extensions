@@ -1,3 +1,13 @@
+import { Data } from 'effect'
+
+import { isNullOrUndefined } from '@/shared/utils/predicates.js'
+
+/** Every manager failure the gateway can observe, keeping the SDK's own error in `cause`. */
+export class McpError extends Data.TaggedError('McpError')<{
+  readonly cause?: unknown
+  readonly message: string
+}> {}
+
 export interface McpToolAnnotations {
   title?: string
   readOnlyHint?: boolean
@@ -68,3 +78,21 @@ export type McpServerMap = Record<string, McpServerConfig>
 
 // Short alias used by the connection manager and gateway.
 export type ServerConfig = McpServerConfig
+
+const LOOPBACK_HOSTNAMES: ReadonlySet<string> = new Set(['127.0.0.1', '::1', '[::1]', 'localhost'])
+
+/**
+ * The authorization URL comes from remote OAuth discovery, so a malicious server chooses it. The
+ * MCP SDK still permits `file:` and arbitrary registered application schemes, and handing one of
+ * those to `open` would read a local file or launch another application.
+ */
+export const assertOpenableAuthorizationUrl = (href: string): URL => {
+  const url = URL.parse(href)
+  if (isNullOrUndefined(url)) {
+    throw new Error(`Refusing to open an unparseable OAuth authorization URL: ${href}`)
+  }
+  if (url.protocol === 'https:' || (url.protocol === 'http:' && LOOPBACK_HOSTNAMES.has(url.hostname))) {
+    return url
+  }
+  throw new Error(`Refusing to open an OAuth authorization URL that is not HTTPS or loopback HTTP: ${href}`)
+}

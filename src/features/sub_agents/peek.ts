@@ -1,19 +1,22 @@
-import { existsSync, statSync } from 'node:fs'
 import { connect, type Socket } from 'node:net'
 
 import { type AssistantMessage, type Message } from '@earendil-works/pi-ai'
 import {
   AssistantMessageComponent,
+  buildSessionContext,
   getMarkdownTheme,
-  SessionManager,
+  migrateSessionEntries,
+  parseSessionEntries,
   ToolExecutionComponent,
   UserMessageComponent,
   type Theme,
+  type SessionEntry,
   type ThemeColor,
 } from '@earendil-works/pi-coding-agent'
 import { Container, matchesKey, truncateToWidth, visibleWidth, type TUI } from '@earendil-works/pi-tui'
-import { Effect, Exit, Fiber, Schema, Scope } from 'effect'
+import { DateTime, Effect, Exit, Fiber, Schema, Scope } from 'effect'
 
+import { bunFileSystem } from '@/shared/effect/bun_services.js'
 import { isEmptyString, isNotEmptyString } from '@/shared/utils/predicates.js'
 
 import { getSocketPath, isPeekActive, type AgentInfo } from './core.js'
@@ -23,84 +26,6 @@ import { persistedProfileColor } from './profiles.js'
 const OSC133_PROMPT_MARKER_RE = /\x1b\]133;[ABC]\x07/g
 
 const stripPromptMarkers = (lines: string[]): string[] => lines.map((line) => line.replace(OSC133_PROMPT_MARKER_RE, ''))
-
-interface ToolExecutionResultPayload {
-  content: { type: string; text?: string; data?: string; mimeType?: string }[]
-  details?: unknown
-}
-
-interface ActiveToolEvent {
-  toolCallId: string
-  toolName: string
-  args: unknown
-  result?: ToolExecutionResultPayload
-  partialResult?: ToolExecutionResultPayload
-  isError?: boolean
-}
-
-interface AgentMessageEvent {
-  message: Message
-}
-
-type PeekStatus = 'thinking' | 'streaming' | 'tool' | 'done'
-
-interface SyncEvent {
-  type: 'sync'
-  status?: PeekStatus
-  userMessage?: Message
-  partialMessage?: AssistantMessage
-  activeTools?: ActiveToolEvent[]
-}
-
-interface MessageStartEvent extends AgentMessageEvent {
-  type: 'message_start'
-}
-
-interface MessageUpdateEvent extends AgentMessageEvent {
-  type: 'message_update'
-  assistantMessageEvent?: { type?: string }
-}
-
-interface MessageEndEvent extends AgentMessageEvent {
-  type: 'message_end'
-}
-
-interface ToolExecutionStartEvent {
-  type: 'tool_execution_start'
-  toolCallId: string
-  toolName: string
-  args: unknown
-}
-
-interface ToolExecutionUpdateEvent {
-  type: 'tool_execution_update'
-  toolCallId: string
-  toolName: string
-  args: unknown
-  partialResult: ToolExecutionResultPayload
-}
-
-interface ToolExecutionEndEvent {
-  type: 'tool_execution_end'
-  toolCallId: string
-  toolName: string
-  result: ToolExecutionResultPayload
-  isError: boolean
-}
-
-interface AgentSettledEvent {
-  type: 'agent_settled'
-}
-
-type PeekSocketEvent =
-  | SyncEvent
-  | MessageStartEvent
-  | MessageUpdateEvent
-  | MessageEndEvent
-  | ToolExecutionStartEvent
-  | ToolExecutionUpdateEvent
-  | ToolExecutionEndEvent
-  | AgentSettledEvent
 
 const TextContentSchema = Schema.Struct({
   text: Schema.String,
@@ -196,6 +121,8 @@ const ToolResultMessageSchema = Schema.Struct({
 })
 
 const MessageSchema = Schema.Union([UserMessageSchema, AssistantMessageSchema, ToolResultMessageSchema])
+type SocketMessage = typeof MessageSchema.Type
+type SocketAssistantMessage = Extract<SocketMessage, { readonly role: 'assistant' }>
 
 const ToolExecutionResultPayloadSchema = Schema.Struct({
   content: Schema.Array(
@@ -264,6 +191,34 @@ const PeekSocketEventSchema = Schema.Union([
   }),
 ])
 
+type PeekSocketEvent = typeof PeekSocketEventSchema.Type
+type SyncEvent = Extract<PeekSocketEvent, { readonly type: 'sync' }>
+type MessageStartEvent = Extract<PeekSocketEvent, { readonly type: 'message_start' }>
+type MessageUpdateEvent = Extract<PeekSocketEvent, { readonly type: 'message_update' }>
+type MessageEndEvent = Extract<PeekSocketEvent, { readonly type: 'message_end' }>
+type ToolExecutionStartEvent = Extract<PeekSocketEvent, { readonly type: 'tool_execution_start' }>
+type ToolExecutionUpdateEvent = Extract<PeekSocketEvent, { readonly type: 'tool_execution_update' }>
+type ToolExecutionEndEvent = Extract<PeekSocketEvent, { readonly type: 'tool_execution_end' }>
+type ActiveToolEvent = NonNullable<SyncEvent['activeTools']>[number]
+type ToolExecutionResultPayload = typeof ToolExecutionResultPayloadSchema.Type
+type PeekStatus = NonNullable<SyncEvent['status']>
+
+const mutableAssistantMessage = (message: SocketAssistantMessage): AssistantMessage => ({
+  ...message,
+  content: message.content.map((part) => (part.type === 'toolCall' ? { ...part, arguments: { ...part.arguments } } : { ...part })),
+  diagnostics: message.diagnostics?.map((diagnostic) => ({
+    ...diagnostic,
+    details: diagnostic.details === undefined ? undefined : { ...diagnostic.details },
+    error: diagnostic.error === undefined ? undefined : { ...diagnostic.error },
+  })),
+  usage: { ...message.usage, cost: { ...message.usage.cost } },
+})
+
+const mutableToolResult = (result: ToolExecutionResultPayload) => ({
+  ...result,
+  content: result.content.map((part) => ({ ...part })),
+})
+
 const isPeekSocketEvent = Schema.is(PeekSocketEventSchema)
 
 const STATUS_ICONS: Record<PeekStatus, string> = {
@@ -297,8 +252,12 @@ export class SubagentPeekOverlay {
   private readonly cwd: string
   private readonly sessionFile: string
   private readonly modelName: string
-  private sessionManager: SessionManager | undefined = undefined
+  private sessionMessages: ReturnType<typeof buildSessionContext>['messages'] = []
   private lastFileSize = 0
+  private loadGeneration = 0
+  /** Survives a superseded reload: the snapshot carries in-flight state that is on no disk transcript. */
+  private pendingSync: SyncEvent | undefined = undefined
+  private reloadFiber: Fiber.Fiber<void> | undefined = undefined
   private readonly chatContainer = new Container()
   private scrollOffset = Number.MAX_SAFE_INTEGER
   private followMode = true
@@ -324,35 +283,61 @@ export class SubagentPeekOverlay {
     this.sessionFile = options.info.sessionFile
     this.cwd = options.info.cwd
     this.modelName = options.info.modelId || options.info.model
-    this.loadSession()
-    this.rebuildChat()
-    if (isPeekActive(options.info.id)) {
-      this.connectSocket()
-    }
-    this.pollFiber = Effect.runFork(Effect.forever(Effect.delay(Effect.sync(() => this.poll()).pipe(Effect.ignoreCause), 200)))
+    this.requestReload()
+    this.pollFiber = Effect.runFork(Effect.forever(Effect.delay(this.poll().pipe(Effect.ignoreCause), 200)))
   }
 
-  private loadSession(): void {
-    try {
-      if (!existsSync(this.sessionFile)) {
-        return
+  private loadSession(generation: number): Effect.Effect<boolean> {
+    return Effect.gen({ self: this }, function* () {
+      const content = yield* bunFileSystem.readFileString(this.sessionFile)
+      const info = yield* bunFileSystem.stat(this.sessionFile)
+      if (Buffer.byteLength(content, 'utf8') !== Number(info.size)) {
+        return false
       }
-      this.sessionManager = SessionManager.open(this.sessionFile)
-      this.lastFileSize = statSync(this.sessionFile).size
-    } catch {
-      this.sessionManager = undefined
-    }
+      const entries = parseSessionEntries(content)
+      migrateSessionEntries(entries)
+      if (this.disposed || generation !== this.loadGeneration) {
+        return false
+      }
+      this.sessionMessages = buildSessionContext(entries.filter((entry): entry is SessionEntry => entry.type !== 'session')).messages
+      this.lastFileSize = Number(info.size)
+      return true
+    }).pipe(Effect.orElseSucceed(() => false))
+  }
+
+  /** One reload at a time, latest request wins: the 200ms poll would otherwise queue a full reparse per tick. */
+  private requestReload(afterLoad?: () => void): void {
+    const generation = ++this.loadGeneration
+    const superseded = this.reloadFiber
+    this.reloadFiber = Effect.runFork(
+      Effect.gen({ self: this }, function* () {
+        if (superseded !== undefined) {
+          yield* Fiber.interrupt(superseded)
+        }
+        if (this.disposed || generation !== this.loadGeneration) {
+          return
+        }
+        const loaded = yield* this.loadSession(generation)
+        if (!loaded || this.disposed || generation !== this.loadGeneration) {
+          return
+        }
+        this.rebuildChat()
+        const { pendingSync } = this
+        this.pendingSync = undefined
+        if (pendingSync !== undefined) {
+          this.handleSyncEvent(pendingSync)
+        }
+        afterLoad?.()
+        this.tui.requestRender()
+      })
+    )
   }
 
   private rebuildChat(): void {
     this.invalidateCache()
     this.chatContainer.clear()
     this.pendingTools.clear()
-    if (this.sessionManager === undefined) {
-      return
-    }
-    const context = this.sessionManager.buildSessionContext()
-    for (const message of context.messages) {
+    for (const message of this.sessionMessages) {
       if (message.role === 'user') {
         const text = this.getUserText(message)
         if (isNotEmptyString(text)) {
@@ -372,6 +357,23 @@ export class SubagentPeekOverlay {
         }
       }
     }
+    this.reattachStreamingComponent()
+  }
+
+  /*
+   * `clear()` detaches the socket-streamed component, so the pointer has to be rebuilt here: leaving
+   * it aimed at the removed component sends every later delta off-screen and live output vanishes.
+   */
+  private reattachStreamingComponent(): void {
+    const streaming = this.streamingMessage
+    this.streamingComponent = undefined
+    if (streaming === undefined) {
+      return
+    }
+    const component = new AssistantMessageComponent(undefined, true, getMarkdownTheme())
+    this.chatContainer.addChild(component)
+    component.updateContent(streaming)
+    this.streamingComponent = component
   }
 
   private addAssistantMessage(message: AssistantMessage): void {
@@ -402,7 +404,7 @@ export class SubagentPeekOverlay {
     return new ToolExecutionComponent(name, id, args, {}, undefined, this.tui, this.cwd)
   }
 
-  private getUserText(message: Message | undefined): string {
+  private getUserText(message: Message | SocketMessage | undefined): string {
     const content = message?.content
     if (typeof content === 'string') {
       return content
@@ -427,7 +429,7 @@ export class SubagentPeekOverlay {
   }
 
   private connectSocket(): void {
-    this.lastConnectAttemptAt = Date.now()
+    this.lastConnectAttemptAt = DateTime.toEpochMillis(DateTime.nowUnsafe())
     const scope = Scope.makeUnsafe()
     let socket: Socket
     try {
@@ -452,9 +454,7 @@ export class SubagentPeekOverlay {
       }
       this.status = 'done'
       this.cleanupStreaming()
-      this.loadSession()
-      this.rebuildChat()
-      this.tui.requestRender()
+      this.requestReload()
     })
     socket.on('data', (data) => {
       this.socketBuffer += data.toString()
@@ -471,8 +471,7 @@ export class SubagentPeekOverlay {
           parsed = undefined
         }
         if (isPeekSocketEvent(parsed)) {
-          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- isPeekSocketEvent already validated this shape; only the readonly/mutable modifier differs from the hand-written event union.
-          this.handleEvent(parsed as PeekSocketEvent)
+          this.handleEvent(parsed)
         }
       }
     })
@@ -487,7 +486,7 @@ export class SubagentPeekOverlay {
       }
     }
     if (event.partialMessage !== undefined) {
-      this.streamingMessage = event.partialMessage
+      this.streamingMessage = mutableAssistantMessage(event.partialMessage)
       this.streamingComponent = new AssistantMessageComponent(undefined, true, getMarkdownTheme())
       this.chatContainer.addChild(this.streamingComponent)
       this.streamingComponent.updateContent(this.streamingMessage)
@@ -506,10 +505,10 @@ export class SubagentPeekOverlay {
       this.pendingTools.set(activeTool.toolCallId, component)
     }
     if (activeTool.result !== undefined) {
-      component.updateResult({ ...activeTool.result, isError: activeTool.isError ?? false })
+      component.updateResult({ ...mutableToolResult(activeTool.result), isError: activeTool.isError ?? false })
       this.pendingTools.delete(activeTool.toolCallId)
     } else if (activeTool.partialResult !== undefined) {
-      component.updateResult({ ...activeTool.partialResult, isError: false }, true)
+      component.updateResult({ ...mutableToolResult(activeTool.partialResult), isError: false }, true)
     }
   }
 
@@ -521,7 +520,7 @@ export class SubagentPeekOverlay {
       }
     } else if (event.message?.role === 'assistant') {
       this.cleanupStreaming()
-      this.streamingMessage = event.message
+      this.streamingMessage = mutableAssistantMessage(event.message)
       this.streamingComponent = new AssistantMessageComponent(undefined, true, getMarkdownTheme())
       this.chatContainer.addChild(this.streamingComponent)
       this.streamingComponent.updateContent(this.streamingMessage)
@@ -534,7 +533,7 @@ export class SubagentPeekOverlay {
       return
     }
     this.ensureStreamingComponent()
-    this.streamingMessage = event.message
+    this.streamingMessage = mutableAssistantMessage(event.message)
     this.streamingComponent?.updateContent(this.streamingMessage)
     const delta = event.assistantMessageEvent
     if (delta?.type === 'thinking_delta') {
@@ -550,7 +549,7 @@ export class SubagentPeekOverlay {
     if (this.streamingComponent === undefined || event.message?.role !== 'assistant') {
       return
     }
-    this.streamingMessage = event.message
+    this.streamingMessage = mutableAssistantMessage(event.message)
     this.streamingComponent.updateContent(this.streamingMessage)
     if (event.message.stopReason === 'aborted' || event.message.stopReason === 'error') {
       const errorMessage = event.message.errorMessage || 'Error'
@@ -585,7 +584,7 @@ export class SubagentPeekOverlay {
     }
     const component = this.pendingTools.get(event.toolCallId)
     if (component !== undefined && event.partialResult !== undefined) {
-      component.updateResult({ ...event.partialResult, isError: false }, true)
+      component.updateResult({ ...mutableToolResult(event.partialResult), isError: false }, true)
     }
   }
 
@@ -595,16 +594,18 @@ export class SubagentPeekOverlay {
     }
     const component = this.pendingTools.get(event.toolCallId)
     if (component !== undefined) {
-      component.updateResult({ ...event.result, isError: event.isError ?? false })
+      component.updateResult({ ...mutableToolResult(event.result), isError: event.isError ?? false })
       this.pendingTools.delete(event.toolCallId)
     }
   }
 
   private handleEvent(event: PeekSocketEvent): void {
+    if (event.type !== 'sync' && event.type !== 'agent_settled') {
+      this.loadGeneration++
+    }
     if (event.type === 'sync') {
-      this.loadSession()
-      this.rebuildChat()
-      this.handleSyncEvent(event)
+      this.pendingSync = event
+      this.requestReload()
     } else if (event.type === 'message_start') {
       this.handleMessageStart(event)
     } else if (event.type === 'message_update') {
@@ -619,9 +620,8 @@ export class SubagentPeekOverlay {
       this.handleToolExecutionEnd(event)
     } else if (event.type === 'agent_settled') {
       this.cleanupStreaming()
-      this.loadSession()
-      this.rebuildChat()
       this.status = 'done'
+      this.requestReload()
     }
     this.invalidateCache()
     if (this.followMode) {
@@ -660,7 +660,7 @@ export class SubagentPeekOverlay {
       provider: 'openai-codex',
       role: 'assistant',
       stopReason: 'stop',
-      timestamp: Date.now(),
+      timestamp: DateTime.toEpochMillis(DateTime.nowUnsafe()),
       usage: {
         cacheRead: 0,
         cacheWrite: 0,
@@ -684,30 +684,29 @@ export class SubagentPeekOverlay {
     this.pendingTools.clear()
   }
 
-  private poll(): void {
-    if (this.disposed) {
-      return
-    }
-    if (this.socket === undefined && isPeekActive(this.info.id) && Date.now() - this.lastConnectAttemptAt >= 2000) {
-      this.connectSocket()
-    }
-    try {
-      const { size } = statSync(this.sessionFile)
-      if (size === this.lastFileSize) {
+  private poll(): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      if (this.disposed) {
         return
       }
-      this.loadSession()
-      if (this.streamingComponent === undefined) {
-        this.rebuildChat()
+      if (
+        this.socket === undefined &&
+        (yield* isPeekActive(this.info.id)) &&
+        DateTime.toEpochMillis(DateTime.nowUnsafe()) - this.lastConnectAttemptAt >= 2000
+      ) {
+        this.connectSocket()
       }
-      this.invalidateCache()
-      if (this.followMode) {
-        this.scrollOffset = Number.MAX_SAFE_INTEGER
+      const { size } = yield* bunFileSystem.stat(this.sessionFile)
+      if (Number(size) === this.lastFileSize) {
+        return
       }
-      this.tui.requestRender()
-    } catch {
-      // Best effort; a transient stat failure is retried on the next poll.
-    }
+      this.requestReload(() => {
+        this.invalidateCache()
+        if (this.followMode) {
+          this.scrollOffset = Number.MAX_SAFE_INTEGER
+        }
+      })
+    }).pipe(Effect.ignore)
   }
 
   private handleNavigationInput(data: string): boolean {
@@ -846,6 +845,10 @@ export class SubagentPeekOverlay {
     if (this.pollFiber !== undefined) {
       Effect.runFork(Fiber.interrupt(this.pollFiber))
       this.pollFiber = undefined
+    }
+    if (this.reloadFiber !== undefined) {
+      Effect.runFork(Fiber.interrupt(this.reloadFiber))
+      this.reloadFiber = undefined
     }
     if (this.socketScope !== undefined) {
       this.releaseSocketScope(this.socketScope)

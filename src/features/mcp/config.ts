@@ -1,10 +1,11 @@
-import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
 
-import { type Cause, Effect, Function, Schema } from 'effect'
+import { Effect, Schema } from 'effect'
+import { FileSystem } from 'effect/FileSystem'
+import { Path } from 'effect/Path'
+import { type PlatformError } from 'effect/PlatformError'
 
-import { isEmptyString, isTrue } from '@/shared/utils/predicates.js'
+import { isEmptyString, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 
 import {
   type DisabledServerConfig,
@@ -81,6 +82,18 @@ const isObject = (value: unknown): value is Record<string, unknown> => {
 
 const fail = (path: string, message: string): never => {
   throw McpConfigError.from(path, message)
+}
+
+/** Rejected here so a bad URL is an isolated `invalid-config` entry, not a server that fails at connect time. */
+const httpUrl = (value: string, path: string): string => {
+  const url = URL.parse(value)
+  if (isNullOrUndefined(url) || (url.protocol !== 'http:' && url.protocol !== 'https:')) {
+    return fail(path, 'must be an http or https URL')
+  }
+  if (!isEmptyString(url.username) || !isEmptyString(url.password)) {
+    return fail(path, 'must not embed credentials; use headers or oauth')
+  }
+  return value
 }
 
 const optionalBoolean = (value: unknown, path: string): boolean | undefined => {
@@ -252,7 +265,7 @@ const parseHttpServer = (path: string, value: Record<string, unknown>, disabled:
 
   const server: HttpServerConfig = {
     type: 'http',
-    url: requiredString(value.url, `${path}.url`),
+    url: httpUrl(requiredString(value.url, `${path}.url`), `${path}.url`),
   }
   const headers = stringMap(value.headers, `${path}.headers`)
   const oauth = parseOAuth(value.oauth, `${path}.oauth`)
@@ -312,7 +325,7 @@ export const parseMcpConfig = (value: unknown): McpServerMap => {
         }
         return [name, parseServer(name, server)]
       } catch (error) {
-        if (error instanceof McpConfigError) {
+        if (Schema.is(McpConfigError)(error)) {
           return [name, { invalid: true } satisfies InvalidServerConfig]
         }
         throw error
@@ -326,7 +339,7 @@ export const parseMcpConfigEffect = (value: unknown): Effect.Effect<McpServerMap
   Effect.gen(function* () {
     const parsed = yield* Effect.try({
       catch: (cause) =>
-        cause instanceof McpConfigError ? cause : McpConfigError.from('mcpServers', cause instanceof Error ? cause.message : String(cause)),
+        Schema.is(McpConfigError)(cause) ? cause : McpConfigError.from('mcpServers', cause instanceof Error ? cause.message : String(cause)),
       try: () => parseMcpConfig(value),
     })
     yield* Schema.decodeEffect(McpServerMapSchema, { onExcessProperty: 'error' })(parsed).pipe(
@@ -336,10 +349,7 @@ export const parseMcpConfigEffect = (value: unknown): Effect.Effect<McpServerMap
   })
 
 /** Parse JSON text without adding JSONC or interpolation semantics. */
-export const parseMcpConfigText: {
-  (source: string): (text: string) => McpServerMap
-  (text: string, source: string): McpServerMap
-} = Function.dual(2, (text: string, source = 'MCP config'): McpServerMap => {
+export const parseMcpConfigText = (text: string, source = 'MCP config'): McpServerMap => {
   let value: unknown
   try {
     value = JSON.parse(text) as unknown
@@ -347,24 +357,36 @@ export const parseMcpConfigText: {
     throw McpConfigError.from(source, 'contains malformed JSON')
   }
   return parseMcpConfig(value)
-})
-
-/** Load an MCP file. This helper exists so tests never need to access the real home directory. */
-export const loadMcpConfigFile = async (path: string): Promise<McpServerMap> => {
-  try {
-    return parseMcpConfigText(await readFile(path, 'utf8'), path)
-  } catch (error) {
-    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') {
-      return {}
-    }
-    throw error
-  }
 }
 
-export const loadMcpConfigFileEffect = (path: string): Effect.Effect<McpServerMap, Cause.UnknownError> =>
-  Effect.tryPromise(() => loadMcpConfigFile(path))
+const missingConfig: McpServerMap = {}
 
-const globalMcpConfigPath = (): string => join(homedir(), '.config', 'mcp', 'mcp.json')
+/*
+ * An absent config file is an empty config, and only that: Effect reports ENOENT as `NotFound`, so
+ * matching the reason keeps a permission or I/O failure loud instead of silently disabling MCP.
+ */
+const isMissingFile = (error: PlatformError): boolean => error.reason._tag === 'NotFound'
+
+/** Load an MCP file. This helper exists so tests never need to access the real home directory. */
+export const loadMcpConfigFile = (path: string): Effect.Effect<McpServerMap, McpConfigError | PlatformError, FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem
+    const text = yield* fs.readFileString(path).pipe(
+      Effect.map((content): string | undefined => content),
+      Effect.catchIf(isMissingFile, () => Effect.void)
+    )
+    if (text === undefined) {
+      return { ...missingConfig }
+    }
+    return yield* Effect.try({
+      catch: (cause) =>
+        Schema.is(McpConfigError)(cause) ? cause : McpConfigError.from(path, cause instanceof Error ? cause.message : String(cause)),
+      try: () => parseMcpConfigText(text, path),
+    })
+  })
 
 /** Load only the standard user-global MCP configuration. */
-export const loadGlobalMcpConfig = (): Promise<McpServerMap> => loadMcpConfigFile(globalMcpConfigPath())
+export const loadGlobalMcpConfig: Effect.Effect<McpServerMap, McpConfigError | PlatformError, FileSystem | Path> = Effect.gen(function* () {
+  const path = yield* Path
+  return yield* loadMcpConfigFile(path.join(homedir(), '.config', 'mcp', 'mcp.json'))
+})

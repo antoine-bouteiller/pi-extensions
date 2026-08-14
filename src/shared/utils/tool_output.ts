@@ -1,10 +1,10 @@
-import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 
 import { formatSize, truncateHead, truncateTail } from '@earendil-works/pi-coding-agent'
-import { type Cause, Effect } from 'effect'
-import { dual } from 'effect/Function'
+import { type Cause, Effect, Option } from 'effect'
+
+import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
+import { unknownError } from '@/shared/effect/errors.js'
 
 export interface Truncation {
   content: string
@@ -23,41 +23,20 @@ export interface TruncateOptions {
   from?: TruncateFrom
 }
 
-export const truncateOutput: {
-  (options: TruncateOptions): (text: string) => Truncation
-  (text: string, options: TruncateOptions): Truncation
-} = dual(2, (text: string, { maxBytes, maxLines, from = 'head' }: TruncateOptions): Truncation =>
+export const truncateOutput = (text: string, { maxBytes, maxLines, from = 'head' }: TruncateOptions): Truncation =>
   from === 'tail' ? truncateTail(text, { maxBytes, maxLines }) : truncateHead(text, { maxBytes, maxLines })
-)
 
 export interface TruncationNoticeOptions {
   from?: TruncateFrom
   fullOutputPath?: string
 }
 
-export const truncationNotice: {
-  (options?: TruncationNoticeOptions): (truncation: Truncation) => string
-  (truncation: Truncation, options?: TruncationNoticeOptions): string
-} = dual(
-  (args) => args.length >= 1 && typeof args[0] === 'object' && args[0] !== null && 'outputLines' in args[0],
-  (truncation: Truncation, { from = 'head', fullOutputPath }: TruncationNoticeOptions = {}): string => {
-    const shown = from === 'tail' ? 'showing the last' : 'showing'
-    const sizes = `${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}`
-    const saved = fullOutputPath === undefined ? '' : ` Full output saved to: ${fullOutputPath}`
-    return `\n\n[Output truncated: ${shown} ${truncation.outputLines} of ${truncation.totalLines} lines (${sizes}).${saved}]`
-  }
-)
-
-/** Writes to a fresh private directory so tool output is never world-readable. */
-export const writePrivateTempFile: {
-  (options: { prefix: string; filename?: string }): (content: string) => Promise<string>
-  (content: string, options: { prefix: string; filename?: string }): Promise<string>
-} = dual(2, async (content: string, { prefix, filename = 'output.txt' }: { prefix: string; filename?: string }): Promise<string> => {
-  const directory = await mkdtemp(join(tmpdir(), prefix))
-  const path = join(directory, filename)
-  await writeFile(path, content, { encoding: 'utf8', mode: 0o600 })
-  return path
-})
+export const truncationNotice = (truncation: Truncation, { from = 'head', fullOutputPath }: TruncationNoticeOptions = {}): string => {
+  const shown = from === 'tail' ? 'showing the last' : 'showing'
+  const sizes = `${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}`
+  const saved = fullOutputPath === undefined ? '' : ` Full output saved to: ${fullOutputPath}`
+  return `\n\n[Output truncated: ${shown} ${truncation.outputLines} of ${truncation.totalLines} lines (${sizes}).${saved}]`
+}
 
 export interface BoundedText {
   text: string
@@ -66,8 +45,56 @@ export interface BoundedText {
   truncation: Truncation
 }
 
-export interface BoundToolTextOptions extends TruncateOptions {
-  saveFullOutput: (content: string) => Promise<string>
+export const SPILL_TTL_MS = 24 * 60 * 60 * 1000
+
+/**
+ * A spill deliberately outlives the call that wrote it, because the truncation notice tells the
+ * model to read the path on a later turn. Nothing else ever deletes them, so each new spill reaps
+ * its own expired siblings; without this, repeated truncated output grows in tmp without bound.
+ *
+ * ponytail: age-based sweep keyed on the caller's prefix; replace with session-scoped cleanup if a
+ * spill ever needs to outlive its session or be removed the moment the session ends.
+ */
+const reapExpiredSpills = (prefix: string): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const root = tmpdir()
+    const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis)
+    const entries = yield* bunFileSystem.readDirectory(root)
+    yield* Effect.forEach(
+      entries.filter((entry) => entry.startsWith(prefix)),
+      (entry) => {
+        const path = bunPath.join(root, entry)
+        return bunFileSystem.stat(path).pipe(
+          Effect.flatMap((info) => {
+            const modified = Option.getOrUndefined(info.mtime)
+            return modified !== undefined && now - modified.getTime() > SPILL_TTL_MS
+              ? bunFileSystem.remove(path, { force: true, recursive: true })
+              : Effect.void
+          }),
+          Effect.ignore
+        )
+      },
+      { concurrency: 8, discard: true }
+    )
+  }).pipe(Effect.ignore)
+
+/** Writes to a fresh private directory so tool output is never world-readable. */
+export const writePrivateTempFileEffect = (
+  content: string,
+  { prefix, filename = 'output.txt' }: { prefix: string; filename?: string }
+): Effect.Effect<string, Cause.UnknownError> =>
+  Effect.gen(function* () {
+    yield* reapExpiredSpills(prefix)
+    const directory = yield* bunFileSystem.makeTempDirectory({ prefix })
+    const path = bunPath.join(directory, filename)
+    yield* bunFileSystem
+      .writeFileString(path, content, { mode: 0o600 })
+      .pipe(Effect.onError(() => bunFileSystem.remove(directory, { force: true, recursive: true }).pipe(Effect.ignore)))
+    return path
+  }).pipe(Effect.mapError(unknownError))
+
+interface BoundToolTextEffectOptions<Failure> extends TruncateOptions {
+  saveFullOutput: (content: string) => Effect.Effect<string, Failure>
   /** Room reserved for the notice so the final text still fits the caller's budget. */
   noticeBytes?: number
   noticeLines?: number
@@ -76,27 +103,28 @@ export interface BoundToolTextOptions extends TruncateOptions {
 /**
  * Truncates model-visible text and spills the complete text to a file, re-truncating
  * against a smaller budget so that appending the notice cannot push the result back
- * over the caller's limits.
+ * over the caller's limits. The reserve grows to the notice's measured size, so a long
+ * spill path cannot overrun the budget; only a budget smaller than the notice itself
+ * still overruns, because the notice is what tells the model where the rest went.
+ * A failed spill stays in the error channel.
  */
-export const boundToolText: {
-  (options: BoundToolTextOptions): (text: string) => Promise<BoundedText>
-  (text: string, options: BoundToolTextOptions): Promise<BoundedText>
-} = dual(
-  2,
-  async (
-    text: string,
-    { maxBytes, maxLines, from = 'head', saveFullOutput, noticeBytes = 2048, noticeLines = 4 }: BoundToolTextOptions
-  ): Promise<BoundedText> => {
+
+export const boundToolTextEffect = <Failure = never>(
+  text: string,
+  { maxBytes, maxLines, from = 'head', saveFullOutput, noticeBytes = 2048, noticeLines = 4 }: BoundToolTextEffectOptions<Failure>
+): Effect.Effect<BoundedText, Failure> =>
+  Effect.gen(function* () {
     const initial = truncateOutput(text, { from, maxBytes, maxLines })
     if (!initial.truncated) {
       return { text, truncated: false, truncation: initial }
     }
 
-    const fullOutputPath = await saveFullOutput(text)
+    const fullOutputPath = yield* saveFullOutput(text)
+    const notice = truncationNotice(initial, { from, fullOutputPath })
     const truncation = truncateOutput(text, {
       from,
-      maxBytes: maxBytes - noticeBytes,
-      maxLines: maxLines - noticeLines,
+      maxBytes: Math.max(0, maxBytes - Math.max(noticeBytes, new TextEncoder().encode(notice).length)),
+      maxLines: Math.max(1, maxLines - Math.max(noticeLines, notice.split('\n').length)),
     })
     return {
       fullOutputPath,
@@ -104,49 +132,4 @@ export const boundToolText: {
       truncated: true,
       truncation,
     }
-  }
-)
-
-/** A failed spill stays in the error channel so callers can map it onto their own tool error. */
-export const writePrivateTempFileEffect: {
-  (options: { prefix: string; filename?: string }): (content: string) => Effect.Effect<string, Cause.UnknownError>
-  (content: string, options: { prefix: string; filename?: string }): Effect.Effect<string, Cause.UnknownError>
-} = dual(2, (content: string, options: { prefix: string; filename?: string }): Effect.Effect<string, Cause.UnknownError> =>
-  Effect.tryPromise(() => writePrivateTempFile(content, options))
-)
-
-interface BoundToolTextEffectOptions<Failure> extends TruncateOptions {
-  saveFullOutput: (content: string) => Effect.Effect<string, Failure>
-  noticeBytes?: number
-  noticeLines?: number
-}
-
-export const boundToolTextEffect: {
-  <Failure = never>(options: BoundToolTextEffectOptions<Failure>): (text: string) => Effect.Effect<BoundedText, Failure>
-  <Failure = never>(text: string, options: BoundToolTextEffectOptions<Failure>): Effect.Effect<BoundedText, Failure>
-} = dual(
-  2,
-  <Failure = never>(
-    text: string,
-    { maxBytes, maxLines, from = 'head', saveFullOutput, noticeBytes = 2048, noticeLines = 4 }: BoundToolTextEffectOptions<Failure>
-  ): Effect.Effect<BoundedText, Failure> =>
-    Effect.gen(function* () {
-      const initial = truncateOutput(text, { from, maxBytes, maxLines })
-      if (!initial.truncated) {
-        return { text, truncated: false, truncation: initial }
-      }
-
-      const fullOutputPath = yield* saveFullOutput(text)
-      const truncation = truncateOutput(text, {
-        from,
-        maxBytes: maxBytes - noticeBytes,
-        maxLines: maxLines - noticeLines,
-      })
-      return {
-        fullOutputPath,
-        text: truncation.content + truncationNotice(truncation, { from, fullOutputPath }),
-        truncated: true,
-        truncation,
-      }
-    })
-)
+  })

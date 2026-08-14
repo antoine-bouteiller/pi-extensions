@@ -1,6 +1,6 @@
-import { describe, expect, test } from 'bun:test'
-
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asExtensionContext, asFooterDataProvider } from '@tests/utils/casts.js'
+import { Effect } from 'effect'
 
 import { collectStatuses, statusLines } from '@/features/status_panel/statuses.js'
 import { createStatusChannel } from '@/shared/state/status_bar.js'
@@ -16,28 +16,34 @@ const footerData = (entries: Record<string, string>) =>
   })
 
 describe('collectStatuses', () => {
-  test('renders and splits a shared-channel status once despite the mirror into pi', () => {
-    const channel = createStatusChannel('collect-mcp', { tone: 'muted' })
-    channel.set(ctx, { text: 'MCP linear: connected\nMCP slack: needs auth' })
+  it.effect('renders and splits a shared-channel status once despite the mirror into pi', () =>
+    Effect.sync(() => {
+      const channel = createStatusChannel('collect-mcp', { tone: 'muted' })
+      channel.set(ctx, { text: 'MCP linear: connected\nMCP slack: needs auth' })
 
-    const collected = collectStatuses(footerData({ 'collect-mcp': 'MCP linear: connected\nMCP slack: needs auth' }))
+      const collected = collectStatuses(footerData({ 'collect-mcp': 'MCP linear: connected\nMCP slack: needs auth' }))
 
-    expect(statusLines(collected.filter((entry) => entry.key === 'collect-mcp'))).toEqual(['MCP linear: connected', 'MCP slack: needs auth'])
-    channel.clear(ctx)
-  })
+      expect(statusLines(collected.filter((entry) => entry.key === 'collect-mcp'))).toEqual(['MCP linear: connected', 'MCP slack: needs auth'])
+      channel.clear(ctx)
+    })
+  )
 
-  test('keeps statuses owned by other extensions and splits their lines', () => {
-    const collected = collectStatuses(footerData({ other: 'first\nsecond' }))
+  it.effect('keeps statuses owned by other extensions and splits their lines', () =>
+    Effect.sync(() => {
+      const collected = collectStatuses(footerData({ other: 'first\nsecond' }))
 
-    expect(statusLines(collected)).toEqual(['first', 'second'])
-    expect(collected.every((entry) => entry.tone === 'muted')).toBeTrue()
-  })
+      expect(statusLines(collected)).toEqual(['first', 'second'])
+      expect(collected.every((entry) => entry.tone === 'muted')).toBeTrue()
+    })
+  )
 
-  test('works without a footer data provider', () => {
-    const channel = createStatusChannel('collect-solo', { icon: '🛡️' })
-    channel.set(ctx, { text: 'cmd-guard' })
+  it.effect('works without a footer data provider', () =>
+    Effect.sync(() => {
+      const channel = createStatusChannel('collect-solo', { icon: '🛡️' })
+      channel.set(ctx, { text: 'cmd-guard' })
 
-    expect(statusLines(collectStatuses(undefined))).toEqual(['🛡️ cmd-guard'])
-    channel.clear(ctx)
-  })
+      expect(statusLines(collectStatuses(undefined))).toEqual(['🛡️ cmd-guard'])
+      channel.clear(ctx)
+    })
+  )
 })

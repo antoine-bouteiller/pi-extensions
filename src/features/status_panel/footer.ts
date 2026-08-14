@@ -1,6 +1,6 @@
 import { type ThemeColor } from '@earendil-works/pi-coding-agent'
 import { truncateToWidth } from '@earendil-works/pi-tui'
-import { Function } from 'effect'
+import { type Path } from 'effect/Path'
 
 import { formatStatusText, type StatusEntry } from '@/shared/state/status_bar.js'
 
@@ -20,17 +20,14 @@ export interface FooterState {
   statuses: readonly StatusEntry[]
 }
 
-export const renderFooterLines: {
-  (theme: FooterTheme, width: number): (state: FooterState) => string[]
-  (state: FooterState, theme: FooterTheme, width: number): string[]
-} = Function.dual(3, (state: FooterState, theme: FooterTheme, width: number): string[] => {
+export const renderFooterLines = (state: FooterState, theme: FooterTheme, width: number, path: Path): string[] => {
   const { model, git, quotas } = state
   const percent = model.contextPercent ?? 0
   const tokens = formatTokens(model.contextTokens ?? 0)
   const window = model.contextWindow > 0 ? formatTokens(model.contextWindow) : '?'
   const muted = (text: string) => truncateToWidth(theme.fg('muted', text), width)
   const lines = [
-    columns(theme.fg('text', formatDirectory(state.cwd)), theme.fg('muted', `${model.modelId} · ${model.thinking}`), width),
+    columns(theme.fg('text', formatDirectory(state.cwd, path)), theme.fg('muted', `${model.modelId} · ${model.thinking}`), width),
     muted(`Context: ${progressBar(percent, 8)} ${tokens}/${window} (${Math.round(percent)}%)`),
   ]
 
@@ -58,4 +55,4 @@ export const renderFooterLines: {
     lines.push(truncateToWidth(theme.fg(STATUS_TONE_COLORS[status.tone ?? 'muted'], formatStatusText(status)), width))
   }
   return lines
-})
+}

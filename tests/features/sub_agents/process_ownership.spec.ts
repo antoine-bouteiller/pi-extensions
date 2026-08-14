@@ -1,10 +1,11 @@
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { Effect, Layer } from 'effect'
+import { withProcessEnv } from '@tests/utils/process_env.js'
+import { Clock, Effect, Layer } from 'effect'
 
 import {
   inspectProcess,
   nodeProcessProbe,
-  ownershipMatches,
+  ownershipVerdict,
   ProcessInspector,
   ProcessInspectorLive,
   processInspectorFromProbe,
@@ -12,8 +13,13 @@ import {
   type ProcessOwnership,
   type ProcessProbeShape,
 } from '@/features/sub_agents/process_ownership.js'
+import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
 
 const alwaysAlive = () => true
+
+const permissionDenied = (): never => {
+  throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
+}
 
 const fakeProbe = (overrides: Partial<ProcessProbeShape>): ProcessProbeShape => ({
   platform: 'linux',
@@ -171,6 +177,24 @@ describe('ProcessInspector: other unix (token check enabled)', () => {
 })
 
 describe('ProcessInspector: liveness and ownership comparison', () => {
+  it.effect('awaits effectful probes instead of hiding blocking work in Effect.sync', () =>
+    Effect.gen(function* () {
+      let read = false
+      const inspector = processInspectorFromProbe(
+        fakeProbe({
+          readFileBuffer: (path) =>
+            Effect.sync(() => {
+              read = true
+              return Buffer.from(path.endsWith('/cmdline') ? 'node\0' : '')
+            }),
+          readFileUtf8: () => Effect.succeed(`1 (x) S ${Array.from({ length: 18 }, () => '0').join(' ')} 99 0 0`),
+        })
+      )
+      expect((yield* inspector.inspect(1))?.identity).toStartWith('linux:99:')
+      expect(read).toBe(true)
+    })
+  )
+
   it.effect('alive() and inspect() both short-circuit to undefined/false when the process is not alive', () =>
     Effect.gen(function* () {
       const inspector = processInspectorFromProbe(fakeProbe({ processAlive: () => false }))
@@ -179,7 +203,17 @@ describe('ProcessInspector: liveness and ownership comparison', () => {
     })
   )
 
-  it.effect('ownershipMatches fails closed when the token check fails', () =>
+  it.effect('reports an unreadable process as unverifiable so it is neither reclaimed nor signalled', () =>
+    Effect.gen(function* () {
+      const inspector = processInspectorFromProbe(fakeProbe({ readFileBuffer: permissionDenied, readFileUtf8: permissionDenied }))
+
+      expect(yield* inspector.ownershipVerdict({ pid: 1, processIdentity: 'linux:99:whatever', token: 'expected' })).toBe('unverifiable')
+      expect(yield* inspector.ownerIsActive({ pid: 1, processIdentity: 'linux:99:whatever' })).toBe(true)
+      expect(yield* inspector.inspect(1)).toBeUndefined()
+    })
+  )
+
+  it.effect('ownershipVerdict fails closed when the token check fails', () =>
     Effect.gen(function* () {
       const probe = fakeProbe({
         platform: 'linux',
@@ -188,11 +222,11 @@ describe('ProcessInspector: liveness and ownership comparison', () => {
       })
       const inspector = processInspectorFromProbe(probe)
       const ownership: ProcessOwnership = { pid: 1, processIdentity: 'linux:99:whatever', token: 'expected' }
-      expect(yield* inspector.ownershipMatches(ownership)).toBe(false)
+      expect(yield* inspector.ownershipVerdict(ownership)).toBe('mismatch')
     })
   )
 
-  it.effect('ownershipMatches requires both identity and token to match', () =>
+  it.effect('ownershipVerdict requires both identity and token to match', () =>
     Effect.gen(function* () {
       const probe = fakeProbe({
         platform: 'linux',
@@ -202,7 +236,7 @@ describe('ProcessInspector: liveness and ownership comparison', () => {
       const inspector = processInspectorFromProbe(probe)
       const identity = yield* inspector.inspect(1, 'expected')
       const ownership: ProcessOwnership = { pid: 1, processIdentity: identity?.identity ?? '', token: 'expected' }
-      expect(yield* inspector.ownershipMatches(ownership)).toBe(true)
+      expect(yield* inspector.ownershipVerdict(ownership)).toBe('match')
     })
   )
 
@@ -221,19 +255,45 @@ describe('ProcessInspector: liveness and ownership comparison', () => {
   )
 })
 
-describe('plain exported functions delegate to the live probe', () => {
-  it('inspectProcess/ownershipMatches/processOwnerIsActive stay usable without Effect', () => {
-    expect(inspectProcess(-1)).toBeUndefined()
-    expect(ownershipMatches({ pid: -1, processIdentity: 'x', token: 'y' })).toBe(false)
-    expect(processOwnerIsActive({ pid: -1 })).toBe(false)
-  })
+describe('exported process effects delegate to the live probe', () => {
+  it.effect('inspectProcess/ownershipVerdict/processOwnerIsActive fail closed', () =>
+    Effect.gen(function* () {
+      expect(yield* inspectProcess(-1)).toBeUndefined()
+      expect(yield* ownershipVerdict({ pid: -1, processIdentity: 'x', token: 'y' })).toBe('mismatch')
+      expect(yield* processOwnerIsActive({ pid: -1 })).toBe(false)
+    })
+  )
 })
 
 describe('ProcessInspectorLive', () => {
-  it('matches the running Node process to the live probe platform', () => {
-    expect(nodeProcessProbe.platform).toBe(process.platform)
-    expect(nodeProcessProbe.processAlive(process.pid)).toBe(true)
-  })
+  it.live(
+    'terminates a process probe after three seconds',
+    () =>
+      Effect.gen(function* () {
+        const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'process-probe-timeout-' })
+        const executable = bunPath.join(root, 'ps')
+        const pidFile = bunPath.join(root, 'pid')
+        yield* bunFileSystem.writeFileString(executable, `#!/bin/sh\necho $$ > '${pidFile}'\nexec /bin/sleep 10\n`)
+        yield* bunFileSystem.chmod(executable, 0o700)
+        const startedAt = yield* Clock.currentTimeMillis
+        const outcome = yield* withProcessEnv('PATH', root, () => Effect.result(nodeProcessProbe.runPs([])))
+        const elapsed = (yield* Clock.currentTimeMillis) - startedAt
+        expect(outcome._tag).toBe('Failure')
+        expect(elapsed).toBeGreaterThanOrEqual(2900)
+        expect(elapsed).toBeLessThan(4500)
+        const pid = Number((yield* bunFileSystem.readFileString(pidFile)).trim())
+        expect(yield* nodeProcessProbe.processAlive(pid)).toBe(false)
+        yield* bunFileSystem.remove(root, { force: true, recursive: true })
+      }),
+    6000
+  )
+
+  it.effect('matches the running process to the live probe platform', () =>
+    Effect.gen(function* () {
+      expect(nodeProcessProbe.platform).toBe(process.platform)
+      expect(yield* nodeProcessProbe.processAlive(process.pid)).toBe(true)
+    })
+  )
 
   it.effect('resolves the live ProcessInspector service and reports the current process alive', () =>
     Effect.gen(function* () {

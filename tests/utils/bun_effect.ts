@@ -1,6 +1,7 @@
 import { test } from 'bun:test'
 
-import { Effect, type Layer, type Scope } from 'effect'
+import { BunFileSystem, BunPath } from '@effect/platform-bun'
+import { Data, Effect, Layer, type FileSystem, type Path, type Scope } from 'effect'
 import { TestClock } from 'effect/testing'
 
 export { describe, expect } from 'bun:test'
@@ -8,21 +9,32 @@ export { describe, expect } from 'bun:test'
 type Options = number | { timeout?: number }
 const timeoutOf = (opts?: Options) => (typeof opts === 'number' ? opts : opts?.timeout)
 
-/** Virtual time by default. */
-const testEnv: Layer.Layer<TestClock.TestClock> = TestClock.layer()
+/** Virtual time and the real Bun platform by default. */
+type TestServices = FileSystem.FileSystem | Path.Path | TestClock.TestClock
+const testEnv: Layer.Layer<TestServices> = Layer.mergeAll(BunFileSystem.layer, BunPath.layer, TestClock.layer())
 
-const run = <Success, Failure>(eff: Effect.Effect<Success, Failure, TestClock.TestClock>) => Effect.runPromise(Effect.provide(eff, testEnv))
+const run = <Success, Failure>(eff: Effect.Effect<Success, Failure, TestServices>) => Effect.runPromise(Effect.provide(eff, testEnv))
 
-const mkEffect =
-  (runner: typeof test) =>
-  <Success, Failure>(name: string, fn: () => Effect.Effect<Success, Failure, TestClock.TestClock>, opts?: Options) => {
+export class PromiseEffectError extends Data.TaggedError('PromiseEffectError')<{ readonly cause: unknown }> {}
+
+export const tryEffect = <Success>(evaluate: () => Success): Effect.Effect<Success, PromiseEffectError> =>
+  Effect.try({ catch: (cause) => new PromiseEffectError({ cause }), try: evaluate })
+
+export const tryPromiseEffect = <Success>(evaluate: () => PromiseLike<Success>): Effect.Effect<Success, PromiseEffectError> =>
+  Effect.tryPromise({ catch: (cause) => new PromiseEffectError({ cause }), try: evaluate })
+
+export const promiseFromEffect = <Success, Failure>(effect: Effect.Effect<Success, Failure>): Promise<Success> =>
+  Effect.runPromise(effect).catch((error: unknown) => Promise.reject(error instanceof PromiseEffectError ? error.cause : error))
+
+const mkEffect = (runner: typeof test) =>
+  function effectTest<Success, Failure>(name: string, fn: () => Effect.Effect<Success, Failure, TestServices>, opts?: Options): void {
     const timeout = timeoutOf(opts)
     runner(name, () => run(fn()), timeout === undefined ? undefined : { timeout })
   }
 
 const mkScoped =
   (runner: typeof test) =>
-  <Success, Failure>(name: string, fn: () => Effect.Effect<Success, Failure, TestClock.TestClock | Scope.Scope>, opts?: Options) => {
+  <Success, Failure>(name: string, fn: () => Effect.Effect<Success, Failure, TestServices | Scope.Scope>, opts?: Options) => {
     const timeout = timeoutOf(opts)
     runner(name, () => run(Effect.scoped(fn())), timeout === undefined ? undefined : { timeout })
   }
@@ -35,10 +47,9 @@ const mkLive =
     runner(name, () => Effect.runPromise(fn()), timeout === undefined ? undefined : { timeout })
   }
 
-const mods = <Runner extends object>(make: (runner: typeof test) => Runner): Runner & { skip: Runner } =>
-  Object.assign(make(test), { skip: make(test.skip) })
+const mods = <Runner extends object>(make: (runner: typeof test) => Runner): Runner & { skip: Runner; skipIf: (condition: boolean) => Runner } =>
+  Object.assign(make(test), { skip: make(test.skip), skipIf: (condition: boolean) => make(test.skipIf(condition)) })
 
-// @effect-diagnostics-next-line missingPipeableSignature:off
 export const it = Object.assign(test, {
   effect: mods(mkEffect),
   live: mods(mkLive),

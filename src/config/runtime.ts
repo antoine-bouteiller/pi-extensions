@@ -1,8 +1,12 @@
-import { NodeFileSystem, NodePath } from '@effect/platform-node'
+import { BunFileSystem, BunPath } from '@effect/platform-bun'
 import { Layer, ManagedRuntime } from 'effect'
 import { FetchHttpClient } from 'effect/unstable/http'
 
-import { AgentActivityLive, type AppRuntime, type AppServices, StatusBarLive } from '@/shared/effect/app_services.js'
+import { McpGatewayLive, type McpGateway } from '@/features/mcp/gateway.js'
+import { AgentActivityLive, type AppServices, StatusBarLive } from '@/shared/effect/app_services.js'
+
+export type ProcessServices = AppServices | McpGateway
+export type ProcessRuntime = ManagedRuntime.ManagedRuntime<ProcessServices, never>
 
 /**
  * Composed once, as a module constant: `ManagedRuntime.make` memoises layer construction by
@@ -11,18 +15,19 @@ import { AgentActivityLive, type AppRuntime, type AppServices, StatusBarLive } f
  * remain synchronously constructible because status-panel resolves its paint-loop stores with
  * `runtime.runSync` during registration.
  */
-const AppLayer: Layer.Layer<AppServices> = Layer.mergeAll(
-  NodeFileSystem.layer,
-  NodePath.layer,
+const AppLayer: Layer.Layer<ProcessServices> = Layer.mergeAll(
+  BunFileSystem.layer,
+  BunPath.layer,
   FetchHttpClient.layer,
   StatusBarLive,
-  AgentActivityLive
+  AgentActivityLive,
+  McpGatewayLive
 )
 
-let processRuntime: AppRuntime | undefined
+let processRuntime: ProcessRuntime | undefined
 
 /**
  * One process-wide runtime, built lazily on first access and passed by `src/index.ts` to every
  * feature so all registrations share the same services.
  */
-export const getOrCreateProcessRuntime = (): AppRuntime => (processRuntime ??= ManagedRuntime.make(AppLayer))
+export const getOrCreateProcessRuntime = (): ProcessRuntime => (processRuntime ??= ManagedRuntime.make(AppLayer))

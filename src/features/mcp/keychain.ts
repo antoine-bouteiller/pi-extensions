@@ -185,6 +185,7 @@ export class KeychainCredentialStore implements CredentialStore {
     return this.createEntry(this.serviceName, keychainAccount(serverName))
   }
 
+  // oxlint-disable-next-line effecttsgo/async-function -- Implements the promise-returning `CredentialStore` awaited by the MCP SDK's OAuth provider; `CredentialStoreEffect` is the Effect-facing wrapper.
   async get(serverName: string, serverUrl: string, signal?: AbortSignal): Promise<OAuthCredentialPayload | undefined> {
     let serialized: string | undefined
     try {
@@ -213,6 +214,7 @@ export class KeychainCredentialStore implements CredentialStore {
     return credential.serverUrl === serverUrl ? credential : undefined
   }
 
+  // oxlint-disable-next-line effecttsgo/async-function -- Implements the promise-returning `CredentialStore` awaited by the MCP SDK's OAuth provider.
   async set(serverName: string, credential: OAuthCredentialPayload, signal?: AbortSignal): Promise<void> {
     const validated = validateCredentialPayload(credential, serverName)
     try {
@@ -223,6 +225,7 @@ export class KeychainCredentialStore implements CredentialStore {
     }
   }
 
+  // oxlint-disable-next-line effecttsgo/async-function -- Implements the promise-returning `CredentialStore` awaited by the MCP SDK's OAuth provider.
   async delete(serverName: string, signal?: AbortSignal): Promise<void> {
     try {
       const entry = this.entry(serverName)
@@ -239,7 +242,7 @@ export class KeychainCredentialStore implements CredentialStore {
 export const createKeychainCredentialStore = (options: KeychainCredentialStoreOptions = {}): CredentialStore => new KeychainCredentialStore(options)
 
 const asKeychainError = (cause: unknown): KeychainCredentialError =>
-  cause instanceof KeychainCredentialError ? cause : KeychainCredentialError.make({ message: 'macOS Keychain OAuth credential operation failed.' })
+  Schema.is(KeychainCredentialError)(cause) ? cause : KeychainCredentialError.make({ message: 'macOS Keychain OAuth credential operation failed.' })
 
 export const credentialStoreEffectLayer = (options: KeychainCredentialStoreOptions = {}): Layer.Layer<CredentialStoreEffect> => {
   const store = createKeychainCredentialStore(options)

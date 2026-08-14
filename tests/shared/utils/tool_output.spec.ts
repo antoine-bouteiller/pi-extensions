@@ -1,38 +1,35 @@
-import { describe, expect, test } from 'bun:test'
-import { readFile, stat } from 'node:fs/promises'
+import { BunFileSystem } from '@effect/platform-bun'
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { DateTime, Effect, FileSystem } from 'effect'
 
-import { Effect } from 'effect'
-
-import {
-  boundToolText,
-  boundToolTextEffect,
-  truncateOutput,
-  truncationNotice,
-  writePrivateTempFile,
-  writePrivateTempFileEffect,
-} from '@/shared/utils/tool_output.js'
+import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
+import { boundToolTextEffect, SPILL_TTL_MS, truncateOutput, truncationNotice, writePrivateTempFileEffect } from '@/shared/utils/tool_output.js'
 
 const lines = (count: number) => Array.from({ length: count }, (_value, index) => `line ${index}`).join('\n')
 
 describe('truncateOutput', () => {
-  test('keeps the head or the tail depending on direction', () => {
-    const text = lines(100)
+  it.effect('keeps the head or the tail depending on direction', () =>
+    Effect.sync(() => {
+      const text = lines(100)
 
-    const head = truncateOutput(text, { maxBytes: 1_000_000, maxLines: 5 })
-    const tail = truncateOutput(text, { from: 'tail', maxBytes: 1_000_000, maxLines: 5 })
+      const head = truncateOutput(text, { maxBytes: 1_000_000, maxLines: 5 })
+      const tail = truncateOutput(text, { from: 'tail', maxBytes: 1_000_000, maxLines: 5 })
 
-    expect(head.truncated).toBeTrue()
-    expect(head.content).toContain('line 0')
-    expect(tail.content).toContain('line 99')
-    expect(tail.content).not.toContain('line 0\n')
-  })
+      expect(head.truncated).toBeTrue()
+      expect(head.content).toContain('line 0')
+      expect(tail.content).toContain('line 99')
+      expect(tail.content).not.toContain('line 0\n')
+    })
+  )
 
-  test('leaves short output untouched', () => {
-    const result = truncateOutput('short', { maxBytes: 1000, maxLines: 10 })
+  it.effect('leaves short output untouched', () =>
+    Effect.sync(() => {
+      const result = truncateOutput('short', { maxBytes: 1000, maxLines: 10 })
 
-    expect(result.truncated).toBeFalse()
-    expect(result.content).toBe('short')
-  })
+      expect(result.truncated).toBeFalse()
+      expect(result.content).toBe('short')
+    })
+  )
 })
 
 describe('truncationNotice', () => {
@@ -45,88 +42,74 @@ describe('truncationNotice', () => {
     truncated: true,
   }
 
-  test('describes tail truncation as showing the last lines', () => {
-    expect(truncationNotice(truncation, { from: 'tail' })).toContain('showing the last 1 of 20 lines')
-  })
+  it.effect('describes tail truncation as showing the last lines', () =>
+    Effect.sync(() => {
+      expect(truncationNotice(truncation, { from: 'tail' })).toContain('showing the last 1 of 20 lines')
+    })
+  )
 
-  test('mentions the spill file only when there is one', () => {
-    expect(truncationNotice(truncation)).not.toContain('Full output saved to:')
-    expect(truncationNotice(truncation, { fullOutputPath: '/tmp/out.txt' })).toContain('Full output saved to: /tmp/out.txt')
-  })
+  it.effect('mentions the spill file only when there is one', () =>
+    Effect.sync(() => {
+      expect(truncationNotice(truncation)).not.toContain('Full output saved to:')
+      expect(truncationNotice(truncation, { fullOutputPath: '/tmp/out.txt' })).toContain('Full output saved to: /tmp/out.txt')
+    })
+  )
 })
 
-describe('writePrivateTempFile', () => {
-  test('writes owner-only content', async () => {
-    const path = await writePrivateTempFile('secret', { prefix: 'pi-test-' })
+describe('bounded tool output', () => {
+  it.effect('writePrivateTempFileEffect writes owner-only content', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const path = yield* writePrivateTempFileEffect('secret', { prefix: 'tool-output-effect-' })
 
-    const stats = await stat(path)
+      expect(yield* fs.readFileString(path)).toBe('secret')
+      expect((yield* fs.stat(bunPath.dirname(path))).mode & 0o777).toBe(0o700)
+      expect((yield* fs.stat(path)).mode & 0o777).toBe(0o600)
+    }).pipe(Effect.provide(BunFileSystem.layer))
+  )
 
-    expect(await readFile(path, 'utf8')).toBe('secret')
-    expect(stats.mode & 0o777).toBe(0o600)
-  })
-})
+  it.effect('writePrivateTempFileEffect leaves no directory behind when the write fails', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const before = yield* fs.readDirectory(bunPath.dirname(yield* fs.makeTempDirectory({ prefix: 'tool-output-probe-' })))
 
-describe('boundToolText', () => {
-  test('returns the original text when it fits', async () => {
-    const result = await boundToolText('small', {
-      maxBytes: 1000,
-      maxLines: 10,
-      saveFullOutput: () => Promise.reject(new Error('should not spill')),
+      yield* Effect.flip(writePrivateTempFileEffect('secret', { filename: 'missing/output.txt', prefix: 'tool-output-failure-' }))
+
+      const after = yield* fs.readDirectory(bunPath.dirname(yield* fs.makeTempDirectory({ prefix: 'tool-output-probe-' })))
+      expect(after.filter((entry) => entry.startsWith('tool-output-failure-'))).toEqual([])
+      expect(before.filter((entry) => entry.startsWith('tool-output-failure-'))).toEqual([])
+    }).pipe(Effect.provide(BunFileSystem.layer))
+  )
+
+  it.effect('boundToolTextEffect spills the complete text and keeps the notice inside the budget', () =>
+    Effect.gen(function* () {
+      const text = lines(500)
+      let saved = ''
+
+      const result = yield* boundToolTextEffect(text, {
+        maxBytes: 100_000,
+        maxLines: 50,
+        noticeBytes: 0,
+        noticeLines: 4,
+        saveFullOutput: (content) =>
+          Effect.sync(() => {
+            saved = content
+            return '/tmp/full.txt'
+          }),
+      })
+
+      expect(saved).toBe(text)
+      expect(result.truncated).toBeTrue()
+      expect(result.fullOutputPath).toBe('/tmp/full.txt')
+      expect(result.text).toContain('Full output saved to: /tmp/full.txt')
+      expect(result.text.split('\n').length).toBeLessThanOrEqual(50)
     })
+  )
 
-    expect(result).toMatchObject({ text: 'small', truncated: false })
-    expect(result.fullOutputPath).toBeUndefined()
-  })
-
-  test('spills the complete text and keeps the notice inside the budget', async () => {
-    const text = lines(500)
-    let saved = ''
-
-    const result = await boundToolText(text, {
-      maxBytes: 100_000,
-      maxLines: 50,
-      noticeBytes: 0,
-      noticeLines: 4,
-      saveFullOutput: (content) => {
-        saved = content
-        return Promise.resolve('/tmp/full.txt')
-      },
-    })
-
-    expect(saved).toBe(text)
-    expect(result.truncated).toBeTrue()
-    expect(result.fullOutputPath).toBe('/tmp/full.txt')
-    expect(result.text).toContain('Full output saved to: /tmp/full.txt')
-    expect(result.text.split('\n').length).toBeLessThanOrEqual(50)
-  })
-})
-
-describe('effect wrappers', () => {
-  test('writePrivateTempFileEffect still writes owner-only content', async () => {
-    const path = await Effect.runPromise(writePrivateTempFileEffect('secret', { prefix: 'tool-output-effect-' }))
-
-    const stats = await stat(path)
-    expect(await readFile(path, 'utf8')).toBe('secret')
-    expect(stats.mode & 0o777).toBe(0o600)
-  })
-
-  test('boundToolTextEffect matches the callback version, spill and all', async () => {
-    const text = lines(500)
-    const options = { maxBytes: 100_000, maxLines: 50, noticeBytes: 0, noticeLines: 4 }
-
-    const expected = await boundToolText(text, {
-      ...options,
-      saveFullOutput: () => Promise.resolve('/tmp/full.txt'),
-    })
-    const actual = await Effect.runPromise(boundToolTextEffect(text, { ...options, saveFullOutput: () => Effect.succeed('/tmp/full.txt') }))
-
-    expect(actual).toEqual(expected)
-  })
-
-  test('boundToolTextEffect skips the spill when the text already fits', async () => {
-    let saves = 0
-    const result = await Effect.runPromise(
-      boundToolTextEffect('short', {
+  it.effect('boundToolTextEffect skips the spill when the text already fits', () =>
+    Effect.gen(function* () {
+      let saves = 0
+      const result = yield* boundToolTextEffect('short', {
         maxBytes: 1000,
         maxLines: 10,
         saveFullOutput: () =>
@@ -135,20 +118,43 @@ describe('effect wrappers', () => {
             return '/tmp/unused.txt'
           }),
       })
-    )
 
-    expect([result.truncated, result.text, saves]).toEqual([false, 'short', 0])
-  })
+      expect([result.truncated, result.text, saves]).toEqual([false, 'short', 0])
+    })
+  )
 
-  test('boundToolTextEffect propagates a failure from the spill', async () => {
-    const failure = await Effect.runPromise(
-      boundToolTextEffect(lines(500), {
-        maxBytes: 100_000,
-        maxLines: 50,
-        saveFullOutput: () => Effect.fail('disk full' as const),
-      }).pipe(Effect.flip)
-    )
+  it.effect('boundToolTextEffect propagates a failure from the spill', () =>
+    Effect.gen(function* () {
+      const failure = yield* Effect.flip(
+        boundToolTextEffect(lines(500), {
+          maxBytes: 100_000,
+          maxLines: 50,
+          saveFullOutput: () => Effect.fail('disk full' as const),
+        })
+      )
 
-    expect(failure).toBe('disk full')
-  })
+      expect(failure).toBe('disk full')
+    })
+  )
+
+  it.live('reaps expired spill directories but keeps recent ones', () =>
+    Effect.gen(function* () {
+      const prefix = `tool-output-reap-${process.pid}-`
+
+      const stale = yield* writePrivateTempFileEffect('stale', { prefix })
+      const staleDirectory = bunPath.dirname(stale)
+      const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis)
+      // `utimes` reads a bare number as nanoseconds, so the age is applied as a Date.
+      const expired = DateTime.toDateUtc(DateTime.makeUnsafe(now - SPILL_TTL_MS - 60_000))
+      yield* bunFileSystem.utimes(staleDirectory, expired, expired)
+
+      const fresh = yield* writePrivateTempFileEffect('fresh', { prefix })
+      const freshDirectory = bunPath.dirname(fresh)
+
+      expect(yield* bunFileSystem.exists(staleDirectory)).toBeFalse()
+      expect(yield* bunFileSystem.exists(freshDirectory)).toBeTrue()
+
+      yield* bunFileSystem.remove(freshDirectory, { force: true, recursive: true })
+    })
+  )
 })

@@ -1,166 +1,181 @@
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asFetch } from '@tests/utils/casts.js'
-import { Effect } from 'effect'
+import { deferred } from '@tests/utils/deferred.js'
+import { Clock, Effect } from 'effect'
 import { TestClock } from 'effect/testing'
+import { FetchHttpClient, type HttpClient } from 'effect/unstable/http'
 
 import { fetchAnthropicQuota, makeQuotaPoller, quotaFromHeaders } from '@/features/status_panel/provider.js'
 import { type ProviderQuota } from '@/features/status_panel/state.js'
 
-const deferred = <Value>() => {
-  let resolve!: (value: Value) => void
-  const promise = new Promise<Value>((complete) => {
-    resolve = complete
-  })
-  return { promise, resolve }
-}
+const withFakeFetch = <Success, Failure>(
+  fetchImpl: typeof fetch,
+  effect: Effect.Effect<Success, Failure, HttpClient.HttpClient>
+): Effect.Effect<Success, Failure> => effect.pipe(Effect.provide(FetchHttpClient.layer), Effect.provideService(FetchHttpClient.Fetch, fetchImpl))
 
-const flushPromises = async () => {
-  await Promise.resolve()
-  await Promise.resolve()
-}
+const flushPromises = (): Promise<void> =>
+  promiseFromEffect(
+    Effect.gen(function* () {
+      yield* Effect.promise(() => Promise.resolve())
+      yield* Effect.promise(() => Promise.resolve())
+    })
+  )
 
 const gatewayResponse = (profiles: unknown) => Promise.resolve(Response.json(profiles, { status: 200 }))
 
 describe('Anthropic quota provider', () => {
-  it('passes the abort signal and converts gateway fractions to percentages', async () => {
-    const controller = new AbortController()
-    let requestedUrl = ''
-    let requestedInit: RequestInit | undefined
-    const fakeFetch = asFetch((input, init) => {
-      requestedUrl = String(input)
-      requestedInit = init
-      return gatewayResponse({
-        activeProfile: 'default',
-        profiles: [
-          {
-            extraUsage: { isEnabled: true, monthlyLimit: 20_000, usedCredits: 3162 },
-            id: 'default',
-            isActive: true,
-            windows: [
-              { resetsAt: Date.now() + 90 * 60_000, type: 'five_hour', utilization: 0.375 },
-              { resetsAt: Date.now() + 102 * 60 * 60_000, type: 'seven_day', utilization: 0.62 },
-              { type: 'seven_day_fable', utilization: 0.02 },
-            ],
-          },
-        ],
+  it.live('passes an abort signal and converts gateway fractions to percentages', () =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis
+      let requestedUrl = ''
+      let requestedInit: RequestInit | undefined
+      const fakeFetch = asFetch((input, init) => {
+        requestedUrl = String(input)
+        requestedInit = init
+        return gatewayResponse({
+          activeProfile: 'default',
+          profiles: [
+            {
+              extraUsage: { isEnabled: true, monthlyLimit: 20_000, usedCredits: 3162 },
+              id: 'default',
+              isActive: true,
+              windows: [
+                { resetsAt: now + 90 * 60_000, type: 'five_hour', utilization: 0.375 },
+                { resetsAt: now + 102 * 60 * 60_000, type: 'seven_day', utilization: 0.62 },
+                { type: 'seven_day_fable', utilization: 0.02 },
+              ],
+            },
+          ],
+        })
       })
+
+      const quota = yield* withFakeFetch(fakeFetch, fetchAnthropicQuota('http://127.0.0.1:3456'))
+      if (quota === undefined) {
+        throw new Error('expected a quota')
+      }
+      const { windows } = quota
+      if (windows === undefined) {
+        throw new Error('expected quota windows')
+      }
+
+      expect(requestedUrl).toBe('http://127.0.0.1:3456/v1/usage/quota/all')
+      expect(requestedInit?.signal).toBeInstanceOf(AbortSignal)
+      expect(quota.label).toBe('anthropic')
+      expect(quota.percent).toBe(37.5)
+      expect(quota.detail).toContain('1h 30m')
+      expect(quota.detail).toContain('Weekly:')
+      expect(quota.detail).toContain('62.0%')
+      expect(quota.detail).toContain('31.62/200$')
+      expect(windows.map((window) => window.label)).toEqual(['Session', 'Weekly'])
+      expect(windows[0]?.percent).toBeCloseTo(37.5)
+      expect(windows[0]?.resetsIn).toBe('1h 30m')
+      expect(windows[1]?.percent).toBeCloseTo(62)
+      expect(windows[1]?.resetsIn).toBe('4d 6h')
+      expect(windows[1]?.detail).toBe('31.62/200$')
     })
+  )
 
-    const quota = await fetchAnthropicQuota('http://127.0.0.1:3456', controller.signal, fakeFetch)
-    if (quota === undefined) {
-      throw new Error('expected a quota')
-    }
-    const { windows } = quota
-    if (windows === undefined) {
-      throw new Error('expected quota windows')
-    }
+  it.live('keeps weekly quota when the current session has no reset time', () =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis
+      const fakeFetch = asFetch(() =>
+        gatewayResponse({
+          profiles: [
+            {
+              isActive: true,
+              windows: [
+                // oxlint-disable-next-line unicorn/no-null -- Meridian uses null when no session timer is active.
+                { resetsAt: null, type: 'five_hour', utilization: 0 },
+                { resetsAt: now + 24 * 60 * 60_000, type: 'seven_day', utilization: 0.45 },
+              ],
+            },
+          ],
+        })
+      )
 
-    expect(requestedUrl).toBe('http://127.0.0.1:3456/v1/usage/quota/all')
-    expect(requestedInit?.signal).toBe(controller.signal)
-    expect(quota.label).toBe('anthropic')
-    expect(quota.percent).toBe(37.5)
-    expect(quota.detail).toContain('1h 30m')
-    expect(quota.detail).toContain('Weekly:')
-    expect(quota.detail).toContain('62.0%')
-    expect(quota.detail).toContain('31.62/200$')
-    expect(windows.map((window) => window.label)).toEqual(['Session', 'Weekly'])
-    expect(windows[0]?.percent).toBeCloseTo(37.5)
-    expect(windows[0]?.resetsIn).toBe('1h 30m')
-    expect(windows[1]?.percent).toBeCloseTo(62)
-    expect(windows[1]?.resetsIn).toBe('4d 6h')
-    expect(windows[1]?.detail).toBe('31.62/200$')
-  })
+      const quota = yield* withFakeFetch(fakeFetch, fetchAnthropicQuota('http://gateway'))
 
-  it('keeps weekly quota when the current session has no reset time', async () => {
-    const fakeFetch = asFetch(() =>
-      gatewayResponse({
-        profiles: [
-          {
-            isActive: true,
-            windows: [
-              // oxlint-disable-next-line unicorn/no-null -- Meridian uses null when no session timer is active.
-              { resetsAt: null, type: 'five_hour', utilization: 0 },
-              { resetsAt: Date.now() + 24 * 60 * 60_000, type: 'seven_day', utilization: 0.45 },
-            ],
-          },
-        ],
-      })
-    )
-
-    const quota = await fetchAnthropicQuota('http://gateway', undefined, fakeFetch)
-
-    expect(quota?.percent).toBe(0)
-    expect(quota?.windows?.[0]).toEqual({ label: 'Session', percent: 0 })
-    expect(quota?.windows?.[1]?.percent).toBe(45)
-    expect(quota?.windows?.[1]?.resetsIn).toBe('1d 0h')
-  })
-
-  it('reads the active profile rather than the first one', async () => {
-    const fakeFetch = asFetch(() =>
-      gatewayResponse({
-        activeProfile: 'work',
-        profiles: [
-          { id: 'other', isActive: false, windows: [{ type: 'five_hour', utilization: 0.1 }] },
-          {
-            id: 'work',
-            isActive: true,
-            windows: [
-              { type: 'five_hour', utilization: 0.5 },
-              { type: 'seven_day', utilization: 0.25 },
-            ],
-          },
-        ],
-      })
-    )
-
-    const quota = await fetchAnthropicQuota('http://gateway', undefined, fakeFetch)
-    expect(quota?.percent).toBe(50)
-  })
-
-  it('strips trailing slashes from the configured base URL', async () => {
-    let requestedUrl = ''
-    const fakeFetch = asFetch((input) => {
-      requestedUrl = String(input)
-      return gatewayResponse({ profiles: [] })
+      expect(quota?.percent).toBe(0)
+      expect(quota?.windows?.[0]).toEqual({ label: 'Session', percent: 0 })
+      expect(quota?.windows?.[1]?.percent).toBe(45)
+      expect(quota?.windows?.[1]?.resetsIn).toBe('1d 0h')
     })
+  )
 
-    await fetchAnthropicQuota('http://127.0.0.1:3456/', undefined, fakeFetch)
-    expect(requestedUrl).toBe('http://127.0.0.1:3456/v1/usage/quota/all')
-  })
+  it.effect('reads the active profile rather than the first one', () =>
+    Effect.gen(function* () {
+      const fakeFetch = asFetch(() =>
+        gatewayResponse({
+          activeProfile: 'work',
+          profiles: [
+            { id: 'other', isActive: false, windows: [{ type: 'five_hour', utilization: 0.1 }] },
+            {
+              id: 'work',
+              isActive: true,
+              windows: [
+                { type: 'five_hour', utilization: 0.5 },
+                { type: 'seven_day', utilization: 0.25 },
+              ],
+            },
+          ],
+        })
+      )
 
-  it('returns null without a base URL, and for unsuccessful or malformed responses', async () => {
-    const unusable = asFetch(() => {
-      throw new Error('should not be called')
+      const quota = yield* withFakeFetch(fakeFetch, fetchAnthropicQuota('http://gateway'))
+      expect(quota?.percent).toBe(50)
     })
-    const unsuccessful = asFetch(() => Promise.resolve(new Response(undefined, { status: 404 })))
-    const malformed = asFetch(() =>
-      gatewayResponse({
-        profiles: [{ isActive: true, windows: [{ type: 'five_hour', utilization: 0.1 }] }],
-      })
-    )
-    const empty = asFetch(() => gatewayResponse({ profiles: [] }))
+  )
 
-    expect(await fetchAnthropicQuota('', undefined, unusable)).toBeUndefined()
-    expect(await fetchAnthropicQuota('http://gateway', undefined, unsuccessful)).toBeUndefined()
-    expect(await fetchAnthropicQuota('http://gateway', undefined, malformed)).toBeUndefined()
-    expect(await fetchAnthropicQuota('http://gateway', undefined, empty)).toBeUndefined()
-  })
+  it.effect('strips trailing slashes from the configured base URL', () =>
+    Effect.gen(function* () {
+      let requestedUrl = ''
+      const fakeFetch = asFetch((input) => {
+        requestedUrl = String(input)
+        return gatewayResponse({ profiles: [] })
+      })
 
-  it('derives Azure quota only from valid token headers', () => {
-    expect(
-      quotaFromHeaders('azure-openai', {
-        'x-ratelimit-limit-tokens': '1000',
-        'x-ratelimit-remaining-tokens': '250',
+      yield* withFakeFetch(fakeFetch, fetchAnthropicQuota('http://127.0.0.1:3456/'))
+      expect(requestedUrl).toBe('http://127.0.0.1:3456/v1/usage/quota/all')
+    })
+  )
+
+  it.effect('returns null without a base URL, and for unsuccessful or malformed responses', () =>
+    Effect.gen(function* () {
+      const unusable = asFetch(() => {
+        throw new Error('should not be called')
       })
-    ).toEqual({ label: 'azure', percent: 75 })
-    expect(quotaFromHeaders('anthropic', {})).toBeUndefined()
-    expect(
-      quotaFromHeaders('azure-openai', {
-        'x-ratelimit-limit-tokens': '0',
-        'x-ratelimit-remaining-tokens': '0',
-      })
-    ).toBeUndefined()
-  })
+      const unsuccessful = asFetch(() => Promise.resolve(new Response(undefined, { status: 404 })))
+      const malformed = asFetch(() =>
+        gatewayResponse({
+          profiles: [{ isActive: true, windows: [{ type: 'five_hour', utilization: 0.1 }] }],
+        })
+      )
+      const empty = asFetch(() => gatewayResponse({ profiles: [] }))
+
+      expect(yield* withFakeFetch(unusable, fetchAnthropicQuota(''))).toBeUndefined()
+      expect(yield* withFakeFetch(unsuccessful, fetchAnthropicQuota('http://gateway'))).toBeUndefined()
+      expect(yield* withFakeFetch(malformed, fetchAnthropicQuota('http://gateway'))).toBeUndefined()
+      expect(yield* withFakeFetch(empty, fetchAnthropicQuota('http://gateway'))).toBeUndefined()
+    })
+  )
+
+  it.effect('derives Azure quota only from valid token headers', () =>
+    Effect.sync(() => {
+      expect(
+        quotaFromHeaders('azure-openai', {
+          'x-ratelimit-limit-tokens': '1000',
+          'x-ratelimit-remaining-tokens': '250',
+        })
+      ).toEqual({ label: 'azure', percent: 75 })
+      expect(quotaFromHeaders('anthropic', {})).toBeUndefined()
+      expect(
+        quotaFromHeaders('azure-openai', {
+          'x-ratelimit-limit-tokens': '0',
+          'x-ratelimit-remaining-tokens': '0',
+        })
+      ).toBeUndefined()
+    })
+  )
 })
 
 describe('Anthropic quota polling lifecycle', () => {
@@ -168,11 +183,12 @@ describe('Anthropic quota polling lifecycle', () => {
     Effect.gen(function* () {
       const requests: ReturnType<typeof deferred<ProviderQuota | undefined>>[] = []
       const poller = yield* makeQuotaPoller(() => undefined, {
-        fetchQuota: () => {
-          const request = deferred<ProviderQuota | undefined>()
-          requests.push(request)
-          return request.promise
-        },
+        fetchQuota: () =>
+          Effect.promise(() => {
+            const request = deferred<ProviderQuota | undefined>()
+            requests.push(request)
+            return request.promise
+          }),
         refreshMs: 10,
       })
 
@@ -194,7 +210,30 @@ describe('Anthropic quota polling lifecycle', () => {
       yield* poller.stop
       yield* TestClock.adjust('60 millis')
       expect(requests).toHaveLength(2)
-    })
+    }).pipe(Effect.provide(FetchHttpClient.layer))
+  )
+
+  it.effect('interrupts the in-flight request on stop so no late quota is published', () =>
+    Effect.gen(function* () {
+      const published: (ProviderQuota | undefined)[] = []
+      let interrupted = false
+      const poller = yield* makeQuotaPoller(
+        (quota) => {
+          published.push(quota)
+        },
+        {
+          fetchQuota: () => Effect.never.pipe(Effect.onInterrupt(() => Effect.sync(() => (interrupted = true)))),
+          refreshMs: 10,
+        }
+      )
+
+      yield* poller.start('http://gateway')
+      yield* poller.stop
+
+      expect(interrupted).toBeTrue()
+      yield* TestClock.adjust('60 millis')
+      expect(published).toEqual([])
+    }).pipe(Effect.provide(FetchHttpClient.layer))
   )
 
   it.effect('continues polling when publishing a quota throws', () =>
@@ -209,10 +248,11 @@ describe('Anthropic quota polling lifecycle', () => {
           }
         },
         {
-          fetchQuota: async () => {
-            fetches += 1
-            return { label: 'anthropic', percent: 10 }
-          },
+          fetchQuota: () =>
+            Effect.sync(() => {
+              fetches += 1
+              return { label: 'anthropic', percent: 10 }
+            }),
           refreshMs: 10,
         }
       )
@@ -223,7 +263,7 @@ describe('Anthropic quota polling lifecycle', () => {
       expect(fetches).toBe(2)
       expect(publications).toBe(2)
       yield* poller.stop
-    })
+    }).pipe(Effect.provide(FetchHttpClient.layer))
   )
 
   it.effect('aborts stopped generations and ignores their late results', () =>
@@ -239,11 +279,12 @@ describe('Anthropic quota polling lifecycle', () => {
           published.push(quota)
         },
         {
-          fetchQuota: (baseUrl, signal) => {
-            const result = deferred<ProviderQuota | undefined>()
-            requests.push({ baseUrl, result, signal })
-            return result.promise
-          },
+          fetchQuota: (baseUrl) =>
+            Effect.promise((signal) => {
+              const result = deferred<ProviderQuota | undefined>()
+              requests.push({ baseUrl, result, signal })
+              return result.promise
+            }),
           refreshMs: 10,
         }
       )
@@ -277,6 +318,6 @@ describe('Anthropic quota polling lifecycle', () => {
       expect(third.signal.aborted).toBeTrue()
       yield* TestClock.adjust('60 millis')
       expect(requests).toHaveLength(3)
-    })
+    }).pipe(Effect.provide(FetchHttpClient.layer))
   )
 })

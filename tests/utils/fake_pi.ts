@@ -1,4 +1,7 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { Effect } from 'effect'
+
+import { promiseFromEffect, tryPromiseEffect } from './bun_effect.js'
 
 type EventHandler = (...args: unknown[]) => unknown
 export type ToolDefinition = { name: string } & Record<string, unknown>
@@ -46,8 +49,11 @@ export const createFakePi = (
         /* Empty */
       },
     },
-    async exec(command: string, args: string[], execOptions?: Record<string, unknown>) {
-      return options.exec === undefined ? { code: 0, killed: false, stderr: '', stdout: '' } : options.exec(command, args, execOptions)
+    exec(command: string, args: string[], execOptions?: Record<string, unknown>) {
+      const { exec } = options
+      return exec === undefined
+        ? promiseFromEffect(Effect.succeed({ code: 0, killed: false, stderr: '', stdout: '' }))
+        : promiseFromEffect(tryPromiseEffect(() => exec(command, args, execOptions)))
     },
     getActiveTools: () => [],
     getAllTools: () => [],
@@ -94,13 +100,12 @@ export const createFakePi = (
   const pi = target as unknown as ExtensionAPI
 
   return {
-    async emit(name, event = {}, context = {}) {
-      const results: unknown[] = []
-      for (const handler of state.handlers.get(name) ?? []) {
-        results.push(await handler(event, context))
-      }
-      return results
-    },
+    emit: (name, event = {}, context = {}) =>
+      promiseFromEffect(
+        Effect.forEach(state.handlers.get(name) ?? [], (handler) => tryPromiseEffect(() => Promise.resolve(handler(event, context))), {
+          concurrency: 1,
+        })
+      ),
     pi,
     state,
   }

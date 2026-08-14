@@ -1,9 +1,10 @@
-import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
 
-import { Context, Effect, Function, Layer } from 'effect'
+import { Cause, Context, Effect, Layer, Stream } from 'effect'
+import { type PlatformError } from 'effect/PlatformError'
+import { ChildProcess } from 'effect/unstable/process'
 
+import { bunChildProcessSpawner, bunFileSystem } from '@/shared/effect/bun_services.js'
 import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined } from '@/shared/utils/predicates.js'
 
 export interface ProcessSnapshot {
@@ -17,154 +18,190 @@ export interface ProcessOwnership {
   token: string
 }
 
-export const processAlive = (pid: number): boolean => {
-  if (!Number.isSafeInteger(pid) || pid <= 0) {
-    return false
-  }
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error: unknown) {
-    return error instanceof Error && 'code' in error && error.code === 'EPERM'
-  }
-}
-
-const hashIdentity = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex')
-
-/**
- * The OS-level primitives `inspectProcess` depends on, factored out so tests can drive the
- * Linux/Windows/Unix branches deterministically on any host instead of only the one they run on.
- */
-export interface ProcessProbeShape {
-  readonly platform: NodeJS.Platform
-  readonly processAlive: (pid: number) => boolean
-  readonly readFileUtf8: (path: string) => string
-  readonly readFileBuffer: (path: string) => Buffer
-  readonly runPowerShell: (script: string) => { status: number | null; stdout: string }
-  readonly runPs: (args: string[]) => { status: number | null; stdout: string }
-}
-
-const inspectLinuxProcess = (probe: ProcessProbeShape, pid: number, token?: string): ProcessSnapshot | undefined => {
-  const stat = probe.readFileUtf8(`/proc/${pid}/stat`)
-  const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
-  const startTicks = fields.at(19)
-  const commandLine = probe.readFileBuffer(`/proc/${pid}/cmdline`)
-  if (isNullOrUndefined(startTicks) || isEmptyString(startTicks) || commandLine.length === 0) {
-    return undefined
-  }
-  const environment = isNotNullOrUndefined(token) && isNotEmptyString(token) ? probe.readFileBuffer(`/proc/${pid}/environ`) : undefined
-  return {
-    identity: `linux:${startTicks}:${hashIdentity(commandLine)}`,
-    ...(isNotNullOrUndefined(token) && isNotEmptyString(token)
-      ? {
-          tokenMatches: environment?.includes(Buffer.from(`PI_SUBAGENT_OWNER_TOKEN=${token}\0`)) ?? false,
-        }
-      : {}),
-  }
-}
-
-const inspectWindowsProcess = (probe: ProcessProbeShape, pid: number): ProcessSnapshot | undefined => {
-  const script = `$p=Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}"; if ($null -ne $p) { [Console]::Out.Write($p.CreationDate.ToUniversalTime().Ticks.ToString() + [char]0 + $p.CommandLine) }`
-  const result = probe.runPowerShell(script)
-  const output = result.status === 0 ? result.stdout : ''
-  return isNotEmptyString(output) ? { identity: `windows:${hashIdentity(output)}` } : undefined
-}
-
-const inspectUnixProcess = (probe: ProcessProbeShape, pid: number, token?: string): ProcessSnapshot | undefined => {
-  // Darwin does not reliably expose another process's environment through ps, even to its parent.
-  const canVerifyToken = probe.platform !== 'darwin'
-  const result = probe.runPs([canVerifyToken ? 'eww' : 'ww', '-p', String(pid), '-o', 'lstart=', '-o', 'command='])
-  const output = result.status === 0 ? result.stdout.trim() : ''
-  if (isEmptyString(output)) {
-    return undefined
-  }
-  return {
-    identity: `unix:${hashIdentity(output)}`,
-    ...(isNotNullOrUndefined(token) && isNotEmptyString(token) && canVerifyToken
-      ? { tokenMatches: output.includes(`PI_SUBAGENT_OWNER_TOKEN=${token}`) }
-      : {}),
-  }
-}
-
-/**
- * Return an identity tied to a particular process lifetime, not just its PID.
- * The optional token additionally proves that this extension launched the process
- * on platforms where another process's environment can be inspected reliably.
- */
-const inspectProcessWith =
-  (probe: ProcessProbeShape) =>
-  (pid: number, token?: string): ProcessSnapshot | undefined => {
-    if (!probe.processAlive(pid)) {
-      return undefined
+export const processAlive = (pid: number): Effect.Effect<boolean> =>
+  Effect.sync(() => {
+    if (!Number.isSafeInteger(pid) || pid <= 0) {
+      return false
     }
     try {
-      if (probe.platform === 'linux') {
-        return inspectLinuxProcess(probe, pid, token)
-      }
-      if (probe.platform === 'win32') {
-        return inspectWindowsProcess(probe, pid)
-      }
-      return inspectUnixProcess(probe, pid, token)
-    } catch {
-      return undefined
+      process.kill(pid, 0)
+      return true
+    } catch (error: unknown) {
+      return error instanceof Error && 'code' in error && error.code === 'EPERM'
     }
-  }
+  })
 
-const ownershipMatchesWith = (inspect: (pid: number, token?: string) => ProcessSnapshot | undefined, ownership: ProcessOwnership): boolean => {
-  const snapshot = inspect(ownership.pid, ownership.token)
-  return snapshot?.identity === ownership.processIdentity && !isFalse(snapshot.tokenMatches)
+const hashIdentity = (value: string | Uint8Array): string => createHash('sha256').update(value).digest('hex')
+
+const processProbeError = (cause: unknown): Cause.UnknownError =>
+  Cause.isUnknownError(cause) ? cause : new Cause.UnknownError(cause, cause instanceof Error ? cause.message : String(cause))
+
+type ProbeResult<Value> = Value | Effect.Effect<Value, Cause.UnknownError>
+
+/** OS primitives are injectable so every platform branch remains deterministic in tests. */
+export interface ProcessProbeShape {
+  readonly platform: NodeJS.Platform
+  readonly processAlive: (pid: number) => ProbeResult<boolean>
+  readonly readFileUtf8: (path: string) => ProbeResult<string>
+  readonly readFileBuffer: (path: string) => ProbeResult<Uint8Array>
+  readonly runPowerShell: (script: string) => ProbeResult<{ status: number | undefined; stdout: string }>
+  readonly runPs: (args: string[]) => ProbeResult<{ status: number | undefined; stdout: string }>
 }
 
-const processOwnerIsActiveWith = (
-  inspect: (pid: number, token?: string) => ProcessSnapshot | undefined,
-  owner: { pid?: number; processIdentity?: string }
-): boolean => {
+const probeResult = <Value>(evaluate: () => ProbeResult<Value>): Effect.Effect<Value, Cause.UnknownError> =>
+  Effect.try({ catch: processProbeError, try: evaluate }).pipe(
+    Effect.flatMap((result) => (Effect.isEffect(result) ? result : Effect.succeed(result)))
+  )
+
+const inspectLinuxProcess = (probe: ProcessProbeShape, pid: number, token?: string): Effect.Effect<ProcessSnapshot | undefined, Cause.UnknownError> =>
+  Effect.gen(function* () {
+    const stat = yield* probeResult(() => probe.readFileUtf8(`/proc/${pid}/stat`))
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
+    const startTicks = fields.at(19)
+    const commandLine = yield* probeResult(() => probe.readFileBuffer(`/proc/${pid}/cmdline`))
+    if (isNullOrUndefined(startTicks) || isEmptyString(startTicks) || commandLine.length === 0) {
+      return undefined
+    }
+    const environment =
+      isNotNullOrUndefined(token) && isNotEmptyString(token) ? yield* probeResult(() => probe.readFileBuffer(`/proc/${pid}/environ`)) : undefined
+    return {
+      identity: `linux:${startTicks}:${hashIdentity(commandLine)}`,
+      ...(isNotNullOrUndefined(token) && isNotEmptyString(token)
+        ? {
+            tokenMatches: environment === undefined ? false : Buffer.from(environment).includes(Buffer.from(`PI_SUBAGENT_OWNER_TOKEN=${token}\0`)),
+          }
+        : {}),
+    }
+  })
+
+const inspectWindowsProcess = (probe: ProcessProbeShape, pid: number): Effect.Effect<ProcessSnapshot | undefined, Cause.UnknownError> =>
+  Effect.gen(function* () {
+    const script = `$p=Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}"; if ($null -ne $p) { [Console]::Out.Write($p.CreationDate.ToUniversalTime().Ticks.ToString() + [char]0 + $p.CommandLine) }`
+    const result = yield* probeResult(() => probe.runPowerShell(script))
+    const output = result.status === 0 ? result.stdout : ''
+    return isNotEmptyString(output) ? { identity: `windows:${hashIdentity(output)}` } : undefined
+  })
+
+const inspectUnixProcess = (probe: ProcessProbeShape, pid: number, token?: string): Effect.Effect<ProcessSnapshot | undefined, Cause.UnknownError> =>
+  Effect.gen(function* () {
+    // Darwin does not reliably expose another process's environment through ps, even to its parent.
+    const canVerifyToken = probe.platform !== 'darwin'
+    const result = yield* probeResult(() => probe.runPs([canVerifyToken ? 'eww' : 'ww', '-p', String(pid), '-o', 'lstart=', '-o', 'command=']))
+    const output = result.status === 0 ? result.stdout.trim() : ''
+    if (isEmptyString(output)) {
+      return undefined
+    }
+    return {
+      identity: `unix:${hashIdentity(output)}`,
+      ...(isNotNullOrUndefined(token) && isNotEmptyString(token) && canVerifyToken
+        ? { tokenMatches: output.includes(`PI_SUBAGENT_OWNER_TOKEN=${token}`) }
+        : {}),
+    }
+  })
+
+/**
+ * Return an identity tied to a process lifetime, not only its PID. A failed probe (EACCES,
+ * an unreadable /proc entry, a `ps` that could not run) stays in the error channel: callers
+ * that decide whether to reclaim a lock or kill a process must not read it as "process gone".
+ */
+type ProcessInspect = (pid: number, token?: string) => Effect.Effect<ProcessSnapshot | undefined, Cause.UnknownError>
+
+const inspectProcessWith =
+  (probe: ProcessProbeShape): ProcessInspect =>
+  (pid, token) =>
+    Effect.gen(function* () {
+      if (!(yield* probeResult(() => probe.processAlive(pid)))) {
+        return undefined
+      }
+      if (probe.platform === 'linux') {
+        return yield* inspectLinuxProcess(probe, pid, token)
+      }
+      return yield* probe.platform === 'win32' ? inspectWindowsProcess(probe, pid) : inspectUnixProcess(probe, pid, token)
+    })
+
+/**
+ * `unverifiable` is deliberately distinct from `match`: a failed probe must keep the ownership
+ * record alive, but it must never authorise a signal. PIDs are reused, so signalling a process
+ * whose identity could not be read can kill an unrelated process or process group.
+ */
+export type OwnershipVerdict = 'match' | 'mismatch' | 'unverifiable'
+
+const ownershipVerdictWith = (inspect: ProcessInspect, ownership: ProcessOwnership): Effect.Effect<OwnershipVerdict> =>
+  inspect(ownership.pid, ownership.token).pipe(
+    Effect.map((snapshot): OwnershipVerdict =>
+      snapshot?.identity === ownership.processIdentity && !isFalse(snapshot.tokenMatches) ? 'match' : 'mismatch'
+    ),
+    Effect.orElseSucceed((): OwnershipVerdict => 'unverifiable')
+  )
+
+const processOwnerIsActiveWith = (inspect: ProcessInspect, owner: { pid?: number; processIdentity?: string }): Effect.Effect<boolean> => {
   if (typeof owner.pid !== 'number') {
-    return false
+    return Effect.succeed(false)
   }
-  const snapshot = inspect(owner.pid)
-  return (
-    isNotNullOrUndefined(snapshot) &&
-    (isNullOrUndefined(owner.processIdentity) || isEmptyString(owner.processIdentity) || snapshot.identity === owner.processIdentity)
+  return inspect(owner.pid).pipe(
+    Effect.map(
+      (snapshot) =>
+        isNotNullOrUndefined(snapshot) &&
+        (isNullOrUndefined(owner.processIdentity) || isEmptyString(owner.processIdentity) || snapshot.identity === owner.processIdentity)
+    ),
+    Effect.orElseSucceed(() => true)
   )
 }
 
-const runPowerShellScript = (script: string): { status: number | null; stdout: string } => {
-  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', timeout: 3000 })
-  return { status: result.status, stdout: result.stdout }
-}
+const collectStdout = (stream: Stream.Stream<Uint8Array, PlatformError>): Effect.Effect<string, Cause.UnknownError> =>
+  Stream.runFold(
+    stream,
+    (): Uint8Array[] => [],
+    (chunks, chunk) => [...chunks, chunk]
+  ).pipe(
+    Effect.map((chunks) => Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString()),
+    Effect.mapError(processProbeError)
+  )
 
-const runPsCommand = (args: string[]): { status: number | null; stdout: string } => {
-  const result = spawnSync('ps', args, { encoding: 'utf8', timeout: 3000 })
-  return { status: result.status, stdout: result.stdout }
-}
+/**
+ * A probe that could not run is a failure, not an absent process: succeeding with empty output
+ * would let a spawn error or timeout be read as "this process is gone" and reclaim a live lock.
+ */
+const runCommand = (command: string, args: string[]): Effect.Effect<{ status: number | undefined; stdout: string }, Cause.UnknownError> =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const child = yield* bunChildProcessSpawner.spawn(
+        ChildProcess.make(command, args, { detached: false, forceKillAfter: 1000, stderr: 'ignore', stdin: 'ignore', stdout: 'pipe' })
+      )
+      const { status, stdout } = yield* Effect.all(
+        { status: child.exitCode.pipe(Effect.map(Number)), stdout: collectStdout(child.stdout) },
+        { concurrency: 2 }
+      )
+      return { status, stdout }
+    })
+  ).pipe(
+    Effect.timeoutOrElse({ duration: 3000, orElse: () => Effect.fail(processProbeError(new Error(`${command} probe timed out`))) }),
+    Effect.mapError(processProbeError)
+  )
 
-export const nodeProcessProbe: ProcessProbeShape = {
+export const nodeProcessProbe = {
   platform: process.platform,
   processAlive,
-  readFileBuffer: (path) => readFileSync(path),
-  readFileUtf8: (path) => readFileSync(path, 'utf8'),
-  runPowerShell: runPowerShellScript,
-  runPs: runPsCommand,
-}
+  readFileBuffer: (path) => bunFileSystem.readFile(path).pipe(Effect.mapError(processProbeError)),
+  readFileUtf8: (path) => bunFileSystem.readFileString(path).pipe(Effect.mapError(processProbeError)),
+  runPowerShell: (script) => runCommand('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]),
+  runPs: (args: string[]) => runCommand('ps', args),
+} satisfies ProcessProbeShape
 
-export const inspectProcess: {
-  (token: string | undefined): (pid: number) => ProcessSnapshot | undefined
-  (pid: number, token?: string): ProcessSnapshot | undefined
-} = Function.dual(
-  (args) => typeof args[0] === 'number',
-  (pid: number, token?: string): ProcessSnapshot | undefined => inspectProcessWith(nodeProcessProbe)(pid, token)
-)
+export const inspectProcess = (pid: number, token?: string): Effect.Effect<ProcessSnapshot | undefined> =>
+  inspectProcessWith(nodeProcessProbe)(pid, token).pipe(Effect.orElseSucceed(() => undefined))
 
-export const ownershipMatches = (ownership: ProcessOwnership): boolean => ownershipMatchesWith(inspectProcess, ownership)
+export const ownershipVerdict = (ownership: ProcessOwnership): Effect.Effect<OwnershipVerdict> =>
+  ownershipVerdictWith(inspectProcessWith(nodeProcessProbe), ownership)
 
-/** Legacy lock records have only a PID and are treated conservatively while it is alive. */
-export const processOwnerIsActive = (owner: { pid?: number; processIdentity?: string }): boolean => processOwnerIsActiveWith(inspectProcess, owner)
+/** Legacy lock records have only a PID and remain active conservatively while that process lives. */
+export const processOwnerIsActive = (owner: { pid?: number; processIdentity?: string }): Effect.Effect<boolean> =>
+  processOwnerIsActiveWith(inspectProcessWith(nodeProcessProbe), owner)
 
 export interface ProcessInspectorShape {
   readonly inspect: (pid: number, token?: string) => Effect.Effect<ProcessSnapshot | undefined>
   readonly alive: (pid: number) => Effect.Effect<boolean>
-  readonly ownershipMatches: (ownership: ProcessOwnership) => Effect.Effect<boolean>
+  readonly ownershipVerdict: (ownership: ProcessOwnership) => Effect.Effect<OwnershipVerdict>
   readonly ownerIsActive: (owner: { pid?: number; processIdentity?: string }) => Effect.Effect<boolean>
 }
 
@@ -175,10 +212,10 @@ export class ProcessInspector extends Context.Service<ProcessInspector, ProcessI
 export const processInspectorFromProbe = (probe: ProcessProbeShape): ProcessInspectorShape => {
   const inspect = inspectProcessWith(probe)
   return {
-    alive: (pid) => Effect.sync(() => probe.processAlive(pid)),
-    inspect: (pid, token) => Effect.sync(() => inspect(pid, token)),
-    ownerIsActive: (owner) => Effect.sync(() => processOwnerIsActiveWith(inspect, owner)),
-    ownershipMatches: (ownership) => Effect.sync(() => ownershipMatchesWith(inspect, ownership)),
+    alive: (pid) => probeResult(() => probe.processAlive(pid)).pipe(Effect.orElseSucceed(() => false)),
+    inspect: (pid, token) => inspect(pid, token).pipe(Effect.orElseSucceed(() => undefined)),
+    ownerIsActive: (owner) => processOwnerIsActiveWith(inspect, owner),
+    ownershipVerdict: (ownership) => ownershipVerdictWith(inspect, ownership),
   }
 }
 

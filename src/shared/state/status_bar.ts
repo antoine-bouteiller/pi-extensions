@@ -1,5 +1,4 @@
 import { type ExtensionContext } from '@earendil-works/pi-coding-agent'
-import { Function } from 'effect'
 
 import { createKeyedStore } from './store.js'
 
@@ -34,12 +33,9 @@ export const statusBar = {
 export const formatStatusText = (item: StatusItem): string => (item.icon === undefined ? item.text : `${item.icon} ${item.text}`)
 
 /** Store-only write, for callers that mirror into Pi's registry themselves. */
-export const publishStatus: {
-  (item: StatusItem | undefined): (key: string) => void
-  (key: string, item: StatusItem | undefined): void
-} = Function.dual(2, (key: string, item: StatusItem | undefined): void => {
+export const publishStatus = (key: string, item: StatusItem | undefined): void => {
   statuses.publish(key, item)
-})
+}
 
 export interface StatusChannel {
   set: (ctx: ExtensionContext, item: StatusItem) => void
@@ -52,24 +48,18 @@ export interface StatusChannel {
  * Plain text is mirrored into pi's own status registry so the stock footer still shows
  * the entry when the status panel is not installed.
  */
-export const createStatusChannel: {
-  (defaults?: Partial<StatusItem>): (key: string) => StatusChannel
-  (key: string, defaults?: Partial<StatusItem>): StatusChannel
-} = Function.dual(
-  (args) => typeof args[0] === 'string',
-  (key: string, defaults: Partial<StatusItem> = {}): StatusChannel => ({
-    clear(ctx) {
-      statuses.publish(key, undefined)
-      if (ctx.hasUI) {
-        ctx.ui.setStatus(key, undefined)
-      }
-    },
-    set(ctx, item) {
-      const entry = { ...defaults, ...item }
-      statuses.publish(key, entry)
-      if (ctx.hasUI) {
-        ctx.ui.setStatus(key, formatStatusText(entry))
-      }
-    },
-  })
-)
+export const createStatusChannel = (key: string, defaults: Partial<StatusItem> = {}): StatusChannel => ({
+  clear(ctx) {
+    statuses.publish(key, undefined)
+    if (ctx.hasUI) {
+      ctx.ui.setStatus(key, undefined)
+    }
+  },
+  set(ctx, item) {
+    const entry = { ...defaults, ...item }
+    statuses.publish(key, entry)
+    if (ctx.hasUI) {
+      ctx.ui.setStatus(key, formatStatusText(entry))
+    }
+  },
+})

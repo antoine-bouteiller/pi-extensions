@@ -2,6 +2,7 @@ pre-commit:
   parallel: true
   jobs:
     - name: Check Lockfile
+      glob: '*.{ts,js,mjs,cjs,yml,yaml,md,mdx,json}'
       run: bun install --frozen-lockfile --silent
     - name: Check
       glob: '*.{ts,js,mjs,cjs}'

@@ -1,4 +1,5 @@
-import { Data, Duration, Effect, Fiber, Function, Ref } from 'effect'
+import { DateTime, Duration, Effect, Fiber, Ref, Result } from 'effect'
+import { HttpClient, type HttpClientError } from 'effect/unstable/http'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
@@ -7,12 +8,10 @@ import { isEmptyString, isTrue } from '@/shared/utils/predicates.js'
 import { progressBar } from './render.js'
 import { type ProviderQuota, type QuotaWindow } from './state.js'
 
-class FetchQuotaError extends Data.TaggedError('FetchQuotaError')<{ readonly cause: unknown }> {}
-
-export type QuotaFetcher = (baseUrl: string, signal: AbortSignal) => Promise<ProviderQuota | undefined>
+export type QuotaFetcher = (baseUrl: string) => Effect.Effect<ProviderQuota | undefined, never, HttpClient.HttpClient>
 
 export interface QuotaPoller {
-  readonly start: (baseUrl: string) => Effect.Effect<void>
+  readonly start: (baseUrl: string) => Effect.Effect<void, never, HttpClient.HttpClient>
   readonly stop: Effect.Effect<void>
 }
 
@@ -27,39 +26,33 @@ export interface QuotaPollerOptions {
  * its own `refresh` attempt rather than awaiting the previous one -- so the in-flight guard below
  * is load-bearing, not redundant: without it, a slow gateway would let requests overlap.
  */
-export const makeQuotaPoller: {
-  (options: QuotaPollerOptions): (onQuota: (quota: ProviderQuota | undefined) => void) => Effect.Effect<QuotaPoller>
-  (onQuota: (quota: ProviderQuota | undefined) => void, options: QuotaPollerOptions): Effect.Effect<QuotaPoller>
-} = Function.dual(2, (onQuota: (quota: ProviderQuota | undefined) => void, options: QuotaPollerOptions): Effect.Effect<QuotaPoller> =>
+export const makeQuotaPoller = (onQuota: (quota: ProviderQuota | undefined) => void, options: QuotaPollerOptions): Effect.Effect<QuotaPoller> =>
   Effect.gen(function* () {
-    const fetchQuota = options.fetchQuota ?? ((baseUrl, signal) => fetchAnthropicQuota(baseUrl, signal))
+    const fetchQuota = options.fetchQuota ?? fetchAnthropicQuota
     const generationRef = yield* Ref.make(0)
-    const requestRef = yield* Ref.make<AbortController | undefined>(undefined)
+    const inFlightRef = yield* Ref.make(false)
     const fiberRef = yield* Ref.make<Fiber.Fiber<void> | undefined>(undefined)
 
-    const refresh = (generation: number, baseUrl: string): Effect.Effect<void> =>
+    const refresh = (generation: number, baseUrl: string): Effect.Effect<void, never, HttpClient.HttpClient> =>
       Effect.gen(function* () {
         const currentGeneration = yield* Ref.get(generationRef)
-        const inFlight = yield* Ref.get(requestRef)
-        if (generation !== currentGeneration || inFlight !== undefined) {
+        if (generation !== currentGeneration || (yield* Ref.get(inFlightRef))) {
           return
         }
-        const request = new AbortController()
-        yield* Ref.set(requestRef, request)
+        yield* Ref.set(inFlightRef, true)
         yield* Effect.gen(function* () {
-          const outcome = yield* Effect.result(
-            Effect.tryPromise({ catch: (cause) => new FetchQuotaError({ cause }), try: () => fetchQuota(baseUrl, request.signal) })
-          )
-          if (outcome._tag === 'Success') {
-            const stillCurrent = (yield* Ref.get(generationRef)) === generation && !request.signal.aborted
-            if (stillCurrent) {
-              yield* Effect.sync(() => onQuota(outcome.success)).pipe(Effect.ignoreCause)
-            }
+          /*
+           * The request runs on this fiber, so `stop` interrupting the poll loop is what cancels
+           * the request the gateway is still holding open.
+           */
+          const quota = yield* fetchQuota(baseUrl)
+          if ((yield* Ref.get(generationRef)) === generation) {
+            yield* Effect.sync(() => onQuota(quota)).pipe(Effect.ignoreCause)
           }
-        }).pipe(Effect.ensuring(Ref.update(requestRef, (current) => (current === request ? undefined : current))))
+        }).pipe(Effect.ensuring(Ref.set(inFlightRef, false)))
       })
 
-    const pollLoop = (generation: number, baseUrl: string): Effect.Effect<void> =>
+    const pollLoop = (generation: number, baseUrl: string): Effect.Effect<void, never, HttpClient.HttpClient> =>
       Effect.gen(function* () {
         while (true) {
           yield* Effect.forkChild(refresh(generation, baseUrl), { startImmediately: true })
@@ -69,15 +62,13 @@ export const makeQuotaPoller: {
 
     const stop: Effect.Effect<void> = Effect.gen(function* () {
       yield* Ref.update(generationRef, (value) => value + 1)
-      const request = yield* Ref.getAndSet(requestRef, undefined)
-      request?.abort()
       const fiber = yield* Ref.getAndSet(fiberRef, undefined)
       if (fiber !== undefined) {
         yield* Fiber.interrupt(fiber)
       }
     })
 
-    const start = (baseUrl: string): Effect.Effect<void> =>
+    const start = (baseUrl: string): Effect.Effect<void, never, HttpClient.HttpClient> =>
       Effect.gen(function* () {
         yield* stop
         const generation = yield* Ref.get(generationRef)
@@ -87,7 +78,6 @@ export const makeQuotaPoller: {
 
     return { start, stop }
   })
-)
 
 /** One usage window as reported by the gateway, with `utilization` as a 0..1 fraction. */
 const GatewayQuotaWindowSchema = Type.Object({
@@ -126,7 +116,7 @@ const formatReset = (resetsAt: number | null | undefined): string => {
   if (typeof resetsAt !== 'number') {
     return ''
   }
-  const minutes = Math.max(0, Math.round((resetsAt - Date.now()) / 60_000))
+  const minutes = Math.max(0, Math.round((resetsAt - DateTime.toEpochMillis(DateTime.nowUnsafe())) / 60_000))
   if (minutes < 60) {
     return `${minutes}m`
   }
@@ -152,62 +142,67 @@ const extraUsageDetail = (profile: GatewayQuotaProfile): string => {
   return `${formatDollars(extraUsage.usedCredits)}/${formatDollars(extraUsage.monthlyLimit)}$`
 }
 
+const quotaFromPayload = (payload: unknown): ProviderQuota | undefined => {
+  if (!Check(GatewayQuotaResponseSchema, payload)) {
+    return undefined
+  }
+  const profile = activeProfile(payload)
+  if (profile === undefined) {
+    return undefined
+  }
+  const windows = profile.windows ?? []
+  const session = windows.find((window) => window.type === 'five_hour')
+  const weekly = windows.find((window) => window.type === 'seven_day')
+  if (typeof session?.utilization !== 'number' || typeof weekly?.utilization !== 'number') {
+    return undefined
+  }
+  const sessionPercent = session.utilization * 100
+  const weeklyPercent = weekly.utilization * 100
+  const extraUsage = extraUsageDetail(profile)
+  const weeklyDetail = isEmptyString(extraUsage) ? '' : ` ${extraUsage}`
+  return {
+    detail: `${formatReset(session.resetsAt)}  Weekly: ${progressBar(weeklyPercent, 10)} ${weeklyPercent.toFixed(1)}%${weeklyDetail}`,
+    label: 'anthropic',
+    percent: sessionPercent,
+    windows: [
+      quotaWindow('Session', sessionPercent, session.resetsAt),
+      { ...quotaWindow('Weekly', weeklyPercent, weekly.resetsAt), ...(isEmptyString(extraUsage) ? {} : { detail: extraUsage }) },
+    ],
+  }
+}
+
+/**
+ * Without this bound a hung gateway leaves `inFlightRef` set forever, and every later tick of the
+ * poll loop returns early: quota would silently stop updating for the rest of the session.
+ */
+const QUOTA_REQUEST_TIMEOUT_MS = 10_000
+
+const requestQuotaPayload = (endpoint: string): Effect.Effect<unknown, HttpClientError.HttpClientError, HttpClient.HttpClient> =>
+  Effect.gen(function* () {
+    const response = yield* HttpClient.get(endpoint)
+    if (response.status >= 200 && response.status < 300) {
+      return yield* response.json
+    }
+    // An unread body holds its connection, so an error response is drained before being discarded.
+    yield* Effect.ignore(response.text)
+    return undefined
+  }).pipe(Effect.timeoutOrElse({ duration: QUOTA_REQUEST_TIMEOUT_MS, orElse: () => Effect.void }))
+
 /**
  * Reads quota from the gateway the anthropic provider is pointed at, which owns the
  * subscription credentials. Upstream `/api/oauth/usage` is not reachable through it.
+ * A quota read is decoration: any transport or decoding failure degrades to "no quota".
  */
-export const fetchAnthropicQuota: {
-  (signal?: AbortSignal, fetchImpl?: typeof fetch): (baseUrl: string) => Promise<ProviderQuota | undefined>
-  (baseUrl: string, signal?: AbortSignal, fetchImpl?: typeof fetch): Promise<ProviderQuota | undefined>
-} = Function.dual(
-  (args) => typeof args[0] === 'string',
-  async (baseUrl: string, signal?: AbortSignal, fetchImpl: typeof fetch = globalThis.fetch): Promise<ProviderQuota | undefined> => {
+export const fetchAnthropicQuota = (baseUrl: string): Effect.Effect<ProviderQuota | undefined, never, HttpClient.HttpClient> =>
+  Effect.gen(function* () {
     if (isEmptyString(baseUrl)) {
       return undefined
     }
-    try {
-      const endpoint = `${baseUrl.replace(/\/+$/, '')}/v1/usage/quota/all`
-      const response = await fetchImpl(endpoint, { signal })
-      if (!response.ok) {
-        return undefined
-      }
-      const payload: unknown = await response.json()
-      if (!Check(GatewayQuotaResponseSchema, payload)) {
-        return undefined
-      }
-      const profile = activeProfile(payload)
-      if (profile === undefined) {
-        return undefined
-      }
-      const windows = profile.windows ?? []
-      const session = windows.find((window) => window.type === 'five_hour')
-      const weekly = windows.find((window) => window.type === 'seven_day')
-      if (typeof session?.utilization !== 'number' || typeof weekly?.utilization !== 'number') {
-        return undefined
-      }
-      const sessionPercent = session.utilization * 100
-      const weeklyPercent = weekly.utilization * 100
-      const extraUsage = extraUsageDetail(profile)
-      const weeklyDetail = isEmptyString(extraUsage) ? '' : ` ${extraUsage}`
-      return {
-        detail: `${formatReset(session.resetsAt)}  Weekly: ${progressBar(weeklyPercent, 10)} ${weeklyPercent.toFixed(1)}%${weeklyDetail}`,
-        label: 'anthropic',
-        percent: sessionPercent,
-        windows: [
-          quotaWindow('Session', sessionPercent, session.resetsAt),
-          { ...quotaWindow('Weekly', weeklyPercent, weekly.resetsAt), ...(isEmptyString(extraUsage) ? {} : { detail: extraUsage }) },
-        ],
-      }
-    } catch {
-      return undefined
-    }
-  }
-)
+    const payload = yield* Effect.result(requestQuotaPayload(`${baseUrl.replace(/\/+$/, '')}/v1/usage/quota/all`))
+    return Result.isFailure(payload) ? undefined : quotaFromPayload(payload.success)
+  })
 
-export const quotaFromHeaders: {
-  (headers: Record<string, string>): (provider: string) => ProviderQuota | undefined
-  (provider: string, headers: Record<string, string>): ProviderQuota | undefined
-} = Function.dual(2, (provider: string, headers: Record<string, string>): ProviderQuota | undefined => {
+export const quotaFromHeaders = (provider: string, headers: Record<string, string>): ProviderQuota | undefined => {
   if (!provider.startsWith('azure')) {
     return undefined
   }
@@ -217,4 +212,4 @@ export const quotaFromHeaders: {
     return undefined
   }
   return { label: 'azure', percent: Math.max(0, Math.min(100, ((limit - remaining) / limit) * 100)) }
-})
+}

@@ -1,6 +1,6 @@
-import { NodeFileSystem } from '@effect/platform-node'
+import { BunFileSystem } from '@effect/platform-bun'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { Effect, Fiber } from 'effect'
+import { Effect, Fiber, Schema } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
 import { TestClock } from 'effect/testing'
 
@@ -13,11 +13,11 @@ describe('bun-effect shim', () => {
 
   it.effect('virtual clock: 1h sleep completes with no real delay', () =>
     Effect.gen(function* () {
-      const started = Date.now()
+      const started = performance.now()
       const fiber = yield* Effect.forkChild(Effect.as(Effect.sleep('1 hour'), 'woke'))
       yield* TestClock.adjust('1 hour')
       expect(yield* Fiber.join(fiber)).toBe('woke')
-      expect(Date.now() - started).toBeLessThan(500)
+      expect(performance.now() - started).toBeLessThan(500)
     })
   )
 
@@ -45,17 +45,20 @@ describe('bun-effect shim', () => {
     })
   )
 
-  it('released after the scoped test finished', () => {
-    expect(log).toEqual(['acquire', 'release'])
-  })
+  it.effect('released after the scoped test finished', () =>
+    Effect.sync(() => {
+      expect(log).toEqual(['acquire', 'release'])
+    })
+  )
 })
 
-describe('node platform layer', () => {
-  it.effect('reads a file through the Node FileSystem layer', () =>
+describe('bun platform layer', () => {
+  it.effect('reads a file through the Bun FileSystem layer', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem
       const pkg = yield* fs.readFileString('package.json')
-      expect(JSON.parse(pkg).name).toBe('pi-extensions')
-    }).pipe(Effect.provide(NodeFileSystem.layer))
+      const parsed = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(pkg)
+      expect(parsed).toMatchObject({ name: 'pi-extensions' })
+    }).pipe(Effect.provide(BunFileSystem.layer))
   )
 })

@@ -1,26 +1,25 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
-import { Function } from 'effect'
 
-import { register as askUser } from '@/features/ask_user/feature.js'
-import { register as backgroundPoll } from '@/features/background_poll/feature.js'
-import { register as caffeinate } from '@/features/caffeinate/feature.js'
-import { register as claudeCode } from '@/features/claude_code/feature.js'
-import { register as commentChecker } from '@/features/comment_checker/feature.js'
-import { register as hashline } from '@/features/hashline/feature.js'
-import { register as mcp } from '@/features/mcp/feature.js'
-import { register as meridianSessionAffinity } from '@/features/meridian_session_affinity/feature.js'
-import { register as promptRewind } from '@/features/prompt_rewind/feature.js'
-import { register as rules } from '@/features/rules/feature.js'
-import { register as safeRm } from '@/features/safe_rm/feature.js'
-import { register as safetyGuard } from '@/features/safety_guard/feature.js'
-import { register as statusPanel } from '@/features/status_panel/feature.js'
-import { register as subAgents } from '@/features/sub_agents/feature.js'
-import { register as webfetch } from '@/features/webfetch/feature.js'
-import { type AppRuntime } from '@/shared/effect/app_services.js'
+import { type ProcessRuntime } from '@/config/runtime.js'
+import { register as askUser } from '@/features/ask_user/index.js'
+import { register as backgroundPoll } from '@/features/background_poll/index.js'
+import { register as caffeinate } from '@/features/caffeinate/index.js'
+import { register as claudeCode } from '@/features/claude_code/index.js'
+import { register as commentChecker } from '@/features/comment_checker/index.js'
+import { register as hashline } from '@/features/hashline/index.js'
+import { register as mcp } from '@/features/mcp/index.js'
+import { register as meridianSessionAffinity } from '@/features/meridian_session_affinity/index.js'
+import { register as promptRewind } from '@/features/prompt_rewind/index.js'
+import { register as rules } from '@/features/rules/index.js'
+import { register as safeRm } from '@/features/safe_rm/index.js'
+import { register as safetyGuard } from '@/features/safety_guard/index.js'
+import { register as statusPanel } from '@/features/status_panel/index.js'
+import { register as subAgents } from '@/features/sub_agents/index.js'
+import { register as webfetch } from '@/features/webfetch/index.js'
 
 export interface FeatureRegistration {
   readonly name: string
-  readonly register: (pi: ExtensionAPI, runtime: AppRuntime) => void
+  readonly register: (pi: ExtensionAPI, runtime: ProcessRuntime) => void
 }
 
 export const features: readonly FeatureRegistration[] = [
@@ -41,11 +40,8 @@ export const features: readonly FeatureRegistration[] = [
   { name: 'webfetch', register: webfetch },
 ]
 
-export const registerFeatures: {
-  (runtime: AppRuntime): (pi: ExtensionAPI) => void
-  (pi: ExtensionAPI, runtime: AppRuntime): void
-} = Function.dual(2, (pi: ExtensionAPI, runtime: AppRuntime): void => {
+export const registerFeatures = (pi: ExtensionAPI, runtime: ProcessRuntime): void => {
   for (const feature of features) {
     feature.register(pi, runtime)
   }
-})
+}

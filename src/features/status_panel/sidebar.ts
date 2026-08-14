@@ -1,8 +1,7 @@
-import { basename } from 'node:path'
-
 import { type ExtensionContext, type ThemeColor } from '@earendil-works/pi-coding-agent'
 import { getCapabilities, truncateToWidth, visibleWidth, type Component, type OverlayHandle } from '@earendil-works/pi-tui'
-import { Effect, Exit, Ref, Scope } from 'effect'
+import { DateTime, Effect, Exit, Ref, Scope } from 'effect'
+import { type Path } from 'effect/Path'
 
 import { type RunningAgent } from '@/shared/state/agent_activity.js'
 import { formatStatusText, type StatusEntry, type StatusTone } from '@/shared/state/status_bar.js'
@@ -179,9 +178,9 @@ const subagentRows = (agents: readonly RunningAgent[], width: number, theme: Sid
   return rows
 }
 
-const workspaceRows = (state: SidebarState, theme: SidebarTheme) => {
-  const project = basename(state.cwd) || formatDirectory(state.cwd)
-  const rows = [paint(theme, 'white', sanitize(project)), paint(theme, 'gray', formatDirectory(state.cwd))]
+const workspaceRows = (state: SidebarState, theme: SidebarTheme, path: Path) => {
+  const project = path.basename(state.cwd) || formatDirectory(state.cwd, path)
+  const rows = [paint(theme, 'white', sanitize(project)), paint(theme, 'gray', formatDirectory(state.cwd, path))]
   if (state.git.branch === undefined) {
     rows.push(paint(theme, 'gray', 'not a Git repository'))
   } else {
@@ -272,10 +271,18 @@ export interface RenderSidebarLinesOptions {
   theme: SidebarTheme
   width: number
   height: number
+  path: Path
   now?: number
 }
 
-export const renderSidebarLines = ({ state, theme, width, height, now = Date.now() }: RenderSidebarLinesOptions) => {
+export const renderSidebarLines = ({
+  state,
+  theme,
+  width,
+  height,
+  path,
+  now = DateTime.toEpochMillis(DateTime.nowUnsafe()),
+}: RenderSidebarLinesOptions) => {
   const safeWidth = Math.max(0, Math.trunc(width))
   const safeHeight = Math.max(0, Math.trunc(height))
   if (safeWidth === 0 || safeHeight === 0) {
@@ -331,7 +338,7 @@ export const renderSidebarLines = ({ state, theme, width, height, now = Date.now
       required: false,
       rows: panel({
         color: 'purple',
-        rows: workspaceRows(state, theme),
+        rows: workspaceRows(state, theme, path),
         theme,
         title: 'WORKSPACE',
         width: panelWidth,
@@ -410,6 +417,7 @@ export interface SidebarController {
 interface SidebarControllerOptions {
   ctx: ExtensionContext
   getState: () => SidebarState
+  path: Path
   onError?: (error: unknown) => void
   redrawMs?: number
 }
@@ -419,6 +427,7 @@ const setRef = <Value>(ref: Ref.Ref<Value>, value: Value): void => Effect.runSyn
 
 const unrefSleep = (milliseconds: number): Effect.Effect<void> =>
   Effect.callback<void>((resume) => {
+    // oxlint-disable-next-line effecttsgo/global-timers-in-effect -- `Effect.sleep` cannot unref its timer, and this redraw tick must not keep the process alive.
     const timer = setTimeout(() => resume(Effect.void), milliseconds)
     timer.unref?.()
     return Effect.sync(() => clearTimeout(timer))
@@ -502,6 +511,7 @@ export const createSidebarController = (options: SidebarControllerOptions): Side
             render: (sidebarWidth: number) =>
               renderSidebarLines({
                 height: tui.terminal.rows,
+                path: options.path,
                 state: options.getState(),
                 theme,
                 width: sidebarWidth,

@@ -12,31 +12,36 @@ pi install git:github.com/antoine-bouteiller/pi-extensions
 
 ## Development
 
-For local development, `src/` is Pi's global extension directory: it is linked to `~/.pi/agent/extensions`, so Pi loads this source tree in place instead of the packaged bundle. Pi's local auto-discovery loads only the top-level `src/index.ts` entrypoint; nothing under `src/config/`, `src/features/`, or `src/shared/` has a direct-child `index.ts`, so none of it is separately auto-discovered. See [`docs/project_structure.md`](docs/project_structure.md) for the full folder and dependency contract.
+For local development, `src/` is Pi's global extension directory: it is linked to `~/.pi/agent/extensions`, so Pi loads this source tree in place instead of the packaged bundle. Pi's local auto-discovery loads only the top-level `src/index.ts` entrypoint; `src/config/`, `src/features/`, and `src/shared/` have no direct-child `index.ts`, so none of them is separately auto-discovered. Each `src/features/<name>/index.ts` sits one level deeper: it is that feature's Pi-registration entrypoint, not an auto-discovered extension. See [`docs/project_structure.md`](docs/project_structure.md) for the full folder and dependency contract.
 
 ```bash
 bun install --frozen-lockfile
 bun run check
 ```
 
-`bun run check` runs Oxlint correctness checks, strict TypeScript checking, Knip unused-code checks, and the Bun test suite. `bun run test:coverage` additionally collects coverage.
+`bun run check` runs Oxfmt formatting checks, Oxlint, Knip unused-code checks, and the Bun test suite. `bun run test:coverage` additionally collects coverage.
+
+**Type checking lives inside Oxlint.** `oxlint.config.ts` sets `options.typeAware` and `options.typeCheck`, and `oxlint-tsgolint` performs the type analysis, so `bun run lint` _is_ the type gate — in `bun run check` and in CI. There is no separate type-check step to add.
+
+The optional `bun run typecheck` (`tsc --noEmit`) is an **advisory** pass that exists only to surface [`@effect/language-service`](https://github.com/Effect-TS/language-service) suggestions such as `processEnv`, `globalTimers`, and `nodeBuiltinImport`. Those are emitted as TypeScript _warnings_, which still make `tsc` exit non-zero, so this script is expected to exit 1 and is deliberately excluded from `check` and CI. Each remaining warning corresponds to a reviewed exception, recorded either in the `overrides` block of `oxlint.config.ts` or as a scoped `oxlint-disable` comment at the call site. Do not treat its non-zero exit as a build failure.
 
 ## Layout
 
 ```text
 src/index.ts               the only Pi extension entrypoint/default export
 src/config/                composition only: the ordered feature registry and runtime; no index.ts
-src/features/<name>/       one capability per snake_case folder, exporting named `register(pi, runtime)`; no index.ts
+src/features/              one capability per snake_case folder; no direct-child index.ts
+src/features/<name>/index.ts  the feature's only Pi *registration* site, exporting named `register(pi, runtime)`
 src/shared/                cross-feature Effect boundary, state, and utilities; no index.ts
 tests/<mirrors src/>       tests mirror the source tree, using `.spec.ts`
 tests/utils/               shared typed fakes and the bun_effect test harness, imported as @tests/utils/*
 ```
 
-See [`docs/project_structure.md`](docs/project_structure.md) for the full dependency-direction and import-alias contract. `src/config/`, `src/features/`, and `src/shared/` deliberately have no direct-child `index.ts`, so Pi never auto-discovers any of them as a separate extension. `package.json`, `bun.lock`, and `bunfig.toml` are development infrastructure and are not Pi entrypoints.
+See [`docs/project_structure.md`](docs/project_structure.md) for the full dependency-direction and import-alias contract. `src/config/`, `src/features/`, and `src/shared/` deliberately have no direct-child `index.ts`, so Pi never auto-discovers any of them as a separate extension; the per-feature `src/features/<name>/index.ts` is a registration entrypoint, not a barrel. `package.json`, `bun.lock`, and `bunfig.toml` are development infrastructure and are not Pi entrypoints.
 
 ## Effect
 
-This package is on an Effect v4 **beta** (`effect` and `@effect/platform-node` pinned to the exact same `4.0.0-beta.102` in `package.json`, not a range) while the API surface is still moving. Renovate remains enabled, but every proposed Effect update stays exact and must pass the full CI suite. `tests/utils/bun_effect.ts` is a local Bun-native `it.effect`/`it.scoped`/`it.live` shim standing in for `@effect/bun-test`, which does not exist yet ([Effect-TS/effect#5973](https://github.com/Effect-TS/effect/pull/5973)); replace it once that package ships.
+This package is on an Effect v4 **beta** (`effect` and `@effect/platform-bun` pinned to the exact same `4.0.0-beta.107` in `package.json`, not a range) while the API surface is still moving. Renovate remains enabled, but every proposed Effect update stays exact and must pass the full CI suite. `tests/utils/bun_effect.ts` is a local Bun-native `it.effect`/`it.scoped`/`it.live` shim standing in for `@effect/bun-test`, which does not exist yet ([Effect-TS/effect#5973](https://github.com/Effect-TS/effect/pull/5973)); replace it once that package ships.
 
 ## Features
 

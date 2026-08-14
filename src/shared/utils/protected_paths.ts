@@ -1,11 +1,10 @@
-import { realpath } from 'node:fs/promises'
-import { basename, dirname, resolve } from 'node:path'
-
 import { Effect, Schema } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
-import { dual } from 'effect/Function'
 import { type PlatformError } from 'effect/PlatformError'
 
+import { bunPath } from '@/shared/effect/bun_services.js'
+
+const { basename, dirname, resolve } = bunPath
 /** Filenames that look like dotenv files but are intended to be public examples. */
 const PUBLIC_ENV_FILENAMES = new Set(['.env.example', '.env.sample', '.env.template'])
 
@@ -14,6 +13,7 @@ const ALWAYS_PROTECTED_PATTERNS = [
   /(?<prefix>^|\/)(?:\.envrc|\.git-credentials|\.netrc|\.npmrc|\.pypirc|auth\.json)$/,
   /(?<prefix>^|\/)id_(?:ed25519|rsa)(?:\.pub)?$/,
   /(?<prefix>^|\/)\.aws\/(?:config|credentials)$/,
+  /(?<prefix>^|\/)\.docker\/config\.json$/,
   /(?<prefix>^|\/)\.kube\/config$/,
   /(?<prefix>^|\/)\.config\/(?:gcloud(?:\/|$)|gh\/hosts\.yml$)/,
   /\.(?:kdbx|key|p12|pem)$/,
@@ -36,38 +36,7 @@ const isMissingPathError = (error: unknown): boolean =>
 /** Strip the leading `@` accepted by pi's path-oriented tools. */
 export const stripToolPathPrefix = (path: string): string => (path.startsWith('@') ? path.slice(1) : path)
 
-export const resolveToolPath: {
-  (cwd: string): (path: string) => string
-  (path: string, cwd: string): string
-} = dual(2, (path: string, cwd: string): string => resolve(cwd, stripToolPathPrefix(path)))
-
-/**
- * Canonicalize an existing path, or (for a path that does not exist yet)
- * canonicalize its nearest existing ancestor and append the missing suffix.
- * This prevents `link-to-elsewhere/new-file` from evading path policy merely
- * because `new-file` has not been created yet.
- */
-const canonicalizeNearestExisting = async (path: string): Promise<string> => {
-  let candidate = resolve(path)
-  const missingComponents: string[] = []
-
-  while (true) {
-    try {
-      const existing = await realpath(candidate)
-      return resolve(existing, ...missingComponents)
-    } catch (error) {
-      if (!isMissingPathError(error)) {
-        throw error
-      }
-      const parent = dirname(candidate)
-      if (parent === candidate) {
-        return resolve(path)
-      }
-      missingComponents.unshift(basename(candidate))
-      candidate = parent
-    }
-  }
-}
+export const resolveToolPath = (path: string, cwd: string): string => resolve(cwd, stripToolPathPrefix(path))
 
 const matchesProtectedPolicy = (path: string): boolean => {
   const normalized = path.replaceAll('\\', '/').toLowerCase()
@@ -75,40 +44,6 @@ const matchesProtectedPolicy = (path: string): boolean => {
   const isPrivateEnv = (name === '.env' || name.startsWith('.env.')) && !PUBLIC_ENV_FILENAMES.has(name)
   return isPrivateEnv || ALWAYS_PROTECTED_PATTERNS.some((pattern) => pattern.test(normalized))
 }
-
-/**
- * Apply protected-file policy to both the lexical and canonical spellings.
- * Checking both means neither a harmless-looking symlink to a credential nor
- * a credential-shaped symlink to a harmless file bypasses the policy.
- */
-const resolveProtectedPath = async (path: string, cwd: string): Promise<ProtectedPathResolution> => {
-  const absolutePath = resolveToolPath(path, cwd)
-  const canonicalPath = await canonicalizeNearestExisting(absolutePath)
-  return {
-    absolutePath,
-    canonicalPath,
-    protected: matchesProtectedPolicy(absolutePath) || matchesProtectedPolicy(canonicalPath),
-  }
-}
-
-export const isProtectedPath: {
-  (cwd: string): (path: string) => Promise<boolean>
-  (path: string, cwd: string): Promise<boolean>
-} = dual(2, async (path: string, cwd: string): Promise<boolean> => {
-  const resolution = await resolveProtectedPath(path, cwd)
-  return resolution.protected
-})
-
-export const assertUnprotectedPath: {
-  (cwd: string, operation: string): (path: string) => Promise<ProtectedPathResolution>
-  (path: string, cwd: string, operation: string): Promise<ProtectedPathResolution>
-} = dual(3, async (path: string, cwd: string, operation: string): Promise<ProtectedPathResolution> => {
-  const resolution = await resolveProtectedPath(path, cwd)
-  if (resolution.protected) {
-    throw new Error(protectedPathMessage(path, operation))
-  }
-  return resolution
-})
 
 const protectedPathMessage = (path: string, operation: string): string => `Refusing to ${operation} protected path: ${path}`
 
@@ -121,12 +56,18 @@ export class ProtectedPathError extends Schema.TaggedError<ProtectedPathError>()
  * Effect maps ENOENT to `NotFound` but ENOTDIR to `BadResource`, the same reason it gives EISDIR
  * and ELOOP. Branching on the reason would either stop walking past a non-directory component or,
  * worse, treat a symlink loop as a missing path. Match on the errno the PlatformError still
- * carries in `cause`, so this stays byte-for-byte the predicate the callback version uses.
+ * carries in `cause`.
  */
 const isMissingPlatformError = (error: PlatformError): boolean => isMissingPathError(error.cause)
 
 const noExistingAncestor = undefined
 
+/**
+ * Canonicalize an existing path, or (for a path that does not exist yet)
+ * canonicalize its nearest existing ancestor and append the missing suffix.
+ * This prevents `link-to-elsewhere/new-file` from evading path policy merely
+ * because `new-file` has not been created yet.
+ */
 const canonicalizeNearestExistingEffect = (path: string): Effect.Effect<string, PlatformError, FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem
@@ -150,10 +91,12 @@ const canonicalizeNearestExistingEffect = (path: string): Effect.Effect<string, 
     }
   })
 
-export const resolveProtectedPathEffect: {
-  (cwd: string): (path: string) => Effect.Effect<ProtectedPathResolution, PlatformError, FileSystem>
-  (path: string, cwd: string): Effect.Effect<ProtectedPathResolution, PlatformError, FileSystem>
-} = dual(2, (path: string, cwd: string): Effect.Effect<ProtectedPathResolution, PlatformError, FileSystem> =>
+/**
+ * Apply protected-file policy to both the lexical and canonical spellings.
+ * Checking both means neither a harmless-looking symlink to a credential nor
+ * a credential-shaped symlink to a harmless file bypasses the policy.
+ */
+export const resolveProtectedPathEffect = (path: string, cwd: string): Effect.Effect<ProtectedPathResolution, PlatformError, FileSystem> =>
   Effect.gen(function* () {
     const absolutePath = resolveToolPath(path, cwd)
     const canonicalPath = yield* canonicalizeNearestExistingEffect(absolutePath)
@@ -163,12 +106,12 @@ export const resolveProtectedPathEffect: {
       protected: matchesProtectedPolicy(absolutePath) || matchesProtectedPolicy(canonicalPath),
     }
   })
-)
 
-export const assertUnprotectedPathEffect: {
-  (cwd: string, operation: string): (path: string) => Effect.Effect<ProtectedPathResolution, PlatformError | ProtectedPathError, FileSystem>
-  (path: string, cwd: string, operation: string): Effect.Effect<ProtectedPathResolution, PlatformError | ProtectedPathError, FileSystem>
-} = dual(3, (path: string, cwd: string, operation: string): Effect.Effect<ProtectedPathResolution, PlatformError | ProtectedPathError, FileSystem> =>
+export const assertUnprotectedPathEffect = (
+  path: string,
+  cwd: string,
+  operation: string
+): Effect.Effect<ProtectedPathResolution, PlatformError | ProtectedPathError, FileSystem> =>
   Effect.gen(function* () {
     const resolution = yield* resolveProtectedPathEffect(path, cwd)
     if (resolution.protected) {
@@ -176,4 +119,3 @@ export const assertUnprotectedPathEffect: {
     }
     return resolution
   })
-)
