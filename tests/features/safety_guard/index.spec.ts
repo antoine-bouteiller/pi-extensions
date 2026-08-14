@@ -233,6 +233,47 @@ describe('safety guard', () => {
     })
   )
 
+  it.effect('allows compound commands whose literal rm targets pass safe_rm validation', () =>
+    Effect.gen(function* () {
+      const cwd = yield* workspace
+      yield* mkdir(join(cwd, 'src'))
+      yield* writeFile(join(cwd, 'src', 'App.tsx'), 'content')
+      const { handler } = setup()
+      const ctx = { cwd, hasUI: false }
+
+      const call = event('git rm -q --cached src/App.tsx;\n rm -f src/App.tsx; git add src/app.tsx; ls src/')
+      expect(yield* Effect.promise(() => handler(call, ctx))).toBeUndefined()
+      expect(call.input.command).toContain('rm -f src/App.tsx')
+      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'src', 'App.tsx')).exists())).toBeTrue()
+    })
+  )
+
+  it.effect('blocks a compound command whose rm target fails safe_rm validation', () =>
+    Effect.gen(function* () {
+      const cwd = yield* workspace
+      const { handler } = setup()
+
+      const result = yield* Effect.promise(() => handler(event('echo start && rm -f /etc/hosts && echo done'), { cwd, hasUI: false }))
+      expect(result?.block).toBeTrue()
+      expect(result?.reason).toContain('working directory or /tmp')
+    })
+  )
+
+  it.effect('ignores dangerous words inside message arguments', () =>
+    Effect.gen(function* () {
+      const { handler } = setup()
+      const ctx = { cwd: '/work/project', hasUI: false }
+
+      for (const command of [
+        `git commit -m 'rm -rf build and reboot the worker'`,
+        'git commit --message="sudo shutdown of the DROP TABLE users path"',
+        'gh pr create --title "mkfs /dev/sda guard" --body "blocks find . -delete"',
+      ]) {
+        expect(yield* Effect.promise(() => handler(event(command), ctx)), command).toBeUndefined()
+      }
+    })
+  )
+
   it.effect('describes the regex command guard as best-effort and does not claim arbitrary code analysis', () =>
     Effect.gen(function* () {
       const { handler } = setup()

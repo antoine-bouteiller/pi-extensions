@@ -17,7 +17,7 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
     name: 'safe_rm',
     parameters: SafeRmParams,
     promptGuidelines: [
-      'Use safe_rm for file and directory deletion. The shell guard routes simple literal rm commands through the same validation and blocks complex rm, rmdir, unlink, find deletion, and xargs rm commands.',
+      'Use safe_rm for file and directory deletion. The shell guard routes simple literal rm commands through the same validation, pre-validates literal rm inside compound commands, and blocks non-literal rm, rmdir, unlink, find deletion, and xargs rm commands.',
       'Set recursive=true only when intentionally removing directories. safe_rm validates all paths before deleting any of them.',
     ],
     promptSnippet: 'Remove files or directories through validated literal paths',

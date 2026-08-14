@@ -1,13 +1,15 @@
 import { isToolCallEventType, type ExtensionContext, type ToolCallEvent, type ToolCallEventResult } from '@earendil-works/pi-coding-agent'
-import { Effect, Match } from 'effect'
+import { Cause, Effect, Match } from 'effect'
 import { type FileSystem } from 'effect/FileSystem'
 import { type PlatformError } from 'effect/PlatformError'
 
+import { parseSimpleRm, validateSafeRmTargets, type SafeRmToolParams } from '@/features/safe_rm/remove.js'
 import { StatusBar } from '@/shared/effect/app_services.js'
 import { Pi, Ui } from '@/shared/effect/pi_services.js'
 import { resolveProtectedPathEffect } from '@/shared/utils/protected_paths.js'
 
-import { ALL_PATTERNS, COMMAND_EXCERPT_CONTEXT_LINES, COMMAND_EXCERPT_MAX_LENGTH, SAFETY_STATUS_KEY } from './constants.js'
+import { ALL_PATTERNS, COMMAND_EXCERPT_CONTEXT_LINES, COMMAND_EXCERPT_MAX_LENGTH, SAFETY_STATUS_KEY, SHELL_DELETION_PATTERN } from './constants.js'
+import { commandSegments, maskProse } from './scan.js'
 
 const commandExcerpt = (command: string, pattern: RegExp): string => {
   const lines = command.split(/\r?\n/)
@@ -35,27 +37,73 @@ type GuardDecision =
   | { readonly _tag: 'Block'; readonly reason: string; readonly notifyLabel?: string }
   | { readonly _tag: 'Confirm'; readonly label: string; readonly message: string }
 
-const decideForCommand = (command: string): GuardDecision => {
-  const scannedCommand = command.replaceAll(/\\\r?\n/g, '')
-  for (const rule of ALL_PATTERNS) {
-    if (!rule.pattern.test(scannedCommand)) {
+/**
+ * A compound command is routable when every deletion it contains is a literal `rm` that safe_rm
+ * could have expressed itself. Those targets are then validated with safe_rm's own rules, and the
+ * shell command runs unchanged so its ordering is preserved.
+ *
+ * ponytail: validation happens before the shell runs, so it is not a TOCTOU fence like the tool
+ * path; route deletions through safe_rm itself if a hostile local process is in scope.
+ */
+const routeDeletions = (scannedCommand: string): SafeRmToolParams[] | undefined => {
+  const routes: SafeRmToolParams[] = []
+  for (const segment of commandSegments(scannedCommand)) {
+    if (!SHELL_DELETION_PATTERN.pattern.test(segment)) {
       continue
     }
-    if (rule.severity === 'critical') {
+    const route = parseSimpleRm(segment)
+    if (route === undefined) {
+      return undefined
+    }
+    routes.push(route)
+  }
+  return routes.length > 0 ? routes : undefined
+}
+
+const validateDeletions = (routes: SafeRmToolParams[], ctx: ExtensionContext): Effect.Effect<string | undefined, never, FileSystem> =>
+  Effect.forEach(routes, (params) => validateSafeRmTargets({ cwd: ctx.cwd, params, signal: ctx.signal }), { concurrency: 1 }).pipe(
+    Effect.as(undefined),
+    Effect.catchCause((cause) => {
+      const error: unknown = Cause.squash(cause)
+      return Effect.succeed(error instanceof Error ? error.message : String(error))
+    })
+  )
+
+const decideForCommand = (command: string, ctx: ExtensionContext): Effect.Effect<GuardDecision, never, FileSystem> =>
+  Effect.gen(function* () {
+    const scannedCommand = command.replaceAll(/\\\r?\n/g, '')
+    const maskedCommand = maskProse(scannedCommand)
+    for (const rule of ALL_PATTERNS) {
+      if (!rule.pattern.test(maskedCommand)) {
+        continue
+      }
+      const routes = rule === SHELL_DELETION_PATTERN ? routeDeletions(scannedCommand) : undefined
+      if (routes !== undefined) {
+        const failure = yield* validateDeletions(routes, ctx)
+        if (failure === undefined) {
+          continue
+        }
+        return {
+          _tag: 'Block',
+          notifyLabel: rule.label,
+          reason: `CRITICAL (best-effort command policy): ${rule.label} — safe_rm validation rejected a target: ${failure}`,
+        }
+      }
+      if (rule.severity === 'critical') {
+        return {
+          _tag: 'Block',
+          notifyLabel: rule.label,
+          reason: `CRITICAL (best-effort command policy): ${rule.label} — recognized command blocked`,
+        }
+      }
       return {
-        _tag: 'Block',
-        notifyLabel: rule.label,
-        reason: `CRITICAL (best-effort command policy): ${rule.label} — recognized command blocked`,
+        _tag: 'Confirm',
+        label: rule.label,
+        message: `Category: ${rule.category}\n\n${commandExcerpt(command, rule.pattern)}`,
       }
     }
-    return {
-      _tag: 'Confirm',
-      label: rule.label,
-      message: `Category: ${rule.category}\n\n${commandExcerpt(command, rule.pattern)}`,
-    }
-  }
-  return { _tag: 'Allow' }
-}
+    return { _tag: 'Allow' }
+  })
 
 const decideForProtectedTarget = (
   operation: 'edit' | 'read' | 'write',
@@ -134,7 +182,7 @@ export const handleToolCall = (event: ToolCallEvent, ctx: ExtensionContext) =>
   Effect.gen(function* () {
     const command = extractCommand(event)
     if (command !== undefined) {
-      return yield* runDecision(decideForCommand(command))
+      return yield* runDecision(yield* decideForCommand(command, ctx))
     }
 
     const target = extractProtectedTarget(event)

@@ -68,7 +68,7 @@ const parseSimpleRmPrefix = (tokens: string[]): SimpleRmPrefix => {
   return { optionsEnded: false, pathsStart, recursive }
 }
 
-const parseSimpleRm = (command: string): SafeRmToolParams | undefined => {
+export const parseSimpleRm = (command: string): SafeRmToolParams | undefined => {
   // Ponytail: whitespace-only literal syntax; add a shell tokenizer when quoted-path routing is needed.
   if (/[\r\n]/.test(command)) {
     return undefined
@@ -318,10 +318,41 @@ const rejectOverlappingTargets = (targets: ValidatedTarget[]): Effect.Effect<voi
     return undefined
   })
 
-interface SafeRmToolParams {
+export interface SafeRmToolParams {
   paths: string[]
   recursive?: boolean
 }
+
+export interface SafeRmValidation {
+  roots: AllowedRoot[]
+  targets: ValidatedTarget[]
+}
+
+export const validateSafeRmTargets = ({
+  cwd,
+  params,
+  signal,
+}: {
+  cwd: string
+  params: SafeRmToolParams
+  signal: AbortSignal | undefined
+}): Effect.Effect<SafeRmValidation, ValidateTargetError | OverlappingTargetsError, FileSystem> =>
+  Effect.gen(function* () {
+    yield* checkCancelled(signal)
+
+    const tmpRoot = resolve('/tmp')
+    const roots: AllowedRoot[] = [
+      { canonical: yield* realpathEffect(cwd), lexical: cwd },
+      { canonical: yield* realpathEffect(tmpRoot), lexical: tmpRoot },
+    ]
+    const recursive = params.recursive ?? false
+
+    const targets = yield* Effect.forEach(params.paths, (path) => validateTargetEffect({ cwd, input: path, recursive, roots, signal }), {
+      concurrency: 'unbounded',
+    })
+    yield* rejectOverlappingTargets(targets)
+    return { roots, targets }
+  })
 
 interface ToolOutput {
   content: { text: string; type: 'text' }[]
@@ -341,20 +372,8 @@ export const makeSafeRmRunner =
   (runtime: AppRuntime): SafeRmRun =>
   (params, signal, ctx) =>
     Effect.gen(function* () {
-      yield* checkCancelled(signal)
-
       const cwd = resolve(ctx.cwd)
-      const tmpRoot = resolve('/tmp')
-      const roots: AllowedRoot[] = [
-        { canonical: yield* realpathEffect(cwd), lexical: cwd },
-        { canonical: yield* realpathEffect(tmpRoot), lexical: tmpRoot },
-      ]
-      const recursive = params.recursive ?? false
-
-      const targets = yield* Effect.forEach(params.paths, (path) => validateTargetEffect({ cwd, input: path, recursive, roots, signal }), {
-        concurrency: 'unbounded',
-      })
-      yield* rejectOverlappingTargets(targets)
+      const { roots, targets } = yield* validateSafeRmTargets({ cwd, params, signal })
 
       const details: SafeRmDetails = { missing: [], removed: [] }
       for (const target of targets) {
