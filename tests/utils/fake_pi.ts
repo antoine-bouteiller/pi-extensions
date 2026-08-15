@@ -8,6 +8,8 @@ export type ToolDefinition = { name: string } & Record<string, unknown>
 export type CommandDefinition = Record<string, unknown>
 
 export interface FakePiState {
+  entries: { customType: string; data: unknown }[]
+  entryRenderers: Map<string, (...args: unknown[]) => unknown>
   handlers: Map<string, EventHandler[]>
   tools: Map<string, ToolDefinition>
   commands: Map<string, CommandDefinition>
@@ -34,6 +36,8 @@ export const createFakePi = (
   const state: FakePiState = {
     commands: new Map(),
     emittedEvents: [],
+    entries: [],
+    entryRenderers: new Map(),
     handlers: new Map(),
     messageRenderers: [],
     messages: [],
@@ -41,6 +45,9 @@ export const createFakePi = (
   }
 
   const target = {
+    appendEntry(customType: string, data: unknown) {
+      state.entries.push({ customType, data })
+    },
     events: {
       emit(name: string, data: unknown) {
         state.emittedEvents.push({ data, name })
@@ -66,8 +73,8 @@ export const createFakePi = (
     registerCommand(name: string, command: CommandDefinition) {
       state.commands.set(name, command)
     },
-    registerEntryRenderer() {
-      /* Empty */
+    registerEntryRenderer(customType: string, renderer: (...args: unknown[]) => unknown) {
+      state.entryRenderers.set(customType, renderer)
     },
     registerFlag() {
       /* Empty */
