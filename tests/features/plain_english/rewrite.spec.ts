@@ -45,11 +45,9 @@ describe('plain_english rewriter', () => {
     })
 
     return Effect.gen(function* () {
-      const result = yield* rewriteMessage({ model: modelRef, question: 'What changed?', text: 'Dense answer', timeoutMs: 1000 }).pipe(
-        Effect.provideService(PiCtx, ctx)
-      )
+      const result = yield* rewriteMessage({ model: modelRef, text: 'Dense answer', timeoutMs: 1000 }).pipe(Effect.provideService(PiCtx, ctx))
       expect(result).toBe('Plain words')
-      expect(received).toMatchObject({ messages: [{ content: expect.stringContaining('What changed?'), role: 'user' }] })
+      expect(received).toMatchObject({ messages: [{ content: expect.stringContaining('Dense answer'), role: 'user' }] })
       expect(received?.tools).toBeUndefined()
     })
   })
@@ -73,6 +71,20 @@ describe('plain_english rewriter', () => {
       rewriteDocument({ body: 'Document', model: modelRef, timeoutMs: 1000 }).pipe(Effect.flip),
       contextWith(() => Promise.resolve(completion([{ text: 'partial', type: 'text' }], 'length')), model)
     ).pipe(Effect.tap((error) => Effect.sync(() => expect(error.reason).toBe('RewriteTruncated'))))
+  )
+
+  it.effect('rejects resolved error completions even when they contain text', () =>
+    provideCtx(
+      rewriteDocument({ body: 'Document', model: modelRef, timeoutMs: 1000 }).pipe(Effect.flip),
+      contextWith(() => Promise.resolve(completion([{ text: 'must not be used', type: 'text' }], 'error')), model)
+    ).pipe(Effect.tap((error) => Effect.sync(() => expect(error.reason).toBe('ProviderFailure'))))
+  )
+
+  it.effect('rejects resolved aborted completions even when they contain text', () =>
+    provideCtx(
+      rewriteDocument({ body: 'Document', model: modelRef, timeoutMs: 1000 }).pipe(Effect.flip),
+      contextWith(() => Promise.resolve(completion([{ text: 'must not be used', type: 'text' }], 'aborted')), model)
+    ).pipe(Effect.tap((error) => Effect.sync(() => expect(error.reason).toBe('ProviderFailure'))))
   )
 
   it.effect('rejects empty completion content', () =>

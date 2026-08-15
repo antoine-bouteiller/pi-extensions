@@ -18,7 +18,6 @@ interface ModelRef {
 
 interface RewriteMessageOptions {
   readonly text: string
-  readonly question?: string
   readonly model: ModelRef
   readonly timeoutMs: number
 }
@@ -53,8 +52,8 @@ const rewrite = ({
       return yield* unavailable(modelRef.provider, modelRef.modelId)
     }
 
-    const completion = yield* Effect.tryPromise(() =>
-      ctx.modelRegistry.complete(model, { messages: [{ content, role: 'user', timestamp: 0 }], systemPrompt })
+    const completion = yield* Effect.tryPromise((signal) =>
+      ctx.modelRegistry.complete(model, { messages: [{ content, role: 'user', timestamp: 0 }], systemPrompt }, { signal })
     ).pipe(
       Effect.mapError(() => providerFailure('The rewrite provider failed.')),
       Effect.timeoutOrElse({
@@ -65,6 +64,9 @@ const rewrite = ({
 
     if (completion.stopReason === 'length') {
       return yield* RewriteError.make({ message: 'The rewrite was truncated.', reason: 'RewriteTruncated' })
+    }
+    if (completion.stopReason !== 'stop' && completion.stopReason !== 'toolUse') {
+      return yield* providerFailure('The rewrite provider did not complete successfully.')
     }
 
     const text = completion.content
@@ -77,12 +79,9 @@ const rewrite = ({
     return text
   })
 
-export const rewriteMessage = ({ text, question, model, timeoutMs }: RewriteMessageOptions) =>
+export const rewriteMessage = ({ text, model, timeoutMs }: RewriteMessageOptions) =>
   rewrite({
-    content:
-      question === undefined
-        ? `Assistant message to rewrite:\n${text}`
-        : `User question (context only; do not answer or repeat it):\n${question}\n\nAssistant message to rewrite:\n${text}`,
+    content: `Assistant message to rewrite:\n${text}`,
     model,
     systemPrompt: messageRewriteSystemPrompt,
     timeoutMs,

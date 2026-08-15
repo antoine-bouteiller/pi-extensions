@@ -1,8 +1,8 @@
 import { tmpdir } from 'node:os'
 
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { describe, expect, it, promiseFromEffect } from '@tests/utils/bun_effect.js'
 import { asExtensionContext, asNarrowed } from '@tests/utils/casts.js'
-import { Effect, FileSystem, Option, Path } from 'effect'
+import { Deferred, Effect, Fiber, FileSystem, Option, Path } from 'effect'
 
 import { loadConfig, type PlainEnglishConfig } from '@/features/plain_english/config.js'
 import { makeMarkdownCommand } from '@/features/plain_english/markdown.js'
@@ -33,14 +33,14 @@ const workspace = Effect.gen(function* () {
   return { directory, fs, path }
 })
 
-const contextWith = (cwd: string, rewritten = 'Clearer prose', reject = false) =>
+const contextWith = (cwd: string, rewritten = 'Clearer prose', reject = false, stopReason: 'stop' | 'error' | 'aborted' = 'stop') =>
   asExtensionContext({
     cwd,
     modelRegistry: {
       complete: () =>
         reject
           ? Promise.reject(new Error('offline'))
-          : Promise.resolve(asNarrowed<object, object>({ content: [{ text: rewritten, type: 'text' }], stopReason: 'stop' })),
+          : Promise.resolve(asNarrowed<object, object>({ content: [{ text: rewritten, type: 'text' }], stopReason })),
       find: (provider: string, modelId: string) =>
         provider === modelRef.provider && modelId === modelRef.modelId ? asNarrowed<object, object>({}) : undefined,
     },
@@ -99,6 +99,68 @@ describe('plain_english markdown command', () => {
       expect(yield* fs.readFileString(source)).toBe(output)
       expect(yield* fs.readDirectory(directory)).toEqual(['guide.md'])
       expect(second.messages).toEqual([{ level: 'warning', message: expect.stringContaining('already rewritten') }])
+    })
+  )
+
+  it.scoped('preserves a 0600 source mode for sibling and overwrite output', () =>
+    Effect.gen(function* () {
+      const { directory, fs, path } = yield* workspace
+      const sibling = path.join(directory, 'sibling.md')
+      const overwrite = path.join(directory, 'overwrite.md')
+      yield* fs.writeFileString(sibling, 'Private sibling source.')
+      yield* fs.writeFileString(overwrite, 'Private overwrite source.')
+      yield* fs.chmod(sibling, 0o600)
+      yield* fs.chmod(overwrite, 0o600)
+
+      yield* run('sibling.md', contextWith(directory), notifications().ui)
+      yield* run('overwrite.md --overwrite', contextWith(directory), notifications().ui)
+
+      expect((yield* fs.stat(path.join(directory, 'sibling.plain.md'))).mode & 0o777).toBe(0o600)
+      expect((yield* fs.stat(overwrite)).mode & 0o777).toBe(0o600)
+    })
+  )
+
+  it.scoped('does not write output for resolved error or aborted completions', () =>
+    Effect.gen(function* () {
+      const { directory, fs, path } = yield* workspace
+      for (const stopReason of ['error', 'aborted'] as const) {
+        const source = path.join(directory, `${stopReason}.md`)
+        const input = 'Dense prose that must not be replaced.'
+        yield* fs.writeFileString(source, input)
+        const { messages, ui } = notifications()
+
+        yield* run(`${stopReason}.md`, contextWith(directory, 'must not be written', false, stopReason), ui)
+
+        expect(yield* fs.readFileString(source)).toBe(input)
+        expect(yield* fs.exists(path.join(directory, `${stopReason}.plain.md`))).toBe(false)
+        expect(messages).toEqual([{ level: 'warning', message: expect.stringContaining('rewrite failed') }])
+      }
+    })
+  )
+
+  it.scoped('aborts an overwrite when the source changes while the rewrite is pending', () =>
+    Effect.gen(function* () {
+      const { directory, fs, path } = yield* workspace
+      const source = path.join(directory, 'guide.md')
+      yield* fs.writeFileString(source, 'Original prose that will be edited while waiting.')
+      const started = Deferred.makeUnsafe<void>()
+      const release = Deferred.makeUnsafe<object>()
+      const ctx = asExtensionContext({
+        cwd: directory,
+        modelRegistry: {
+          complete: () => promiseFromEffect(Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release)))),
+          find: () => asNarrowed<object, object>({}),
+        },
+      })
+      const { messages, ui } = notifications()
+      const fiber = yield* Effect.forkChild(run('guide.md --overwrite', ctx, ui))
+      yield* Deferred.await(started)
+      yield* fs.writeFileString(source, 'Newer user edit.')
+      yield* Deferred.succeed(release, asNarrowed<object, object>({ content: [{ text: 'Stale rewrite', type: 'text' }], stopReason: 'stop' }))
+      yield* Fiber.join(fiber)
+
+      expect(yield* fs.readFileString(source)).toBe('Newer user edit.')
+      expect(messages).toEqual([{ level: 'warning', message: expect.stringContaining('changed') }])
     })
   )
 

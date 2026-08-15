@@ -35,6 +35,9 @@ const splitFrontmatter = (document: string): { readonly frontmatter: string; rea
 
 const outputPath = (path: string): string => `${path.slice(0, -'.md'.length)}.plain.md`
 
+const sameBytes = (left: Uint8Array, right: Uint8Array): boolean =>
+  left.length === right.length && left.every((value, index) => value === right[index])
+
 const notify = (message: string, level: 'info' | 'warning') =>
   Effect.gen(function* () {
     const ui = yield* Ui
@@ -66,7 +69,9 @@ export const makeMarkdownCommand =
         return yield* notify(`Markdown file not found: ${source}`, 'warning')
       }
 
-      const document = yield* fs.readFileString(source)
+      const documentBytes = yield* fs.readFile(source)
+      const document = new TextDecoder().decode(documentBytes)
+      const sourceMode = (yield* fs.stat(source)).mode & 0o777
       const { body, frontmatter } = splitFrontmatter(document)
       if (parsed.overwrite && body.includes(REWRITTEN_MARKER)) {
         return yield* notify('Markdown file was already rewritten.', 'warning')
@@ -87,14 +92,22 @@ export const makeMarkdownCommand =
 
       const destination = parsed.overwrite ? source : outputPath(source)
       const content = parsed.overwrite ? `${frontmatter}${REWRITTEN_MARKER}\n${rewritten}` : `${frontmatter}${rewritten}`
-      yield* Effect.scoped(
+      const written = yield* Effect.scoped(
         Effect.gen(function* () {
           const temporaryDirectory = yield* fs.makeTempDirectoryScoped({ directory: path.dirname(destination), prefix: '.plain-english-' })
           const temporary = path.join(temporaryDirectory, 'rewrite.tmp')
-          yield* fs.writeFileString(temporary, content)
+          yield* fs.writeFileString(temporary, content, { mode: sourceMode })
+          yield* fs.chmod(temporary, sourceMode)
+          if (parsed.overwrite && !sameBytes(documentBytes, yield* fs.readFile(source))) {
+            return false
+          }
           yield* fs.rename(temporary, destination)
+          return true
         })
       )
+      if (!written) {
+        return yield* notify('Markdown file changed while the rewrite was pending; no changes were written.', 'warning')
+      }
       return yield* notify(`Plain-English Markdown written: ${destination}`, 'info')
     }).pipe(
       Effect.matchEffect({
