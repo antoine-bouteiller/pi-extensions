@@ -2,14 +2,14 @@ import { Effect, Schema } from 'effect'
 
 import { PiCtx } from '@/shared/effect/pi_services.js'
 
-export class RewriteError extends Schema.TaggedError<RewriteError>()('RewriteError', {
+class RewriteError extends Schema.TaggedError<RewriteError>()('RewriteError', {
   message: Schema.String,
   reason: Schema.Literals(['ModelUnavailable', 'RewriteTimeout', 'RewriteTruncated', 'ProviderFailure']),
 }) {}
 
-export const messageRewriteSystemPrompt = `Rewrite the assistant message in plain English. Preserve every fact. Leave fenced code blocks verbatim. Output only the rewrite. Never answer or repeat the user's question.`
+const messageRewriteSystemPrompt = `Rewrite the assistant message in plain English. Preserve every fact. Leave fenced code blocks verbatim. Output only the rewrite. Never answer or repeat the user's question.`
 
-export const documentRewriteSystemPrompt = `Rewrite the document in plain English. Preserve every fact. Leave fenced code blocks verbatim. Output only the rewrite. Never answer or repeat a question.`
+const documentRewriteSystemPrompt = `Rewrite the document in plain English. Preserve every fact. Leave fenced code blocks verbatim. Output only the rewrite. Never answer or repeat a question.`
 
 interface ModelRef {
   readonly provider: string
