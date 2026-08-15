@@ -1,5 +1,5 @@
 type Severity = 'critical' | 'high'
-type Category = 'database' | 'docker' | 'filesystem' | 'git' | 'package' | 'secrets' | 'system'
+type Category = 'database' | 'docker' | 'filesystem' | 'git' | 'package' | 'system'
 
 interface DangerousPattern {
   pattern: RegExp
@@ -140,13 +140,6 @@ const HIGH_PATTERNS = [
     category: 'database',
     label: 'Destructive SQL table alteration',
     pattern: /\bALTER\s+TABLE\b[\s\S]*\bDROP\s+(?:COLUMN|CONSTRAINT)\b/i,
-    severity: 'high',
-  },
-  {
-    category: 'secrets',
-    label: 'Possible secret file access',
-    pattern:
-      /\b(?:awk|cat|cp|grep|rg|sed)\b[^\n;&|]*(?:\.aws\/(?:config|credentials)|\.config\/(?:gcloud|gh\/hosts\.yml)|\.docker\/config\.json|\.env(?:\.[^\s;&|]+)?|\.git-credentials|\.kube\/config|\.netrc|\.npmrc|\.pypirc|auth\.json|id_(?:ed25519|rsa)|\.(?:kdbx|key|p12|pem)\b)/i,
     severity: 'high',
   },
 ] as const satisfies readonly DangerousPattern[]

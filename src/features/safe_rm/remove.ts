@@ -21,8 +21,6 @@ import { assertUnprotectedPathEffect, ProtectedPathError } from '@/shared/utils/
 
 import {
   CancelledError,
-  GitMetadataError,
-  GitRepositoryError,
   InvalidPathError,
   OutsideAllowedRootError,
   OverlappingTargetsError,
@@ -146,11 +144,6 @@ const normalizeInput = (path: string): Effect.Effect<string, InvalidPathError> =
   return Effect.succeed(path)
 }
 
-const rejectMetadataPath = (absolutePath: string): Effect.Effect<void, GitMetadataError> =>
-  absolutePath.split(sep).some((component) => component.toLowerCase() === '.git')
-    ? Effect.fail(GitMetadataError.make({ message: `Refusing to remove Git metadata: ${absolutePath}` }))
-    : Effect.void
-
 const realpathEffect = (path: string): Effect.Effect<string, Cause.UnknownError> => bunFileSystem.realPath(path).pipe(Effect.mapError(unknownError))
 
 const removeEffect = (path: string, options: { force: boolean; recursive: boolean }): Effect.Effect<void, Cause.UnknownError> =>
@@ -158,28 +151,20 @@ const removeEffect = (path: string, options: { force: boolean; recursive: boolea
 
 /**
  * Recursive removal must not turn a harmless-looking parent directory into
- * a way to erase credentials or a nested Git repository. Symlink entries are
+ * a way to erase credentials. Symlink entries are
  * checked by canonical policy but never traversed.
  */
 const inspectDirectoryTree = (
   directory: string,
   cwd: string,
   signal: AbortSignal | undefined
-): Effect.Effect<
-  void,
-  CancelledError | Cause.UnknownError | GitRepositoryError | GitMetadataError | PlatformError | ProtectedPathError,
-  FileSystem
-> =>
+): Effect.Effect<void, CancelledError | Cause.UnknownError | PlatformError | ProtectedPathError, FileSystem> =>
   Effect.gen(function* () {
     yield* checkCancelled(signal)
     const entries = yield* readHostDirectoryEntries(directory)
     for (const entry of entries) {
       yield* checkCancelled(signal)
       const child = join(directory, entry.name)
-      if (entry.name.toLowerCase() === '.git') {
-        return yield* GitRepositoryError.make({ message: `Refusing to remove a Git repository: ${directory}` })
-      }
-      yield* rejectMetadataPath(child)
       yield* assertUnprotectedPathEffect(child, cwd, 'remove')
       if (entry.isDirectory && !entry.isSymbolicLink) {
         yield* inspectDirectoryTree(child, cwd, signal)
@@ -201,10 +186,8 @@ type ValidateTargetError =
   | InvalidPathError
   | Cause.UnknownError
   | OutsideAllowedRootError
-  | GitMetadataError
   | SymlinkEscapeError
   | RecursiveRequiredError
-  | GitRepositoryError
   | PlatformError
   | ProtectedPathError
 
@@ -224,8 +207,6 @@ const validateTargetEffect = ({
     if (lexicalRoot === undefined) {
       return yield* OutsideAllowedRootError.make({ message: `Deletion target must be below the working directory or /tmp: ${input}` })
     }
-
-    yield* rejectMetadataPath(absolute)
 
     const statsOutcome = yield* Effect.result(lstatHostFile(absolute))
     if (Result.isFailure(statsOutcome)) {
@@ -259,15 +240,7 @@ interface RevalidateTargetOptions {
   signal: AbortSignal | undefined
 }
 
-type RevalidateTargetError =
-  | CancelledError
-  | Cause.UnknownError
-  | SymlinkEscapeError
-  | TargetChangedError
-  | GitRepositoryError
-  | GitMetadataError
-  | PlatformError
-  | ProtectedPathError
+type RevalidateTargetError = CancelledError | Cause.UnknownError | SymlinkEscapeError | TargetChangedError | PlatformError | ProtectedPathError
 
 const mutationQueueError = (cause: unknown): RevalidateTargetError => {
   if (
@@ -275,8 +248,6 @@ const mutationQueueError = (cause: unknown): RevalidateTargetError => {
     Schema.is(CancelledError)(cause) ||
     Schema.is(SymlinkEscapeError)(cause) ||
     Schema.is(TargetChangedError)(cause) ||
-    Schema.is(GitRepositoryError)(cause) ||
-    Schema.is(GitMetadataError)(cause) ||
     Schema.is(ProtectedPathError)(cause)
   ) {
     return cause

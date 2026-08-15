@@ -59,7 +59,7 @@ This package tracks an Effect v4 prerelease while the API surface keeps moving, 
 | `meridian_session_affinity` | Adds Pi's session ID to Meridian requests so SDK sessions resume across client-side tool loops              |
 | `prompt_rewind`             | Escape before the first assistant output restores the cancelled prompt's raw text for editing               |
 | `rules`                     | Loads recursive `.md` and `.mdc` rules from `.claude/rules/` and `.agents/rules/`                           |
-| `safe_rm`                   | Validated deletion that refuses credentials, Git repositories, and paths outside the working directory      |
+| `safe_rm`                   | Validated deletion that refuses credentials and paths outside the working directory                         |
 | `safety_guard`              | Routes simple literal `rm` through `safe_rm`; blocks complex destructive shell commands and protected paths |
 | `status_panel`              | Docked status sidebar with model, context usage, git state, provider quota, and running subagents           |
 | `sub_agents`                | Session-scoped subagents in isolated child Pi processes ([details](src/features/sub_agents/README.md))      |

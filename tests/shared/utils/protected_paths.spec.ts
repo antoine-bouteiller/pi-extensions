@@ -25,9 +25,9 @@ describe('protected path resolution over FileSystem', () => {
           ['.env.example', false],
           ['src/index.ts', false],
           ['.ssh/id_rsa', true],
-          ['secrets.pem', true],
-          ['.docker/config.json', true],
-          ['.kube/config', true],
+          ['secrets.pem', false],
+          ['.docker/config.json', false],
+          ['.kube/config', false],
           ['docker/config.json', false],
         ]
 
@@ -62,13 +62,13 @@ describe('protected path resolution over FileSystem', () => {
         const fs = yield* FileSystem.FileSystem
         const path = yield* Path.Path
         const root = yield* makeRoot
-        yield* fs.makeDirectory(path.join(root, 'real-secrets'))
-        yield* fs.symlink(path.join(root, 'real-secrets'), path.join(root, 'link'))
+        yield* fs.makeDirectory(path.join(root, '.ssh'))
+        yield* fs.symlink(path.join(root, '.ssh'), path.join(root, 'link'))
 
         const resolution = yield* resolveProtectedPathEffect('link/id_rsa', root)
 
         expect(resolution.protected).toBe(true)
-        expect(resolution.canonicalPath).toBe(path.join(root, 'real-secrets', 'id_rsa'))
+        expect(resolution.canonicalPath).toBe(path.join(root, '.ssh', 'id_rsa'))
       })
     )
   )

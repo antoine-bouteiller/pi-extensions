@@ -117,7 +117,7 @@ describe('safe rm', () => {
     })
   )
 
-  it.effect('requires recursive intent and protects Git metadata', () =>
+  it.effect('requires recursive intent and removes Git metadata', () =>
     Effect.gen(function* () {
       const { cwd } = yield* workspace
       yield* mkdir(join(cwd, 'build'))
@@ -130,18 +130,12 @@ describe('safe rm', () => {
       yield* writeFile(join(externalMetadata, 'config'), '[core]')
 
       expect(setup().execute('call-3', { paths: ['build'] }, undefined, undefined, { cwd })).rejects.toThrow('recursive: true')
-      expect(
-        setup().execute('call-4', { paths: ['.git'], recursive: true }, undefined, undefined, {
-          cwd,
-        })
-      ).rejects.toThrow('Git metadata')
-      expect(
-        setup().execute('call-5', { paths: ['repository'], recursive: true }, undefined, undefined, {
-          cwd,
-        })
-      ).rejects.toThrow('Git repository')
-      expect(setup().execute('call-6', { paths: [join(externalMetadata, 'config')] }, undefined, undefined, { cwd })).rejects.toThrow('Git metadata')
-      expect(yield* Effect.promise(() => Bun.file(join(externalMetadata, 'config')).exists())).toBeTrue()
+      yield* Effect.promise(() => setup().execute('call-4', { paths: ['.git'], recursive: true }, undefined, undefined, { cwd }))
+      yield* Effect.promise(() => setup().execute('call-5', { paths: ['repository'], recursive: true }, undefined, undefined, { cwd }))
+      yield* Effect.promise(() => setup().execute('call-6', { paths: [join(externalMetadata, 'config')] }, undefined, undefined, { cwd }))
+      expect(yield* Effect.promise(() => Bun.file(join(cwd, '.git')).exists())).toBeFalse()
+      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'repository', '.git')).exists())).toBeFalse()
+      expect(yield* Effect.promise(() => Bun.file(join(externalMetadata, 'config')).exists())).toBeFalse()
     })
   )
 
@@ -159,8 +153,9 @@ describe('safe rm', () => {
       const { root, cwd } = yield* workspace
       yield* writeFile(join(cwd, '.env'), 'TOKEN=secret')
       yield* mkdir(join(cwd, 'output'))
-      yield* writeFile(join(cwd, 'output', '.npmrc'), 'token=secret')
-      const credential = join(root, 'id_ed25519')
+      yield* writeFile(join(cwd, 'output', '.env.local'), 'token=secret')
+      const credential = join(root, '.ssh', 'id_ed25519')
+      yield* mkdir(join(root, '.ssh'))
       yield* writeFile(credential, 'secret')
       yield* symlink(credential, join(cwd, 'ordinary.txt'))
 
@@ -169,21 +164,19 @@ describe('safe rm', () => {
       }
 
       expect(yield* Effect.promise(() => Bun.file(join(cwd, '.env')).exists())).toBeTrue()
-      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'output', '.npmrc')).exists())).toBeTrue()
+      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'output', '.env.local')).exists())).toBeTrue()
       expect(yield* Effect.promise(() => Bun.file(credential).exists())).toBeTrue()
     })
   )
 
-  it.effect('refuses a recursive parent containing nested Git metadata', () =>
+  it.effect('removes a recursive parent containing nested Git metadata', () =>
     Effect.gen(function* () {
       const { cwd } = yield* workspace
       yield* mkdir(join(cwd, 'artifacts', 'checkout', '.git'), { recursive: true })
       yield* writeFile(join(cwd, 'artifacts', 'checkout', '.git', 'config'), '[core]')
 
-      expect(setup().execute('nested-git', { paths: ['artifacts'], recursive: true }, undefined, undefined, { cwd })).rejects.toThrow(
-        'Git repository'
-      )
-      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'artifacts', 'checkout', '.git', 'config')).exists())).toBeTrue()
+      yield* Effect.promise(() => setup().execute('nested-git', { paths: ['artifacts'], recursive: true }, undefined, undefined, { cwd }))
+      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'artifacts')).exists())).toBeFalse()
     })
   )
 
@@ -277,9 +270,6 @@ describe('safe rm', () => {
       expect(yield* Effect.promise(() => rejectionMessage(setup().execute('t2', { paths: ['/etc/hosts'] }, undefined, undefined, { cwd })))).toBe(
         'Deletion target must be below the working directory or /tmp: /etc/hosts'
       )
-      expect(
-        yield* Effect.promise(() => rejectionMessage(setup().execute('t3', { paths: ['.git'], recursive: true }, undefined, undefined, { cwd })))
-      ).toBe(`Refusing to remove Git metadata: ${join(cwd, '.git')}`)
       expect(yield* Effect.promise(() => rejectionMessage(setup().execute('t4', { paths: ['build'] }, undefined, undefined, { cwd })))).toBe(
         'Directory deletion requires recursive: true: build'
       )

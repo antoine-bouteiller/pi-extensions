@@ -8,16 +8,7 @@ const { basename, dirname, resolve } = bunPath
 /** Filenames that look like dotenv files but are intended to be public examples. */
 const PUBLIC_ENV_FILENAMES = new Set(['.env.example', '.env.sample', '.env.template'])
 
-const ALWAYS_PROTECTED_PATTERNS = [
-  /(?<prefix>^|\/)\.ssh(?<suffix>\/|$)/,
-  /(?<prefix>^|\/)(?:\.envrc|\.git-credentials|\.netrc|\.npmrc|\.pypirc|auth\.json)$/,
-  /(?<prefix>^|\/)id_(?:ed25519|rsa)(?:\.pub)?$/,
-  /(?<prefix>^|\/)\.aws\/(?:config|credentials)$/,
-  /(?<prefix>^|\/)\.docker\/config\.json$/,
-  /(?<prefix>^|\/)\.kube\/config$/,
-  /(?<prefix>^|\/)\.config\/(?:gcloud(?:\/|$)|gh\/hosts\.yml$)/,
-  /\.(?:kdbx|key|p12|pem)$/,
-]
+const SSH_PATTERN = /(?<prefix>^|\/)\.ssh(?<suffix>\/|$)/
 
 export interface ProtectedPathResolution {
   /** Absolute path after resolving it lexically against cwd. */
@@ -42,7 +33,7 @@ const matchesProtectedPolicy = (path: string): boolean => {
   const normalized = path.replaceAll('\\', '/').toLowerCase()
   const name = basename(normalized)
   const isPrivateEnv = (name === '.env' || name.startsWith('.env.')) && !PUBLIC_ENV_FILENAMES.has(name)
-  return isPrivateEnv || ALWAYS_PROTECTED_PATTERNS.some((pattern) => pattern.test(normalized))
+  return isPrivateEnv || SSH_PATTERN.test(normalized)
 }
 
 const protectedPathMessage = (path: string, operation: string): string => `Refusing to ${operation} protected path: ${path}`

@@ -4,14 +4,6 @@ export class InvalidPathError extends Schema.TaggedError<InvalidPathError>()('In
   message: Schema.String,
 }) {}
 
-export class GitMetadataError extends Schema.TaggedError<GitMetadataError>()('GitMetadataError', {
-  message: Schema.String,
-}) {}
-
-export class GitRepositoryError extends Schema.TaggedError<GitRepositoryError>()('GitRepositoryError', {
-  message: Schema.String,
-}) {}
-
 export class OutsideAllowedRootError extends Schema.TaggedError<OutsideAllowedRootError>()('OutsideAllowedRootError', {
   message: Schema.String,
 }) {}

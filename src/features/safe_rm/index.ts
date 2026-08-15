@@ -11,7 +11,7 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
 
   pi.registerTool({
     description:
-      'Safely remove literal paths without shell rm. Every target is validated before deletion: targets must be below the working directory or /tmp, parent symlinks cannot escape those roots, credentials and Git repositories are protected even inside recursive targets, and directories require recursive=true.',
+      'Safely remove literal paths without shell rm. Every target is validated before deletion: targets must be below the working directory or /tmp, parent symlinks cannot escape those roots, credentials are protected even inside recursive targets, and directories require recursive=true.',
     execute: async (_toolCallId, params, signal, _onUpdate, ctx) => runtime.runPromise(run(params, signal ?? undefined, ctx)),
     label: 'Safe Remove',
     name: 'safe_rm',
