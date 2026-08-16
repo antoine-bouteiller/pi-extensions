@@ -75,7 +75,7 @@ describe('plain_english markdown command', () => {
 
       expect(yield* fs.readFileString(source)).toBe(input)
       expect(yield* fs.readFileString(path.join(directory, 'guide.plain.md'))).toBe('---\ntitle: Guide\ntags: [docs]\n---\nClearer prose')
-      expect(yield* fs.readDirectory(directory)).toEqual(['guide.md', 'guide.plain.md'])
+      expect((yield* fs.readDirectory(directory)).toSorted()).toEqual(['guide.md', 'guide.plain.md'])
       expect(messages).toEqual([{ level: 'info', message: expect.stringContaining('guide.plain.md') }])
     })
   )
