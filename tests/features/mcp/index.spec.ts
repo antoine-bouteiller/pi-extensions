@@ -15,7 +15,7 @@ import {
   readonlyMcpPolicy,
   unrestrictedMcpPolicy,
   type McpGatewayManager,
-  type McpGatewayShape,
+  type McpGatewayApi,
   type McpManagerCallbacks,
   type McpOperationOptions,
   type McpSearchOptions,
@@ -24,7 +24,7 @@ import {
 import { register } from '@/features/mcp/index.js'
 import { type McpServerMap } from '@/features/mcp/types.js'
 import { publishStatus } from '@/shared/state/status_bar.js'
-import { parseJsonText } from '@/shared/utils/json.js'
+import { type JsonObject, parseJsonText } from '@/shared/utils/json.js'
 
 afterEach(() => publishStatus('mcp', undefined))
 interface RecordedCall {
@@ -32,12 +32,19 @@ interface RecordedCall {
   values: unknown[]
 }
 
+interface ExecuteInput {
+  args?: unknown
+  connect?: string
+  describe?: string
+  regex?: boolean
+  search?: string
+  server?: string
+  tool?: string
+}
+
 const testConfig: McpServerMap = { alpha: { command: 'noop', type: 'stdio' } }
 
-const createHarness = (
-  overrides: Partial<McpGatewayManager> = {},
-  gateway: (manager: McpGatewayManager) => Partial<McpGatewayShape> = () => ({})
-) => {
+const createHarness = (overrides: Partial<McpGatewayManager> = {}, gateway: (manager: McpGatewayManager) => Partial<McpGatewayApi> = () => ({})) => {
   const calls: RecordedCall[] = []
   let callbacks: McpManagerCallbacks | undefined
   let loadCount = 0
@@ -51,7 +58,7 @@ const createHarness = (
       Effect.sync(() => {
         calls.push({ method: 'authenticate', values: [server, options] })
       }),
-    call: (tool: string, args: Record<string, unknown>, options?: McpOperationOptions) =>
+    call: (tool: string, args: JsonObject, options?: McpOperationOptions) =>
       Effect.sync(() => {
         calls.push({ method: 'call', values: [tool, args, options] })
         return callResult
@@ -139,11 +146,11 @@ const createHarness = (
 
   const start = (): Promise<void> => promiseFromEffect(Effect.promise(() => fixture.emit('session_start', {}, context())).pipe(Effect.asVoid))
 
-  const execute = (params: Record<string, unknown>, signal?: AbortSignal): Promise<AgentToolResult<unknown>> => {
+  const execute = (params: ExecuteInput, signal?: AbortSignal): Promise<AgentToolResult<unknown>> => {
     const tool = fixture.state.tools.get('mcp')
     expect(tool).toBeDefined()
     const executeTool = asTool<{
-      execute: (id: string, input: Record<string, unknown>, signal?: AbortSignal) => Promise<AgentToolResult<unknown>>
+      execute: (id: string, input: ExecuteInput, signal?: AbortSignal) => Promise<AgentToolResult<unknown>>
     }>(tool)
     return promiseFromEffect(Effect.promise(() => executeTool.execute('call-1', params, signal)))
   }
@@ -168,10 +175,10 @@ const createHarness = (
   }
 }
 
-const context = (statuses?: { key: string; value: unknown }[]) => ({
+const context = (statuses?: { key: string; value: JsonObject[string] }[]) => ({
   hasUI: Boolean(statuses),
   ui: {
-    setStatus(key: string, value: unknown) {
+    setStatus(key: string, value: JsonObject[string]) {
       statuses?.push({ key, value })
     },
     theme: { fg: (_color: string, value: string) => value },
@@ -271,7 +278,7 @@ describe('MCP gateway registration and lifecycle', () => {
 
   it.effect('session_start publishes every server and eagerly connects disconnected ones', () =>
     Effect.gen(function* () {
-      const statuses: { key: string; value: unknown }[] = []
+      const statuses: { key: string; value: JsonObject[string] }[] = []
       const harness = createHarness()
       yield* Effect.promise(() => harness.fixture.emit('session_start', {}, context(statuses)))
 
@@ -301,7 +308,7 @@ describe('MCP gateway registration and lifecycle', () => {
 
   it.effect('manager status callbacks show every server status', () =>
     Effect.gen(function* () {
-      const statuses: { key: string; value: unknown }[] = []
+      const statuses: { key: string; value: JsonObject[string] }[] = []
       const harness = createHarness()
       yield* Effect.promise(() => harness.fixture.emit('session_start', {}, context(statuses)))
 
@@ -536,7 +543,7 @@ describe('MCP gateway registration and lifecycle', () => {
         () => ({ createManager: () => promiseFromEffect(Effect.promise(() => creation.promise)) })
       )
       const { fixture } = harness
-      const statuses: { key: string; value: unknown }[] = []
+      const statuses: { key: string; value: JsonObject[string] }[] = []
 
       const starting = fixture.emit('session_start', {}, context(statuses))
       yield* Effect.promise(() => Promise.resolve())

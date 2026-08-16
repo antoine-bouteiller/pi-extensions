@@ -14,6 +14,7 @@ import { Context, Deferred, Effect, HashSet, Path, Ref } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
 import { type PlatformError } from 'effect/PlatformError'
 
+import { type JsonObject } from '@/shared/utils/json.js'
 import { isEmptyString, isNotEmptyString, isNullOrUndefined } from '@/shared/utils/predicates.js'
 import { isRecord } from '@/shared/utils/records.js'
 
@@ -247,7 +248,12 @@ const splitInlineList = (value: string): string[] => {
   return entries.filter(Boolean)
 }
 
-const parsePathValue = (rawValue: string, lines: string[], lineIndex: number): { paths: string[]; consumed: number } => {
+interface PathValue {
+  consumed: number
+  paths: string[]
+}
+
+const parsePathValue = (rawValue: string, lines: string[], lineIndex: number): PathValue => {
   if (rawValue.startsWith('[')) {
     return { consumed: 1, paths: splitInlineList(rawValue) }
   }
@@ -515,7 +521,7 @@ const matchesRule = (rule: Rule, targetPath: string, cwd: string, path: Path.Pat
   }
 }
 
-const record = (value: unknown): Record<string, unknown> | undefined => (isRecord(value) ? value : undefined)
+const record = (value: unknown): JsonObject | undefined => (isRecord(value) ? value : undefined)
 
 const stringProperty = (value: unknown, property: string): string | undefined => {
   const candidate = record(value)?.[property]
@@ -564,12 +570,12 @@ interface DiscoverySlot {
   deferred: Deferred.Deferred<Rule[]>
 }
 
-interface RulesStateShape {
+interface RulesStateFields {
   readonly dynamicInjections: Ref.Ref<HashSet.HashSet<string>>
   readonly activeDiscovery: Ref.Ref<DiscoverySlot | undefined>
 }
 
-class RulesState extends Context.Service<RulesState, RulesStateShape>()('pi-extensions/features/rules/rules/RulesState') {}
+class RulesState extends Context.Service<RulesState, RulesStateFields>()('pi-extensions/features/rules/rules/RulesState') {}
 
 /**
  * `activeDiscovery` only coalesces concurrent scans that share a (cwd, trusted) key; it is cleared

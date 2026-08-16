@@ -7,18 +7,18 @@ export class PiCtx extends Context.Service<PiCtx, ExtensionContext>()('pi-extens
 
 type NotifyLevel = NonNullable<Parameters<ExtensionContext['ui']['notify']>[1]>
 
-export interface UiShape {
+export interface UiApi {
   readonly confirm: (title: string, message: string) => Effect.Effect<boolean>
   readonly notify: (message: string, level: NotifyLevel) => Effect.Effect<void>
   readonly setStatus: (key: string, text: string | undefined) => Effect.Effect<void>
   readonly hasUI: Effect.Effect<boolean>
 }
 
-export class Ui extends Context.Service<Ui, UiShape>()('pi-extensions/shared/effect/pi_services/Ui') {}
+export class Ui extends Context.Service<Ui, UiApi>()('pi-extensions/shared/effect/pi_services/Ui') {}
 
 export const piContext = (pi: ExtensionAPI): Context.Context<Pi> => Context.make(Pi, pi)
 
-export const makeUi = (ctx: ExtensionContext): UiShape => ({
+export const makeUi = (ctx: ExtensionContext): UiApi => ({
   /*
    * Pi accepts an AbortSignal to dismiss the dialog. Passing the fiber-linked signal from
    * Effect.promise is what closes the dialog on interruption instead of leaving it on screen.

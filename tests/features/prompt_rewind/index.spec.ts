@@ -49,7 +49,7 @@ const createHarness = (dispatchSubmittedCommands = false) => {
   const submittedCommandTasks: Promise<void>[] = []
   const waitForIdleCalls: number[] = []
   const navigateTreeCalls: string[] = []
-  let navigateTreeResult: { cancelled: boolean } = { cancelled: false }
+  let navigateTreeResult = { cancelled: false }
 
   const editor = {
     onSubmit: (text: string) => {

@@ -33,7 +33,7 @@ const stableTuiReference = (getRenderer: () => TUI): TUI =>
         if (typeof method !== 'function') {
           throw new TypeError(`${String(property)} is not callable`)
         }
-        return Reflect.apply(method, currentRenderer, args)
+        return method.call(currentRenderer, ...args)
       }
     },
     getPrototypeOf: () => Reflect.getPrototypeOf(getRenderer()),

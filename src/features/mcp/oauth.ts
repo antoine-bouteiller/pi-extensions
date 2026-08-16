@@ -34,17 +34,22 @@ const abortError = (message: string): McpError => new McpError({ cause: Object.a
 
 const escaped = (value: string): string =>
   value.replaceAll(/[&<>"']/g, (character) => {
-    const entities: Record<string, string> = {
-      '"': '&quot;',
-      '&': '&amp;',
-      "'": '&#39;',
-      '<': '&lt;',
-      '>': '&gt;',
-    }
-    return entities[character] ?? character
+    const entities = new Map([
+      ['"', '&quot;'],
+      ['&', '&amp;'],
+      ["'", '&#39;'],
+      ['<', '&lt;'],
+      ['>', '&gt;'],
+    ])
+    return entities.get(character) ?? character
   })
 
-const callbackUrl = (options: OAuthCallbackOptions): { url: URL; bindHost: string } => {
+interface CallbackUrl {
+  url: URL
+  bindHost: string
+}
+
+const callbackUrl = (options: OAuthCallbackOptions): CallbackUrl => {
   const url = new URL(options.redirectUri ?? `http://localhost:${options.port}/callback`)
   if (url.protocol !== 'http:') {
     throw new Error('OAuth redirectUri must use http on loopback')
@@ -222,15 +227,18 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
       redirectUri: options.config.redirectUri,
     })
     this.redirectUrl = url.href
-    this.clientMetadata = {
+    const clientMetadata: OAuthClientMetadata = {
       client_name: options.config.clientName ?? 'Pi MCP Gateway',
       grant_types: ['authorization_code', 'refresh_token'],
       redirect_uris: [this.redirectUrl],
       response_types: ['code'],
       token_endpoint_auth_method:
         isNotNullOrUndefined(options.config.clientSecret) && isNotEmptyString(options.config.clientSecret) ? 'client_secret_post' : 'none',
-      ...(isNotNullOrUndefined(options.config.scope) && isNotEmptyString(options.config.scope) ? { scope: options.config.scope } : {}),
     }
+    if (isNotNullOrUndefined(options.config.scope) && isNotEmptyString(options.config.scope)) {
+      clientMetadata.scope = options.config.scope
+    }
+    this.clientMetadata = clientMetadata
   }
 
   state(): string {
@@ -243,12 +251,11 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
   // oxlint-disable-next-line effecttsgo/async-function -- Implements the MCP SDK's `OAuthClientProvider`, which declares promise-returning members.
   async clientInformation(): Promise<OAuthClientInformationMixed | undefined> {
     if (isNotNullOrUndefined(this.options.config.clientId) && isNotEmptyString(this.options.config.clientId)) {
-      return {
-        client_id: this.options.config.clientId,
-        ...(isNotNullOrUndefined(this.options.config.clientSecret) && isNotEmptyString(this.options.config.clientSecret)
-          ? { client_secret: this.options.config.clientSecret }
-          : {}),
+      const clientInformation: OAuthClientInformationMixed = { client_id: this.options.config.clientId }
+      if (isNotNullOrUndefined(this.options.config.clientSecret) && isNotEmptyString(this.options.config.clientSecret)) {
+        clientInformation.client_secret = this.options.config.clientSecret
       }
+      return clientInformation
     }
     const credential = await this.load()
     return credential?.clientInformation

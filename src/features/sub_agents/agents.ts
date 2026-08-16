@@ -20,7 +20,7 @@ import { Check } from 'typebox/value'
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { runningAgents } from '@/shared/state/agent_activity.js'
 import { publishStatus } from '@/shared/state/status_bar.js'
-import { prettyJsonText } from '@/shared/utils/json.js'
+import { prettyJsonText, type JsonObject } from '@/shared/utils/json.js'
 import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 import { truncateOutput, truncationNotice } from '@/shared/utils/tool_output.js'
 
@@ -32,6 +32,7 @@ import {
   type AgentInfo,
   type AgentListEntry,
   type AgentManagerOptions,
+  type AgentResponseEntry,
   writeFullToolOutput,
 } from './core.js'
 import { SubagentPeekOverlay } from './peek.js'
@@ -90,7 +91,9 @@ const boundedText = (text: string, maxBytes = DEFAULT_MAX_BYTES, maxLines = DEFA
     }
   })
 
-const boundedTextResult = <TDetails extends Record<string, unknown>>(text: string, details: TDetails) =>
+type BoundedResultDetails = JsonObject | { agents: AgentListEntry[] } | { message: string; responses: AgentResponseEntry[] }
+
+const boundedTextResult = <TDetails extends BoundedResultDetails>(text: string, details: TDetails) =>
   boundedText(text).pipe(
     Effect.map((bounded) =>
       isTrue(bounded.truncated)
@@ -173,6 +176,28 @@ type PiExtensionContext = ExtensionContext | ExtensionCommandContext
 
 const completionMessageType = 'pi-codex-subagent-completion'
 
+const completionDetails = (
+  event: Pick<AgentCompletionEvent, 'agentName' | 'color' | 'isReadonly' | 'profile'>,
+  status: string,
+  fullOutputPath?: string
+): CompletionMessageDetails => {
+  const details: CompletionMessageDetails = {
+    agent_name: event.agentName,
+    color: event.color,
+    status,
+  }
+  if (!isNullOrUndefined(event.profile) && !isEmptyString(event.profile)) {
+    details.profile = event.profile
+  }
+  if (event.isReadonly !== undefined) {
+    details.is_readonly = event.isReadonly
+  }
+  if (!isNullOrUndefined(fullOutputPath) && !isEmptyString(fullOutputPath)) {
+    details.fullOutputPath = fullOutputPath
+  }
+  return details
+}
+
 const renderCompletionMessage: MessageRenderer<CompletionMessageDetails> = (message, { expanded }, theme) => {
   const status = message.details?.status
   let statusColor: ThemeColor
@@ -231,19 +256,24 @@ export const makeSubagentFeature = ({ managerOptions = {}, pi, runtime }: Subage
     if (!isCurrentSession(event.parentSessionId)) {
       return
     }
-    const payload = JSON.stringify(
-      {
-        agent_name: event.agentName,
-        status: event.status,
-        ...(event.finalResponse === undefined ? {} : { final_response: event.finalResponse }),
-        ...(isNullOrUndefined(event.error) || isEmptyString(event.error) ? {} : { error: event.error }),
-        ...(isNullOrUndefined(event.profile) || isEmptyString(event.profile) ? {} : { profile: event.profile }),
-        color: event.color,
-        ...(event.isReadonly === undefined ? {} : { is_readonly: event.isReadonly }),
-      },
-      undefined,
-      2
-    )
+    const payloadDetails: JsonObject = {
+      agent_name: event.agentName,
+      color: event.color,
+      status: event.status,
+    }
+    if (event.finalResponse !== undefined) {
+      payloadDetails.final_response = event.finalResponse
+    }
+    if (!isNullOrUndefined(event.error) && !isEmptyString(event.error)) {
+      payloadDetails.error = event.error
+    }
+    if (!isNullOrUndefined(event.profile) && !isEmptyString(event.profile)) {
+      payloadDetails.profile = event.profile
+    }
+    if (event.isReadonly !== undefined) {
+      payloadDetails.is_readonly = event.isReadonly
+    }
+    const payload = JSON.stringify(payloadDetails, undefined, 2)
     const publish = (bounded: { text: string; fullOutputPath?: string }) => {
       if (!isCurrentSession(event.parentSessionId)) {
         return
@@ -252,14 +282,7 @@ export const makeSubagentFeature = ({ managerOptions = {}, pi, runtime }: Subage
         {
           content: `<subagent_notification>\n${bounded.text}\n</subagent_notification>`,
           customType: completionMessageType,
-          details: {
-            agent_name: event.agentName,
-            status: event.status,
-            ...(isNullOrUndefined(event.profile) || isEmptyString(event.profile) ? {} : { profile: event.profile }),
-            color: event.color,
-            ...(event.isReadonly === undefined ? {} : { is_readonly: event.isReadonly }),
-            ...(isNullOrUndefined(bounded.fullOutputPath) || isEmptyString(bounded.fullOutputPath) ? {} : { fullOutputPath: bounded.fullOutputPath }),
-          },
+          details: completionDetails(event, event.status, bounded.fullOutputPath),
           display: true,
         },
         { deliverAs: 'steer', triggerTurn: true }
@@ -307,13 +330,7 @@ export const makeSubagentFeature = ({ managerOptions = {}, pi, runtime }: Subage
       {
         content: `<subagent_notification>\n${payload}\n</subagent_notification>`,
         customType: completionMessageType,
-        details: {
-          agent_name: event.agentName,
-          status: 'inactive',
-          ...(isNullOrUndefined(event.profile) || isEmptyString(event.profile) ? {} : { profile: event.profile }),
-          color: event.color,
-          ...(event.isReadonly === undefined ? {} : { is_readonly: event.isReadonly }),
-        },
+        details: completionDetails(event, 'inactive'),
         display: true,
       },
       { deliverAs: 'steer', triggerTurn: true }

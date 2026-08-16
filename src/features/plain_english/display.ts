@@ -102,12 +102,7 @@ export const makeDisplay = ({ pi, config, toggle }: DisplayOptions) => {
         const messageId = 'responseId' in event.message && typeof event.message.responseId === 'string' ? event.message.responseId : undefined
         const rewrite = rewriteMessage({ model: eligible.model, text: eligible.text, timeoutMs: config.timeoutMs }).pipe(
           Effect.tap((rewritten) =>
-            Effect.sync(() =>
-              pi.appendEntry('plain-english', {
-                ...(messageId === undefined ? {} : { messageId }),
-                text: rewritten,
-              })
-            )
+            Effect.sync(() => pi.appendEntry('plain-english', messageId === undefined ? { text: rewritten } : { messageId, text: rewritten }))
           ),
           Effect.catchTag('RewriteError', (error) => notifyOnce(error.message))
         )

@@ -57,6 +57,12 @@ export type PollExec = (command: string, timeoutMs: number, cwd: string | undefi
 /** `sh` reports a killed-by-timeout command the way GNU `timeout` does, so the loop retries it. */
 const TIMEOUT_EXIT_CODE = 124
 
+interface PollExecOptions {
+  cwd?: string
+  signal: AbortSignal
+  timeout: number
+}
+
 /**
  * Delegated to Pi instead of spawned here: `pi.exec` already owns the child's lifetime, timeout,
  * and teardown. A `killed` attempt is reported the way GNU `timeout` does, so a long attempt stays
@@ -67,7 +73,13 @@ const makePollExec =
   (command, timeoutMs, cwd) =>
     Effect.tryPromise({
       catch: (cause) => ToolFailure.make({ cause, message: cause instanceof Error ? cause.message : String(cause) }),
-      try: (signal) => pi.exec('sh', ['-lc', command], { signal, timeout: timeoutMs, ...(cwd === undefined ? {} : { cwd }) }),
+      try: (signal) => {
+        const options: PollExecOptions = { signal, timeout: timeoutMs }
+        if (cwd !== undefined) {
+          options.cwd = cwd
+        }
+        return pi.exec('sh', ['-lc', command], options)
+      },
     }).pipe(
       Effect.map((result) =>
         isTrue(result.killed)
@@ -172,16 +184,16 @@ export const runPollLoop = (options: PollLoopOptions): Effect.Effect<PollLoopRes
     }
   })
 
-interface PollStateShape {
+interface PollStateFields {
   readonly mutex: Semaphore.Semaphore
   readonly sessionScope: Ref.Ref<Option.Option<Scope.Closeable>>
   readonly shuttingDown: Ref.Ref<boolean>
   readonly tasks: Ref.Ref<HashMap.HashMap<string, Fiber.Fiber<void>>>
 }
 
-class PollState extends Context.Service<PollState, PollStateShape>()('pi-extensions/features/background_poll/poll/PollState') {}
+class PollState extends Context.Service<PollState, PollStateFields>()('pi-extensions/features/background_poll/poll/PollState') {}
 
-const updateStatus = (state: PollStateShape, ctx: ExtensionContext): Effect.Effect<void> =>
+const updateStatus = (state: PollStateFields, ctx: ExtensionContext): Effect.Effect<void> =>
   Effect.gen(function* () {
     const count = HashMap.size(yield* Ref.get(state.tasks))
     yield* Effect.sync(() => {
@@ -193,7 +205,7 @@ const updateStatus = (state: PollStateShape, ctx: ExtensionContext): Effect.Effe
     })
   })
 
-const OUTCOME_HEADLINES: Record<PollResultDetails['outcome'], string> = {
+const OUTCOME_HEADLINES = {
   completed: 'Background poll completed',
   error: 'Background poll failed',
   'timed-out': 'Background poll timed out',
@@ -201,7 +213,7 @@ const OUTCOME_HEADLINES: Record<PollResultDetails['outcome'], string> = {
 
 const wakeAgent = (
   pi: ExtensionAPI,
-  state: PollStateShape,
+  state: PollStateFields,
   sessionScope: Scope.Closeable,
   result: PollLoopResult,
   ctx: ExtensionContext
@@ -336,7 +348,7 @@ export interface PollHandlers {
 }
 
 export const makePollHandlers = (pi: ExtensionAPI, exec: PollExec = makePollExec(pi)): PollHandlers => {
-  const pollState: PollStateShape = Effect.runSync(
+  const pollState: PollStateFields = Effect.runSync(
     Effect.gen(function* () {
       return {
         mutex: yield* Semaphore.make(1),

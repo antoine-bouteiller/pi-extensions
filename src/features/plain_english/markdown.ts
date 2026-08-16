@@ -25,7 +25,7 @@ const parseArgs = (args: string): ParsedArgs | undefined => {
   return path === '' ? undefined : { overwrite, path }
 }
 
-const splitFrontmatter = (document: string): { readonly frontmatter: string; readonly body: string } => {
+const splitFrontmatter = (document: string) => {
   const match = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(document)
   if (match === null) {
     return { body: document, frontmatter: '' }

@@ -34,11 +34,11 @@ export const loadConfig = (environment: Readonly<Record<string, string | undefin
   timeoutMs: positiveNumber(environment.PI_PLAIN_ENGLISH_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
 })
 
-export const makeToggle = (): { get: () => boolean; set: (next: boolean) => void } => {
+export const makeToggle = () => {
   let enabled = true
   return {
     get: () => enabled,
-    set: (next) => {
+    set: (next: boolean) => {
       enabled = next
     },
   }

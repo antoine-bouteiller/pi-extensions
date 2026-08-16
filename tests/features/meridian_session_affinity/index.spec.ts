@@ -6,6 +6,10 @@ import { Effect } from 'effect'
 
 import { register as registerMeridianSessionAffinity } from '@/features/meridian_session_affinity/index.js'
 
+interface ProviderHeaderEvent {
+  headers: Record<string, string>
+}
+
 const createHarness = () => {
   const fixture = createFakePi()
   registerMeridianSessionAffinity(fixture.pi, runtime)
@@ -90,7 +94,7 @@ Current working directory: /repo`,
   it.effect('adds the Pi session id to requests identified by the Meridian agent header', () =>
     Effect.gen(function* () {
       const fixture = createHarness()
-      const event: { headers: Record<string, string> } = {
+      const event: ProviderHeaderEvent = {
         headers: {
           authorization: 'Bearer x',
           'x-meridian-agent': 'pi',
@@ -111,7 +115,7 @@ Current working directory: /repo`,
     withProcessEnv('MERIDIAN_BASE_URL', 'https://meridian.example.test/proxy/', () =>
       Effect.gen(function* () {
         const fixture = createHarness()
-        const event: { headers: Record<string, string> } = { headers: {} }
+        const event: ProviderHeaderEvent = { headers: {} }
 
         yield* Effect.promise(() => fixture.emit('before_provider_headers', event, context('session-b', 'https://meridian.example.test/proxy')))
 
@@ -123,7 +127,7 @@ Current working directory: /repo`,
   it.effect('does not leak session affinity to non-Meridian providers', () =>
     Effect.gen(function* () {
       const fixture = createHarness()
-      const event: { headers: Record<string, string> } = {
+      const event: ProviderHeaderEvent = {
         headers: { authorization: 'Bearer direct-anthropic-key' },
       }
 
@@ -136,16 +140,16 @@ Current working directory: /repo`,
   it.effect('uses stable, distinct affinity ids for subagent sessions', () =>
     Effect.gen(function* () {
       const fixture = createHarness()
-      const firstEvent: { headers: Record<string, string> } = {
+      const firstEvent: ProviderHeaderEvent = {
         headers: {
           'X-Meridian-Agent': 'pi',
           'X-Session-Affinity': 'stale',
         },
       }
-      const firstFollowup: { headers: Record<string, string> } = {
+      const firstFollowup: ProviderHeaderEvent = {
         headers: { 'x-meridian-agent': 'pi' },
       }
-      const secondEvent: { headers: Record<string, string> } = {
+      const secondEvent: ProviderHeaderEvent = {
         headers: { 'x-meridian-agent': 'pi' },
       }
 

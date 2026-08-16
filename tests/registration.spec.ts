@@ -122,7 +122,9 @@ const collectReport = (): Promise<RegistrationReport> =>
 let pending: Promise<RegistrationReport> | undefined
 const registrationReport = (): Promise<RegistrationReport> => (pending ??= collectReport())
 
-const mergedManifest = (features: Record<string, FeatureReport>): Manifest => {
+type FeatureReports = Record<string, FeatureReport>
+
+const mergedManifest = (features: FeatureReports) => {
   const manifests = Object.values(features).map((feature) => feature.manifest)
   const collect = (key: keyof Manifest): string[] => manifests.flatMap((manifest) => manifest[key])
   return { commands: collect('commands'), handlers: collect('handlers'), messageRenderers: collect('messageRenderers'), tools: collect('tools') }

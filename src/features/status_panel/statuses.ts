@@ -2,13 +2,13 @@ import { type ReadonlyFooterDataProvider, type ThemeColor } from '@earendil-work
 
 import { formatStatusText, statusBar, type StatusEntry, type StatusTone } from '@/shared/state/status_bar.js'
 
-export const STATUS_TONE_COLORS: Record<StatusTone, ThemeColor> = {
+export const STATUS_TONE_COLORS = {
   error: 'error',
   info: 'text',
   muted: 'muted',
   success: 'success',
   warning: 'warning',
-}
+} satisfies Record<StatusTone, ThemeColor>
 
 /**
  * Merges statuses published through the shared channel with those any other extension

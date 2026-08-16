@@ -16,6 +16,7 @@ import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { lstatHostFile, readHostDirectoryEntries } from '@/shared/effect/bun_host_file_system.js'
 import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
 import { unknownError } from '@/shared/effect/errors.js'
+import { type JsonObject } from '@/shared/utils/json.js'
 import { isEmptyString, isNotEmptyString } from '@/shared/utils/predicates.js'
 import { assertUnprotectedPathEffect, ProtectedPathError } from '@/shared/utils/protected_paths.js'
 
@@ -390,7 +391,7 @@ export const makeSafeRmRunner =
 
 interface RoutedRmResult {
   content: { text: string; type: 'text' }[]
-  details: Record<string, unknown>
+  details: JsonObject
   isError: boolean
 }
 

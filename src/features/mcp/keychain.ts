@@ -5,6 +5,7 @@ import { Context, Effect, Layer, Option, Schema } from 'effect'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
+import { type JsonObject, type JsonValue } from '@/shared/utils/json.js'
 import { isEmptyString } from '@/shared/utils/predicates.js'
 
 export const MCP_OAUTH_KEYCHAIN_SERVICE = 'pi-mcp.oauth'
@@ -13,11 +14,6 @@ export const MCP_OAUTH_KEYCHAIN_SERVICE = 'pi-mcp.oauth'
 export class KeychainCredentialError extends Schema.TaggedError<KeychainCredentialError>()('KeychainCredentialError', {
   message: Schema.String,
 }) {}
-
-type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject
-interface JsonObject {
-  [key: string]: JsonValue | undefined
-}
 
 const OAuthTokensSchema = Type.Object({
   access_token: Type.String({ minLength: 1 }),
@@ -53,14 +49,14 @@ export interface CredentialStore {
   delete: (serverName: string, signal?: AbortSignal) => Promise<void>
 }
 
-interface CredentialStoreEffectShape {
+interface CredentialStoreEffectApi {
   readonly delete: (serverName: string) => Effect.Effect<void, KeychainCredentialError>
   readonly get: (serverName: string, serverUrl: string) => Effect.Effect<Option.Option<OAuthCredentialPayload>, KeychainCredentialError>
   readonly set: (serverName: string, credential: OAuthCredentialPayload) => Effect.Effect<void, KeychainCredentialError>
 }
 
 /** Effect-native credential boundary; the Promise interface remains as the MCP SDK adapter. */
-export class CredentialStoreEffect extends Context.Service<CredentialStoreEffect, CredentialStoreEffectShape>()(
+export class CredentialStoreEffect extends Context.Service<CredentialStoreEffect, CredentialStoreEffectApi>()(
   'pi-extensions/features/mcp/keychain/CredentialStoreEffect'
 ) {}
 
@@ -72,7 +68,7 @@ export interface KeychainCredentialStoreOptions {
   createEntry?: EntryFactory
 }
 
-const isObject = (value: unknown): value is Record<string, unknown> => {
+const isObject = (value: unknown): value is JsonObject => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return false
   }
@@ -101,7 +97,7 @@ const malformed = (serverName: string): Error =>
     message: `Stored OAuth credential for MCP server ${JSON.stringify(serverName)} is malformed; delete it and authenticate again.`,
   })
 
-const requireString = (value: Record<string, unknown>, field: string, serverName: string): string => {
+const requireString = (value: JsonObject, field: string, serverName: string): string => {
   const result = value[field]
   if (typeof result !== 'string' || isEmptyString(result)) {
     throw malformed(serverName)
@@ -140,11 +136,14 @@ const validateCredentialPayload = (value: unknown, serverName: string): OAuthCre
     throw malformed(serverName)
   }
 
-  return {
-    serverUrl,
-    ...(tokens === undefined ? {} : { tokens }),
-    ...(clientInformation === undefined ? {} : { clientInformation }),
+  const credential: OAuthCredentialPayload = { serverUrl }
+  if (tokens !== undefined) {
+    credential.tokens = tokens
   }
+  if (clientInformation !== undefined) {
+    credential.clientInformation = clientInformation
+  }
+  return credential
 }
 
 export const keychainAccount = (serverName: string): string => createHash('sha256').update(serverName, 'utf8').digest('hex')

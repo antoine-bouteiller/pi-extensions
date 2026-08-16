@@ -7,7 +7,7 @@ import { Deferred, Effect, Option } from 'effect'
 
 import { type PlainEnglishConfig, makeToggle } from '@/features/plain_english/config.js'
 import { makeDisplay } from '@/features/plain_english/display.js'
-import { PiCtx, Ui, type UiShape } from '@/shared/effect/pi_services.js'
+import { PiCtx, Ui, type UiApi } from '@/shared/effect/pi_services.js'
 
 type TestModel = Model<Api>
 
@@ -31,7 +31,7 @@ const contextWith = (complete: () => Promise<AssistantMessage>) =>
 
 const completion = (text: string): AssistantMessage => asNarrowed<AssistantMessage, object>({ content: [{ text, type: 'text' }], stopReason: 'stop' })
 
-const ui = (notifications: { message: string; level: string }[]): UiShape => ({
+const ui = (notifications: { message: string; level: string }[]): UiApi => ({
   confirm: () => Effect.succeed(false),
   hasUI: Effect.succeed(true),
   notify: (message, level) =>

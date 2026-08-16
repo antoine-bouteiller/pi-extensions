@@ -7,6 +7,7 @@ import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontex
 import { type Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { Context, Data, Deferred, Effect, Fiber, Layer, Result, Schema } from 'effect'
 
+import { type JsonObject } from '@/shared/utils/json.js'
 import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 import { isRecord } from '@/shared/utils/records.js'
 
@@ -42,8 +43,21 @@ interface ToolMetadata {
   server: string
   remoteName: string
   description?: string
-  inputSchema: Record<string, unknown>
+  inputSchema: JsonObject
   annotations: McpToolAnnotations
+}
+
+interface ClientTool {
+  name: string
+  description?: string
+  inputSchema: JsonObject
+  annotations?: {
+    title?: unknown
+    readOnlyHint?: unknown
+    destructiveHint?: unknown
+    idempotentHint?: unknown
+    openWorldHint?: unknown
+  }
 }
 
 interface ClientLike {
@@ -53,26 +67,18 @@ interface ClientLike {
   listTools: (
     params?: { cursor?: string },
     options?: { signal?: AbortSignal; timeout?: number }
-  ) => Promise<{
-    tools: {
-      name: string
-      description?: string
-      inputSchema: Record<string, unknown>
-      annotations?: {
-        title?: unknown
-        readOnlyHint?: unknown
-        destructiveHint?: unknown
-        idempotentHint?: unknown
-        openWorldHint?: unknown
-      }
-    }[]
-    nextCursor?: string
-  }>
+  ) => Promise<{ tools: ClientTool[]; nextCursor?: string }>
   callTool: (
-    params: { name: string; arguments: Record<string, unknown> },
+    params: { name: string; arguments: JsonObject },
     schema: undefined,
     options?: { signal?: AbortSignal; timeout?: number }
   ) => Promise<unknown>
+}
+
+interface ServerStatus {
+  name: string
+  status: McpServerStatus
+  error?: string
 }
 
 interface ConnectedServer {
@@ -238,17 +244,29 @@ const normalizeAnnotations = (
   if (value === undefined) {
     return {}
   }
-  return {
-    ...(typeof value.title === 'string' ? { title: value.title } : {}),
-    ...(typeof value.readOnlyHint === 'boolean' ? { readOnlyHint: value.readOnlyHint } : {}),
-    ...(typeof value.destructiveHint === 'boolean' ? { destructiveHint: value.destructiveHint } : {}),
-    ...(typeof value.idempotentHint === 'boolean' ? { idempotentHint: value.idempotentHint } : {}),
-    ...(typeof value.openWorldHint === 'boolean' ? { openWorldHint: value.openWorldHint } : {}),
+  const annotations: McpToolAnnotations = {}
+  if (typeof value.title === 'string') {
+    annotations.title = value.title
   }
+  if (typeof value.readOnlyHint === 'boolean') {
+    annotations.readOnlyHint = value.readOnlyHint
+  }
+  if (typeof value.destructiveHint === 'boolean') {
+    annotations.destructiveHint = value.destructiveHint
+  }
+  if (typeof value.idempotentHint === 'boolean') {
+    annotations.idempotentHint = value.idempotentHint
+  }
+  if (typeof value.openWorldHint === 'boolean') {
+    annotations.openWorldHint = value.openWorldHint
+  }
+  return annotations
 }
 
-const inheritedEnvironment = (configured: Record<string, string> | undefined): Record<string, string> => {
-  const inherited: Record<string, string> = {}
+type Environment = Record<string, string>
+
+const inheritedEnvironment = (configured: Environment | undefined) => {
+  const inherited: Environment = {}
   for (const [name, value] of Object.entries(process.env)) {
     if (value !== undefined) {
       inherited[name] = value
@@ -303,7 +321,10 @@ const convertContentBlock = (item: unknown): GatewayContent | undefined => {
   if (typeof item !== 'object' || item === null || !('type' in item)) {
     return undefined
   }
-  const block = item as Record<string, unknown>
+  if (!isRecord(item)) {
+    return undefined
+  }
+  const block = item
   if (block.type === 'text' && typeof block.text === 'string') {
     return { text: block.text, type: 'text' }
   }
@@ -319,16 +340,19 @@ const convertContentBlock = (item: unknown): GatewayContent | undefined => {
   return undefined
 }
 
-const convertToolResult = (result: unknown): { content: GatewayContent[]; isError: boolean } => {
+interface ConvertedToolResult {
+  content: GatewayContent[]
+  isError: boolean
+}
+
+const convertToolResult = (result: unknown): ConvertedToolResult => {
   if (typeof result !== 'object' || result === null) {
     return { content: [{ text: JSON.stringify(result), type: 'text' }], isError: false }
   }
-  const value = result as {
-    isError?: boolean
-    content?: unknown[]
-    structuredContent?: Record<string, unknown>
-    toolResult?: unknown
+  if (!isRecord(result)) {
+    return { content: [{ text: JSON.stringify(result), type: 'text' }], isError: false }
   }
+  const value = result
   if ('toolResult' in value && value.content === undefined) {
     return {
       content: [{ text: JSON.stringify(value.toolResult, undefined, 2), type: 'text' }],
@@ -336,13 +360,14 @@ const convertToolResult = (result: unknown): { content: GatewayContent[]; isErro
     }
   }
 
-  const converted = (value.content ?? []).map((item) => convertContentBlock(item)).filter((block): block is GatewayContent => block !== undefined)
+  const content = Array.isArray(value.content) ? value.content : []
+  const converted = content.map((item) => convertContentBlock(item)).filter((block): block is GatewayContent => block !== undefined)
   if (value.structuredContent !== undefined) {
     converted.push({ text: JSON.stringify(value.structuredContent, undefined, 2), type: 'text' })
   }
   return {
     content: converted.length > 0 ? converted : [{ text: '(MCP tool returned no supported content)', type: 'text' }],
-    isError: isTrue(value.isError),
+    isError: value.isError === true,
   }
 }
 
@@ -363,7 +388,28 @@ export class McpManager {
   constructor(config: McpServerMap, options: McpManagerOptions) {
     this.options = options
     this.credentialStore = options.credentialStore ?? createKeychainCredentialStore()
-    this.createClient = options.createClient ?? (() => new Client({ name: 'pi-mcp-gateway', version: '1.0.0' }))
+    this.createClient =
+      options.createClient ??
+      (() => {
+        const client = new Client({ name: 'pi-mcp-gateway', version: '1.0.0' })
+        return {
+          callTool: (params, schema, requestOptions) => client.callTool(params, schema, requestOptions),
+          close: () => client.close(),
+          connect: (transport, connectOptions) => client.connect(transport, connectOptions),
+          getInstructions: () => client.getInstructions(),
+          listTools: (params, requestOptions) =>
+            client.listTools(params, requestOptions).then((page) => {
+              const tools: ClientTool[] = []
+              for (const tool of page.tools) {
+                if (!isRecord(tool.inputSchema)) {
+                  return Promise.reject(new McpError({ message: 'MCP server returned a tool with an invalid input schema' }))
+                }
+                tools.push({ ...tool, inputSchema: tool.inputSchema })
+              }
+              return page.nextCursor === undefined ? { tools } : { nextCursor: page.nextCursor, tools }
+            }),
+        }
+      })
     this.createTransport = options.createTransport ?? this.defaultTransport.bind(this)
     this.connectTimeoutMs = options.connectTimeoutMs ?? CONNECT_TIMEOUT_MS
     this.requestTimeoutMs = options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS
@@ -378,12 +424,17 @@ export class McpManager {
     }
   }
 
-  status(): readonly { name: string; status: McpServerStatus; error?: string }[] {
-    return [...this.runtimes.values()].map((runtime) => ({
-      name: runtime.name,
-      status: runtime.status,
-      ...(isNotNullOrUndefined(runtime.error) && isNotEmptyString(runtime.error) ? { error: runtime.error } : {}),
-    }))
+  status(): readonly ServerStatus[] {
+    return [...this.runtimes.values()].map((runtime) => {
+      const status: ServerStatus = {
+        name: runtime.name,
+        status: runtime.status,
+      }
+      if (isNotNullOrUndefined(runtime.error) && isNotEmptyString(runtime.error)) {
+        status.error = runtime.error
+      }
+      return status
+    })
   }
 
   oauthServers(): readonly string[] {
@@ -526,11 +577,7 @@ export class McpManager {
     return this.resolveTool(tool, options, 'describe').pipe(Effect.map((metadata) => ({ ...metadata, annotations: { ...metadata.annotations } })))
   }
 
-  call(
-    tool: string,
-    args: Record<string, unknown>,
-    options: { server?: string; signal?: AbortSignal } = {}
-  ): Effect.Effect<AgentToolResult<unknown>, McpFailure> {
+  call(tool: string, args: JsonObject, options: { server?: string; signal?: AbortSignal } = {}): Effect.Effect<AgentToolResult<unknown>, McpFailure> {
     return Effect.gen({ self: this }, function* () {
       const metadata = yield* this.resolveTool(tool, options, 'call')
       const runtime = yield* this.runtime(metadata.server)
@@ -1052,6 +1099,9 @@ export class McpManager {
           return yield* exceededDiscoveryLimit
         }
         for (const tool of page.tools) {
+          if (!isRecord(tool.inputSchema)) {
+            return yield* new McpError({ message: `MCP server ${quoted(server)} returned a tool with an invalid input schema` })
+          }
           const name = `${sanitizeToolPart(server)}_${sanitizeToolPart(tool.name)}`
           if (names.has(name)) {
             return yield* new McpError({ message: `MCP tool-name collision on ${server}: ${quoted(name)}` })

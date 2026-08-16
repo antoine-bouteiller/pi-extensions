@@ -9,8 +9,10 @@ import { asError, asExtensionApi, asNarrowed, asResult, asTheme, asTui } from '@
 import { withProcessEnv } from '@tests/utils/process_env.js'
 import { Cause, Data, DateTime, Deferred, Effect, Fiber } from 'effect'
 
+import { type AgentManagerOptions } from '@/features/sub_agents/core.js'
+import { type ProcessSnapshot } from '@/features/sub_agents/process_ownership.js'
 import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
-import { jsonText, parseJsonText, prettyJsonText } from '@/shared/utils/json.js'
+import { jsonText, parseJsonText, prettyJsonText, type JsonObject } from '@/shared/utils/json.js'
 
 const { dirname, join } = bunPath
 const {
@@ -85,7 +87,7 @@ const rejectionOf = (promise: Promise<unknown>): Promise<Error> =>
 
 interface CompletionEvent {
   agentName: string
-  [field: string]: unknown
+  [field: string]: JsonObject[string]
 }
 
 interface ActivityEvent {
@@ -124,7 +126,7 @@ interface FakeToolDefinition {
 
 interface FakeToolResult {
   content: { text: string; type: string }[]
-  details: Record<string, unknown>
+  details: JsonObject
 }
 
 interface FakeMessage {
@@ -153,7 +155,7 @@ const promising = (manager: InstanceType<typeof AgentManager>) => ({
   waitAllAgents: (...args: Parameters<typeof manager.waitAllAgents>) => promiseFromEffect(manager.waitAllAgents(...args)),
 })
 
-const createAgentManager = (options: Record<string, unknown> = {}) =>
+const createAgentManager = (options: Partial<AgentManagerOptions> = {}) =>
   promising(
     new AgentManager({
       piCommand: { command: FAKE_RPC_CHILD },
@@ -164,6 +166,8 @@ const createAgentManager = (options: Record<string, unknown> = {}) =>
 const processTest = (name: string, run: () => Effect.Effect<void, unknown>): void => {
   it.live(name, run, 15_000)
 }
+
+const absentProcessSnapshot = (): ProcessSnapshot | undefined => undefined
 
 const withScoutProfile = <Success, Failure, Requirements>(
   patch: Partial<{ model: string; isReadonly: boolean }>,
@@ -1500,7 +1504,7 @@ describe('child process lifecycle', () => {
         const mismatchReconciler = createAgentManager({
           processInspector: {
             alive: () => Effect.succeed(true),
-            inspect: () => Effect.void,
+            inspect: () => Effect.succeed(absentProcessSnapshot()),
             ownerIsActive: () => Effect.succeed(false),
             ownershipVerdict: () => Effect.succeed('mismatch' as const),
           },
@@ -1517,7 +1521,7 @@ describe('child process lifecycle', () => {
         const unverifiableReconciler = createAgentManager({
           processInspector: {
             alive: () => Effect.succeed(true),
-            inspect: () => Effect.void,
+            inspect: () => Effect.succeed(absentProcessSnapshot()),
             ownerIsActive: () => Effect.succeed(false),
             ownershipVerdict: () => Effect.succeed('unverifiable' as const),
           },
@@ -1783,7 +1787,7 @@ describe('completion delivery', () => {
       })
       const internals = asNarrowed<
         {
-          pushMailbox: (event: Record<string, unknown>) => void
+          pushMailbox: (event: JsonObject) => void
           startLiveAgent: () => Effect.Effect<never, TestLaunchError>
           waiters: unknown[]
         },
@@ -2222,8 +2226,12 @@ describe('extension completion delivery and status activity', () => {
         expect(Buffer.byteLength(largeForeground.content[0].text, 'utf8')).toBeLessThanOrEqual(50 * 1024)
         expect(largeForeground.content[0].text.split('\n').length).toBeLessThanOrEqual(2000)
         expect(largeForeground.content[0].text).toContain('Output truncated')
-        expect(largeForeground.details.fullOutputPath).toBeString()
-        expect(yield* existsFile(String(largeForeground.details.fullOutputPath))).toBe(true)
+        const { fullOutputPath } = largeForeground.details
+        expect(fullOutputPath).toBeString()
+        if (typeof fullOutputPath !== 'string') {
+          throw new Error('expected a full output path')
+        }
+        expect(yield* existsFile(fullOutputPath)).toBe(true)
 
         const abortController = makeAbortController()
         const abortNotifications = sentMessages.length

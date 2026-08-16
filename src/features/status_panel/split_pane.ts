@@ -8,21 +8,23 @@ export const MIN_MAIN_WIDTH = 64
 const REGULAR_RENDER_ADAPTER = Symbol('status-panel.regular-render-adapter')
 const FULLSCREEN_LAYOUT_ADAPTER = Symbol('status-panel.fullscreen-layout-adapter')
 
+type Reflectable = TUI | Component | WeakSet<never>
+
 interface RegularRenderAdapterState {
-  owner: object
+  owner: Reflectable
   baseRender: TUI['render']
   adapter: TUI['render']
   renderer?: TUI
 }
 
 interface FullscreenLayoutAdapterState {
-  owner: object
+  owner: Reflectable
   originalRoot: Component
   splitRoot: Component
 }
 
 const isRenderFunction = (value: unknown): value is TUI['render'] => typeof value === 'function'
-const isObject = (value: unknown): value is object => Object(value) === value && typeof value !== 'function'
+const isObject = (value: unknown): value is Reflectable => Object(value) === value && typeof value !== 'function'
 
 const isComponent = (value: unknown): value is Component =>
   isObject(value) && typeof Reflect.get(value, 'render') === 'function' && typeof Reflect.get(value, 'invalidate') === 'function'
@@ -30,12 +32,12 @@ const isComponent = (value: unknown): value is Component =>
 const isTui = (value: unknown): value is TUI =>
   isObject(value) && isRenderFunction(Reflect.get(value, 'render')) && typeof Reflect.get(value, 'requestRender') === 'function'
 
-const prototypeOf = (value: object): object | undefined => {
+const prototypeOf = (value: Reflectable): Reflectable | undefined => {
   const prototype: unknown = Object.getPrototypeOf(value)
   return isObject(prototype) ? prototype : undefined
 }
 
-const constructorName = (value: object | undefined): string | undefined => {
+const constructorName = (value: Reflectable | undefined): string | undefined => {
   if (value === undefined) {
     return undefined
   }
@@ -70,7 +72,11 @@ const regularAdapterState = (tui: TUI): RegularRenderAdapterState | undefined =>
   if (!isObject(owner) || !isRenderFunction(baseRender) || !isRenderFunction(adapter)) {
     return undefined
   }
-  return { adapter, baseRender, owner, ...(isTui(renderer) ? { renderer } : {}) }
+  const result: RegularRenderAdapterState = { adapter, baseRender, owner }
+  if (isTui(renderer)) {
+    result.renderer = renderer
+  }
+  return result
 }
 
 const fullscreenAdapterState = (tui: TUI): FullscreenLayoutAdapterState | undefined => {
@@ -89,7 +95,7 @@ const setLayoutRoot = (tui: TUI, component: Component) => {
   if (typeof setter !== 'function') {
     return false
   }
-  Reflect.apply(setter, tui, [component])
+  setter.call(tui, component)
   return true
 }
 
@@ -123,7 +129,7 @@ export const createSplitPaneController = (options: SplitPaneOptions = {}): Split
   let sidebar: Component | undefined
   let enabled = false
   let disposed = false
-  const adapterOwner = {}
+  const adapterOwner = new WeakSet<never>()
 
   const isVisible = (terminalWidth: number) => enabled && Number.isFinite(terminalWidth) && terminalWidth >= minMainWidth + minSidebarWidth
   const effectiveWidth = (terminalWidth: number) => (isVisible(terminalWidth) ? Math.min(sidebarWidth, terminalWidth - minMainWidth) : 0)
@@ -166,10 +172,10 @@ export const createSplitPaneController = (options: SplitPaneOptions = {}): Split
       const reservedWidth = effectiveWidth(terminalWidth)
       syncOverlayWidth(terminalWidth)
       try {
-        return Reflect.apply(baseRender, this, [terminalWidth - reservedWidth])
+        return baseRender.call(this, terminalWidth - reservedWidth)
       } catch (error) {
         options.onError?.(error)
-        return Reflect.apply(baseRender, this, [terminalWidth])
+        return baseRender.call(this, terminalWidth)
       }
     }
     state.adapter = adapter

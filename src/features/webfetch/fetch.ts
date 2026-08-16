@@ -159,7 +159,7 @@ const convertHtml = (html: string, format: WebfetchFormat): string => {
   return format === 'text' ? markdownToText(markdown) : markdown
 }
 
-const requestHeaders = (format: WebfetchFormat): Record<string, string> => ({
+const requestHeaders = (format: WebfetchFormat) => ({
   accept:
     format === 'html'
       ? 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5'
@@ -180,7 +180,11 @@ interface RawResponseMeta {
   readonly url: string
 }
 
-const capturingFetch = (raw: typeof fetch, box: { current?: RawResponseMeta }): typeof fetch => {
+interface ResponseCapture {
+  current?: RawResponseMeta
+}
+
+const capturingFetch = (raw: typeof fetch, box: ResponseCapture): typeof fetch => {
   // oxlint-disable-next-line effecttsgo/async-function -- Must stay assignable to `typeof fetch` for the callers that receive it.
   const wrapped = async (input: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1]): ReturnType<typeof fetch> => {
     const response = await raw(input, init)
@@ -202,7 +206,7 @@ const executeRequest = (
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient
     const rawFetch = yield* FetchHttpClient.Fetch
-    const box: { current?: RawResponseMeta } = {}
+    const box: ResponseCapture = {}
     const response = yield* client
       .execute(HttpClientRequest.get(url, { headers: requestHeaders(format) }))
       .pipe(Effect.provideService(FetchHttpClient.Fetch, capturingFetch(rawFetch, box)))
@@ -312,7 +316,9 @@ const buildFetchResult = ({
       statusText,
       timeoutSeconds,
       url: url.href,
-      ...(isNullOrUndefined(fullOutputPath) || isEmptyString(fullOutputPath) ? {} : { fullOutputPath }),
+    }
+    if (!isNullOrUndefined(fullOutputPath) && !isEmptyString(fullOutputPath)) {
+      details.fullOutputPath = fullOutputPath
     }
     return { content: [{ text: bounded.text, type: 'text' }], details }
   })

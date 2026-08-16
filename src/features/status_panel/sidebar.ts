@@ -31,7 +31,7 @@ const MAX_AGENT_ROWS = 5
 type PaletteColor = 'purple' | 'blue' | 'green' | 'red' | 'orange' | 'gray' | 'white'
 type Rgb = readonly [number, number, number]
 
-const COLORS: Record<PaletteColor, Rgb> = {
+const COLORS = {
   blue: [110, 168, 254],
   gray: [128, 128, 128],
   green: [95, 211, 148],
@@ -39,9 +39,9 @@ const COLORS: Record<PaletteColor, Rgb> = {
   purple: [177, 140, 255],
   red: [255, 93, 115],
   white: [212, 212, 212],
-}
+} satisfies Record<PaletteColor, Rgb>
 
-const THEME_FALLBACKS: Record<PaletteColor, ThemeColor> = {
+const THEME_FALLBACKS = {
   blue: 'thinkingLow',
   gray: 'muted',
   green: 'success',
@@ -49,7 +49,7 @@ const THEME_FALLBACKS: Record<PaletteColor, ThemeColor> = {
   purple: 'accent',
   red: 'error',
   white: 'text',
-}
+} satisfies Record<PaletteColor, ThemeColor>
 
 const paint = (theme: SidebarTheme, color: PaletteColor, text: string) => {
   if (process.env.NO_COLOR !== undefined) {
@@ -245,13 +245,13 @@ const quotaRows = (quota: ProviderQuota, width: number, theme: SidebarTheme) => 
   return rows
 }
 
-const STATUS_TONE_COLORS: Record<StatusTone, PaletteColor> = {
+const STATUS_TONE_COLORS = {
   error: 'red',
   info: 'blue',
   muted: 'gray',
   success: 'green',
   warning: 'orange',
-}
+} satisfies Record<StatusTone, PaletteColor>
 
 const statusRows = (statuses: readonly StatusEntry[], theme: SidebarTheme) =>
   statuses

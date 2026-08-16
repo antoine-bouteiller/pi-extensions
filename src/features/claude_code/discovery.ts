@@ -204,14 +204,14 @@ const writeCommandSkills = (
     )
   })
 
-interface DiscoveryStateShape {
+interface DiscoveryStateFields {
   readonly mutex: Semaphore.Semaphore
   readonly activeSkillScope: Ref.Ref<Option.Option<Scope.Closeable>>
 }
 
-class DiscoveryState extends Context.Service<DiscoveryState, DiscoveryStateShape>()('pi-extensions/features/claude_code/discovery/DiscoveryState') {}
+class DiscoveryState extends Context.Service<DiscoveryState, DiscoveryStateFields>()('pi-extensions/features/claude_code/discovery/DiscoveryState') {}
 
-const releaseActiveSkillDirectory = (state: DiscoveryStateShape): Effect.Effect<void> =>
+const releaseActiveSkillDirectory = (state: DiscoveryStateFields): Effect.Effect<void> =>
   Effect.gen(function* () {
     const current = yield* Ref.getAndSet(state.activeSkillScope, Option.none())
     if (Option.isSome(current)) {
@@ -280,7 +280,7 @@ export interface DiscoveryHandlers {
 }
 
 export const makeDiscoveryHandlers = (environment: ClaudeCodeEnvironment): DiscoveryHandlers => {
-  const discoveryState: DiscoveryStateShape = Effect.runSync(
+  const discoveryState: DiscoveryStateFields = Effect.runSync(
     Effect.gen(function* () {
       return {
         activeSkillScope: yield* Ref.make<Option.Option<Scope.Closeable>>(Option.none()),

@@ -7,7 +7,7 @@ import { type Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { type JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
 import { makeAbortController } from '@tests/utils/abort_controller.js'
 import { promiseFromEffect, tryEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asError, asNarrowed } from '@tests/utils/casts.js'
+import { asError } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { httpGet } from '@tests/utils/http.js'
 import { freeLoopbackPort } from '@tests/utils/loopback_port.js'
@@ -17,7 +17,7 @@ import { readonlyMcpPolicy, type McpOperationOptions, type McpSearchOptions } fr
 import { KeychainCredentialError, type CredentialStore } from '@/features/mcp/keychain.js'
 import { McpManager, McpManagerService, mcpManagerLayer } from '@/features/mcp/manager.js'
 import { type McpGatewayPolicy, type McpServerMap } from '@/features/mcp/types.js'
-import { jsonText } from '@/shared/utils/json.js'
+import { type JsonObject, jsonText } from '@/shared/utils/json.js'
 
 class FakeTransport {
   onclose?: () => void
@@ -59,7 +59,7 @@ interface FakePage {
   tools: {
     name: string
     description?: string
-    inputSchema: Record<string, unknown>
+    inputSchema: JsonObject
     annotations?: {
       title?: unknown
       readOnlyHint?: unknown
@@ -77,7 +77,7 @@ const harness = (
     pages?: Record<string, FakePage>
     connect?: (transport: FakeTransport, provider?: OAuthClientProvider) => Promise<void>
     listTools?: () => Promise<FakePage>
-    call?: (params: { name: string; arguments: Record<string, unknown> }) => Promise<unknown>
+    call?: (params: { name: string; arguments: JsonObject }) => Promise<unknown>
     callResult?: unknown
     openUrl?: (url: string, signal?: AbortSignal) => Promise<void>
     credentialStore?: CredentialStore
@@ -90,10 +90,10 @@ const harness = (
     connects: [] as string[],
     keychainReads: 0,
     lists: [] as (string | undefined)[],
-    toolCalls: [] as { name: string; arguments: Record<string, unknown> }[],
+    toolCalls: [] as { name: string; arguments: JsonObject }[],
     transports: [] as FakeTransport[],
   }
-  const pages = options.pages ?? {
+  const pages: Record<string, FakePage> = options.pages ?? {
     root: {
       tools: [
         {
@@ -109,7 +109,7 @@ const harness = (
     createClient() {
       calls.clients += 1
       return {
-        callTool(params: { name: string; arguments: Record<string, unknown> }) {
+        callTool(params: { name: string; arguments: JsonObject }) {
           return promiseFromEffect(
             Effect.gen(function* () {
               calls.toolCalls.push(params)
@@ -131,11 +131,13 @@ const harness = (
         connect(transport: Transport) {
           return promiseFromEffect(
             Effect.gen(function* () {
-              const fake = asNarrowed<FakeTransport, Transport>(transport)
-              calls.connects.push(fake.kind)
+              if (!(transport instanceof FakeTransport)) {
+                throw new Error('Expected FakeTransport')
+              }
+              calls.connects.push(transport.kind)
               const { connect } = options
               if (connect !== undefined) {
-                yield* Effect.promise(() => connect(fake, fake.provider))
+                yield* Effect.promise(() => connect(transport, transport.provider))
               }
             })
           )
@@ -186,7 +188,7 @@ const harness = (
 /** The manager is Effect-native; these behavioural tests drive it through one promise facade. */
 const promised = (manager: McpManager) => ({
   authenticate: (server: string, options?: McpOperationOptions) => promiseFromEffect(manager.authenticate(server, options)),
-  call: (tool: string, args: Record<string, unknown>, options?: McpOperationOptions) => promiseFromEffect(manager.call(tool, args, options)),
+  call: (tool: string, args: JsonObject, options?: McpOperationOptions) => promiseFromEffect(manager.call(tool, args, options)),
   close: () => promiseFromEffect(manager.close),
   connect: (server: string, options?: McpOperationOptions) => promiseFromEffect(manager.connect(server, options)),
   describe: (tool: string, options?: McpOperationOptions) => promiseFromEffect(manager.describe(tool, options)),

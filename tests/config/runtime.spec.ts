@@ -9,7 +9,7 @@ import { FetchHttpClient } from 'effect/unstable/http'
 
 import { getOrCreateProcessRuntime } from '@/config/runtime.js'
 import { register as registerStatusPanel } from '@/features/status_panel/index.js'
-import { AgentActivity, type AgentActivityShape, type AppRuntime, StatusBarLive } from '@/shared/effect/app_services.js'
+import { AgentActivity, type AgentActivityApi, type AppRuntime, StatusBarLive } from '@/shared/effect/app_services.js'
 import { parseJsonText } from '@/shared/utils/json.js'
 
 const sharedActivityScript = (paths: { aggregate: string; activity: string; runtime: string; statusPanel: string }): string => `
@@ -76,7 +76,7 @@ describe('process-wide runtime', () => {
   it.effect('uses the runtime supplied to a feature register function', () =>
     Effect.gen(function* () {
       let subscriptions = 0
-      const sentinelActivity: AgentActivityShape = {
+      const sentinelActivity: AgentActivityApi = {
         list: () => [],
         publish: () => Effect.void,
         subscribe: () => {

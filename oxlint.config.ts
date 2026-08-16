@@ -14,6 +14,7 @@ export default defineConfig({
     node: true,
   },
   extends: [recommended],
+  jsPlugins: [{ name: 'pi-extensions', specifier: './oxlint/index.ts' }],
   options: {
     typeAware: true,
     typeCheck: true,
@@ -128,5 +129,13 @@ export default defineConfig({
      * package is ever called data-last, so the rule only produced `Function.dual` boilerplate.
      */
     'effecttsgo/missing-pipeable-signature': 'off',
+
+    'pi-extensions/no-conditional-empty-object-spread': 'error',
+    'pi-extensions/no-known-value-widening': 'error',
+    'pi-extensions/no-module-mocking': 'error',
+    'pi-extensions/no-object-parameters': 'error',
+    'pi-extensions/no-shape-in-symbol-names': 'error',
+    'pi-extensions/no-unknown-type-aliases': 'error',
+    'pi-extensions/no-unsafe-dictionary-type': 'error',
   },
 })

@@ -17,22 +17,22 @@ interface StatusChannel {
  * Reads stay synchronous on purpose: the status panel calls them from TUI paint callbacks, which
  * cannot await. Only the parts that touch Pi's UI are effects.
  */
-export interface StatusBarShape {
+export interface StatusBarApi {
   readonly has: (key: string) => boolean
   readonly list: () => readonly StatusEntry[]
   readonly subscribe: (listener: () => void) => () => void
   readonly channel: (key: string, defaults?: Partial<StatusItem>) => StatusChannel
 }
 
-export class StatusBar extends Context.Service<StatusBar, StatusBarShape>()('pi-extensions/shared/effect/app_services/StatusBar') {}
+export class StatusBar extends Context.Service<StatusBar, StatusBarApi>()('pi-extensions/shared/effect/app_services/StatusBar') {}
 
-export interface AgentActivityShape {
+export interface AgentActivityApi {
   readonly list: () => readonly RunningAgent[]
   readonly publish: (agents: readonly RunningAgent[]) => Effect.Effect<void>
   readonly subscribe: (listener: () => void) => () => void
 }
 
-export class AgentActivity extends Context.Service<AgentActivity, AgentActivityShape>()('pi-extensions/shared/effect/app_services/AgentActivity') {}
+export class AgentActivity extends Context.Service<AgentActivity, AgentActivityApi>()('pi-extensions/shared/effect/app_services/AgentActivity') {}
 
 const statusChannel = (key: string, defaults: Partial<StatusItem> = {}): StatusChannel => ({
   clear: Effect.gen(function* () {
@@ -54,7 +54,7 @@ const statusChannel = (key: string, defaults: Partial<StatusItem> = {}): StatusC
     }),
 })
 
-const agentActivityShape = (store: AgentActivityStore): AgentActivityShape => ({
+const agentActivityApi = (store: AgentActivityStore): AgentActivityApi => ({
   list: store.list,
   publish: (agents) =>
     Effect.sync(() => {
@@ -76,7 +76,7 @@ export const StatusBarLive: Layer.Layer<StatusBar> = Layer.succeed(StatusBar)({
   subscribe: statusBar.subscribe,
 })
 
-export const AgentActivityLive: Layer.Layer<AgentActivity> = Layer.succeed(AgentActivity)(agentActivityShape(runningAgents))
+export const AgentActivityLive: Layer.Layer<AgentActivity> = Layer.succeed(AgentActivity)(agentActivityApi(runningAgents))
 
 export type AppServices = FileSystem | Path | HttpClient.HttpClient | StatusBar | AgentActivity
 

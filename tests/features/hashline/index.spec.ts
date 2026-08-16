@@ -12,6 +12,7 @@ import { runtime } from '@tests/utils/runtime.js'
 import { Effect, FileSystem, Path } from 'effect'
 
 import { register as hashline } from '@/features/hashline/index.js'
+import { type JsonObject } from '@/shared/utils/json.js'
 
 const pathService = runtime.runSync(Path.Path)
 const { join } = pathService
@@ -27,19 +28,13 @@ const writeFile = (path: string, data: string) => FileSystem.FileSystem.pipe(Eff
 
 interface ToolOutput {
   content: { text: string; type: string }[]
-  details: Record<string, unknown>
+  details: JsonObject
 }
 
 interface Tool {
   description: string
   promptGuidelines?: string[]
-  execute: (
-    id: string,
-    params: Record<string, unknown>,
-    signal: AbortSignal | undefined,
-    onUpdate: undefined,
-    ctx: { cwd: string }
-  ) => Promise<ToolOutput>
+  execute: (id: string, params: JsonObject, signal: AbortSignal | undefined, onUpdate: undefined, ctx: { cwd: string }) => Promise<ToolOutput>
   renderResult: (result: ToolOutput & { isError?: boolean }, options: { expanded: boolean; isPartial: boolean }, theme: Theme) => Component
 }
 
@@ -50,7 +45,12 @@ afterEach(() =>
   )
 )
 
-const setup = (): { read: Tool; write: Tool } => {
+interface HashlineTools {
+  read: Tool
+  write: Tool
+}
+
+const setup = (): HashlineTools => {
   const { pi, state } = createFakePi()
   hashline(pi, runtime)
   return {

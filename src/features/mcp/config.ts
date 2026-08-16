@@ -5,6 +5,7 @@ import { FileSystem } from 'effect/FileSystem'
 import { Path } from 'effect/Path'
 import { type PlatformError } from 'effect/PlatformError'
 
+import { type JsonObject } from '@/shared/utils/json.js'
 import { isEmptyString, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 
 import {
@@ -72,7 +73,7 @@ const InvalidServerSchema = Schema.Struct({ invalid: Schema.Literal(true) })
 const McpServerSchema = Schema.Union([StdioServerSchema, HttpServerSchema, DisabledServerSchema, InvalidServerSchema])
 const McpServerMapSchema = Schema.Record(Schema.String, McpServerSchema)
 
-const isObject = (value: unknown): value is Record<string, unknown> => {
+const isObject = (value: unknown): value is JsonObject => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return false
   }
@@ -166,7 +167,7 @@ const stringMap = (value: unknown, path: string): Record<string, string> | undef
   )
 }
 
-const aliasedValue = (value: Record<string, unknown>, aliases: { camel: string; snake: string }, path: string): unknown => {
+const aliasedValue = (value: JsonObject, aliases: { camel: string; snake: string }, path: string): JsonObject[string] => {
   const { camel, snake } = aliases
   if (value[camel] !== undefined && value[snake] !== undefined) {
     fail(`${path}.${camel}`, `must not be specified together with ${snake}`)
@@ -194,17 +195,29 @@ const parseOAuth = (value: unknown, path: string): OAuthConfig | undefined => {
   const redirectUri = optionalString(aliasedValue(value, { camel: 'redirectUri', snake: 'redirect_uri' }, path), `${path}.redirectUri`)
   const callbackPort = optionalPort(aliasedValue(value, { camel: 'callbackPort', snake: 'callback_port' }, path), `${path}.callbackPort`)
 
-  return {
-    ...(clientId === undefined ? {} : { clientId }),
-    ...(clientName === undefined ? {} : { clientName }),
-    ...(clientSecret === undefined ? {} : { clientSecret }),
-    ...(scope === undefined ? {} : { scope }),
-    ...(callbackPort === undefined ? {} : { callbackPort }),
-    ...(redirectUri === undefined ? {} : { redirectUri }),
+  const oauth: OAuthConfig = {}
+  if (clientId !== undefined) {
+    oauth.clientId = clientId
   }
+  if (clientName !== undefined) {
+    oauth.clientName = clientName
+  }
+  if (clientSecret !== undefined) {
+    oauth.clientSecret = clientSecret
+  }
+  if (scope !== undefined) {
+    oauth.scope = scope
+  }
+  if (callbackPort !== undefined) {
+    oauth.callbackPort = callbackPort
+  }
+  if (redirectUri !== undefined) {
+    oauth.redirectUri = redirectUri
+  }
+  return oauth
 }
 
-const validateServerFields = (path: string, value: Record<string, unknown>): void => {
+const validateServerFields = (path: string, value: JsonObject): void => {
   for (const key of Object.keys(value)) {
     if (!SERVER_FIELDS.has(key)) {
       fail(`${path}.${key}`, 'is not supported')
@@ -212,7 +225,7 @@ const validateServerFields = (path: string, value: Record<string, unknown>): voi
   }
 }
 
-const parseDisabledOnlyServer = (path: string, value: Record<string, unknown>): DisabledServerConfig => {
+const parseDisabledOnlyServer = (path: string, value: JsonObject): DisabledServerConfig => {
   for (const field of ['type', 'args', 'env', 'cwd', 'headers', 'oauth'] as const) {
     if (value[field] !== undefined) {
       fail(`${path}.${field}`, 'requires a command or url transport')
@@ -221,7 +234,7 @@ const parseDisabledOnlyServer = (path: string, value: Record<string, unknown>): 
   return { disabled: true } satisfies DisabledServerConfig
 }
 
-const parseStdioServer = (path: string, value: Record<string, unknown>, disabled: boolean | undefined): StdioServerConfig => {
+const parseStdioServer = (path: string, value: JsonObject, disabled: boolean | undefined): StdioServerConfig => {
   if (value.type !== undefined && value.type !== 'stdio') {
     fail(`${path}.type`, 'must be "stdio" when command is configured')
   }
@@ -253,7 +266,7 @@ const parseStdioServer = (path: string, value: Record<string, unknown>, disabled
   return server
 }
 
-const parseHttpServer = (path: string, value: Record<string, unknown>, disabled: boolean | undefined): HttpServerConfig => {
+const parseHttpServer = (path: string, value: JsonObject, disabled: boolean | undefined): HttpServerConfig => {
   if (value.type !== undefined && value.type !== 'http') {
     fail(`${path}.type`, 'must be "http" when url is configured')
   }

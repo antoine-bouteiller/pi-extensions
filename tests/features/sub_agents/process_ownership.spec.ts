@@ -11,7 +11,7 @@ import {
   processInspectorFromProbe,
   processOwnerIsActive,
   type ProcessOwnership,
-  type ProcessProbeShape,
+  type ProcessProbeApi,
 } from '@/features/sub_agents/process_ownership.js'
 import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
 
@@ -21,7 +21,7 @@ const permissionDenied = (): never => {
   throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
 }
 
-const fakeProbe = (overrides: Partial<ProcessProbeShape>): ProcessProbeShape => ({
+const fakeProbe = (overrides: Partial<ProcessProbeApi>): ProcessProbeApi => ({
   platform: 'linux',
   processAlive: alwaysAlive,
   readFileBuffer: () => {

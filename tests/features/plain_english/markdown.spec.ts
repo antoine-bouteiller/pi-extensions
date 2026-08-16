@@ -6,7 +6,7 @@ import { Deferred, Effect, Fiber, FileSystem, Option, Path } from 'effect'
 
 import { loadConfig, type PlainEnglishConfig } from '@/features/plain_english/config.js'
 import { makeMarkdownCommand } from '@/features/plain_english/markdown.js'
-import { PiCtx, Ui, type UiShape } from '@/shared/effect/pi_services.js'
+import { PiCtx, Ui, type UiApi } from '@/shared/effect/pi_services.js'
 
 const marker = '<!-- plain-english:rewritten -->'
 const modelRef = { modelId: 'rewriter', provider: 'test' }
@@ -46,7 +46,7 @@ const contextWith = (cwd: string, rewritten = 'Clearer prose', reject = false, s
     },
   })
 
-const notifications = (): { readonly messages: { message: string; level: string }[]; readonly ui: UiShape } => {
+const notifications = () => {
   const messages: { message: string; level: string }[] = []
   return {
     messages,
@@ -55,11 +55,11 @@ const notifications = (): { readonly messages: { message: string; level: string 
       hasUI: Effect.succeed(true),
       notify: (message, level) => Effect.sync(() => messages.push({ level, message })),
       setStatus: () => Effect.void,
-    },
+    } satisfies UiApi,
   }
 }
 
-const run = (args: string, ctx: ReturnType<typeof contextWith>, ui: UiShape, command = makeMarkdownCommand({ config: config() })) =>
+const run = (args: string, ctx: ReturnType<typeof contextWith>, ui: UiApi, command = makeMarkdownCommand({ config: config() })) =>
   command(args, ctx).pipe(Effect.provideService(PiCtx, ctx), Effect.provideService(Ui, ui))
 
 describe('plain_english markdown command', () => {

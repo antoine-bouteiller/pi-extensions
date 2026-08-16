@@ -4,7 +4,7 @@ import { type PlatformError } from 'effect/PlatformError'
 import { ChildProcess } from 'effect/unstable/process'
 
 import { bunChildProcessSpawner } from '@/shared/effect/bun_services.js'
-import { jsonText } from '@/shared/utils/json.js'
+import { jsonText, type JsonObject } from '@/shared/utils/json.js'
 import { isEmptyString } from '@/shared/utils/predicates.js'
 import { isRecord } from '@/shared/utils/records.js'
 
@@ -38,13 +38,13 @@ interface CheckerResult {
 
 export type CheckerRunner = (input: HookInput) => Promise<CheckerResult>
 
-interface CommandRunnerShape {
+interface CommandRunnerApi {
   readonly run: (input: HookInput) => Effect.Effect<CheckerResult, Cause.UnknownError>
 }
 
-class CommandRunner extends Context.Service<CommandRunner, CommandRunnerShape>()('pi-extensions/features/comment_checker/checker/CommandRunner') {}
+class CommandRunner extends Context.Service<CommandRunner, CommandRunnerApi>()('pi-extensions/features/comment_checker/checker/CommandRunner') {}
 
-const record = (value: unknown): Record<string, unknown> | undefined => (isRecord(value) ? value : undefined)
+const record = (value: unknown): JsonObject | undefined => (isRecord(value) ? value : undefined)
 
 const hookInput = (event: ToolResultEvent, ctx: ExtensionContext): HookInput | undefined => {
   if (event.isError) {
@@ -144,7 +144,7 @@ export const makeCommentCheckerRunner =
   (input) =>
     Effect.runPromise(runCommentChecker(input, executable))
 
-const productionRunner: CommandRunnerShape = { run: runCommentChecker }
+const productionRunner: CommandRunnerApi = { run: runCommentChecker }
 
 const checkerResult = (
   event: ToolResultEvent,
@@ -175,7 +175,7 @@ const checkerResult = (
 export const makeCheckerHandler = (
   runner?: CheckerRunner
 ): ((event: ToolResultEvent, ctx: ExtensionContext) => Effect.Effect<{ content: ToolResultEvent['content'] } | undefined, Cause.UnknownError>) => {
-  const commandRunner: CommandRunnerShape = runner === undefined ? productionRunner : { run: (input) => Effect.tryPromise(() => runner(input)) }
+  const commandRunner: CommandRunnerApi = runner === undefined ? productionRunner : { run: (input) => Effect.tryPromise(() => runner(input)) }
 
   return (event, ctx) => checkerResult(event, ctx).pipe(Effect.provideService(CommandRunner, commandRunner))
 }

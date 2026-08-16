@@ -2,10 +2,30 @@ import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Effect } from 'effect'
 
 import { promiseFromEffect, tryPromiseEffect } from './bun_effect.js'
+import { asExtensionApi } from './casts.js'
 
 type EventHandler = (...args: unknown[]) => unknown
-export type ToolDefinition = { name: string } & Record<string, unknown>
-export type CommandDefinition = Record<string, unknown>
+export interface ToolDefinition {
+  label?: string
+  name: string
+  promptSnippet?: string
+}
+declare const commandDefinitionBrand: unique symbol
+export interface CommandDefinition {
+  readonly [commandDefinitionBrand]?: never
+}
+
+interface ExecOptions {
+  readonly cwd?: string
+  readonly signal?: AbortSignal
+  readonly timeout?: number
+}
+
+interface FakePiResult {
+  emit: (name: string, event?: unknown, context?: unknown) => Promise<unknown[]>
+  pi: ExtensionAPI
+  state: FakePiState
+}
 
 export interface FakePiState {
   entries: { customType: string; data: unknown }[]
@@ -19,20 +39,10 @@ export interface FakePiState {
 }
 
 export interface FakePiOptions {
-  exec?: (
-    command: string,
-    args: string[],
-    options?: Record<string, unknown>
-  ) => Promise<{ stdout: string; stderr: string; code: number; killed?: boolean }>
+  exec?: (command: string, args: string[], options?: ExecOptions) => Promise<{ stdout: string; stderr: string; code: number; killed?: boolean }>
 }
 
-export const createFakePi = (
-  options: FakePiOptions = {}
-): {
-  pi: ExtensionAPI
-  state: FakePiState
-  emit: (name: string, event?: unknown, context?: unknown) => Promise<unknown[]>
-} => {
+export const createFakePi = (options: FakePiOptions = {}): FakePiResult => {
   const state: FakePiState = {
     commands: new Map(),
     emittedEvents: [],
@@ -56,7 +66,7 @@ export const createFakePi = (
         /* Empty */
       },
     },
-    exec(command: string, args: string[], execOptions?: Record<string, unknown>) {
+    exec(command: string, args: string[], execOptions?: ExecOptions) {
       const { exec } = options
       return exec === undefined
         ? promiseFromEffect(Effect.succeed({ code: 0, killed: false, stderr: '', stdout: '' }))
@@ -103,8 +113,7 @@ export const createFakePi = (
    * No Proxy: a real ExtensionAPI method this fixture does not implement should throw "is not a
    * function" at the call site, not silently no-op and hide the gap.
    */
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- opaque host cast: `target` covers only the ExtensionAPI surface these tests exercise.
-  const pi = target as unknown as ExtensionAPI
+  const pi = asExtensionApi(target)
 
   return {
     emit: (name, event = {}, context = {}) =>

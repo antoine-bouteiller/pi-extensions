@@ -10,7 +10,7 @@ import { type AppServices } from '@/shared/effect/app_services.js'
 import { bunPath } from '@/shared/effect/bun_services.js'
 import { ToolFailure } from '@/shared/effect/errors.js'
 import { createStatusChannel } from '@/shared/state/status_bar.js'
-import { jsonText } from '@/shared/utils/json.js'
+import { type JsonObject, type JsonValue, jsonText } from '@/shared/utils/json.js'
 import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 import { isRecord } from '@/shared/utils/records.js'
 
@@ -79,7 +79,7 @@ interface McpToolSummary {
 }
 
 export interface McpToolDescription extends McpToolSummary {
-  inputSchema?: unknown
+  inputSchema?: JsonValue
 }
 
 export interface McpOperationOptions {
@@ -100,7 +100,7 @@ export interface McpGatewayManager {
   list: (server: string, options?: McpOperationOptions) => Effect.Effect<readonly McpToolSummary[], Error>
   search: (query: string, options?: McpSearchOptions) => Effect.Effect<readonly McpToolSummary[], Error>
   describe: (tool: string, options?: McpOperationOptions) => Effect.Effect<McpToolDescription, Error>
-  call: (tool: string, args: Record<string, unknown>, options?: McpOperationOptions) => Effect.Effect<AgentToolResult<unknown>, Error>
+  call: (tool: string, args: JsonObject, options?: McpOperationOptions) => Effect.Effect<AgentToolResult<unknown>, Error>
   authenticate: (server: string, options?: McpOperationOptions) => Effect.Effect<unknown, Error>
   close: Effect.Effect<void>
 }
@@ -117,31 +117,29 @@ interface McpManagerContext {
   policy: McpGatewayPolicy
 }
 
-export interface McpGatewayShape {
+export interface McpGatewayApi {
   readonly configPath: string
   readonly loadConfig: Effect.Effect<McpServerMap, Error, FileSystem | Path>
   readonly createManager: (config: McpServerMap, context: McpManagerContext) => McpGatewayManager | Promise<McpGatewayManager>
   readonly policy: McpGatewayPolicy
 }
 
-export class McpGateway extends Context.Service<McpGateway, McpGatewayShape>()('pi-extensions/features/mcp/gateway/McpGateway') {}
+export class McpGateway extends Context.Service<McpGateway, McpGatewayApi>()('pi-extensions/features/mcp/gateway/McpGateway') {}
 
 const textResult = (text: string, details?: unknown): Effect.Effect<AgentToolResult<unknown>, McpOperationError> =>
   boundGatewayOutput([{ text, type: 'text' }]).pipe(
     Effect.mapError(mcpOperationError),
-    Effect.map((bounded) => ({
-      content: bounded.content,
-      details: {
-        ...(details !== undefined && typeof details === 'object' ? details : {}),
-        outputTruncated: bounded.details.truncated,
-        ...(isNotNullOrUndefined(bounded.details.fullOutputPath) && isNotEmptyString(bounded.details.fullOutputPath)
-          ? { fullOutputPath: bounded.details.fullOutputPath }
-          : {}),
-      },
-    }))
+    Effect.map((bounded) => {
+      const resultDetails = isRecord(details) ? { ...details } : {}
+      resultDetails.outputTruncated = bounded.details.truncated
+      if (isNotNullOrUndefined(bounded.details.fullOutputPath) && isNotEmptyString(bounded.details.fullOutputPath)) {
+        resultDetails.fullOutputPath = bounded.details.fullOutputPath
+      }
+      return { content: bounded.content, details: resultDetails }
+    })
   )
 
-const parseArgs = (args: unknown): Effect.Effect<Record<string, unknown>, ToolFailure> =>
+const parseArgs = (args: unknown): Effect.Effect<JsonObject, ToolFailure> =>
   Effect.gen(function* () {
     const parsed =
       typeof args === 'string'
@@ -309,13 +307,13 @@ const classifySelector = (params: McpGatewayInput): Effect.Effect<McpSelector, T
     return { _tag: 'Status' as const }
   })
 
-interface McpGatewayStateShape {
+interface McpGatewayStateFields {
   readonly generation: Ref.Ref<number>
   readonly manager: Ref.Ref<Option.Option<McpGatewayManager>>
   readonly initialization: Ref.Ref<Option.Option<Deferred.Deferred<void, McpOperationError>>>
 }
 
-const makeState: Effect.Effect<McpGatewayStateShape> = Effect.gen(function* () {
+const makeState: Effect.Effect<McpGatewayStateFields> = Effect.gen(function* () {
   return {
     generation: yield* Ref.make(0),
     initialization: yield* Ref.make<Option.Option<Deferred.Deferred<void, McpOperationError>>>(Option.none()),
@@ -324,7 +322,7 @@ const makeState: Effect.Effect<McpGatewayStateShape> = Effect.gen(function* () {
 })
 
 /** Mirrors `if (initialization) { await initialization }` then requires an installed manager. */
-const requireManager = (state: McpGatewayStateShape): Effect.Effect<McpGatewayManager, McpOperationError | ToolFailure> =>
+const requireManager = (state: McpGatewayStateFields): Effect.Effect<McpGatewayManager, McpOperationError | ToolFailure> =>
   Effect.gen(function* () {
     const pending = yield* Ref.get(state.initialization)
     if (Option.isSome(pending)) {
@@ -339,7 +337,7 @@ const requireManager = (state: McpGatewayStateShape): Effect.Effect<McpGatewayMa
 
 const dispatchGateway = (
   configPath: string,
-  state: McpGatewayStateShape,
+  state: McpGatewayStateFields,
   params: McpGatewayInput,
   signal: AbortSignal | undefined
 ): Effect.Effect<AgentToolResult<unknown>, McpOperationError | ToolFailure> =>

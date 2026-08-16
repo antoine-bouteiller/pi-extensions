@@ -221,19 +221,19 @@ const mutableToolResult = (result: ToolExecutionResultPayload) => ({
 
 const isPeekSocketEvent = Schema.is(PeekSocketEventSchema)
 
-const STATUS_ICONS: Record<PeekStatus, string> = {
+const STATUS_ICONS = {
   done: '✓',
   streaming: '●',
   thinking: '◐',
   tool: '◑',
-}
+} satisfies Record<PeekStatus, string>
 
-const STATUS_COLORS: Record<PeekStatus, ThemeColor> = {
+const STATUS_COLORS = {
   done: 'success',
   streaming: 'success',
   thinking: 'warning',
   tool: 'accent',
-}
+} satisfies Record<PeekStatus, ThemeColor>
 
 export interface SubagentPeekOverlayOptions {
   tui: TUI

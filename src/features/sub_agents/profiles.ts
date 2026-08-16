@@ -118,7 +118,12 @@ const providerRank = (provider: string, modelId: string): number => {
 export const hasModelId = (models: readonly AvailableModel[], id: string): boolean =>
   models.some((model) => model.id === id && !isGoogleCandidate(model))
 
-export const parseModelSelector = (selector: string): { provider?: string; id: string } => {
+export interface ParsedModelSelector {
+  readonly id: string
+  readonly provider?: string
+}
+
+export const parseModelSelector = (selector: string): ParsedModelSelector => {
   const normalized = selector.trim()
   if (isEmptyString(normalized)) {
     throw new Error('Model selector must not be empty.')
@@ -272,7 +277,7 @@ export const configuredProfileColor = (profile: unknown): ThemeColor => {
   if (typeof profile !== 'string') {
     return 'muted'
   }
-  const config = (AGENT_CONFIGS as Readonly<Record<string, AgentConfig>>)[profile]
+  const config = Object.entries(AGENT_CONFIGS).find(([key]) => key === profile)?.[1]
   return config === undefined ? 'muted' : (config.color ?? 'accent')
 }
 

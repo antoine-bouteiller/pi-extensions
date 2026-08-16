@@ -8,24 +8,28 @@ import { TestClock } from 'effect/testing'
 import { register as backgroundPoll } from '@/features/background_poll/index.js'
 import { formatPollOutput, runPollLoop, type PollExec } from '@/features/background_poll/poll.js'
 import { ToolFailure } from '@/shared/effect/errors.js'
+import { type JsonObject } from '@/shared/utils/json.js'
 
 interface ToolResult {
   content: { text: string; type: string }[]
   terminate?: boolean
-  details?: Record<string, unknown>
+  details?: JsonObject
+}
+
+interface TestContext {
+  hasUI: boolean
+  ui: {
+    notify: (message: string, level: string) => number
+    setStatus: (key: string, value: unknown) => number
+    theme: { fg: (color: string, value: string) => string }
+  }
 }
 
 interface Tool {
-  execute: (
-    toolCallId: string,
-    params: Record<string, unknown>,
-    signal: AbortSignal | undefined,
-    onUpdate: undefined,
-    ctx: Record<string, unknown>
-  ) => Promise<ToolResult>
+  execute: (toolCallId: string, params: JsonObject, signal: AbortSignal | undefined, onUpdate: undefined, ctx: TestContext) => Promise<ToolResult>
 }
 
-type Handler = (event: unknown, ctx: Record<string, unknown>) => Promise<void> | void
+type Handler = (event: JsonObject, ctx: TestContext) => Promise<void> | void
 
 type Exec = (
   command: string,
@@ -44,7 +48,7 @@ const asPollExec =
 const setup = (exec: Exec) => {
   let tool: Tool | undefined
   const handlers = new Map<string, Handler>()
-  const messages: { message: Record<string, unknown>; options: Record<string, unknown> }[] = []
+  const messages: { message: JsonObject; options: JsonObject }[] = []
   const notifications: { message: string; level: string }[] = []
   const statuses: unknown[] = []
   const messageSent = deferred<void>()
@@ -55,7 +59,7 @@ const setup = (exec: Exec) => {
       registerTool: (definition: Tool) => {
         tool = definition
       },
-      sendMessage: (message: Record<string, unknown>, options: Record<string, unknown>) => {
+      sendMessage: (message: JsonObject, options: JsonObject) => {
         messages.push({ message, options })
         messageSent.resolve(undefined)
       },

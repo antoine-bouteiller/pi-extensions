@@ -166,7 +166,13 @@ const quotaFromPayload = (payload: unknown): ProviderQuota | undefined => {
     percent: sessionPercent,
     windows: [
       quotaWindow('Session', sessionPercent, session.resetsAt),
-      { ...quotaWindow('Weekly', weeklyPercent, weekly.resetsAt), ...(isEmptyString(extraUsage) ? {} : { detail: extraUsage }) },
+      (() => {
+        const window = quotaWindow('Weekly', weeklyPercent, weekly.resetsAt)
+        if (!isEmptyString(extraUsage)) {
+          window.detail = extraUsage
+        }
+        return window
+      })(),
     ],
   }
 }

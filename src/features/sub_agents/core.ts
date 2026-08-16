@@ -21,7 +21,7 @@ import {
 } from '@/shared/effect/bun_host_file_system.js'
 import { bunChildProcessSpawner, bunFileSystem, bunPath, type BunChildProcessSpawner } from '@/shared/effect/bun_services.js'
 import { azureQuota, consumeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
-import { jsonText, parseJsonText, prettyJsonText } from '@/shared/utils/json.js'
+import { jsonText, parseJsonText, prettyJsonText, type JsonObject } from '@/shared/utils/json.js'
 import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 import { isRecord } from '@/shared/utils/records.js'
 
@@ -31,7 +31,7 @@ import {
   processAlive,
   processInspectorFromProbe,
   processOwnerIsActive,
-  type ProcessInspectorShape,
+  type ProcessInspectorApi,
   type ProcessSnapshot,
 } from './process_ownership.js'
 import {
@@ -301,7 +301,7 @@ export interface AgentManagerOptions {
   /** Test hook invoked after a held lock is released normally but before its instance is revalidated. */
   beforeReleaseTaskLockRemoval?: (lockFile: string) => Effect.Effect<void, Cause.UnknownError>
   /** Override process identity inspection so tests can drive Linux/Darwin/Windows branches on any host. */
-  processInspector?: ProcessInspectorShape
+  processInspector?: ProcessInspectorApi
   processSpawner?: BunChildProcessSpawner
   afterProcessSpawn?: () => Effect.Effect<void>
   /** Override the platform used to choose between POSIX signals and Windows taskkill for tests. */
@@ -440,11 +440,17 @@ const normalizeConfig = (value: unknown): SubagentConfig => {
       : undefined
   const retentionDays =
     typeof raw.retentionDays === 'number' && Number.isFinite(raw.retentionDays) && raw.retentionDays >= 0 ? raw.retentionDays : undefined
-  return {
-    ...(typeof raw.storageDir === 'string' && isNotEmptyString(raw.storageDir.trim()) ? { storageDir: raw.storageDir.trim() } : {}),
-    ...(inactivityMinutes === undefined ? {} : { inactivityMinutes }),
-    ...(retentionDays === undefined ? {} : { retentionDays }),
+  const config: SubagentConfig = {}
+  if (typeof raw.storageDir === 'string' && isNotEmptyString(raw.storageDir.trim())) {
+    config.storageDir = raw.storageDir.trim()
   }
+  if (inactivityMinutes !== undefined) {
+    config.inactivityMinutes = inactivityMinutes
+  }
+  if (retentionDays !== undefined) {
+    config.retentionDays = retentionDays
+  }
+  return config
 }
 
 /** An absent or malformed config file means defaults; an unreadable one is a real failure and must not be hidden. */
@@ -993,6 +999,14 @@ const SubagentRpcEventSchema = Type.Object({
   type: Type.String(),
 })
 
+interface SessionLogEntry {
+  category: string
+  data?: unknown
+  level: string
+  message: string
+  ts: string
+}
+
 class SessionLogger {
   private readonly file: string
   private readonly writes = Semaphore.makeUnsafe(1)
@@ -1001,13 +1015,16 @@ class SessionLogger {
   }
   private write(entry: { level: string; category: string; message: string; data?: unknown }): Effect.Effect<void> {
     const { level, category, message, data } = entry
-    const line = `${JSON.stringify({
+    const loggedEntry: SessionLogEntry = {
       category,
       level,
       message,
       ts: DateTime.formatIso(DateTime.nowUnsafe()),
-      ...(data === undefined ? {} : { data }),
-    })}\n`
+    }
+    if (data !== undefined) {
+      loggedEntry.data = data
+    }
+    const line = `${JSON.stringify(loggedEntry)}\n`
     return this.writes.withPermits(1)(
       bunFileSystem
         .makeDirectory(dirname(this.file), { mode: 0o700, recursive: true })
@@ -1284,17 +1301,22 @@ const previewText = (text: string | undefined, maxLength = 180): string | undefi
   return normalized.length <= maxLength ? normalized : `${normalized.slice(0, Math.max(0, maxLength - 1))}…`
 }
 
-const agentMetadata = (
-  info: AgentInfo
-): {
-  profile?: string
+interface AgentMetadata {
   color: ThemeColor
   isReadonly?: boolean
-} => ({
-  ...(isNotNullOrUndefined(info.profile) && isNotEmptyString(info.profile) ? { profile: info.profile } : {}),
-  color: persistedProfileColor(info.profile, info.color),
-  ...(info.isReadonly === undefined ? {} : { isReadonly: info.isReadonly }),
-})
+  profile?: string
+}
+
+const agentMetadata = (info: AgentInfo): AgentMetadata => {
+  const metadata: AgentMetadata = { color: persistedProfileColor(info.profile, info.color) }
+  if (isNotNullOrUndefined(info.profile) && isNotEmptyString(info.profile)) {
+    metadata.profile = info.profile
+  }
+  if (info.isReadonly !== undefined) {
+    metadata.isReadonly = info.isReadonly
+  }
+  return metadata
+}
 
 const getPiCommand = (override?: AgentManagerOptions['piCommand']) => {
   const configuredPiBin = process.env.PI_SUBAGENT_PI_BIN
@@ -1382,7 +1404,7 @@ const buildChildArgs = (launch: { command: string; prefixArgs: string[] }, info:
 }
 
 /** Only a definite `mismatch` proves the child is gone; an unverifiable probe keeps us waiting. */
-const waitForOwnedExit = (inspector: ProcessInspectorShape, ownership: ChildProcessOwnership, timeoutMs: number): Effect.Effect<boolean> =>
+const waitForOwnedExit = (inspector: ProcessInspectorApi, ownership: ChildProcessOwnership, timeoutMs: number): Effect.Effect<boolean> =>
   Effect.gen(function* () {
     const deadline = (yield* Clock.currentTimeMillis) + timeoutMs
     while ((yield* Clock.currentTimeMillis) < deadline) {
@@ -1399,7 +1421,7 @@ const waitForOwnedExit = (inspector: ProcessInspectorShape, ownership: ChildProc
  * script or a bin shim replaces the command line in place while keeping the PID, so the
  * first readable identity can describe the launcher instead of the child Pi process.
  */
-const verifyChildOwnership = (inspector: ProcessInspectorShape, pid: number, token: string): Effect.Effect<ProcessSnapshot, SubagentProcessError> =>
+const verifyChildOwnership = (inspector: ProcessInspectorApi, pid: number, token: string): Effect.Effect<ProcessSnapshot, SubagentProcessError> =>
   Effect.gen(function* () {
     let previous: ProcessSnapshot | undefined
     for (let attempt = 0; attempt < 20; attempt++) {
@@ -1435,7 +1457,7 @@ export class AgentManager {
   private readonly defaultWaitAllTargets = new Map<string, Set<string>>()
   private readonly shutdownController = new AbortController()
   private shuttingDown?: Deferred.Deferred<void>
-  private readonly inspector: ProcessInspectorShape
+  private readonly inspector: ProcessInspectorApi
   private readonly platform: NodeJS.Platform
   private readonly processSpawner: BunChildProcessSpawner
   private ownerProcessIdentity: string | undefined
@@ -1844,7 +1866,7 @@ export class AgentManager {
         ownership.ownerPid !== process.pid &&
         (yield* this.inspector.ownerIsActive({
           pid: ownership.ownerPid,
-          ...(isNullOrUndefined(ownership.ownerProcessIdentity) ? {} : { processIdentity: ownership.ownerProcessIdentity }),
+          ...(isNullOrUndefined(ownership.ownerProcessIdentity) ? undefined : { processIdentity: ownership.ownerProcessIdentity }),
         }))
       if (ownedByAnotherProcess) {
         return
@@ -2340,11 +2362,7 @@ export class AgentManager {
     })
   }
 
-  private sendCommand(
-    live: LiveAgent,
-    command: Record<string, unknown>,
-    timeoutMs = DEFAULT_STARTUP_TIMEOUT_MS
-  ): Effect.Effect<unknown, SubagentProcessError> {
+  private sendCommand(live: LiveAgent, command: JsonObject, timeoutMs = DEFAULT_STARTUP_TIMEOUT_MS): Effect.Effect<unknown, SubagentProcessError> {
     return Effect.suspend(() =>
       live.processFinished || live.expectedExit
         ? Effect.fail(subagentProcessError(`Agent ${live.info.taskName} process is not available.`))
@@ -2353,7 +2371,7 @@ export class AgentManager {
   }
 
   /** Skips the availability guard so `terminateProcess` can still deliver its abort round trip. */
-  private dispatchCommand(live: LiveAgent, command: Record<string, unknown>, timeoutMs: number): Effect.Effect<unknown, SubagentProcessError> {
+  private dispatchCommand(live: LiveAgent, command: JsonObject, timeoutMs: number): Effect.Effect<unknown, SubagentProcessError> {
     return Effect.suspend(() => {
       const id = `req-${++live.reqId}`
       const commandType = typeof command.type === 'string' ? command.type : 'unknown'
@@ -2639,15 +2657,24 @@ export class AgentManager {
     return sortInfos(infos)
       .filter((info) => includeAll || info.parentSessionId === parentSessionId)
       .filter((info) => isNullOrUndefined(prefix) || isEmptyString(prefix) || info.taskName.startsWith(prefix))
-      .map((info) => ({
-        agent_name: info.canonicalName,
-        agent_status: info.status,
-        last_task_message: previewText(info.lastTaskMessage),
-        ...(includeAll ? { parent_session_id: info.parentSessionId } : {}),
-        ...(isNotNullOrUndefined(info.profile) && isNotEmptyString(info.profile) ? { profile: info.profile } : {}),
-        color: persistedProfileColor(info.profile, info.color),
-        ...(info.isReadonly === undefined ? {} : { is_readonly: info.isReadonly }),
-      }))
+      .map((info) => {
+        const entry: AgentListEntry = {
+          agent_name: info.canonicalName,
+          agent_status: info.status,
+          color: persistedProfileColor(info.profile, info.color),
+          last_task_message: previewText(info.lastTaskMessage),
+        }
+        if (includeAll) {
+          entry.parent_session_id = info.parentSessionId
+        }
+        if (isNotNullOrUndefined(info.profile) && isNotEmptyString(info.profile)) {
+          entry.profile = info.profile
+        }
+        if (info.isReadonly !== undefined) {
+          entry.is_readonly = info.isReadonly
+        }
+        return entry
+      })
   }
 
   listAgents(pathPrefix: string | undefined, parentSessionId: string, includeAll = false): AgentListEntry[] {
@@ -2683,16 +2710,25 @@ export class AgentManager {
   }
 
   private agentResponse(info: AgentInfo): AgentResponseEntry {
-    return {
+    const response: AgentResponseEntry = {
       agent_name: info.canonicalName,
-      status: info.status,
-      ...(info.finalResponse === undefined ? {} : { finalResponse: info.finalResponse }),
-      ...(isNotNullOrUndefined(info.error) && isNotEmptyString(info.error) ? { error: info.error } : {}),
-      last_task_message: previewText(info.lastTaskMessage),
-      ...(isNotNullOrUndefined(info.profile) && isNotEmptyString(info.profile) ? { profile: info.profile } : {}),
       color: persistedProfileColor(info.profile, info.color),
-      ...(info.isReadonly === undefined ? {} : { is_readonly: info.isReadonly }),
+      last_task_message: previewText(info.lastTaskMessage),
+      status: info.status,
     }
+    if (info.finalResponse !== undefined) {
+      response.finalResponse = info.finalResponse
+    }
+    if (isNotNullOrUndefined(info.error) && isNotEmptyString(info.error)) {
+      response.error = info.error
+    }
+    if (isNotNullOrUndefined(info.profile) && isNotEmptyString(info.profile)) {
+      response.profile = info.profile
+    }
+    if (info.isReadonly !== undefined) {
+      response.is_readonly = info.isReadonly
+    }
+    return response
   }
 
   private finishWaitTarget(parentSessionId: string, agentName: string): void {

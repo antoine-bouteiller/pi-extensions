@@ -53,26 +53,26 @@ const started = {
 }
 await Effect.runPromise(record(started))
 
-/** @param {string} message */
-const settle = (message) =>
+/** @param {string} input */
+const settle = (input) =>
   Effect.sync(() => {
-    const failing = message.startsWith('fail')
-    const response = message.startsWith('large') || message.startsWith('exit-after-output') ? 'x'.repeat(60 * 1024) : `response:${message}`
-    const messageEnd = {
-      message: {
-        content: [{ text: response, type: 'text' }],
-        role: 'assistant',
-        stopReason: failing ? 'error' : 'stop',
-        ...(failing ? { errorMessage: 'fake failure' } : {}),
-      },
-      type: 'message_end',
+    const failing = input.startsWith('fail')
+    const response = input.startsWith('large') || input.startsWith('exit-after-output') ? 'x'.repeat(60 * 1024) : `response:${input}`
+    const resultMessage = {
+      content: [{ text: response, type: 'text' }],
+      role: 'assistant',
+      stopReason: failing ? 'error' : 'stop',
     }
-    if (message.startsWith('exit-after-output')) {
+    if (failing) {
+      resultMessage.errorMessage = 'fake failure'
+    }
+    const messageEnd = { message: resultMessage, type: 'message_end' }
+    if (input.startsWith('exit-after-output')) {
       process.stderr.write('final stderr before exit')
       process.stdout.write(`${jsonText(messageEnd)}\n${jsonText({ type: 'agent_settled' })}\n`, () => process.exit(0))
       return
     }
-    if (message.startsWith('garbage')) {
+    if (input.startsWith('garbage')) {
       process.stdout.write('{ not json\n')
     }
     send(messageEnd)

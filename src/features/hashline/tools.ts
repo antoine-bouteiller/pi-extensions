@@ -26,6 +26,7 @@ import { Type, type Static } from 'typebox'
 import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { PiCtx } from '@/shared/effect/pi_services.js'
 import { type HandlerServices } from '@/shared/effect/runtime.js'
+import { type JsonObject } from '@/shared/utils/json.js'
 import { isTrue } from '@/shared/utils/predicates.js'
 import { assertUnprotectedPathEffect, resolveToolPath, stripToolPathPrefix } from '@/shared/utils/protected_paths.js'
 import { isRecord } from '@/shared/utils/records.js'
@@ -46,11 +47,11 @@ export const writeSchema = Type.Object({
 
 interface ToolOutput {
   content: { text: string; type: 'text' }[]
-  details: Record<string, unknown>
+  details: JsonObject
 }
-type RenderableToolOutput = AgentToolResult<Record<string, unknown>> & { isError?: boolean }
+type RenderableToolOutput = AgentToolResult<JsonObject> & { isError?: boolean }
 
-const result = (text: string, details: Record<string, unknown> = {}): ToolOutput => ({
+const result = (text: string, details: JsonObject = {}): ToolOutput => ({
   content: [{ text, type: 'text' as const }],
   details,
 })
@@ -384,13 +385,16 @@ const writeHashlinePatch = ({
         const parsedSection = parsed.sections[index]
         const sourceAbsolute = resolveToolPath(stripToolPathPrefix(parsedSection?.path ?? section.path), cwd)
         const sourcePath = pathService.relative(cwd, sourceAbsolute) || sourceAbsolute
-        return {
+        const sectionResult = {
           hash: section.fileHash,
-          ...(section.moveDest === undefined ? {} : { moveDest: path, sourcePath }),
           op: section.op,
           path,
           version: fingerprint(normalizeToLF(section.written)),
         }
+        if (section.moveDest !== undefined) {
+          return { ...sectionResult, moveDest: path, sourcePath }
+        }
+        return sectionResult
       })
       const summary = sections.map((section) => `${section.op} ${section.path} [${section.hash}]`)
 
