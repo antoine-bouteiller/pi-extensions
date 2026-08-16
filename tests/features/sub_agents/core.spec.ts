@@ -158,6 +158,8 @@ const promising = (manager: InstanceType<typeof AgentManager>) => ({
 const createAgentManager = (options: Partial<AgentManagerOptions> = {}) =>
   promising(
     new AgentManager({
+      // A child that refuses to exit is escalated over ~2.5s in production; tests only need the ordering.
+      exitWaitScale: 0.1,
       piCommand: { command: FAKE_RPC_CHILD },
       ...options,
     })
@@ -1302,11 +1304,13 @@ describe('child process lifecycle', () => {
         expect(pidAlive(childPid)).toBe(true)
       } finally {
         verifiable = true
-        yield* Effect.promise(() => manager.shutdown())
         const terminated = pid
-        if (terminated !== undefined) {
+        // Killed before teardown: shutting down a live `survive-stdin` child walks the whole SIGTERM/SIGKILL escalation ladder.
+        if (terminated !== undefined && pidAlive(terminated)) {
+          process.kill(terminated, 'SIGKILL')
           yield* Effect.promise(() => waitUntil(() => !pidAlive(terminated)))
         }
+        yield* Effect.promise(() => manager.shutdown())
         yield* removeFile(scope, { force: true, recursive: true })
       }
     })
@@ -1360,12 +1364,13 @@ describe('child process lifecycle', () => {
         expect(parseJsonText(yield* readText(started.infoFile))).toMatchObject({ childProcess: { token } })
       } finally {
         verifiable = true
-        yield* Effect.promise(() => manager.shutdown())
         const terminated = pid
+        // Killed before teardown: shutting down a live `survive-stdin` child walks the whole SIGTERM/SIGKILL escalation ladder.
         if (terminated !== undefined && pidAlive(terminated)) {
           process.kill(terminated, 'SIGKILL')
           yield* Effect.promise(() => waitUntil(() => !pidAlive(terminated)))
         }
+        yield* Effect.promise(() => manager.shutdown())
         yield* removeFile(scope, { force: true, recursive: true })
       }
     })
