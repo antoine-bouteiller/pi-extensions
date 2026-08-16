@@ -164,7 +164,12 @@ export const startOAuthCallback = (options: OAuthCallbackOptions): Effect.Effect
       .serve(
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest
-          return respondToCallback(request, { code, expectedState: options.expectedState, url })
+          /*
+           * `connection: close` keeps shutdown prompt: a keep-alive browser socket would hold the
+           * listener — and the fixed callback port needed by the reconnect — open until the
+           * server's shutdown grace period expires.
+           */
+          return HttpServerResponse.setHeader(respondToCallback(request, { code, expectedState: options.expectedState, url }), 'connection', 'close')
         })
       )
       .pipe(Effect.provideService(Scope.Scope, listenerScope))
