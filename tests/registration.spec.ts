@@ -1,14 +1,11 @@
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- This test verifies a child Node process.
-import { spawn } from 'node:child_process'
-import { once } from 'node:events'
-import { text } from 'node:stream/consumers'
-import { fileURLToPath } from 'node:url'
+import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { Effect } from 'effect'
 
-import { NodeFileSystem, NodePath } from '@effect/platform-node'
-import { Effect, FileSystem, Layer, Path } from 'effect'
-
+import { type ProcessRuntime } from '#config/runtime'
+import { nodeFileSystem, nodePath } from '#shared/effect/node_services'
 import { asResult } from '#tests/utils/casts'
 import { describe, expect, it } from '#tests/utils/effect'
+import { createFakePi, type FakePiState } from '#tests/utils/fake_pi'
 
 /*
  * These are package contracts, not an inventory: every expectation is derived from the feature
@@ -22,158 +19,100 @@ const MANIFEST_KEYS = ['commands', 'handlers', 'messageRenderers', 'tools'] as c
 
 type Manifest = Record<(typeof MANIFEST_KEYS)[number], string[]>
 
-interface FeatureReport {
-  exportsDefault: boolean
-  exportsRegister: boolean
-  manifest: Manifest
+interface FeatureModule {
+  default?: unknown
+  register?: (pi: ExtensionAPI, runtime: ProcessRuntime) => void
 }
 
-interface RegistrationReport {
-  aggregate: Manifest
-  features: Record<string, FeatureReport>
-  registryNames: string[]
-}
-
-const PATHS = {
-  entrypoint: fileURLToPath(new URL('../src/index.ts', import.meta.url)),
-  fakePi: fileURLToPath(new URL('utils/fake_pi.ts', import.meta.url)),
-  featuresDir: fileURLToPath(new URL('../src/features', import.meta.url)).replace(/\/$/, ''),
-  registry: fileURLToPath(new URL('../src/config/features.ts', import.meta.url)),
-  runtime: fileURLToPath(new URL('../src/config/runtime.ts', import.meta.url)),
-}
-
-const featureDirectories = (): Promise<string[]> =>
-  Effect.runPromise(
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem
-      const path = yield* Path.Path
-      const names = yield* fs.readDirectory(PATHS.featuresDir)
-      const entries = yield* Effect.forEach(
-        names,
-        (name) => fs.stat(path.join(PATHS.featuresDir, name)).pipe(Effect.map((info) => ({ info, name }))),
-        {}
-      )
-      return entries
-        .filter(({ info }) => info.type === 'Directory')
-        .map(({ name }) => name)
-        .toSorted()
-    }).pipe(Effect.provide(Layer.merge(NodeFileSystem.layer, NodePath.layer)))
-  )
+const FEATURES_DIR = nodePath.resolve(import.meta.dirname, '../src/features')
 
 const toFeatureName = (directory: string): string => directory.replaceAll('_', '-')
 
-const reportScript = (directories: string[]): string => `
-  const unwrapModule = module => module.default?.default !== undefined ? module.default : module.default ?? module;
-  const { createFakePi } = unwrapModule(await import(${JSON.stringify(PATHS.fakePi)}));
-
-  const snapshot = state => ({
+const snapshot = (state: FakePiState) =>
+  ({
     commands: [...state.commands.keys()],
     handlers: [...state.handlers.entries()].flatMap(([event, handlers]) => handlers.map(() => event)),
     messageRenderers: [...state.messageRenderers],
     tools: [...state.tools.keys()],
-  });
-
-  const report = { features: {} };
-
-  const { default: piExtensions } = unwrapModule(await import(${JSON.stringify(PATHS.entrypoint)}));
-  const aggregate = createFakePi();
-  piExtensions(aggregate.pi);
-  report.aggregate = snapshot(aggregate.state);
-
-  const { getOrCreateProcessRuntime } = unwrapModule(await import(${JSON.stringify(PATHS.runtime)}));
-  const runtime = getOrCreateProcessRuntime();
-  for (const directory of ${JSON.stringify(directories)}) {
-    const module = unwrapModule(await import(${JSON.stringify(PATHS.featuresDir)} + '/' + directory + '/index.ts'));
-    const fixture = createFakePi();
-    const exportsRegister = typeof module.register === 'function';
-    if (exportsRegister) {
-      module.register(fixture.pi, runtime);
-    }
-    report.features[directory] = {
-      exportsDefault: module.default !== undefined,
-      exportsRegister,
-      manifest: snapshot(fixture.state),
-    };
-  }
-
-  const { features } = unwrapModule(await import(${JSON.stringify(PATHS.registry)}));
-  report.registryNames = features.map(feature => feature.name);
-  console.log(JSON.stringify(report));
-`
-
-/*
- * Registering sub_agents touches the real agent directory and pollutes process-level module state
- * for specs that mock it, so the whole report is collected in a throwaway child process.
- */
-const collectReport = (): Promise<RegistrationReport> =>
-  Effect.runPromise(
-    Effect.gen(function* () {
-      const { PI_SUBAGENT_OWNER_TOKEN: _ownerToken, ...env } = process.env
-      const script = reportScript(yield* Effect.promise(featureDirectories))
-      const child = spawn(process.execPath, ['--import', 'jiti/register', '--eval', script], {
-        env,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      })
-      return yield* Effect.all(
-        [
-          Effect.promise(() => text(child.stdout)),
-          Effect.promise(() => text(child.stderr)),
-          Effect.promise(() => once(child, 'exit').then(([code]) => code)),
-        ],
-        { concurrency: 'unbounded' }
-      )
-    })
-  ).then(([stdout, stderr, exitCode]) => {
-    expect(exitCode, stderr).toBe(0)
-    return asResult<RegistrationReport>(JSON.parse(stdout.trim()))
-  })
-
-let pending: Promise<RegistrationReport> | undefined
-const registrationReport = (): Promise<RegistrationReport> => (pending ??= collectReport())
-
-type FeatureReports = Record<string, FeatureReport>
-
-const mergedManifest = (features: FeatureReports) => {
-  const manifests = Object.values(features).map((feature) => feature.manifest)
-  const collect = (key: keyof Manifest): string[] => manifests.flatMap((manifest) => manifest[key])
-  return { commands: collect('commands'), handlers: collect('handlers'), messageRenderers: collect('messageRenderers'), tools: collect('tools') }
-}
+  }) satisfies Manifest
 
 const registrationCount = (manifest: Manifest): number => MANIFEST_KEYS.reduce((total, key) => total + manifest[key].length, 0)
 
-describe('registration', () => {
-  it.effect(
-    'the registry wires every feature directory exactly once',
-    () =>
-      Effect.gen(function* () {
-        const { registryNames } = yield* Effect.promise(() => registrationReport())
-        const directories = yield* Effect.promise(() => featureDirectories())
+const mergedManifest = (manifests: Manifest[]) => {
+  const collect = (key: keyof Manifest): string[] => manifests.flatMap((manifest) => manifest[key])
+  return {
+    commands: collect('commands'),
+    handlers: collect('handlers'),
+    messageRenderers: collect('messageRenderers'),
+    tools: collect('tools'),
+  } satisfies Manifest
+}
 
-        expect(registryNames.toSorted()).toEqual(directories.map(toFeatureName).toSorted())
-        expect(new Set(registryNames).size).toBe(registryNames.length)
-      }),
-    10_000
+// Features register differently inside a subagent, so this worker must look like a top-level Pi run.
+delete process.env.PI_SUBAGENT_OWNER_TOKEN
+
+const { getOrCreateProcessRuntime } = await import('#config/runtime')
+const { default: piExtensions } = await import('../src/index')
+
+const runtime = getOrCreateProcessRuntime()
+const features = await Effect.runPromise(
+  Effect.gen(function* () {
+    const names = yield* nodeFileSystem.readDirectory(FEATURES_DIR)
+    const entries = yield* Effect.forEach(
+      names,
+      (name) => nodeFileSystem.stat(nodePath.join(FEATURES_DIR, name)).pipe(Effect.map((info) => ({ info, name }))),
+      {}
+    )
+    return yield* Effect.forEach(
+      entries.filter(({ info }) => info.type === 'Directory').map(({ name }) => name),
+      (directory) =>
+        Effect.promise(() => import(nodePath.join(FEATURES_DIR, directory, 'index.ts'))).pipe(
+          Effect.map((imported) => {
+            const module = asResult<FeatureModule>(imported)
+            const fixture = createFakePi()
+            module.register?.(fixture.pi, runtime)
+            return {
+              directory,
+              exportsDefault: module.default !== undefined,
+              exportsRegister: typeof module.register === 'function',
+              manifest: snapshot(fixture.state),
+            }
+          })
+        ),
+      {}
+    )
+  })
+)
+const aggregate = createFakePi()
+piExtensions(aggregate.pi)
+const merged = mergedManifest(features.map((feature) => feature.manifest))
+
+describe('registration', () => {
+  it.effect('the registry wires every feature directory exactly once', () =>
+    Effect.gen(function* () {
+      const { features: registry } = yield* Effect.promise(() => import('#config/features'))
+      const registryNames = registry.map((feature) => feature.name)
+
+      expect(registryNames.toSorted()).toEqual(features.map((feature) => toFeatureName(feature.directory)).toSorted())
+      expect(new Set(registryNames).size).toBe(registryNames.length)
+    })
   )
 
   it.effect('every feature exposes only a named register entrypoint that registers something', () =>
-    Effect.gen(function* () {
-      const { features } = yield* Effect.promise(() => registrationReport())
-
-      for (const [directory, feature] of Object.entries(features)) {
-        expect(feature.exportsRegister, directory).toBe(true)
-        expect(feature.exportsDefault, directory).toBe(false)
-        expect(registrationCount(feature.manifest), directory).toBeGreaterThan(0)
+    Effect.sync(() => {
+      for (const feature of features) {
+        expect(feature.exportsRegister, feature.directory).toBe(true)
+        expect(feature.exportsDefault, feature.directory).toBe(false)
+        expect(registrationCount(feature.manifest), feature.directory).toBeGreaterThan(0)
       }
     })
   )
 
   it.effect('the packaged entrypoint registers exactly what the features register on their own', () =>
-    Effect.gen(function* () {
-      const { aggregate, features } = yield* Effect.promise(() => registrationReport())
-      const merged = mergedManifest(features)
-
+    Effect.sync(() => {
+      const aggregated = snapshot(aggregate.state)
       for (const key of MANIFEST_KEYS) {
-        expect(aggregate[key].toSorted(), key).toEqual(merged[key].toSorted())
+        expect(aggregated[key].toSorted(), key).toEqual(merged[key].toSorted())
       }
     })
   )
@@ -183,10 +122,7 @@ describe('registration', () => {
    * commands by name, so a collision between two features is silently deduped in the aggregate.
    */
   it.effect('tool, command, and message renderer names are unique across features and well formed', () =>
-    Effect.gen(function* () {
-      const { features } = yield* Effect.promise(() => registrationReport())
-      const merged = mergedManifest(features)
-
+    Effect.sync(() => {
       for (const key of ['commands', 'messageRenderers', 'tools'] as const) {
         expect(merged[key].toSorted(), key).toEqual([...new Set(merged[key])].toSorted())
       }
@@ -195,6 +131,9 @@ describe('registration', () => {
       }
       for (const command of merged.commands) {
         expect(command, command).toMatch(KEBAB_CASE)
+      }
+      for (const feature of features) {
+        expect(feature.directory, feature.directory).toMatch(SNAKE_CASE)
       }
     })
   )

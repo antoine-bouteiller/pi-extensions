@@ -1,5 +1,4 @@
 import { userInfo } from 'node:os'
-import { fileURLToPath } from 'node:url'
 
 import { type Theme } from '@earendil-works/pi-coding-agent'
 import { visibleWidth } from '@earendil-works/pi-tui'
@@ -27,10 +26,10 @@ const {
   writeFileString: writeText,
 } = nodeFileSystem
 const TEST_AGENT_DIR = '/tmp/pi-codex-subagents-tests'
-const FAKE_RPC_CHILD = join(import.meta.dirname, 'fixtures', 'fake_rpc_child')
+const FAKE_RPC_CHILD = join(import.meta.dirname, 'fixtures', 'fake_rpc_child.js')
 const FAKE_RPC_COMMAND = {
   command: process.execPath,
-  prefixArgs: [fileURLToPath(new URL('lib/jiti-cli.mjs', import.meta.resolve('jiti/package.json'))), FAKE_RPC_CHILD],
+  prefixArgs: [FAKE_RPC_CHILD],
 }
 const TEST_TEMP_DIR = join(TEST_AGENT_DIR, 'temp')
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR
@@ -166,6 +165,8 @@ const promising = (manager: InstanceType<typeof AgentManager>) => ({
 const createAgentManager = (options: Partial<AgentManagerOptions> = {}) =>
   promising(
     new AgentManager({
+      // A child that refuses to exit is escalated over ~2.5s in production; tests only need the ordering.
+      exitWaitScale: 0.1,
       piCommand: FAKE_RPC_COMMAND,
       ...options,
     })
@@ -1316,11 +1317,13 @@ describe('child process lifecycle', () => {
         expect(pidAlive(childPid)).toBe(true)
       } finally {
         verifiable = true
-        yield* Effect.promise(() => manager.shutdown())
         const terminated = pid
-        if (terminated !== undefined) {
+        // Killed before teardown: shutting down a live `survive-stdin` child walks the whole SIGTERM/SIGKILL escalation ladder.
+        if (terminated !== undefined && pidAlive(terminated)) {
+          process.kill(terminated, 'SIGKILL')
           yield* Effect.promise(() => waitUntil(() => !pidAlive(terminated)))
         }
+        yield* Effect.promise(() => manager.shutdown())
         yield* removeFile(scope, { force: true, recursive: true })
       }
     })
@@ -1374,12 +1377,13 @@ describe('child process lifecycle', () => {
         expect(parseJsonText(yield* readText(started.infoFile))).toMatchObject({ childProcess: { token } })
       } finally {
         verifiable = true
-        yield* Effect.promise(() => manager.shutdown())
         const terminated = pid
+        // Killed before teardown: shutting down a live `survive-stdin` child walks the whole SIGTERM/SIGKILL escalation ladder.
         if (terminated !== undefined && pidAlive(terminated)) {
           process.kill(terminated, 'SIGKILL')
           yield* Effect.promise(() => waitUntil(() => !pidAlive(terminated)))
         }
+        yield* Effect.promise(() => manager.shutdown())
         yield* removeFile(scope, { force: true, recursive: true })
       }
     })

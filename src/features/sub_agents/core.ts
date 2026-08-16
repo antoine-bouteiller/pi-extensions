@@ -306,6 +306,8 @@ export interface AgentManagerOptions {
   afterProcessSpawn?: () => Effect.Effect<void>
   /** Override the platform used to choose between POSIX signals and Windows taskkill for tests. */
   platform?: NodeJS.Platform
+  /** Scales how long termination waits for a child that refuses to exit. Tests shrink it; production keeps 1. */
+  exitWaitScale?: number
 }
 
 interface Waiter {
@@ -1460,6 +1462,7 @@ export class AgentManager {
   private readonly inspector: ProcessInspectorApi
   private readonly platform: NodeJS.Platform
   private readonly processSpawner: NodeChildProcessSpawner
+  private readonly exitWaitScale: number
   private ownerProcessIdentity: string | undefined
   private readonly reconciliation: Fiber.Fiber<void>
   /** Launches and terminations are forked here so an aborted caller leaves the child it started alone. */
@@ -1473,6 +1476,7 @@ export class AgentManager {
     this.inspector = options.processInspector ?? processInspectorFromProbe(nodeProcessProbe)
     this.platform = options.platform ?? process.platform
     this.processSpawner = options.processSpawner ?? nodeChildProcessSpawner
+    this.exitWaitScale = options.exitWaitScale ?? 1
     this.reconciliation = Effect.runFork(this.initialize())
   }
 
@@ -1811,12 +1815,12 @@ export class AgentManager {
       }
       if (this.platform === 'win32') {
         yield* this.killWindowsTree(ownership.pid)
-        yield* waitForOwnedExit(this.inspector, ownership, 2000)
+        yield* waitForOwnedExit(this.inspector, ownership, this.exitWait(2000))
       } else {
         yield* this.signalOwnedProcess(ownership, 'SIGTERM')
-        if (!(yield* waitForOwnedExit(this.inspector, ownership, 1000))) {
+        if (!(yield* waitForOwnedExit(this.inspector, ownership, this.exitWait(1000)))) {
           yield* this.signalOwnedProcess(ownership, 'SIGKILL')
-          yield* waitForOwnedExit(this.inspector, ownership, 1000)
+          yield* waitForOwnedExit(this.inspector, ownership, this.exitWait(1000))
         }
       }
       if ((yield* this.inspector.ownershipVerdict(ownership)) !== 'mismatch') {
@@ -3025,12 +3029,16 @@ export class AgentManager {
     })
   }
 
+  private exitWait(timeoutMs: number): number {
+    return Math.max(1, Math.round(timeoutMs * this.exitWaitScale))
+  }
+
   private awaitChildExit(live: LiveAgent, timeoutMs: number): Effect.Effect<void> {
-    return Deferred.await(live.exited).pipe(Effect.timeoutOption(timeoutMs), Effect.asVoid)
+    return Deferred.await(live.exited).pipe(Effect.timeoutOption(this.exitWait(timeoutMs)), Effect.asVoid)
   }
 
   private awaitChildCleanup(live: LiveAgent, timeoutMs: number): Effect.Effect<void> {
-    return Deferred.await(live.exit).pipe(Effect.timeoutOption(timeoutMs), Effect.asVoid)
+    return Deferred.await(live.exit).pipe(Effect.timeoutOption(this.exitWait(timeoutMs)), Effect.asVoid)
   }
 
   private terminationSequence(live: LiveAgent): Effect.Effect<void, SubagentError> {
