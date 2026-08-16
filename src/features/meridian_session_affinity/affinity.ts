@@ -1,9 +1,9 @@
 import { type BeforeAgentStartEvent, type BeforeProviderHeadersEvent, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { Effect } from 'effect'
 
-import { isEmptyString, isNullOrUndefined } from '@/shared/utils/predicates.js'
+import { isEmptyString, isNullOrUndefined } from '#shared/utils/predicates'
 
-import { scrubPiFingerprints } from './scrub.js'
+import { scrubPiFingerprints } from './scrub'
 
 const DEFAULT_MERIDIAN_BASE_URL = 'http://127.0.0.1:3456'
 const MERIDIAN_AGENT_HEADER = 'x-meridian-agent'

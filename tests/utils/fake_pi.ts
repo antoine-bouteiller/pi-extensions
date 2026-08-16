@@ -1,8 +1,8 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Effect } from 'effect'
 
-import { promiseFromEffect, tryPromiseEffect } from './bun_effect.js'
-import { asExtensionApi } from './casts.js'
+import { asExtensionApi } from './casts'
+import { promiseFromEffect, tryPromiseEffect } from './effect'
 
 type EventHandler = (...args: unknown[]) => unknown
 export interface ToolDefinition {

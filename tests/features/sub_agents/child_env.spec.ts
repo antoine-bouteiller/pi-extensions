@@ -1,7 +1,7 @@
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Effect } from 'effect'
 
-import { buildChildEnv } from '@/features/sub_agents/child_env.js'
+import { buildChildEnv } from '#features/sub_agents/child_env'
+import { describe, expect, it } from '#tests/utils/effect'
 
 const identity = { childToken: 'token-1', isReadonly: true, profile: 'scout' }
 

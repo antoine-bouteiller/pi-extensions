@@ -1,9 +1,14 @@
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- This test verifies a child Node process.
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { text } from 'node:stream/consumers'
 import { fileURLToPath } from 'node:url'
 
-import { BunFileSystem, BunPath } from '@effect/platform-bun'
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asResult } from '@tests/utils/casts.js'
+import { NodeFileSystem, NodePath } from '@effect/platform-node'
 import { Effect, FileSystem, Layer, Path } from 'effect'
+
+import { asResult } from '#tests/utils/casts'
+import { describe, expect, it } from '#tests/utils/effect'
 
 /*
  * These are package contracts, not an inventory: every expectation is derived from the feature
@@ -52,13 +57,14 @@ const featureDirectories = (): Promise<string[]> =>
         .filter(({ info }) => info.type === 'Directory')
         .map(({ name }) => name)
         .toSorted()
-    }).pipe(Effect.provide(Layer.merge(BunFileSystem.layer, BunPath.layer)))
+    }).pipe(Effect.provide(Layer.merge(NodeFileSystem.layer, NodePath.layer)))
   )
 
 const toFeatureName = (directory: string): string => directory.replaceAll('_', '-')
 
 const reportScript = (directories: string[]): string => `
-  const { createFakePi } = await import(${JSON.stringify(PATHS.fakePi)});
+  const unwrapModule = module => module.default?.default !== undefined ? module.default : module.default ?? module;
+  const { createFakePi } = unwrapModule(await import(${JSON.stringify(PATHS.fakePi)}));
 
   const snapshot = state => ({
     commands: [...state.commands.keys()],
@@ -69,15 +75,15 @@ const reportScript = (directories: string[]): string => `
 
   const report = { features: {} };
 
-  const { default: piExtensions } = await import(${JSON.stringify(PATHS.entrypoint)});
+  const { default: piExtensions } = unwrapModule(await import(${JSON.stringify(PATHS.entrypoint)}));
   const aggregate = createFakePi();
   piExtensions(aggregate.pi);
   report.aggregate = snapshot(aggregate.state);
 
-  const { getOrCreateProcessRuntime } = await import(${JSON.stringify(PATHS.runtime)});
+  const { getOrCreateProcessRuntime } = unwrapModule(await import(${JSON.stringify(PATHS.runtime)}));
   const runtime = getOrCreateProcessRuntime();
   for (const directory of ${JSON.stringify(directories)}) {
-    const module = await import(${JSON.stringify(PATHS.featuresDir)} + '/' + directory + '/index.js');
+    const module = unwrapModule(await import(${JSON.stringify(PATHS.featuresDir)} + '/' + directory + '/index.ts'));
     const fixture = createFakePi();
     const exportsRegister = typeof module.register === 'function';
     if (exportsRegister) {
@@ -90,26 +96,29 @@ const reportScript = (directories: string[]): string => `
     };
   }
 
-  const { features } = await import(${JSON.stringify(PATHS.registry)});
+  const { features } = unwrapModule(await import(${JSON.stringify(PATHS.registry)}));
   report.registryNames = features.map(feature => feature.name);
   console.log(JSON.stringify(report));
 `
 
 /*
- * Registering sub_agents touches the real agent directory and pollutes Bun's shared module cache
- * for the specs that mock it, so the whole report is collected in a throwaway child process.
+ * Registering sub_agents touches the real agent directory and pollutes process-level module state
+ * for specs that mock it, so the whole report is collected in a throwaway child process.
  */
 const collectReport = (): Promise<RegistrationReport> =>
   Effect.runPromise(
     Effect.gen(function* () {
       const { PI_SUBAGENT_OWNER_TOKEN: _ownerToken, ...env } = process.env
       const script = reportScript(yield* Effect.promise(featureDirectories))
-      const child = Bun.spawn([process.execPath, '--eval', script], { env, stderr: 'pipe', stdout: 'pipe' })
+      const child = spawn(process.execPath, ['--import', 'jiti/register', '--eval', script], {
+        env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
       return yield* Effect.all(
         [
-          Effect.promise(() => new Response(child.stdout).text()),
-          Effect.promise(() => new Response(child.stderr).text()),
-          Effect.promise(() => child.exited),
+          Effect.promise(() => text(child.stdout)),
+          Effect.promise(() => text(child.stderr)),
+          Effect.promise(() => once(child, 'exit').then(([code]) => code)),
         ],
         { concurrency: 'unbounded' }
       )
@@ -133,14 +142,17 @@ const mergedManifest = (features: FeatureReports) => {
 const registrationCount = (manifest: Manifest): number => MANIFEST_KEYS.reduce((total, key) => total + manifest[key].length, 0)
 
 describe('registration', () => {
-  it.effect('the registry wires every feature directory exactly once', () =>
-    Effect.gen(function* () {
-      const { registryNames } = yield* Effect.promise(() => registrationReport())
-      const directories = yield* Effect.promise(() => featureDirectories())
+  it.effect(
+    'the registry wires every feature directory exactly once',
+    () =>
+      Effect.gen(function* () {
+        const { registryNames } = yield* Effect.promise(() => registrationReport())
+        const directories = yield* Effect.promise(() => featureDirectories())
 
-      expect(registryNames.toSorted()).toEqual(directories.map(toFeatureName).toSorted())
-      expect(new Set(registryNames).size).toBe(registryNames.length)
-    })
+        expect(registryNames.toSorted()).toEqual(directories.map(toFeatureName).toSorted())
+        expect(new Set(registryNames).size).toBe(registryNames.length)
+      }),
+    10_000
   )
 
   it.effect('every feature exposes only a named register entrypoint that registers something', () =>
@@ -148,8 +160,8 @@ describe('registration', () => {
       const { features } = yield* Effect.promise(() => registrationReport())
 
       for (const [directory, feature] of Object.entries(features)) {
-        expect(feature.exportsRegister, directory).toBeTrue()
-        expect(feature.exportsDefault, directory).toBeFalse()
+        expect(feature.exportsRegister, directory).toBe(true)
+        expect(feature.exportsDefault, directory).toBe(false)
         expect(registrationCount(feature.manifest), directory).toBeGreaterThan(0)
       }
     })

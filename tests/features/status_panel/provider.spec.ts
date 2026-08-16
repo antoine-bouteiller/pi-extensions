@@ -1,12 +1,12 @@
-import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asFetch } from '@tests/utils/casts.js'
-import { deferred } from '@tests/utils/deferred.js'
 import { Clock, Effect } from 'effect'
 import { TestClock } from 'effect/testing'
 import { FetchHttpClient, type HttpClient } from 'effect/unstable/http'
 
-import { fetchAnthropicQuota, makeQuotaPoller, quotaFromHeaders } from '@/features/status_panel/provider.js'
-import { type ProviderQuota } from '@/features/status_panel/state.js'
+import { fetchAnthropicQuota, makeQuotaPoller, quotaFromHeaders } from '#features/status_panel/provider'
+import { type ProviderQuota } from '#features/status_panel/state'
+import { asFetch } from '#tests/utils/casts'
+import { deferred } from '#tests/utils/deferred'
+import { promiseFromEffect, describe, expect, it } from '#tests/utils/effect'
 
 const withFakeFetch = <Success, Failure>(
   fetchImpl: typeof fetch,
@@ -230,7 +230,7 @@ describe('Anthropic quota polling lifecycle', () => {
       yield* poller.start('http://gateway')
       yield* poller.stop
 
-      expect(interrupted).toBeTrue()
+      expect(interrupted).toBe(true)
       yield* TestClock.adjust('60 millis')
       expect(published).toEqual([])
     }).pipe(Effect.provide(FetchHttpClient.layer))
@@ -299,8 +299,8 @@ describe('Anthropic quota polling lifecycle', () => {
         throw new Error('expected a second pending request')
       }
       const [, second] = requests
-      expect(first.signal.aborted).toBeTrue()
-      expect(second.signal.aborted).toBeFalse()
+      expect(first.signal.aborted).toBe(true)
+      expect(second.signal.aborted).toBe(false)
 
       expect(second.baseUrl).toBe('http://gateway')
       second.result.resolve({ label: 'anthropic', percent: 20 })
@@ -315,7 +315,7 @@ describe('Anthropic quota polling lifecycle', () => {
         throw new Error('expected a third pending request')
       }
       yield* poller.stop
-      expect(third.signal.aborted).toBeTrue()
+      expect(third.signal.aborted).toBe(true)
       yield* TestClock.adjust('60 millis')
       expect(requests).toHaveLength(3)
     }).pipe(Effect.provide(FetchHttpClient.layer))

@@ -1,11 +1,11 @@
-import { makeAbortController } from '@tests/utils/abort_controller.js'
-import { promiseFromEffect, tryEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asError, asExtensionContext } from '@tests/utils/casts.js'
 import { Context, Effect, Fiber, Layer, ManagedRuntime } from 'effect'
 
-import { ToolFailure } from '@/shared/effect/errors.js'
-import { PiCtx, Ui } from '@/shared/effect/pi_services.js'
-import { makeEventHandler, makeToolExecutor, perInvocation, withAbortSignal } from '@/shared/effect/runtime.js'
+import { ToolFailure } from '#shared/effect/errors'
+import { PiCtx, Ui } from '#shared/effect/pi_services'
+import { makeEventHandler, makeToolExecutor, perInvocation, withAbortSignal } from '#shared/effect/runtime'
+import { makeAbortController } from '#tests/utils/abort_controller'
+import { asError, asExtensionContext } from '#tests/utils/casts'
+import { promiseFromEffect, tryEffect, describe, expect, it } from '#tests/utils/effect'
 
 interface UiCalls {
   confirms: { title: string; message: string; aborted: boolean }[]
@@ -53,7 +53,7 @@ const emptyRuntime = () => ManagedRuntime.make(Layer.empty)
 const scopedEmptyRuntime = Effect.acquireRelease(Effect.sync(emptyRuntime), (runtime) => Effect.promise(() => runtime.dispose()))
 
 describe('tool executor boundary', () => {
-  it.scoped('rejects with the tagged ToolFailure and its exact message', () =>
+  it.effect('rejects with the tagged ToolFailure and its exact message', () =>
     Effect.gen(function* () {
       const runtime = yield* scopedEmptyRuntime
       const execute = makeToolExecutor(runtime)(() => Effect.fail(ToolFailure.make({ message: 'path is outside the workspace' })))
@@ -85,7 +85,7 @@ describe('tool executor boundary', () => {
     })
   )
 
-  it.scoped('lets a tool map a rejected promise onto its own failure message', () =>
+  it.effect('lets a tool map a rejected promise onto its own failure message', () =>
     Effect.gen(function* () {
       const runtime = yield* scopedEmptyRuntime
       const execute = makeToolExecutor(runtime)(() =>
@@ -113,7 +113,7 @@ describe('tool executor boundary', () => {
     })
   )
 
-  it.scoped('never runs the body when the signal is already aborted', () =>
+  it.effect('never runs the body when the signal is already aborted', () =>
     Effect.gen(function* () {
       const runtime = yield* scopedEmptyRuntime
       const signal = AbortSignal.abort()
@@ -136,7 +136,7 @@ describe('tool executor boundary', () => {
     })
   )
 
-  it.scoped('interrupts the fiber when the inbound AbortSignal fires', () =>
+  it.effect('interrupts the fiber when the inbound AbortSignal fires', () =>
     Effect.gen(function* () {
       const runtime = yield* scopedEmptyRuntime
       const controller = makeAbortController()
@@ -153,7 +153,7 @@ describe('tool executor boundary', () => {
     })
   )
 
-  it.scoped('gives concurrent invocations their own context', () =>
+  it.effect('gives concurrent invocations their own context', () =>
     Effect.gen(function* () {
       const runtime = yield* scopedEmptyRuntime
       const execute = makeToolExecutor(runtime)(() =>
@@ -178,7 +178,7 @@ describe('tool executor boundary', () => {
 })
 
 describe('event handler boundary', () => {
-  it.scoped('keeps the error channel intact so a failing handler rejects', () =>
+  it.effect('keeps the error channel intact so a failing handler rejects', () =>
     Effect.gen(function* () {
       const runtime = yield* scopedEmptyRuntime
       const handler = makeEventHandler(runtime)(() => Effect.fail(ToolFailure.make({ message: 'discovery failed' })))
@@ -195,7 +195,7 @@ describe('event handler boundary', () => {
     })
   )
 
-  it.scoped('passes the live event and context through', () =>
+  it.effect('passes the live event and context through', () =>
     Effect.gen(function* () {
       const runtime = yield* scopedEmptyRuntime
       const handler = makeEventHandler(runtime)((event: { id: string }, ctx) => Effect.succeed(`${event.id}@${ctx.cwd}`))
@@ -290,7 +290,7 @@ describe('runtime disposal', () => {
     })
   )
 
-  it.scoped('interrupts an in-flight fiber on disposal, and a replacement runtime still works', () =>
+  it.effect('interrupts an in-flight fiber on disposal, and a replacement runtime still works', () =>
     Effect.gen(function* () {
       class Counter extends Context.Service<Counter, { readonly id: string }>()('pi-extensions/tests/shared/effect/runtime.spec/Counter') {}
       let released = 0

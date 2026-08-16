@@ -1,9 +1,9 @@
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { createFakePi } from '@tests/utils/fake_pi.js'
-import { runtime } from '@tests/utils/runtime.js'
 import { Effect } from 'effect'
 
-import { register as caffeinate } from '@/features/caffeinate/index.js'
+import { register as caffeinate } from '#features/caffeinate/index'
+import { describe, expect, it } from '#tests/utils/effect'
+import { createFakePi } from '#tests/utils/fake_pi'
+import { runtime } from '#tests/utils/runtime'
 
 interface FakeChild {
   readonly exit: PromiseWithResolvers<void>
@@ -129,12 +129,12 @@ describe('caffeinate', () => {
         stopped = true
       })
       yield* Effect.promise(() => Promise.resolve())
-      expect(stopped).toBeFalse()
+      expect(stopped).toBe(false)
 
       harness.children[0]?.exit.resolve()
       yield* Effect.promise(() => settled)
 
-      expect(stopped).toBeTrue()
+      expect(stopped).toBe(true)
     })
   )
 
@@ -163,13 +163,13 @@ describe('caffeinate', () => {
         stopped = true
       })
       yield* Effect.promise(() => Promise.resolve())
-      expect(stopped).toBeFalse()
+      expect(stopped).toBe(false)
 
       harness.spawnGate?.resolve()
       yield* Effect.promise(() => settled)
 
       expect(harness.children[0]?.killCalls).toBe(1)
-      expect(stopped).toBeTrue()
+      expect(stopped).toBe(true)
     })
   )
   it.effect('clears a failed spawn reservation so the next run can retry', () =>

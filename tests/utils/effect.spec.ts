@@ -1,10 +1,11 @@
-import { BunFileSystem } from '@effect/platform-bun'
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Effect, Fiber, Schema } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
+import { Path } from 'effect/Path'
 import { TestClock } from 'effect/testing'
 
-describe('bun-effect shim', () => {
+import { describe, expect, it } from '#tests/utils/effect'
+
+describe('effect test harness', () => {
   it.effect('runs an effect', () =>
     Effect.gen(function* () {
       expect(yield* Effect.succeed(42)).toBe(42)
@@ -29,8 +30,16 @@ describe('bun-effect shim', () => {
     })
   )
 
+  it.live('uses the live clock', () =>
+    Effect.gen(function* () {
+      const started = performance.now()
+      yield* Effect.sleep('20 millis')
+      expect(performance.now() - started).toBeGreaterThanOrEqual(15)
+    })
+  )
+
   const log: string[] = []
-  it.scoped('acquires inside the scope', () =>
+  it.effect('acquires inside the scope', () =>
     Effect.gen(function* () {
       yield* Effect.acquireRelease(
         Effect.sync(() => {
@@ -52,13 +61,25 @@ describe('bun-effect shim', () => {
   )
 })
 
-describe('bun platform layer', () => {
-  it.effect('reads a file through the Bun FileSystem layer', () =>
+describe('node platform layer', () => {
+  it.effect('provides NodePath', () =>
+    Effect.gen(function* () {
+      const path = yield* Path
+      expect(path.resolve('a', 'b')).toMatch(/a[/\\]b$/)
+    })
+  )
+
+  it.effect('reads a file through the Node FileSystem layer', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem
       const pkg = yield* fs.readFileString('package.json')
       const parsed = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(pkg)
       expect(parsed).toMatchObject({ name: 'pi-extensions' })
-    }).pipe(Effect.provide(BunFileSystem.layer))
+    })
   )
+})
+
+describe('effect test modifiers', () => {
+  it.effect.skip('collects effect.skip as skipped', () => Effect.die('must not run'))
+  it.effect.skipIf(true)('collects effect.skipIf as skipped', () => Effect.die('must not run'))
 })

@@ -1,12 +1,12 @@
-import { makeAbortController } from '@tests/utils/abort_controller.js'
-import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asError } from '@tests/utils/casts.js'
-import { httpGet } from '@tests/utils/http.js'
-import { freeLoopbackPort } from '@tests/utils/loopback_port.js'
 import { Effect, Fiber } from 'effect'
 
-import { type CredentialStore, type OAuthCredentialPayload } from '@/features/mcp/keychain.js'
-import { KeychainOAuthProvider, createOAuthState, startOAuthCallback, type OAuthCallback, type OAuthCallbackOptions } from '@/features/mcp/oauth.js'
+import { type CredentialStore, type OAuthCredentialPayload } from '#features/mcp/keychain'
+import { KeychainOAuthProvider, createOAuthState, startOAuthCallback, type OAuthCallback, type OAuthCallbackOptions } from '#features/mcp/oauth'
+import { makeAbortController } from '#tests/utils/abort_controller'
+import { asError } from '#tests/utils/casts'
+import { promiseFromEffect, describe, expect, it } from '#tests/utils/effect'
+import { httpGet } from '#tests/utils/http'
+import { freeLoopbackPort } from '#tests/utils/loopback_port'
 
 const freePort = () => freeLoopbackPort
 
@@ -44,6 +44,14 @@ const withCallback = <Value, Failure, Requirements>(
 ) => Effect.scoped(startOAuthCallback(options).pipe(Effect.flatMap(use)))
 
 describe('OAuth callback', () => {
+  it.live('acquires a callback listener only when it is loopback-bound', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* startOAuthCallback({ expectedState: 'state', port: yield* freePort() })
+      })
+    )
+  )
+
   it.live('accepts a matching callback and releases the port', () =>
     Effect.gen(function* () {
       const port = yield* freePort()
@@ -259,7 +267,7 @@ describe('Keychain OAuth provider', () => {
         serverUrl: 'https://mcp.example.test/mcp',
         store: new MemoryStore(),
       })
-      expect(provider.redirectToAuthorization(new URL('https://auth.test'))).rejects.toThrow('/mcp-auth')
+      yield* Effect.promise(() => expect(provider.redirectToAuthorization(new URL('https://auth.test'))).rejects.toThrow('/mcp-auth'))
 
       const state = createOAuthState()
       const interactive = new KeychainOAuthProvider({
@@ -281,7 +289,9 @@ describe('Keychain OAuth provider', () => {
       expect(opened).toEqual(['https://auth.test/start'])
 
       for (const hostile of ['file:///etc/passwd', 'vscode://extension/install', 'http://evil.test/start']) {
-        expect(interactive.redirectToAuthorization(new URL(hostile))).rejects.toThrow(/Refusing to open an OAuth authorization URL/)
+        yield* Effect.promise(() =>
+          expect(interactive.redirectToAuthorization(new URL(hostile))).rejects.toThrow(/Refusing to open an OAuth authorization URL/)
+        )
       }
       yield* Effect.promise(() => interactive.redirectToAuthorization(new URL('http://localhost:3120/callback')))
       expect(opened).toEqual(['https://auth.test/start', 'http://localhost:3120/callback'])

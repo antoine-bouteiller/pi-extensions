@@ -1,9 +1,9 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Data, Effect } from 'effect'
 
-import { isNotEmptyString } from '@/shared/utils/predicates.js'
+import { isNotEmptyString } from '#shared/utils/predicates'
 
-import { emptyGitInfoState, type GitInfoState } from './state.js'
+import { emptyGitInfoState, type GitInfoState } from './state'
 
 class ExecGitError extends Data.TaggedError('ExecGitError')<{ readonly cause: unknown }> {}
 

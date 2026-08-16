@@ -1,10 +1,10 @@
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { createFakePi } from '@tests/utils/fake_pi.js'
-import { withProcessEnv } from '@tests/utils/process_env.js'
-import { runtime } from '@tests/utils/runtime.js'
 import { Effect } from 'effect'
 
-import { register as registerMeridianSessionAffinity } from '@/features/meridian_session_affinity/index.js'
+import { register as registerMeridianSessionAffinity } from '#features/meridian_session_affinity/index'
+import { describe, expect, it } from '#tests/utils/effect'
+import { createFakePi } from '#tests/utils/fake_pi'
+import { withProcessEnv } from '#tests/utils/process_env'
+import { runtime } from '#tests/utils/runtime'
 
 interface ProviderHeaderEvent {
   headers: Record<string, string>

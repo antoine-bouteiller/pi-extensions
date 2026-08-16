@@ -13,10 +13,11 @@ import {
 import { Context, Deferred, Effect, HashSet, Path, Ref } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
 import { type PlatformError } from 'effect/PlatformError'
+import picomatch from 'picomatch'
 
-import { type JsonObject } from '@/shared/utils/json.js'
-import { isEmptyString, isNotEmptyString, isNullOrUndefined } from '@/shared/utils/predicates.js'
-import { isRecord } from '@/shared/utils/records.js'
+import { type JsonObject } from '#shared/utils/json'
+import { isEmptyString, isNotEmptyString, isNullOrUndefined } from '#shared/utils/predicates'
+import { isRecord } from '#shared/utils/records'
 
 const RULE_DIRECTORIES = ['.claude/rules', '.agents/rules'] as const
 const RULE_EXTENSIONS = new Set(['.md', '.mdc'])
@@ -503,8 +504,8 @@ const matchesRule = (rule: Rule, targetPath: string, cwd: string, path: Path.Pat
 
   try {
     const excluded = negatives.some((pattern) => {
-      const glob = new Bun.Glob(normalizePath(pattern))
-      return pathBases.some((candidate) => glob.match(candidate))
+      const match = picomatch(normalizePath(pattern), { dot: true })
+      return pathBases.some((candidate) => match(candidate))
     })
     if (excluded) {
       return false
@@ -513,8 +514,8 @@ const matchesRule = (rule: Rule, targetPath: string, cwd: string, path: Path.Pat
       return true
     }
     return positives.some((pattern) => {
-      const glob = new Bun.Glob(normalizePath(pattern).replace(/^\//, ''))
-      return pathBases.some((candidate) => glob.match(candidate))
+      const match = picomatch(normalizePath(pattern).replace(/^\//, ''), { dot: true })
+      return pathBases.some((candidate) => match(candidate))
     })
   } catch {
     return false

@@ -7,13 +7,13 @@ import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontex
 import { type Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { Context, Data, Deferred, Effect, Fiber, Layer, Result, Schema } from 'effect'
 
-import { type JsonObject } from '@/shared/utils/json.js'
-import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
-import { isRecord } from '@/shared/utils/records.js'
+import { type JsonObject } from '#shared/utils/json'
+import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isTrue } from '#shared/utils/predicates'
+import { isRecord } from '#shared/utils/records'
 
-import { KeychainCredentialError, createKeychainCredentialStore, type CredentialStore } from './keychain.js'
-import { KeychainOAuthProvider, createOAuthState, oauthCallbackPort, startOAuthCallback, type OAuthCallback, type OpenUrl } from './oauth.js'
-import { boundGatewayOutput, type GatewayContent } from './output.js'
+import { KeychainCredentialError, createKeychainCredentialStore, type CredentialStore } from './keychain'
+import { KeychainOAuthProvider, createOAuthState, oauthCallbackPort, startOAuthCallback, type OAuthCallback, type OpenUrl } from './oauth'
+import { boundGatewayOutput, type GatewayContent } from './output'
 import {
   McpError,
   type McpGatewayPolicy,
@@ -23,7 +23,7 @@ import {
   type McpToolAnnotations,
   type OAuthConfig,
   type ServerConfig,
-} from './types.js'
+} from './types'
 
 const CONNECT_TIMEOUT_MS = 30_000
 /** Caps the `tools/list` fan-out so a large configuration cannot open every server at once. */

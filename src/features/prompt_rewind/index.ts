@@ -9,9 +9,9 @@
 
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
-import { type AppRuntime } from '@/shared/effect/app_services.js'
+import { type AppRuntime } from '#shared/effect/app_services'
 
-import { makeRewindController, REWIND_COMMAND } from './rewind.js'
+import { makeRewindController, REWIND_COMMAND } from './rewind'
 
 export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
   const controller = makeRewindController()

@@ -1,14 +1,14 @@
-import { afterEach } from 'bun:test'
 import { tmpdir } from 'node:os'
 
-import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asResult } from '@tests/utils/casts.js'
-import { createFakePi } from '@tests/utils/fake_pi.js'
-import { runtime } from '@tests/utils/runtime.js'
 import { Effect, FileSystem, Path } from 'effect'
+import { afterEach } from 'vitest'
 
-import { parseCommandFrontmatter } from '@/features/claude_code/discovery.js'
-import { register as registerClaudeCode } from '@/features/claude_code/index.js'
+import { parseCommandFrontmatter } from '#features/claude_code/discovery'
+import { register as registerClaudeCode } from '#features/claude_code/index'
+import { asResult } from '#tests/utils/casts'
+import { promiseFromEffect, describe, expect, it } from '#tests/utils/effect'
+import { createFakePi } from '#tests/utils/fake_pi'
+import { runtime } from '#tests/utils/runtime'
 
 const pathService = runtime.runSync(Path.Path)
 const { dirname, join } = pathService
@@ -156,7 +156,7 @@ describe('Claude Code compatibility', () => {
       const longNames = names.filter((name) => name.startsWith('a'))
       expect(longNames).toHaveLength(2)
       expect(new Set(longNames).size).toBe(2)
-      expect(longNames.every((name) => name.length <= 64)).toBeTrue()
+      expect(longNames.every((name) => name.length <= 64)).toBe(true)
       expect(longNames.map((name) => skills.get(name)).join('\n')).toContain('Long one')
       expect(longNames.map((name) => skills.get(name)).join('\n')).toContain('Long two')
 
@@ -202,18 +202,18 @@ describe('Claude Code compatibility', () => {
         fixture.invoke<DiscoveryResult>('resources_discover', { cwd: fixture.projectDirectory }, context)
       )
       const [firstDirectory] = firstResult.skillPaths
-      expect(yield* pathExists(firstDirectory)).toBeTrue()
+      expect(yield* pathExists(firstDirectory)).toBe(true)
 
       const secondResult = yield* Effect.promise(() =>
         fixture.invoke<DiscoveryResult>('resources_discover', { cwd: fixture.projectDirectory }, context)
       )
       const [secondDirectory] = secondResult.skillPaths
       expect(secondDirectory).not.toBe(firstDirectory)
-      expect(yield* pathExists(firstDirectory)).toBeFalse()
-      expect(yield* pathExists(secondDirectory)).toBeTrue()
+      expect(yield* pathExists(firstDirectory)).toBe(false)
+      expect(yield* pathExists(secondDirectory)).toBe(true)
 
       yield* Effect.promise(() => fixture.invoke('session_shutdown', {}, context))
-      expect(yield* pathExists(secondDirectory)).toBeFalse()
+      expect(yield* pathExists(secondDirectory)).toBe(false)
     })
   )
 
@@ -233,11 +233,11 @@ describe('Claude Code compatibility', () => {
       const [secondDirectory] = secondResult.skillPaths
 
       expect(firstDirectory).not.toBe(secondDirectory)
-      expect(yield* pathExists(firstDirectory)).toBeFalse()
-      expect(yield* pathExists(secondDirectory)).toBeTrue()
+      expect(yield* pathExists(firstDirectory)).toBe(false)
+      expect(yield* pathExists(secondDirectory)).toBe(true)
 
       yield* Effect.promise(() => fixture.invoke('session_shutdown', {}, context))
-      expect(yield* pathExists(secondDirectory)).toBeFalse()
+      expect(yield* pathExists(secondDirectory)).toBe(false)
     })
   )
 

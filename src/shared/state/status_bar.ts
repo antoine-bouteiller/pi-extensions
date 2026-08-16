@@ -1,6 +1,6 @@
 import { type ExtensionContext } from '@earendil-works/pi-coding-agent'
 
-import { createKeyedStore } from './store.js'
+import { createKeyedStore } from './store'
 
 export type StatusTone = 'muted' | 'info' | 'success' | 'warning' | 'error'
 

@@ -1,8 +1,8 @@
 import { type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { type Cause, Context, Effect, type ManagedRuntime } from 'effect'
 
-import { type ToolFailure } from './errors.js'
-import { makeUi, PiCtx, Ui } from './pi_services.js'
+import { type ToolFailure } from './errors'
+import { makeUi, PiCtx, Ui } from './pi_services'
 
 export type HandlerServices = PiCtx | Ui
 

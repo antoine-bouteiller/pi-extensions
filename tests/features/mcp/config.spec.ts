@@ -1,8 +1,8 @@
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Effect, FileSystem, Path } from 'effect'
 
-import { loadMcpConfigFile, parseMcpConfig, parseMcpConfigEffect, parseMcpConfigText } from '@/features/mcp/config.js'
-import { parseJsonText } from '@/shared/utils/json.js'
+import { loadMcpConfigFile, parseMcpConfig, parseMcpConfigEffect, parseMcpConfigText } from '#features/mcp/config'
+import { parseJsonText } from '#shared/utils/json'
+import { describe, expect, it } from '#tests/utils/effect'
 
 const temporaryPath = (name: string) =>
   Effect.gen(function* () {
@@ -55,7 +55,7 @@ describe('global MCP config parsing', () => {
       const input = {
         mcpServers: {
           local: {
-            args: ['server.js', '--quiet'],
+            args: ['server', '--quiet'],
             command: 'node',
             cwd: '/work/server',
             env: { EMPTY: '', MODE: 'test' },
@@ -66,7 +66,7 @@ describe('global MCP config parsing', () => {
 
       const parsed = parseMcpConfig(input)
       expect(parsed.local).toEqual({
-        args: ['server.js', '--quiet'],
+        args: ['server', '--quiet'],
         command: 'node',
         cwd: '/work/server',
         env: { EMPTY: '', MODE: 'test' },

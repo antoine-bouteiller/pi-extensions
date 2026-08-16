@@ -2,18 +2,18 @@ import { type ExtensionAPI, type ExtensionContext, type ExtensionEvent, type Rea
 import { Effect, Path, Ref } from 'effect'
 import { type HttpClient } from 'effect/unstable/http'
 
-import { type AppRuntime, AgentActivity, StatusBar } from '@/shared/effect/app_services.js'
-import { azureQuota, writeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
-import { isEmptyString, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
+import { type AppRuntime, AgentActivity, StatusBar } from '#shared/effect/app_services'
+import { azureQuota, writeSubagentAzureQuota } from '#shared/state/azure_quota'
+import { isEmptyString, isNullOrUndefined, isTrue } from '#shared/utils/predicates'
 
-import { renderFooterLines } from './footer.js'
-import { fetchGitInfo } from './git.js'
-import { makeQuotaPoller, quotaFromHeaders, type QuotaFetcher, type QuotaPoller } from './provider.js'
-import { formatDirectory } from './render.js'
-import { createSidebarController, type SidebarController } from './sidebar.js'
-import { MIN_MAIN_WIDTH, MIN_SIDEBAR_WIDTH } from './split_pane.js'
-import { emptyPanelState, type ModelInfoState, type PanelState } from './state.js'
-import { collectStatuses } from './statuses.js'
+import { renderFooterLines } from './footer'
+import { fetchGitInfo } from './git'
+import { makeQuotaPoller, quotaFromHeaders, type QuotaFetcher, type QuotaPoller } from './provider'
+import { formatDirectory } from './render'
+import { createSidebarController, type SidebarController } from './sidebar'
+import { MIN_MAIN_WIDTH, MIN_SIDEBAR_WIDTH } from './split_pane'
+import { emptyPanelState, type ModelInfoState, type PanelState } from './state'
+import { collectStatuses } from './statuses'
 
 const ANTHROPIC_QUOTA_REFRESH_MS = 15_000
 

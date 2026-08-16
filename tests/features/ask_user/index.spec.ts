@@ -1,13 +1,13 @@
 import { CURSOR_MARKER, visibleWidth, type Component, type Focusable } from '@earendil-works/pi-tui'
-import { makeAbortController } from '@tests/utils/abort_controller.js'
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asTool } from '@tests/utils/casts.js'
-import { createFakePi } from '@tests/utils/fake_pi.js'
-import { runtime } from '@tests/utils/runtime.js'
 import { Effect } from 'effect'
 
-import { register as askUser } from '@/features/ask_user/index.js'
-import { ASK_USER_MALFORMED_CALL_MESSAGE } from '@/features/ask_user/prompt.js'
+import { register as askUser } from '#features/ask_user/index'
+import { ASK_USER_MALFORMED_CALL_MESSAGE } from '#features/ask_user/prompt'
+import { makeAbortController } from '#tests/utils/abort_controller'
+import { asTool } from '#tests/utils/casts'
+import { describe, expect, it } from '#tests/utils/effect'
+import { createFakePi } from '#tests/utils/fake_pi'
+import { runtime } from '#tests/utils/runtime'
 
 interface AskUserResult {
   content: { type: 'text'; text: string }[]
@@ -257,7 +257,7 @@ describe('ask_user prompt component', () => {
       fixture.component.render(40)
       const narrowLines = fixture.component.render(8)
 
-      expect(narrowLines.every((line) => visibleWidth(line) <= 8)).toBeTrue()
+      expect(narrowLines.every((line) => visibleWidth(line) <= 8)).toBe(true)
       expect(narrowLines.join('').match(/界/g)).toHaveLength(4)
 
       fixture.component.handleInput?.('\x1b')

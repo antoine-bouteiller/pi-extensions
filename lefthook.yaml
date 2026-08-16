@@ -3,13 +3,13 @@ pre-commit:
   jobs:
     - name: Check Lockfile
       glob: '*.{ts,js,mjs,cjs,yml,yaml,md,mdx,json}'
-      run: bun install --frozen-lockfile --silent
+      run: pnpm install --lockfile-only --frozen-lockfile --ignore-scripts --silent
     - name: Check
       glob: '*.{ts,js,mjs,cjs}'
-      run: bunx oxlint --fix --fix-suggestions {staged_files}
+      run: pnpm exec oxlint --fix --fix-suggestions {staged_files}
       stage_fixed: true
     - name: Format
-      run: bunx oxfmt {staged_files}
+      run: pnpm exec oxfmt {staged_files}
       stage_fixed: true
     - name: Knip
-      run: bun run knip
+      run: pnpm run knip

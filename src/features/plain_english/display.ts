@@ -2,9 +2,9 @@ import { type EntryRenderer, type ExtensionAPI, type ExtensionContext, type Mess
 import { Text } from '@earendil-works/pi-tui'
 import { Effect, Exit, Option, Ref, Scope } from 'effect'
 
-import { type PlainEnglishConfig, proseLength } from '@/features/plain_english/config.js'
-import { rewriteMessage } from '@/features/plain_english/rewrite.js'
-import { type PiCtx, Ui } from '@/shared/effect/pi_services.js'
+import { type PlainEnglishConfig, proseLength } from '#features/plain_english/config'
+import { rewriteMessage } from '#features/plain_english/rewrite'
+import { type PiCtx, Ui } from '#shared/effect/pi_services'
 
 interface Toggle {
   readonly get: () => boolean

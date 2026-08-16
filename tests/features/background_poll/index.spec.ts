@@ -1,14 +1,14 @@
-import { promiseFromEffect, tryEffect, tryPromiseEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asExtensionApi } from '@tests/utils/casts.js'
-import { deferred } from '@tests/utils/deferred.js'
-import { runtime } from '@tests/utils/runtime.js'
 import { Effect, Fiber } from 'effect'
 import { TestClock } from 'effect/testing'
 
-import { register as backgroundPoll } from '@/features/background_poll/index.js'
-import { formatPollOutput, runPollLoop, type PollExec } from '@/features/background_poll/poll.js'
-import { ToolFailure } from '@/shared/effect/errors.js'
-import { type JsonObject } from '@/shared/utils/json.js'
+import { register as backgroundPoll } from '#features/background_poll/index'
+import { formatPollOutput, runPollLoop, type PollExec } from '#features/background_poll/poll'
+import { ToolFailure } from '#shared/effect/errors'
+import { type JsonObject } from '#shared/utils/json'
+import { asExtensionApi } from '#tests/utils/casts'
+import { deferred } from '#tests/utils/deferred'
+import { promiseFromEffect, tryEffect, tryPromiseEffect, describe, expect, it } from '#tests/utils/effect'
+import { runtime } from '#tests/utils/runtime'
 
 interface ToolResult {
   content: { text: string; type: string }[]
@@ -122,7 +122,7 @@ describe('background poll', () => {
         )
       )
 
-      expect(result.terminate).toBeTrue()
+      expect(result.terminate).toBe(true)
       expect(result.content[0].text).toContain('Stop now')
       expect(fixture.statuses).toContain('⏳ 1 background poll')
 

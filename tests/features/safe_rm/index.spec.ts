@@ -1,16 +1,23 @@
-import { afterEach } from 'bun:test'
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- `stat` preserves file-only existence semantics.
+import { stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 
 import { withFileMutationQueue } from '@earendil-works/pi-coding-agent'
-import { makeAbortController } from '@tests/utils/abort_controller.js'
-import { describe, expect, it, promiseFromEffect, tryPromiseEffect } from '@tests/utils/bun_effect.js'
-import { asNarrowed, asTool } from '@tests/utils/casts.js'
-import { deferred } from '@tests/utils/deferred.js'
-import { createFakePi } from '@tests/utils/fake_pi.js'
-import { runtime } from '@tests/utils/runtime.js'
 import { Effect, FileSystem, Path } from 'effect'
+import { afterEach } from 'vitest'
 
-import { register as safeRm } from '@/features/safe_rm/index.js'
+import { register as safeRm } from '#features/safe_rm/index'
+import { makeAbortController } from '#tests/utils/abort_controller'
+import { asNarrowed, asTool } from '#tests/utils/casts'
+import { deferred } from '#tests/utils/deferred'
+import { describe, expect, it, promiseFromEffect, tryPromiseEffect } from '#tests/utils/effect'
+import { createFakePi } from '#tests/utils/fake_pi'
+import { runtime } from '#tests/utils/runtime'
+
+const fileExists = (path: string): Promise<boolean> =>
+  stat(path)
+    .then((info) => info.isFile())
+    .catch(() => false)
 
 const pathService = runtime.runSync(Path.Path)
 const { join } = pathService
@@ -82,8 +89,8 @@ describe('safe rm', () => {
       )
 
       expect(result.details).toEqual({ missing: [], removed: ['file.txt', 'build'] })
-      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'file.txt')).exists())).toBeFalse()
-      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'build', 'output.txt')).exists())).toBeFalse()
+      expect(yield* Effect.promise(() => fileExists(join(cwd, 'file.txt')))).toBe(false)
+      expect(yield* Effect.promise(() => fileExists(join(cwd, 'build', 'output.txt')))).toBe(false)
     })
   )
 
@@ -98,8 +105,8 @@ describe('safe rm', () => {
       const result = yield* Effect.promise(() => setup().execute('literal-at', { paths: ['@types'], recursive: true }, undefined, undefined, { cwd }))
 
       expect(result.details).toEqual({ missing: [], removed: ['@types'] })
-      expect(yield* Effect.promise(() => Bun.file(join(cwd, '@types', 'marker')).exists())).toBeFalse()
-      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'types', 'marker')).exists())).toBeTrue()
+      expect(yield* Effect.promise(() => fileExists(join(cwd, '@types', 'marker')))).toBe(false)
+      expect(yield* Effect.promise(() => fileExists(join(cwd, 'types', 'marker')))).toBe(true)
     })
   )
 
@@ -108,12 +115,14 @@ describe('safe rm', () => {
       const { cwd } = yield* workspace
       yield* writeFile(join(cwd, 'keep.txt'), 'content')
 
-      expect(
-        setup().execute('call-2', { paths: ['keep.txt', '/etc/hosts'] }, undefined, undefined, {
-          cwd,
-        })
-      ).rejects.toThrow('working directory or /tmp')
-      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'keep.txt')).exists())).toBeTrue()
+      yield* Effect.promise(() =>
+        expect(
+          setup().execute('call-2', { paths: ['keep.txt', '/etc/hosts'] }, undefined, undefined, {
+            cwd,
+          })
+        ).rejects.toThrow('working directory or /tmp')
+      )
+      expect(yield* Effect.promise(() => fileExists(join(cwd, 'keep.txt')))).toBe(true)
     })
   )
 
@@ -129,13 +138,15 @@ describe('safe rm', () => {
       yield* mkdir(externalMetadata, { recursive: true })
       yield* writeFile(join(externalMetadata, 'config'), '[core]')
 
-      expect(setup().execute('call-3', { paths: ['build'] }, undefined, undefined, { cwd })).rejects.toThrow('recursive: true')
+      yield* Effect.promise(() =>
+        expect(setup().execute('call-3', { paths: ['build'] }, undefined, undefined, { cwd })).rejects.toThrow('recursive: true')
+      )
       yield* Effect.promise(() => setup().execute('call-4', { paths: ['.git'], recursive: true }, undefined, undefined, { cwd }))
       yield* Effect.promise(() => setup().execute('call-5', { paths: ['repository'], recursive: true }, undefined, undefined, { cwd }))
       yield* Effect.promise(() => setup().execute('call-6', { paths: [join(externalMetadata, 'config')] }, undefined, undefined, { cwd }))
-      expect(yield* Effect.promise(() => Bun.file(join(cwd, '.git')).exists())).toBeFalse()
-      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'repository', '.git')).exists())).toBeFalse()
-      expect(yield* Effect.promise(() => Bun.file(join(externalMetadata, 'config')).exists())).toBeFalse()
+      expect(yield* Effect.promise(() => fileExists(join(cwd, '.git')))).toBe(false)
+      expect(yield* Effect.promise(() => fileExists(join(cwd, 'repository', '.git')))).toBe(false)
+      expect(yield* Effect.promise(() => fileExists(join(externalMetadata, 'config')))).toBe(false)
     })
   )
 
@@ -144,7 +155,9 @@ describe('safe rm', () => {
       const { cwd } = yield* workspace
       yield* symlink('/etc', join(cwd, 'outside'))
 
-      expect(setup().execute('call-7', { paths: ['outside/hosts'] }, undefined, undefined, { cwd })).rejects.toThrow('escapes an allowed root')
+      yield* Effect.promise(() =>
+        expect(setup().execute('call-7', { paths: ['outside/hosts'] }, undefined, undefined, { cwd })).rejects.toThrow('escapes an allowed root')
+      )
     })
   )
 
@@ -160,12 +173,12 @@ describe('safe rm', () => {
       yield* symlink(credential, join(cwd, 'ordinary.txt'))
 
       for (const params of [{ paths: ['.env'] }, { paths: ['ordinary.txt'] }, { paths: ['output'], recursive: true }]) {
-        expect(setup().execute('credential', params, undefined, undefined, { cwd })).rejects.toThrow('protected path')
+        yield* Effect.promise(() => expect(setup().execute('credential', params, undefined, undefined, { cwd })).rejects.toThrow('protected path'))
       }
 
-      expect(yield* Effect.promise(() => Bun.file(join(cwd, '.env')).exists())).toBeTrue()
-      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'output', '.env.local')).exists())).toBeTrue()
-      expect(yield* Effect.promise(() => Bun.file(credential).exists())).toBeTrue()
+      expect(yield* Effect.promise(() => fileExists(join(cwd, '.env')))).toBe(true)
+      expect(yield* Effect.promise(() => fileExists(join(cwd, 'output', '.env.local')))).toBe(true)
+      expect(yield* Effect.promise(() => fileExists(credential))).toBe(true)
     })
   )
 
@@ -176,7 +189,7 @@ describe('safe rm', () => {
       yield* writeFile(join(cwd, 'artifacts', 'checkout', '.git', 'config'), '[core]')
 
       yield* Effect.promise(() => setup().execute('nested-git', { paths: ['artifacts'], recursive: true }, undefined, undefined, { cwd }))
-      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'artifacts')).exists())).toBeFalse()
+      expect(yield* Effect.promise(() => fileExists(join(cwd, 'artifacts')))).toBe(false)
     })
   )
 
@@ -196,7 +209,7 @@ describe('safe rm', () => {
       )
 
       expect(rejection).toMatchObject({ _tag: 'CancelledError', message: 'Deletion was cancelled' })
-      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'keep.txt')).exists())).toBeTrue()
+      expect(yield* Effect.promise(() => fileExists(join(cwd, 'keep.txt')))).toBe(true)
     })
   )
 
@@ -240,7 +253,7 @@ describe('safe rm', () => {
       )
 
       expect(rejection).toMatchObject({ _tag: 'CancelledError', message: 'Deletion was cancelled' })
-      expect(yield* Effect.promise(() => Bun.file(target).exists())).toBeTrue()
+      expect(yield* Effect.promise(() => fileExists(target))).toBe(true)
     })
   )
 
@@ -255,7 +268,7 @@ describe('safe rm', () => {
           rejectionMessage(setup().execute('overlap', { paths: ['build', 'build/output.txt'], recursive: true }, undefined, undefined, { cwd }))
         )
       ).toBe('Deletion targets must be distinct and non-overlapping: build, build/output.txt')
-      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'build', 'output.txt')).exists())).toBeTrue()
+      expect(yield* Effect.promise(() => fileExists(join(cwd, 'build', 'output.txt')))).toBe(true)
     })
   )
 

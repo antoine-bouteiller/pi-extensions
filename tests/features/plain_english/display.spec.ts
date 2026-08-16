@@ -1,13 +1,13 @@
 import { type Api, type AssistantMessage, type Context, type Model } from '@earendil-works/pi-ai'
 import { type MessageEndEvent } from '@earendil-works/pi-coding-agent'
-import { describe, expect, it, promiseFromEffect } from '@tests/utils/bun_effect.js'
-import { asExtensionContext, asNarrowed, asTheme } from '@tests/utils/casts.js'
-import { createFakePi } from '@tests/utils/fake_pi.js'
 import { Deferred, Effect, Option } from 'effect'
 
-import { type PlainEnglishConfig, makeToggle } from '@/features/plain_english/config.js'
-import { makeDisplay } from '@/features/plain_english/display.js'
-import { PiCtx, Ui, type UiApi } from '@/shared/effect/pi_services.js'
+import { type PlainEnglishConfig, makeToggle } from '#features/plain_english/config'
+import { makeDisplay } from '#features/plain_english/display'
+import { PiCtx, Ui, type UiApi } from '#shared/effect/pi_services'
+import { asExtensionContext, asNarrowed, asTheme } from '#tests/utils/casts'
+import { describe, expect, it, promiseFromEffect } from '#tests/utils/effect'
+import { createFakePi } from '#tests/utils/fake_pi'
 
 type TestModel = Model<Api>
 
@@ -44,7 +44,7 @@ const ui = (notifications: { message: string; level: string }[]): UiApi => ({
 const settle = Effect.yieldNow.pipe(Effect.andThen(Effect.yieldNow))
 
 describe('plain_english display', () => {
-  it.scoped('appends one rewrite for an eligible assistant message without replacing it', () => {
+  it.effect('appends one rewrite for an eligible assistant message without replacing it', () => {
     const { pi, state } = createFakePi()
     const display = makeDisplay({ config, pi, toggle: makeToggle() })
     const ctx = contextWith(() => Promise.resolve(completion('Plain wording')))
@@ -58,7 +58,7 @@ describe('plain_english display', () => {
     }).pipe(Effect.provideService(PiCtx, ctx), Effect.provideService(Ui, ui([])))
   })
 
-  it.scoped('skips bash calls, short prose, disabled toggles, and an unset model', () => {
+  it.effect('skips bash calls, short prose, disabled toggles, and an unset model', () => {
     const { pi, state } = createFakePi()
     const toggle = makeToggle()
     const ctx = contextWith(() => Promise.resolve(completion('Plain wording')))
@@ -86,7 +86,7 @@ describe('plain_english display', () => {
     }).pipe(Effect.provideService(PiCtx, ctx), Effect.provideService(Ui, ui([])))
   })
 
-  it.scoped('rewrites an ask_user-only tool call', () => {
+  it.effect('rewrites an ask_user-only tool call', () => {
     const { pi, state } = createFakePi()
     const display = makeDisplay({ config, pi, toggle: makeToggle() })
     const ctx = contextWith(() => Promise.resolve(completion('Plain wording')))
@@ -105,7 +105,7 @@ describe('plain_english display', () => {
     }).pipe(Effect.provideService(PiCtx, ctx), Effect.provideService(Ui, ui([])))
   })
 
-  it.scoped('notifies once when consecutive rewrites fail', () => {
+  it.effect('notifies once when consecutive rewrites fail', () => {
     const { pi, state } = createFakePi()
     const display = makeDisplay({ config, pi, toggle: makeToggle() })
     let completionCalls = 0
@@ -127,7 +127,7 @@ describe('plain_english display', () => {
     }).pipe(Effect.provideService(PiCtx, ctx), Effect.provideService(Ui, ui(notifications)))
   })
 
-  it.scoped('does not append a rewrite interrupted by session shutdown', () => {
+  it.effect('does not append a rewrite interrupted by session shutdown', () => {
     const { pi, state } = createFakePi()
     const display = makeDisplay({ config, pi, toggle: makeToggle() })
     let completionCalls = 0

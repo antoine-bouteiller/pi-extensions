@@ -1,9 +1,9 @@
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from '@earendil-works/pi-coding-agent'
 import { Effect } from 'effect'
 
-import { boundToolTextEffect, writePrivateTempFileEffect } from '@/shared/utils/tool_output.js'
+import { boundToolTextEffect, writePrivateTempFileEffect } from '#shared/utils/tool_output'
 
-import { McpError } from './types.js'
+import { McpError } from './types'
 
 export type GatewayContent = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }
 

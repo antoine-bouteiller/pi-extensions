@@ -1,8 +1,8 @@
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Effect } from 'effect'
-// oxlint-disable unicorn/no-null -- Null literals are required to exercise the nullish predicates.
 
-import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
+import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '#shared/utils/predicates'
+// oxlint-disable unicorn/no-null -- Null literals are required to exercise the nullish predicates.
+import { describe, expect, it } from '#tests/utils/effect'
 
 const presentString = (value: string | null | undefined): string | undefined =>
   isNotNullOrUndefined(value) && isNotEmptyString(value) ? value : undefined
@@ -36,8 +36,8 @@ describe('shared predicates', () => {
   it.effect('preserves type narrowing', () =>
     Effect.sync(() => {
       expect(presentString('value')).toBe('value')
-      expect(trueValue(true)).toBeTrue()
-      expect(falseValue(false)).toBeFalse()
+      expect(trueValue(true)).toBe(true)
+      expect(falseValue(false)).toBe(false)
       expect(emptyValue('')).toBe('')
       expect(nonEmptyValue('value')).toBe('value')
     })

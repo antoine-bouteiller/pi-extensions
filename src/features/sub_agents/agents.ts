@@ -17,12 +17,12 @@ import { Data, DateTime, Effect, Result } from 'effect'
 import { type Static, Type } from 'typebox'
 import { Check } from 'typebox/value'
 
-import { type AppRuntime } from '@/shared/effect/app_services.js'
-import { runningAgents } from '@/shared/state/agent_activity.js'
-import { publishStatus } from '@/shared/state/status_bar.js'
-import { prettyJsonText, type JsonObject } from '@/shared/utils/json.js'
-import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
-import { truncateOutput, truncationNotice } from '@/shared/utils/tool_output.js'
+import { type AppRuntime } from '#shared/effect/app_services'
+import { runningAgents } from '#shared/state/agent_activity'
+import { publishStatus } from '#shared/state/status_bar'
+import { prettyJsonText, type JsonObject } from '#shared/utils/json'
+import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '#shared/utils/predicates'
+import { truncateOutput, truncationNotice } from '#shared/utils/tool_output'
 
 import {
   AgentCompletionEventSchema,
@@ -34,9 +34,9 @@ import {
   type AgentManagerOptions,
   type AgentResponseEntry,
   writeFullToolOutput,
-} from './core.js'
-import { SubagentPeekOverlay } from './peek.js'
-import { AGENT_PROFILE_NAMES, configuredProfileColor, getAgentProfilesDescription, persistedProfileColor } from './profiles.js'
+} from './core'
+import { SubagentPeekOverlay } from './peek'
+import { AGENT_PROFILE_NAMES, configuredProfileColor, getAgentProfilesDescription, persistedProfileColor } from './profiles'
 
 const WaitAgentDetailsSchema = Type.Object({
   event: Type.Optional(AgentCompletionEventSchema),

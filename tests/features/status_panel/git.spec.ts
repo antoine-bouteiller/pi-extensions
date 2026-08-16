@@ -1,8 +1,8 @@
-import { promiseFromEffect, tryEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { createFakePi } from '@tests/utils/fake_pi.js'
 import { Effect } from 'effect'
 
-import { fetchGitInfo } from '@/features/status_panel/git.js'
+import { fetchGitInfo } from '#features/status_panel/git'
+import { promiseFromEffect, tryEffect, describe, expect, it } from '#tests/utils/effect'
+import { createFakePi } from '#tests/utils/fake_pi'
 
 const success = (stdout: string) => ({ code: 0, killed: false, stderr: '', stdout })
 

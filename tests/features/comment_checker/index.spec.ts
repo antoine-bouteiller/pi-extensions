@@ -1,11 +1,11 @@
-import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { createFakePi } from '@tests/utils/fake_pi.js'
-import { runtime } from '@tests/utils/runtime.js'
 import { Effect, FileSystem, Path } from 'effect'
 
-import { makeCommentCheckerRunner, type CheckerRunner } from '@/features/comment_checker/checker.js'
-import { register as commentChecker } from '@/features/comment_checker/index.js'
-import { jsonText } from '@/shared/utils/json.js'
+import { makeCommentCheckerRunner, type CheckerRunner } from '#features/comment_checker/checker'
+import { register as commentChecker } from '#features/comment_checker/index'
+import { jsonText } from '#shared/utils/json'
+import { promiseFromEffect, describe, expect, it } from '#tests/utils/effect'
+import { createFakePi } from '#tests/utils/fake_pi'
+import { runtime } from '#tests/utils/runtime'
 
 const context = {
   cwd: '/workspace',
@@ -166,7 +166,7 @@ describe('comment checker', () => {
       expect(calls).toBe(0)
     })
   )
-  it.scoped('runs the Effect child process with bounded output and JSON stdin', () =>
+  it.effect('runs the Effect child process with bounded output and JSON stdin', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const path = yield* Path.Path
@@ -174,12 +174,11 @@ describe('comment checker', () => {
       const executable = path.join(directory, 'comment-checker')
       yield* fs.writeFileString(
         executable,
-        `#!/usr/bin/env bun
+        `#!/usr/bin/env node
 let input = ''
-for await (const chunk of Bun.stdin.stream()) input += new TextDecoder().decode(chunk)
-if (input.includes('overflow')) process.stdout.write('x'.repeat(${64 * 1024 + 1}))
-else process.stdout.write(input)
-process.exit(2)
+for await (const chunk of process.stdin) input += chunk.toString()
+if (input.includes('overflow')) process.stdout.write('x'.repeat(${64 * 1024 + 1}), () => process.exit(2))
+else process.stdout.write(input, () => process.exit(2))
 `,
         { mode: 0o700 }
       )

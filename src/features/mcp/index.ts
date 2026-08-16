@@ -1,9 +1,9 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { type ManagedRuntime } from 'effect'
 
-import { type AppServices } from '@/shared/effect/app_services.js'
+import { type AppServices } from '#shared/effect/app_services'
 
-import { makeGatewaySession, McpGatewayParameters, type McpGateway } from './gateway.js'
+import { makeGatewaySession, McpGatewayParameters, type McpGateway } from './gateway'
 
 type McpRuntime = ManagedRuntime.ManagedRuntime<AppServices | McpGateway, never>
 

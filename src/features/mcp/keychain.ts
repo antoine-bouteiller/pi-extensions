@@ -5,8 +5,8 @@ import { Context, Effect, Layer, Option, Schema } from 'effect'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
-import { type JsonObject, type JsonValue } from '@/shared/utils/json.js'
-import { isEmptyString } from '@/shared/utils/predicates.js'
+import { type JsonObject, type JsonValue } from '#shared/utils/json'
+import { isEmptyString } from '#shared/utils/predicates'
 
 export const MCP_OAUTH_KEYCHAIN_SERVICE = 'pi-mcp.oauth'
 

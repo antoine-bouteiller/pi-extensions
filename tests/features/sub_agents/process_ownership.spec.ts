@@ -1,5 +1,3 @@
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { withProcessEnv } from '@tests/utils/process_env.js'
 import { Clock, Effect, Layer } from 'effect'
 
 import {
@@ -12,8 +10,10 @@ import {
   processOwnerIsActive,
   type ProcessOwnership,
   type ProcessProbeApi,
-} from '@/features/sub_agents/process_ownership.js'
-import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
+} from '#features/sub_agents/process_ownership'
+import { nodeFileSystem, nodePath } from '#shared/effect/node_services'
+import { describe, expect, it } from '#tests/utils/effect'
+import { withProcessEnv } from '#tests/utils/process_env'
 
 const alwaysAlive = () => true
 
@@ -60,7 +60,7 @@ describe('ProcessInspector: linux', () => {
     Effect.gen(function* () {
       const inspector = processInspectorFromProbe(linuxProbe())
       const snapshot = yield* inspector.inspect(123)
-      expect(snapshot?.identity).toStartWith('linux:55555:')
+      expect(snapshot?.identity?.startsWith('linux:55555:')).toBe(true)
       expect(snapshot?.tokenMatches).toBeUndefined()
     })
   )
@@ -105,7 +105,7 @@ describe('ProcessInspector: windows', () => {
         })
       )
       const snapshot = yield* inspector.inspect(999)
-      expect(snapshot?.identity).toStartWith('windows:')
+      expect(snapshot?.identity?.startsWith('windows:')).toBe(true)
       expect(snapshot?.tokenMatches).toBeUndefined()
     })
   )
@@ -131,7 +131,7 @@ describe('ProcessInspector: darwin (token check skipped)', () => {
         })
       )
       const snapshot = yield* inspector.inspect(42, 'secret')
-      expect(snapshot?.identity).toStartWith('unix:')
+      expect(snapshot?.identity?.startsWith('unix:')).toBe(true)
       expect(snapshot?.tokenMatches).toBeUndefined()
     })
   )
@@ -150,7 +150,7 @@ describe('ProcessInspector: other unix (token check enabled)', () => {
         })
       )
       const snapshot = yield* inspector.inspect(42, 'secret')
-      expect(snapshot?.identity).toStartWith('unix:')
+      expect(snapshot?.identity?.startsWith('unix:')).toBe(true)
       expect(snapshot?.tokenMatches).toBe(true)
     })
   )
@@ -160,7 +160,7 @@ describe('ProcessInspector: other unix (token check enabled)', () => {
       const inspector = processInspectorFromProbe(
         fakeProbe({
           platform: 'freebsd',
-          runPs: () => ({ status: 0, stdout: 'Mon Jan 1 00:00:00 2026 node script.js' }),
+          runPs: () => ({ status: 0, stdout: 'Mon Jan 1 00:00:00 2026 node script' }),
         })
       )
       const snapshot = yield* inspector.inspect(42, 'secret')
@@ -190,7 +190,8 @@ describe('ProcessInspector: liveness and ownership comparison', () => {
           readFileUtf8: () => Effect.succeed(`1 (x) S ${Array.from({ length: 18 }, () => '0').join(' ')} 99 0 0`),
         })
       )
-      expect((yield* inspector.inspect(1))?.identity).toStartWith('linux:99:')
+      const snapshot = yield* inspector.inspect(1)
+      expect(snapshot?.identity?.startsWith('linux:99:')).toBe(true)
       expect(read).toBe(true)
     })
   )
@@ -270,20 +271,20 @@ describe('ProcessInspectorLive', () => {
     'terminates a process probe after three seconds',
     () =>
       Effect.gen(function* () {
-        const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'process-probe-timeout-' })
-        const executable = bunPath.join(root, 'ps')
-        const pidFile = bunPath.join(root, 'pid')
-        yield* bunFileSystem.writeFileString(executable, `#!/bin/sh\necho $$ > '${pidFile}'\nexec /bin/sleep 10\n`)
-        yield* bunFileSystem.chmod(executable, 0o700)
+        const root = yield* nodeFileSystem.makeTempDirectory({ prefix: 'process-probe-timeout-' })
+        const executable = nodePath.join(root, 'ps')
+        const pidFile = nodePath.join(root, 'pid')
+        yield* nodeFileSystem.writeFileString(executable, `#!/bin/sh\necho $$ > '${pidFile}'\nexec /bin/sleep 10\n`)
+        yield* nodeFileSystem.chmod(executable, 0o700)
         const startedAt = yield* Clock.currentTimeMillis
         const outcome = yield* withProcessEnv('PATH', root, () => Effect.result(nodeProcessProbe.runPs([])))
         const elapsed = (yield* Clock.currentTimeMillis) - startedAt
         expect(outcome._tag).toBe('Failure')
         expect(elapsed).toBeGreaterThanOrEqual(2900)
         expect(elapsed).toBeLessThan(4500)
-        const pid = Number((yield* bunFileSystem.readFileString(pidFile)).trim())
+        const pid = Number((yield* nodeFileSystem.readFileString(pidFile)).trim())
         expect(yield* nodeProcessProbe.processAlive(pid)).toBe(false)
-        yield* bunFileSystem.remove(root, { force: true, recursive: true })
+        yield* nodeFileSystem.remove(root, { force: true, recursive: true })
       }),
     6000
   )
@@ -321,7 +322,8 @@ describe('ProcessInspectorLive', () => {
   it.effect('a fake layer overrides the live probe for a chosen platform', () =>
     Effect.gen(function* () {
       const inspector = yield* ProcessInspector
-      expect((yield* inspector.inspect(1))?.identity).toStartWith('windows:')
+      const snapshot = yield* inspector.inspect(1)
+      expect(snapshot?.identity?.startsWith('windows:')).toBe(true)
     }).pipe(Effect.provide(fakeLayer))
   )
 })

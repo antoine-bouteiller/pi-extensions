@@ -1,11 +1,11 @@
 import { type Api, type AssistantMessage, type Context, type Model } from '@earendil-works/pi-ai'
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asExtensionContext, asNarrowed } from '@tests/utils/casts.js'
 import { Effect, Fiber } from 'effect'
 import { TestClock } from 'effect/testing'
 
-import { rewriteDocument, rewriteMessage } from '@/features/plain_english/rewrite.js'
-import { PiCtx } from '@/shared/effect/pi_services.js'
+import { rewriteDocument, rewriteMessage } from '#features/plain_english/rewrite'
+import { PiCtx } from '#shared/effect/pi_services'
+import { asExtensionContext, asNarrowed } from '#tests/utils/casts'
+import { describe, expect, it } from '#tests/utils/effect'
 
 type TestModel = Model<Api>
 

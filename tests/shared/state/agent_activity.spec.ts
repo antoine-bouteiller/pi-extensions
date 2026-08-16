@@ -1,7 +1,7 @@
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Effect } from 'effect'
 
-import { createAgentActivityStore, type RunningAgent } from '@/shared/state/agent_activity.js'
+import { createAgentActivityStore, type RunningAgent } from '#shared/state/agent_activity'
+import { describe, expect, it } from '#tests/utils/effect'
 
 describe('agent activity store', () => {
   it.effect('publishes a snapshot that later mutations cannot change', () =>

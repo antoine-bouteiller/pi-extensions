@@ -3,7 +3,7 @@ import fs from 'node:fs'
 
 import { type Cause, Effect } from 'effect'
 
-import { unknownError } from '@/shared/effect/errors.js'
+import { unknownError } from '#shared/effect/errors'
 
 const isMissingPathError = (error: unknown): boolean =>
   error instanceof Error && 'code' in error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')

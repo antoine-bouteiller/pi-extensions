@@ -1,17 +1,20 @@
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- This test reads and removes the native temporary output file.
+import { readFile, rm } from 'node:fs/promises'
+
 import { type AgentToolResult, type Theme } from '@earendil-works/pi-coding-agent'
-import { makeAbortController } from '@tests/utils/abort_controller.js'
-import { promiseFromEffect, tryPromiseEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asError, asNarrowed, asTheme, asTool } from '@tests/utils/casts.js'
-import { deferred } from '@tests/utils/deferred.js'
-import { createFakePi } from '@tests/utils/fake_pi.js'
-import { testRuntime } from '@tests/utils/runtime.js'
 import { Clock, Data, Effect, Layer } from 'effect'
 import { TestClock } from 'effect/testing'
 import { FetchHttpClient, type HttpClient } from 'effect/unstable/http'
 
-import { type WebfetchDetails, type WebfetchInput } from '@/features/webfetch/fetch.js'
-import { register } from '@/features/webfetch/index.js'
-import { isTrue } from '@/shared/utils/predicates.js'
+import { type WebfetchDetails, type WebfetchInput } from '#features/webfetch/fetch'
+import { register } from '#features/webfetch/index'
+import { isTrue } from '#shared/utils/predicates'
+import { makeAbortController } from '#tests/utils/abort_controller'
+import { asError, asNarrowed, asTheme, asTool } from '#tests/utils/casts'
+import { deferred } from '#tests/utils/deferred'
+import { promiseFromEffect, tryPromiseEffect, describe, expect, it } from '#tests/utils/effect'
+import { createFakePi } from '#tests/utils/fake_pi'
+import { testRuntime } from '#tests/utils/runtime'
 
 /** The shape `HttpClientRequest.get`'s injected `Fetch` accepts. */
 type WebfetchFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
@@ -200,9 +203,9 @@ describe('webfetch', () => {
 
       expect(text(plain)).toBe('Title\n\nHeading\n\nA bold link to home.')
       expect(plain.details?.timeoutSeconds).toBe(5)
-      expect(plain.details?.converted).toBeTrue()
+      expect(plain.details?.converted).toBe(true)
       expect(text(raw)).toBe(html)
-      expect(raw.details?.converted).toBeFalse()
+      expect(raw.details?.converted).toBe(false)
     })
   )
 
@@ -343,10 +346,10 @@ describe('webfetch', () => {
       )
 
       expect(asError(rejection).message).toContain('download limit')
-      // 5 MiB / 100 KiB chunks = chunk 53 is where the running total first exceeds the cap (Bun's
+      // 5 MiB / 100 KiB chunks = chunk 53 is where the running total first exceeds the cap (the
       // ReadableStream pulls one chunk ahead of what `Stream.runForEach` has consumed).
       expect(cancelledAfterChunks).toBe(53)
-      expect(fetchAborted).toBeTrue()
+      expect(fetchAborted).toBe(true)
     })
   )
 
@@ -372,7 +375,7 @@ describe('webfetch', () => {
     })
   )
 
-  it.scoped('truncates large model output and saves the complete text', () =>
+  it.effect('truncates large model output and saves the complete text', () =>
     Effect.gen(function* () {
       const complete = `${'a'.repeat(60 * 1024)}\nlast line`
       const harness = createHarness(() => promiseFromEffect(Effect.sync(() => new Response(complete, { headers: { 'content-type': 'text/plain' } }))))
@@ -380,10 +383,10 @@ describe('webfetch', () => {
       const result = yield* Effect.promise(() => harness.execute({ url: 'https://example.com/large.txt' }))
       const fullOutputPath = result.details.fullOutputPath ?? ''
 
-      yield* Effect.addFinalizer(() => Effect.promise(() => Bun.file(fullOutputPath).delete()).pipe(Effect.ignore))
+      yield* Effect.addFinalizer(() => Effect.promise(() => rm(fullOutputPath)).pipe(Effect.ignore))
 
-      expect(fullOutputPath).toStartWith('/')
-      expect(yield* Effect.promise(() => Bun.file(fullOutputPath).text())).toBe(complete)
+      expect(fullOutputPath.startsWith('/')).toBe(true)
+      expect(yield* Effect.promise(() => readFile(fullOutputPath, 'utf8'))).toBe(complete)
       expect(text(result)).toContain('[Output truncated:')
       expect(text(result)).toContain(fullOutputPath)
       expect(result.details).toMatchObject({ outputTruncated: true })

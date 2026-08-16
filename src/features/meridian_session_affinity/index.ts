@@ -1,9 +1,9 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
-import { type AppRuntime } from '@/shared/effect/app_services.js'
-import { makeEventHandler } from '@/shared/effect/runtime.js'
+import { type AppRuntime } from '#shared/effect/app_services'
+import { makeEventHandler } from '#shared/effect/runtime'
 
-import { applySessionAffinity, scrubbedSystemPrompt } from './affinity.js'
+import { applySessionAffinity, scrubbedSystemPrompt } from './affinity'
 
 export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
   pi.on('before_agent_start', (event, ctx) => scrubbedSystemPrompt({ ctx, event }))

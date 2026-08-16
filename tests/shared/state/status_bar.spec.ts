@@ -1,8 +1,8 @@
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asExtensionContext } from '@tests/utils/casts.js'
 import { Effect } from 'effect'
 
-import { createStatusChannel, formatStatusText, statusBar } from '@/shared/state/status_bar.js'
+import { createStatusChannel, formatStatusText, statusBar } from '#shared/state/status_bar'
+import { asExtensionContext } from '#tests/utils/casts'
+import { describe, expect, it } from '#tests/utils/effect'
 
 const createContext = (hasUI = true) => {
   const written: { key: string; value: unknown }[] = []
@@ -34,7 +34,7 @@ describe('status bar channel', () => {
       expect(written).toEqual([{ key: 'demo-set', value: '⏳ 2 polls' }])
 
       channel.clear(ctx)
-      expect(statusBar.has('demo-set')).toBeFalse()
+      expect(statusBar.has('demo-set')).toBe(false)
       expect(written.at(-1)).toEqual({ key: 'demo-set', value: undefined })
     })
   )
@@ -58,8 +58,8 @@ describe('status bar channel', () => {
 
       channel.set(ctx, { text: 'connected' })
 
-      expect(statusBar.has('demo-headless')).toBeTrue()
-      expect(written).toBeEmpty()
+      expect(statusBar.has('demo-headless')).toBe(true)
+      expect(written).toHaveLength(0)
       channel.clear(ctx)
     })
   )

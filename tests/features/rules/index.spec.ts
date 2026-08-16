@@ -1,15 +1,15 @@
-import { afterEach } from 'bun:test'
 import { tmpdir } from 'node:os'
 
 import { type ToolResultEvent } from '@earendil-works/pi-coding-agent'
-import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asResult } from '@tests/utils/casts.js'
-import { createFakePi } from '@tests/utils/fake_pi.js'
-import { runtime } from '@tests/utils/runtime.js'
 import { Effect, FileSystem, Path } from 'effect'
+import { afterEach } from 'vitest'
 
-import { register as registerRules } from '@/features/rules/index.js'
-import { parseRuleFrontmatter } from '@/features/rules/rules.js'
+import { register as registerRules } from '#features/rules/index'
+import { parseRuleFrontmatter } from '#features/rules/rules'
+import { asResult } from '#tests/utils/casts'
+import { promiseFromEffect, describe, expect, it } from '#tests/utils/effect'
+import { createFakePi } from '#tests/utils/fake_pi'
+import { runtime } from '#tests/utils/runtime'
 
 const pathService = runtime.runSync(Path.Path)
 const { dirname, join } = pathService

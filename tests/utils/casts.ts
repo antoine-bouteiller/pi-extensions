@@ -3,10 +3,10 @@
 import { type ExtensionAPI, type ExtensionContext, type ReadonlyFooterDataProvider, type Theme } from '@earendil-works/pi-coding-agent'
 import { type TUI } from '@earendil-works/pi-tui'
 
-import { type OAuthCredentialPayload } from '@/features/mcp/keychain.js'
-import { type JsonObject } from '@/shared/utils/json.js'
+import { type OAuthCredentialPayload } from '#features/mcp/keychain'
+import { type JsonObject } from '#shared/utils/json'
 
-import { type CommandDefinition, type ToolDefinition } from './fake_pi.js'
+import { type CommandDefinition, type ToolDefinition } from './fake_pi'
 
 const requireObject = (value: unknown, expected: string): object | Function => {
   if ((typeof value !== 'object' || value === null) && typeof value !== 'function') {

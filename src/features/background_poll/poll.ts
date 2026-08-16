@@ -2,10 +2,10 @@ import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type ExtensionAPI, type Extension
 import { Clock, Context, Deferred, Effect, Exit, type Fiber, HashMap, Option, Ref, Scope, Semaphore } from 'effect'
 import { Type, type Static } from 'typebox'
 
-import { ToolFailure } from '@/shared/effect/errors.js'
-import { createStatusChannel } from '@/shared/state/status_bar.js'
-import { isEmptyString, isTrue } from '@/shared/utils/predicates.js'
-import { truncateOutput, truncationNotice } from '@/shared/utils/tool_output.js'
+import { ToolFailure } from '#shared/effect/errors'
+import { createStatusChannel } from '#shared/state/status_bar'
+import { isEmptyString, isTrue } from '#shared/utils/predicates'
+import { truncateOutput, truncationNotice } from '#shared/utils/tool_output'
 
 const status = createStatusChannel('background-poll', { icon: '⏳', priority: 20, tone: 'muted' })
 

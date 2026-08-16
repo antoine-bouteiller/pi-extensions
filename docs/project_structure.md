@@ -24,28 +24,29 @@ src/
 │   ├── mcp/{index,gateway,config,keychain,manager,oauth,output,types}.ts
 │   ├── meridian_session_affinity/{index,affinity,scrub}.ts
 │   ├── prompt_rewind/{index,rewind}.ts
+│   ├── plain_english/{index,config,display,markdown,rewrite}.ts
 │   ├── rules/{index,rules}.ts
 │   ├── safe_rm/{index,remove,errors}.ts
-│   ├── safety_guard/{index,guard,constants}.ts
+│   ├── safety_guard/{index,guard,constants,scan}.ts
 │   ├── status_panel/{index,panel,footer,git,provider,render,sidebar,split_pane,state,statuses}.ts
 │   ├── sub_agents/{index,agents,child_env,core,peek,process_ownership,profiles,rpc}.ts
 │   ├── sub_agents/README.md
 │   └── webfetch/{index,fetch}.ts
 └── shared/
-    ├── effect/{app_services,bun_host_file_system,bun_services,errors,pi_services,runtime}.ts
+    ├── effect/{app_services,node_host_file_system,errors,node_services,pi_services,runtime}.ts
     ├── state/{agent_activity,azure_quota,status_bar,store}.ts
     └── utils/{json,predicates,protected_paths,records,tool_output}.ts
 
 tests/
-├── bun_effect.spec.ts
 ├── project_structure.spec.ts
 ├── registration.spec.ts
 ├── config/runtime.spec.ts
 ├── features/<feature>/...*.spec.ts   # mirrors src/features
-├── shared/effect/{app_services,bun_host_file_system,runtime}.spec.ts
+├── shared/effect/{app_services,node_host_file_system,runtime}.spec.ts
 ├── shared/state/{agent_activity,status_bar}.spec.ts
 ├── shared/utils/{predicates,protected_paths,tool_output}.spec.ts
-└── utils/{abort_controller,bun_effect,casts,deferred,fake_pi,http,loopback_port,process_env,runtime}.ts
+└── utils/{abort_controller,casts,deferred,effect,fake_pi,http,loopback_port,process_env,runtime}.ts
+    ├── effect.spec.ts                # exercises the shared Effect/Vitest helper
     └── process_env.spec.ts           # the one helper with behaviour worth pinning
 ```
 
@@ -94,22 +95,25 @@ owns the code, and `src/index.ts` remains the only discovered extension entrypoi
 
 Source-owned tests mirror `src/` under `tests/`, using `.spec.ts` instead of `.test.ts`
 (`tests/features/<name>/...` mirrors `src/features/<name>/...`, `tests/shared/...` mirrors
-`src/shared/...`, and so on). `tests/bun_effect.spec.ts`, `tests/project_structure.spec.ts`, and
-`tests/registration.spec.ts` are the three package-contract specs, allowed at the `tests/` root
+`src/shared/...`, and so on). `tests/project_structure.spec.ts` and
+`tests/registration.spec.ts` are the two package-contract specs, allowed at the `tests/` root
 without a mirrored source module. `registration.spec.ts` derives every expectation from the
 feature folders on disk instead of hardcoding an inventory of features, tools, commands, and
 hooks, so it never needs editing when the feature set changes.
-`tests/utils/` holds shared test infrastructure (`bun_effect`, `casts`, `fake_pi`, and a
+`tests/utils/` holds shared test infrastructure (`effect`, `casts`, `fake_pi`, and a
 `runtime` helper that exposes the process `AppRuntime`); it is also an explicit exception to the
 mirroring rule.
 
 ## Imports and aliases
 
-- Production code uses `./` imports within the same folder and `@/*` for every other source
-  import; `../` imports are not allowed under `src/`. All imports include `.js`, for example
-  `@/shared/utils/records.js`.
-- Tests use `@/*` for source imports. Shared test utilities use `@tests/*`, and both aliases
-  include `.js`, for example `@tests/utils/runtime.js`.
+- Production code uses `./` imports within the same folder and the `#config/*`, `#features/*`,
+  and `#shared/*` package subpath prefixes for every other source import; `../` imports are not
+  allowed under `src/`. These internal specifiers are extensionless, for example
+  `#shared/utils/records` and `#features/mcp/index`.
+- Tests use the same source prefixes plus the native `#tests/*` prefix for shared test utilities,
+  for example `#tests/utils/runtime`. Bare package specifiers keep the extension required by their
+  package's exports map: `@modelcontextprotocol/sdk/...` imports require `.js`. The package supports
+  Node 22.19.0 or later.
 
 ## Adding a feature
 

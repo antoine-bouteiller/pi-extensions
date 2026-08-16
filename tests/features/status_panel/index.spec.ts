@@ -1,19 +1,20 @@
-import { afterEach, beforeEach } from 'bun:test'
 import { randomUUID } from 'node:crypto'
 import { tmpdir, userInfo } from 'node:os'
 
-import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { createFakePi } from '@tests/utils/fake_pi.js'
-import { withProcessEnv } from '@tests/utils/process_env.js'
-import { runtime } from '@tests/utils/runtime.js'
+import { visibleWidth } from '@earendil-works/pi-tui'
 import { Effect } from 'effect'
+import { afterEach, beforeEach } from 'vitest'
 
-import { register as statusPanel } from '@/features/status_panel/index.js'
-import { columns, formatTokens, progressBar } from '@/features/status_panel/render.js'
-import { emptyGitInfoState, emptyModelInfoState } from '@/features/status_panel/state.js'
-import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
-import { runningAgents } from '@/shared/state/agent_activity.js'
-import { azureQuota, consumeSubagentAzureQuota, writeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
+import { register as statusPanel } from '#features/status_panel/index'
+import { columns, formatTokens, progressBar } from '#features/status_panel/render'
+import { emptyGitInfoState, emptyModelInfoState } from '#features/status_panel/state'
+import { nodeFileSystem, nodePath } from '#shared/effect/node_services'
+import { runningAgents } from '#shared/state/agent_activity'
+import { azureQuota, consumeSubagentAzureQuota, writeSubagentAzureQuota } from '#shared/state/azure_quota'
+import { promiseFromEffect, describe, expect, it } from '#tests/utils/effect'
+import { createFakePi } from '#tests/utils/fake_pi'
+import { withProcessEnv } from '#tests/utils/process_env'
+import { runtime } from '#tests/utils/runtime'
 
 beforeEach(() => azureQuota.set(undefined))
 
@@ -61,13 +62,13 @@ describe('status panel registration', () => {
     return Effect.gen(function* () {
       const token = randomUUID()
       yield* writeSubagentAzureQuota(token, 150)
-      const directory = bunPath.join(temporaryRoot, 'pi-codex-subagents', userInfo().username, 'quota')
-      const target = bunPath.join(directory, `${token}.json`)
+      const directory = nodePath.join(temporaryRoot, 'pi-codex-subagents', userInfo().username, 'quota')
+      const target = nodePath.join(directory, `${token}.json`)
       if (process.platform !== 'win32') {
-        expect((yield* bunFileSystem.stat(directory)).mode & 0o777).toBe(0o700)
-        expect((yield* bunFileSystem.stat(target)).mode & 0o777).toBe(0o600)
+        expect((yield* nodeFileSystem.stat(directory)).mode & 0o777).toBe(0o700)
+        expect((yield* nodeFileSystem.stat(target)).mode & 0o777).toBe(0o600)
       }
-      expect((yield* bunFileSystem.readDirectory(directory)).some((name) => name.includes('.tmp'))).toBe(false)
+      expect((yield* nodeFileSystem.readDirectory(directory)).some((name) => name.includes('.tmp'))).toBe(false)
       const claimed = yield* Effect.all([consumeSubagentAzureQuota(token), consumeSubagentAzureQuota(token)], { concurrency: 2 })
       expect(claimed.filter((value) => value === 100)).toHaveLength(1)
       expect(claimed.filter((value) => value === undefined)).toHaveLength(1)
@@ -80,12 +81,12 @@ describe('status panel registration', () => {
     const temporaryRoot = process.env.PI_SUBAGENT_TEMP_DIR || tmpdir()
     return Effect.gen(function* () {
       const token = randomUUID()
-      const directory = bunPath.join(temporaryRoot, 'pi-codex-subagents', userInfo().username, 'quota')
-      yield* bunFileSystem.makeDirectory(directory, { recursive: true })
-      yield* bunFileSystem.writeFileString(bunPath.join(directory, `${token}.json`), '{ not json')
+      const directory = nodePath.join(temporaryRoot, 'pi-codex-subagents', userInfo().username, 'quota')
+      yield* nodeFileSystem.makeDirectory(directory, { recursive: true })
+      yield* nodeFileSystem.writeFileString(nodePath.join(directory, `${token}.json`), '{ not json')
 
       expect(yield* consumeSubagentAzureQuota(token)).toBeUndefined()
-      expect((yield* bunFileSystem.readDirectory(directory)).some((name) => name.startsWith(token))).toBe(false)
+      expect((yield* nodeFileSystem.readDirectory(directory)).some((name) => name.startsWith(token))).toBe(false)
     })
   })
 
@@ -125,7 +126,7 @@ describe('status panel formatting', () => {
   it.effect('keeps columns within the available width', () =>
     Effect.sync(() => {
       const rendered = columns('a very long branch name', 'model/context', 20)
-      expect(Bun.stringWidth(rendered)).toBeLessThanOrEqual(20)
+      expect(visibleWidth(rendered)).toBeLessThanOrEqual(20)
     })
   )
 
@@ -207,7 +208,7 @@ describe('status panel formatting', () => {
         for (const width of [28, 36, 44]) {
           const lines = renderSidebar(width)
           expect(lines).toHaveLength(30)
-          expect(lines.every((line) => Bun.stringWidth(line) <= width)).toBeTrue()
+          expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true)
         }
         expect(renderSidebar(44).join('\n')).toContain('AGENT')
         expect(renderSidebar(44).join('\n')).toContain('CONTEXT')
@@ -300,11 +301,11 @@ describe('status panel quota lifecycle', () => {
           throw new Error('expected a quota request')
         }
         const [signal] = signals
-        expect(signal.aborted).toBeFalse()
+        expect(signal.aborted).toBe(false)
         expect(signals).toHaveLength(1)
 
         yield* Effect.promise(() => emit('session_shutdown', {}, ctx))
-        expect(signal.aborted).toBeTrue()
+        expect(signal.aborted).toBe(true)
       })
     )
   )

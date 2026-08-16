@@ -1,6 +1,6 @@
 import { type ThemeColor } from '@earendil-works/pi-coding-agent'
 
-import { createObservableStore } from './store.js'
+import { createObservableStore } from './store'
 
 export interface RunningAgent {
   name: string

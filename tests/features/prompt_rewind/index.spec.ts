@@ -1,10 +1,10 @@
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asCommand, asExtensionContext } from '@tests/utils/casts.js'
-import { createFakePi } from '@tests/utils/fake_pi.js'
-import { runtime } from '@tests/utils/runtime.js'
 import { Effect } from 'effect'
 
-import { register as registerPromptRewind } from '@/features/prompt_rewind/index.js'
+import { register as registerPromptRewind } from '#features/prompt_rewind/index'
+import { asCommand, asExtensionContext } from '#tests/utils/casts'
+import { describe, expect, it } from '#tests/utils/effect'
+import { createFakePi } from '#tests/utils/fake_pi'
+import { runtime } from '#tests/utils/runtime'
 
 const REWIND_COMMAND = 'prompt-rewind-cancel'
 
@@ -214,7 +214,7 @@ describe('prompt rewind', () => {
       const harness = createHarness()
       yield* Effect.promise(() => harness.startSession('rpc'))
 
-      expect(harness.hasTerminalHandler()).toBeFalse()
+      expect(harness.hasTerminalHandler()).toBe(false)
     })
   )
 
@@ -499,7 +499,7 @@ describe('prompt rewind', () => {
 
       yield* Effect.promise(() => harness.fixture.emit('session_shutdown', {}))
 
-      expect(harness.terminalUnsubscribed()).toBeTrue()
+      expect(harness.terminalUnsubscribed()).toBe(true)
       yield* Effect.promise(() => harness.command().handler('', harness.ctx))
       expect(harness.navigateTreeCalls).toEqual([])
     })
