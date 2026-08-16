@@ -228,6 +228,7 @@ export const THEME_COLOR_VALUES = [
   'dim',
   'text',
   'thinkingText',
+  'searchMatchText',
   'userMessageText',
   'customMessageText',
   'customMessageLabel',
