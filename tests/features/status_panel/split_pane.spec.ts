@@ -1,9 +1,9 @@
 import { TuiAltScreen, TuiMainScreen as PiTuiMainScreen, type Terminal, type TUI } from '@earendil-works/pi-tui'
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asTui } from '@tests/utils/casts.js'
 import { Effect } from 'effect'
 
-import { createSplitPaneController, DEFAULT_SIDEBAR_WIDTH, MIN_MAIN_WIDTH, MIN_SIDEBAR_WIDTH } from '@/features/status_panel/split_pane.js'
+import { createSplitPaneController, DEFAULT_SIDEBAR_WIDTH, MIN_MAIN_WIDTH, MIN_SIDEBAR_WIDTH } from '#features/status_panel/split_pane'
+import { asTui } from '#tests/utils/casts'
+import { describe, expect, it } from '#tests/utils/effect'
 
 class TuiMainScreen {
   readonly mode = 'regular' as const
@@ -107,8 +107,8 @@ describe('status panel split pane', () => {
       const overlay = split.overlayOptions()
 
       expect(tui.render(MIN_MAIN_WIDTH + MIN_SIDEBAR_WIDTH - 1)).toEqual([`main:${MIN_MAIN_WIDTH + MIN_SIDEBAR_WIDTH - 1}`])
-      expect(overlay.visible?.(MIN_MAIN_WIDTH + MIN_SIDEBAR_WIDTH - 1, 30)).toBeFalse()
-      expect(overlay.visible?.(MIN_MAIN_WIDTH + MIN_SIDEBAR_WIDTH, 30)).toBeTrue()
+      expect(overlay.visible?.(MIN_MAIN_WIDTH + MIN_SIDEBAR_WIDTH - 1, 30)).toBe(false)
+      expect(overlay.visible?.(MIN_MAIN_WIDTH + MIN_SIDEBAR_WIDTH, 30)).toBe(true)
     })
   )
 
@@ -173,7 +173,7 @@ describe('status panel split pane', () => {
       split.dispose()
 
       expect(tui.render(120)).toEqual(['main:120'])
-      expect(Object.is(Reflect.get(renderer, 'render'), Reflect.get(TuiMainScreen.prototype, 'render'))).toBeTrue()
+      expect(Object.is(Reflect.get(renderer, 'render'), Reflect.get(TuiMainScreen.prototype, 'render'))).toBe(true)
     })
   )
 
@@ -223,7 +223,7 @@ describe('status panel split pane', () => {
 
       expect(widths.at(-1)).toBe(76)
       expect(sidebarWidths.at(-1)).toBe(DEFAULT_SIDEBAR_WIDTH)
-      expect(split.overlayOptions().visible?.(120, 36)).toBeFalse()
+      expect(split.overlayOptions().visible?.(120, 36)).toBe(false)
       expect(Object.hasOwn(renderer, 'render')).toBe(hadOwnRender)
       split.hide()
       renderer.render(120)
@@ -281,7 +281,7 @@ describe('status panel split pane', () => {
       split.attach(tui)
       split.show()
 
-      expect(split.overlayOptions().visible?.(120, 36)).toBeTrue()
+      expect(split.overlayOptions().visible?.(120, 36)).toBe(true)
     })
   )
 

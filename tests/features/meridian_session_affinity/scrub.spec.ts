@@ -1,7 +1,7 @@
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Effect } from 'effect'
 
-import { scrubPiFingerprints } from '@/features/meridian_session_affinity/scrub.js'
+import { scrubPiFingerprints } from '#features/meridian_session_affinity/scrub'
+import { describe, expect, it } from '#tests/utils/effect'
 
 const PI_IDENTITY =
   'You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.\n'
@@ -40,7 +40,7 @@ describe('scrubPiFingerprints', () => {
     Effect.sync(() => {
       const scrubbed = scrubPiFingerprints(PROMPT)
 
-      expect(scrubbed).toStartWith('You are an expert coding assistant.')
+      expect(scrubbed.startsWith('You are an expert coding assistant.')).toBe(true)
       expect(scrubbed).not.toContain('operating inside pi')
       expect(scrubbed).not.toContain('Pi documentation')
       expect(scrubbed).not.toContain('/duplicate')

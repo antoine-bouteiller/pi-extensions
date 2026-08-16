@@ -4,8 +4,8 @@ import { Cause, Context, Effect, Layer, Stream } from 'effect'
 import { type PlatformError } from 'effect/PlatformError'
 import { ChildProcess } from 'effect/unstable/process'
 
-import { bunChildProcessSpawner, bunFileSystem } from '@/shared/effect/bun_services.js'
-import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined } from '@/shared/utils/predicates.js'
+import { nodeChildProcessSpawner, nodeFileSystem } from '#shared/effect/node_services'
+import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined } from '#shared/utils/predicates'
 
 export interface ProcessSnapshot {
   identity: string
@@ -161,7 +161,7 @@ const collectStdout = (stream: Stream.Stream<Uint8Array, PlatformError>): Effect
 const runCommand = (command: string, args: string[]): Effect.Effect<{ status: number | undefined; stdout: string }, Cause.UnknownError> =>
   Effect.scoped(
     Effect.gen(function* () {
-      const child = yield* bunChildProcessSpawner.spawn(
+      const child = yield* nodeChildProcessSpawner.spawn(
         ChildProcess.make(command, args, { detached: false, forceKillAfter: 1000, stderr: 'ignore', stdin: 'ignore', stdout: 'pipe' })
       )
       const { status, stdout } = yield* Effect.all(
@@ -178,8 +178,8 @@ const runCommand = (command: string, args: string[]): Effect.Effect<{ status: nu
 export const nodeProcessProbe = {
   platform: process.platform,
   processAlive,
-  readFileBuffer: (path) => bunFileSystem.readFile(path).pipe(Effect.mapError(processProbeError)),
-  readFileUtf8: (path) => bunFileSystem.readFileString(path).pipe(Effect.mapError(processProbeError)),
+  readFileBuffer: (path) => nodeFileSystem.readFile(path).pipe(Effect.mapError(processProbeError)),
+  readFileUtf8: (path) => nodeFileSystem.readFileString(path).pipe(Effect.mapError(processProbeError)),
   runPowerShell: (script) => runCommand('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]),
   runPs: (args: string[]) => runCommand('ps', args),
 } satisfies ProcessProbeApi

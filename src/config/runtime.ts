@@ -1,9 +1,9 @@
-import { BunFileSystem, BunPath } from '@effect/platform-bun'
+import { NodeFileSystem, NodePath } from '@effect/platform-node'
 import { Layer, ManagedRuntime } from 'effect'
 import { FetchHttpClient } from 'effect/unstable/http'
 
-import { McpGatewayLive, type McpGateway } from '@/features/mcp/gateway.js'
-import { AgentActivityLive, type AppServices, StatusBarLive } from '@/shared/effect/app_services.js'
+import { McpGatewayLive, type McpGateway } from '#features/mcp/gateway'
+import { AgentActivityLive, type AppServices, StatusBarLive } from '#shared/effect/app_services'
 
 export type ProcessServices = AppServices | McpGateway
 export type ProcessRuntime = ManagedRuntime.ManagedRuntime<ProcessServices, never>
@@ -16,8 +16,8 @@ export type ProcessRuntime = ManagedRuntime.ManagedRuntime<ProcessServices, neve
  * `runtime.runSync` during registration.
  */
 const AppLayer: Layer.Layer<ProcessServices> = Layer.mergeAll(
-  BunFileSystem.layer,
-  BunPath.layer,
+  NodeFileSystem.layer,
+  NodePath.layer,
   FetchHttpClient.layer,
   StatusBarLive,
   AgentActivityLive,

@@ -1,6 +1,6 @@
 import { Effect, Schema } from 'effect'
 
-import { PiCtx } from '@/shared/effect/pi_services.js'
+import { PiCtx } from '#shared/effect/pi_services'
 
 class RewriteError extends Schema.TaggedError<RewriteError>()('RewriteError', {
   message: Schema.String,

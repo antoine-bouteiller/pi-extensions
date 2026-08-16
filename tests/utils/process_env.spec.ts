@@ -1,9 +1,9 @@
-import { afterEach } from 'bun:test'
-
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Deferred, Effect, Fiber } from 'effect'
+import { afterEach } from 'vitest'
 
-import { withProcessEnv } from './process_env.js'
+import { describe, expect, it } from '#tests/utils/effect'
+
+import { withProcessEnv } from './process_env'
 
 const KEY = 'PI_TEST_WITH_PROCESS_ENV'
 const original = process.env[KEY]

@@ -1,9 +1,6 @@
+import { setTimeout } from 'node:timers/promises'
+
 import { visibleWidth } from '@earendil-works/pi-tui'
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asExtensionContext } from '@tests/utils/casts.js'
-import { deferred } from '@tests/utils/deferred.js'
-import { withProcessEnv } from '@tests/utils/process_env.js'
-import { runtime } from '@tests/utils/runtime.js'
 import { Effect, Path } from 'effect'
 
 import {
@@ -11,7 +8,12 @@ import {
   renderSidebarLines as renderSidebarLinesWithPath,
   type RenderSidebarLinesOptions,
   type SidebarState,
-} from '@/features/status_panel/sidebar.js'
+} from '#features/status_panel/sidebar'
+import { asExtensionContext } from '#tests/utils/casts'
+import { deferred } from '#tests/utils/deferred'
+import { describe, expect, it } from '#tests/utils/effect'
+import { withProcessEnv } from '#tests/utils/process_env'
+import { runtime } from '#tests/utils/runtime'
 
 const theme = {
   bold: (text: string) => text,
@@ -71,8 +73,8 @@ describe('sidebar rendering', () => {
       const text = stripAnsi(lines.join('\n'))
 
       expect(lines).toHaveLength(36)
-      expect(lines.every((line) => visibleWidth(line) <= 44)).toBeTrue()
-      expect(lines.every((line) => stripAnsi(line).startsWith('│ '))).toBeTrue()
+      expect(lines.every((line) => visibleWidth(line) <= 44)).toBe(true)
+      expect(lines.every((line) => stripAnsi(line).startsWith('│ '))).toBe(true)
       expect(text).toContain('╭─ ✦ AGENT')
       expect(text).toContain('◆ Working')
       expect(text).toContain('gpt-5.6-sol')
@@ -242,7 +244,7 @@ describe('sidebar rendering', () => {
       for (const width of [1, 2, 8, 28, 44]) {
         const lines = renderSidebarLines({ height: 24, state: long, theme, width })
         expect(lines).toHaveLength(24)
-        expect(lines.every((line) => visibleWidth(line) <= width)).toBeTrue()
+        expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true)
       }
       expect(stripAnsi(renderSidebarLines({ height: 24, state: long, theme, width: 28 }).join('\n'))).toContain('◆ Working')
     })
@@ -351,7 +353,7 @@ describe('sidebar controller overlay race', () => {
       second.factory(secondTui, controllerTheme, {}, second.resolve)
       const secondHandle: FakeOverlayHandle = { hide: () => hiddenHandles.push('second') }
       second.options.onHandle?.(secondHandle)
-      expect(sidebar.isVisible()).toBeTrue()
+      expect(sidebar.isVisible()).toBe(true)
 
       // The stale first generation now delivers its callbacks late: attach, onHandle, and the custom() promise settling via .finally().
       first.factory(firstTui, controllerTheme, {}, first.resolve)
@@ -364,7 +366,7 @@ describe('sidebar controller overlay race', () => {
       expect(hiddenHandles).toEqual(['first'])
       expect(renderRequests).not.toContain('first')
       expect(renderRequests.at(-1)).toBe('second')
-      expect(sidebar.isVisible()).toBeTrue()
+      expect(sidebar.isVisible()).toBe(true)
 
       sidebar.dispose()
     })
@@ -397,25 +399,25 @@ describe('sidebar controller overlay race', () => {
       const [overlay] = calls
       overlay.factory(tui, controllerTheme, {}, overlay.resolve)
       const idleRenders = renderRequests
-      yield* Effect.promise(() => Bun.sleep(30))
+      yield* Effect.promise(() => setTimeout(30))
       expect(renderRequests).toBe(idleRenders)
 
       currentState = { ...currentState, activity: 'working' }
       sidebar.requestRender()
-      yield* Effect.promise(() => Bun.sleep(30))
+      yield* Effect.promise(() => setTimeout(30))
       expect(renderRequests).toBeGreaterThan(idleRenders + 1)
 
       currentState = { ...currentState, activity: 'ready' }
-      yield* Effect.promise(() => Bun.sleep(15))
+      yield* Effect.promise(() => setTimeout(15))
       currentState = { ...currentState, activity: 'working' }
       sidebar.requestRender()
       const rendersAtRestart = renderRequests
-      yield* Effect.promise(() => Bun.sleep(15))
+      yield* Effect.promise(() => setTimeout(15))
       expect(renderRequests).toBeGreaterThan(rendersAtRestart)
 
       sidebar.dispose()
       const rendersAfterDispose = renderRequests
-      yield* Effect.promise(() => Bun.sleep(30))
+      yield* Effect.promise(() => setTimeout(30))
       expect(renderRequests).toBe(rendersAfterDispose)
     })
   )

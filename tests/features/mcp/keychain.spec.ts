@@ -1,5 +1,3 @@
-import { promiseFromEffect, tryEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asError, asOAuthCredentialPayload } from '@tests/utils/casts.js'
 import { Effect, Option } from 'effect'
 
 import {
@@ -9,8 +7,10 @@ import {
   credentialStoreEffectLayer,
   keychainAccount,
   type OAuthCredentialPayload,
-} from '@/features/mcp/keychain.js'
-import { jsonText, parseJsonText } from '@/shared/utils/json.js'
+} from '#features/mcp/keychain'
+import { jsonText, parseJsonText } from '#shared/utils/json'
+import { asError, asOAuthCredentialPayload } from '#tests/utils/casts'
+import { promiseFromEffect, tryEffect, describe, expect, it } from '#tests/utils/effect'
 
 type FailureMode = 'get' | 'set' | 'delete' | undefined
 
@@ -196,7 +196,7 @@ describe('Keychain OAuth credential store', () => {
       yield* Effect.promise(() => store.set('slack', credential))
 
       expect(yield* Effect.promise(() => store.get('slack', 'https://attacker.example/mcp'))).toBeUndefined()
-      expect(keyring.values.has(keychainAccount('slack'))).toBeTrue()
+      expect(keyring.values.has(keychainAccount('slack'))).toBe(true)
     })
   )
 

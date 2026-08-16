@@ -1,6 +1,6 @@
 import { Data } from 'effect'
 
-import { isNullOrUndefined } from '@/shared/utils/predicates.js'
+import { isNullOrUndefined } from '#shared/utils/predicates'
 
 /** Every manager failure the gateway can observe, keeping the SDK's own error in `cause`. */
 export class McpError extends Data.TaggedError('McpError')<{

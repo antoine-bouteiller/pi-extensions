@@ -2,7 +2,7 @@ import { StringDecoder } from 'node:string_decoder'
 
 import { Data } from 'effect'
 
-import { isEmptyString } from '@/shared/utils/predicates.js'
+import { isEmptyString } from '#shared/utils/predicates'
 
 /**
  * A child must not be able to grow the parent's heap without bound, whether it never terminates a

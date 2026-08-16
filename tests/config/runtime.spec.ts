@@ -1,23 +1,28 @@
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- This test verifies a child Node process.
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { text } from 'node:stream/consumers'
 import { fileURLToPath } from 'node:url'
 
-import { BunFileSystem, BunPath } from '@effect/platform-bun'
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { createFakePi } from '@tests/utils/fake_pi.js'
-import { withProcessEnv } from '@tests/utils/process_env.js'
+import { NodeFileSystem, NodePath } from '@effect/platform-node'
 import { Effect, Layer, ManagedRuntime } from 'effect'
 import { FetchHttpClient } from 'effect/unstable/http'
 
-import { getOrCreateProcessRuntime } from '@/config/runtime.js'
-import { register as registerStatusPanel } from '@/features/status_panel/index.js'
-import { AgentActivity, type AgentActivityApi, type AppRuntime, StatusBarLive } from '@/shared/effect/app_services.js'
-import { parseJsonText } from '@/shared/utils/json.js'
+import { getOrCreateProcessRuntime } from '#config/runtime'
+import { register as registerStatusPanel } from '#features/status_panel/index'
+import { AgentActivity, type AgentActivityApi, type AppRuntime, StatusBarLive } from '#shared/effect/app_services'
+import { parseJsonText } from '#shared/utils/json'
+import { describe, expect, it } from '#tests/utils/effect'
+import { createFakePi } from '#tests/utils/fake_pi'
+import { withProcessEnv } from '#tests/utils/process_env'
 
 const sharedActivityScript = (paths: { aggregate: string; activity: string; runtime: string; statusPanel: string }): string => `
   const { Effect } = await import('effect');
-  const { default: piExtensions } = await import(${JSON.stringify(paths.aggregate)});
-  const { register: registerStatusPanel } = await import(${JSON.stringify(paths.statusPanel)});
-  const { AgentActivity } = await import(${JSON.stringify(paths.activity)});
-  const { getOrCreateProcessRuntime } = await import(${JSON.stringify(paths.runtime)});
+  const unwrapModule = module => module.default?.default !== undefined ? module.default : module.default ?? module;
+  const { default: piExtensions } = unwrapModule(await import(${JSON.stringify(paths.aggregate)}));
+  const { register: registerStatusPanel } = unwrapModule(await import(${JSON.stringify(paths.statusPanel)}));
+  const { AgentActivity } = unwrapModule(await import(${JSON.stringify(paths.activity)}));
+  const { getOrCreateProcessRuntime } = unwrapModule(await import(${JSON.stringify(paths.runtime)}));
 
   const createPi = () => {
     const handlers = new Map();
@@ -85,7 +90,7 @@ describe('process-wide runtime', () => {
         },
       }
       const runtime: AppRuntime = ManagedRuntime.make(
-        Layer.mergeAll(BunFileSystem.layer, BunPath.layer, FetchHttpClient.layer, StatusBarLive, Layer.succeed(AgentActivity)(sentinelActivity))
+        Layer.mergeAll(NodeFileSystem.layer, NodePath.layer, FetchHttpClient.layer, StatusBarLive, Layer.succeed(AgentActivity)(sentinelActivity))
       )
       yield* withProcessEnv('PI_SUBAGENT_OWNER_TOKEN', undefined, () =>
         Effect.sync(() => {
@@ -96,26 +101,32 @@ describe('process-wide runtime', () => {
     })
   )
 
-  it.effect('makes AgentActivity observable through aggregate and explicit feature registration', () =>
-    Effect.gen(function* () {
-      const script = sharedActivityScript({
-        activity: fileURLToPath(new URL('../../src/shared/effect/app_services.ts', import.meta.url)),
-        aggregate: fileURLToPath(new URL('../../src/index.ts', import.meta.url)),
-        runtime: fileURLToPath(new URL('../../src/config/runtime.ts', import.meta.url)),
-        statusPanel: fileURLToPath(new URL('../../src/features/status_panel/index.ts', import.meta.url)),
-      })
-      const { PI_SUBAGENT_OWNER_TOKEN: _ownerToken, ...env } = process.env
-      const child = Bun.spawn([process.execPath, '--eval', script], { env, stderr: 'pipe', stdout: 'pipe' })
-      const [stdout, stderr, exitCode] = yield* Effect.promise(() =>
-        Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
-      )
+  it.effect(
+    'makes AgentActivity observable through aggregate and explicit feature registration',
+    () =>
+      Effect.gen(function* () {
+        const script = sharedActivityScript({
+          activity: fileURLToPath(new URL('../../src/shared/effect/app_services.ts', import.meta.url)),
+          aggregate: fileURLToPath(new URL('../../src/index.ts', import.meta.url)),
+          runtime: fileURLToPath(new URL('../../src/config/runtime.ts', import.meta.url)),
+          statusPanel: fileURLToPath(new URL('../../src/features/status_panel/index.ts', import.meta.url)),
+        })
+        const { PI_SUBAGENT_OWNER_TOKEN: _ownerToken, ...env } = process.env
+        const child = spawn(process.execPath, ['--import', 'jiti/register', '--eval', script], {
+          env,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        })
+        const [stdout, stderr, exitCode] = yield* Effect.promise(() =>
+          Promise.all([text(child.stdout), text(child.stderr), once(child, 'exit').then(([code]) => code)])
+        )
 
-      expect(exitCode, stderr).toBe(0)
-      const result = parseJsonText(stdout.trim())
-      expect(result).toEqual({
-        aggregate: expect.stringContaining('shared-agent'),
-        explicit: expect.stringContaining('shared-agent'),
-      })
-    })
+        expect(exitCode, stderr).toBe(0)
+        const result = parseJsonText(stdout.trim())
+        expect(result).toEqual({
+          aggregate: expect.stringContaining('shared-agent'),
+          explicit: expect.stringContaining('shared-agent'),
+        })
+      }),
+    10_000
   )
 })

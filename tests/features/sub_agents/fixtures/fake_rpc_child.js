@@ -1,13 +1,15 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- This standalone Node fixture must explicitly close its stdin descriptor.
+import { closeSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 
 import { Effect } from 'effect'
 
-import { bunFileSystem } from '../../../../src/shared/effect/bun_services.ts'
-import { writeSubagentAzureQuota } from '../../../../src/shared/state/azure_quota.ts'
-import { jsonText, parseJsonText } from '../../../../src/shared/utils/json.ts'
-import { isRecord } from '../../../../src/shared/utils/records.ts'
+import { nodeFileSystem } from '#shared/effect/node_services'
+import { writeSubagentAzureQuota } from '#shared/state/azure_quota'
+import { jsonText, parseJsonText } from '#shared/utils/json'
+import { isRecord } from '#shared/utils/records'
 
 const encode = (value) => new TextEncoder().encode(value)
 const sessionIndex = process.argv.indexOf('--session')
@@ -22,7 +24,7 @@ const record = (value) => {
   }
   return Effect.scoped(
     Effect.gen(function* () {
-      const file = yield* bunFileSystem.open(sessionFile, { flag: 'a' })
+      const file = yield* nodeFileSystem.open(sessionFile, { flag: 'a' })
       yield* file.writeAll(encode(`${jsonText({ pid: process.pid, ...value })}\n`))
       yield* file.sync
     })
@@ -48,7 +50,7 @@ const started = {
       'PI_SUBAGENT_READONLY',
     ].flatMap((key) => (process.env[key] === undefined ? [] : [[key, process.env[key]]]))
   ),
-  runtime: 'bun',
+  runtime: 'node',
   type: 'started',
 }
 await Effect.runPromise(record(started))
@@ -96,6 +98,8 @@ const staysAlive = (message) => {
   return message.startsWith('hold')
 }
 
+const promptMessage = (value) => (typeof value === 'string' ? value : '')
+
 /** @param {string} line */
 const handle = (line) =>
   Effect.gen(function* () {
@@ -116,7 +120,7 @@ const handle = (line) =>
       return
     }
     if (command.type === 'prompt') {
-      const message = String(command.message)
+      const message = promptMessage(command.message)
       yield* record({ message: command.message, type: 'prompt' })
       if (message.startsWith('reject')) {
         send({ error: 'fake prompt rejection', id: command.id, success: false, type: 'response' })
@@ -127,7 +131,8 @@ const handle = (line) =>
       send({ type: 'agent_start' })
       if (message.startsWith('close-stdin')) {
         input.close()
-        yield* Effect.promise(() => Bun.stdin.stream().cancel())
+        closeSync(0)
+        process.stdin.destroy()
         // oxlint-disable-next-line effecttsgo/global-timers-in-effect -- The child must remain alive after closing stdin so the parent proves it terminates the process.
         setInterval(() => undefined, 1000)
         return

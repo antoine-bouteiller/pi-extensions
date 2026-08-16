@@ -1,20 +1,21 @@
-import { mock } from 'bun:test'
 import { userInfo } from 'node:os'
+import { fileURLToPath } from 'node:url'
 
 import { type Theme } from '@earendil-works/pi-coding-agent'
 import { visibleWidth } from '@earendil-works/pi-tui'
-import { makeAbortController } from '@tests/utils/abort_controller.js'
-import { promiseFromEffect, tryPromiseEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asError, asExtensionApi, asNarrowed, asResult, asTheme, asTui } from '@tests/utils/casts.js'
-import { withProcessEnv } from '@tests/utils/process_env.js'
 import { Cause, Data, DateTime, Deferred, Effect, Fiber } from 'effect'
+import { afterAll } from 'vitest'
 
-import { type AgentManagerOptions } from '@/features/sub_agents/core.js'
-import { type ProcessSnapshot } from '@/features/sub_agents/process_ownership.js'
-import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
-import { jsonText, parseJsonText, prettyJsonText, type JsonObject } from '@/shared/utils/json.js'
+import { type AgentManagerOptions } from '#features/sub_agents/core'
+import { type ProcessSnapshot } from '#features/sub_agents/process_ownership'
+import { nodeFileSystem, nodePath } from '#shared/effect/node_services'
+import { jsonText, parseJsonText, prettyJsonText, type JsonObject } from '#shared/utils/json'
+import { makeAbortController } from '#tests/utils/abort_controller'
+import { asError, asExtensionApi, asNarrowed, asResult, asTheme, asTui } from '#tests/utils/casts'
+import { promiseFromEffect, tryPromiseEffect, describe, expect, it } from '#tests/utils/effect'
+import { withProcessEnv } from '#tests/utils/process_env'
 
-const { dirname, join } = bunPath
+const { dirname, join } = nodePath
 const {
   chmod: chmodFile,
   exists: existsFile,
@@ -24,20 +25,27 @@ const {
   stat: statFile,
   utimes: touchFile,
   writeFileString: writeText,
-} = bunFileSystem
+} = nodeFileSystem
 const TEST_AGENT_DIR = '/tmp/pi-codex-subagents-tests'
-const FAKE_RPC_CHILD = join(import.meta.dir, 'fixtures', 'fake_rpc_child.js')
+const FAKE_RPC_CHILD = join(import.meta.dirname, 'fixtures', 'fake_rpc_child')
+const FAKE_RPC_COMMAND = {
+  command: process.execPath,
+  prefixArgs: [fileURLToPath(new URL('lib/jiti-cli.mjs', import.meta.resolve('jiti/package.json'))), FAKE_RPC_CHILD],
+}
 const TEST_TEMP_DIR = join(TEST_AGENT_DIR, 'temp')
+const previousAgentDir = process.env.PI_CODING_AGENT_DIR
 process.env.PI_SUBAGENT_TEMP_DIR = TEST_TEMP_DIR
+process.env.PI_CODING_AGENT_DIR = TEST_AGENT_DIR
 
-const codingAgent = await import('@earendil-works/pi-coding-agent')
-await mock.module('@earendil-works/pi-coding-agent', () => ({
-  ...codingAgent,
-  CONFIG_DIR_NAME: '.pi',
-  getAgentDir: () => TEST_AGENT_DIR,
-}))
+afterAll(() => {
+  if (previousAgentDir === undefined) {
+    delete process.env.PI_CODING_AGENT_DIR
+  } else {
+    process.env.PI_CODING_AGENT_DIR = previousAgentDir
+  }
+})
 
-const { runtime } = await import('@tests/utils/runtime.js')
+const { runtime } = await import('#tests/utils/runtime')
 const {
   AgentManager,
   MAX_RPC_FRAME_CHARS,
@@ -49,12 +57,12 @@ const {
   parentScopeKey,
   taskStorageKey,
   writeFullToolOutput,
-} = await import('@/features/sub_agents/core.js')
-const { AGENT_CONFIGS } = await import('@/features/sub_agents/profiles.js')
-const { inspectProcess, ownershipVerdict, processAlive, processOwnerIsActive } = await import('@/features/sub_agents/process_ownership.js')
-const { SubagentPeekOverlay } = await import('@/features/sub_agents/peek.js')
-const { azureQuota } = await import('@/shared/state/azure_quota.js')
-const { runningAgents } = await import('@/shared/state/agent_activity.js')
+} = await import('#features/sub_agents/core')
+const { AGENT_CONFIGS } = await import('#features/sub_agents/profiles')
+const { inspectProcess, ownershipVerdict, processAlive, processOwnerIsActive } = await import('#features/sub_agents/process_ownership')
+const { SubagentPeekOverlay } = await import('#features/sub_agents/peek')
+const { azureQuota } = await import('#shared/state/azure_quota')
+const { runningAgents } = await import('#shared/state/agent_activity')
 
 /*
  * Fixtures need concrete epoch values to build on-disk records and mtimes, and the assertions compare
@@ -158,7 +166,7 @@ const promising = (manager: InstanceType<typeof AgentManager>) => ({
 const createAgentManager = (options: Partial<AgentManagerOptions> = {}) =>
   promising(
     new AgentManager({
-      piCommand: { command: FAKE_RPC_CHILD },
+      piCommand: FAKE_RPC_COMMAND,
       ...options,
     })
   )
@@ -629,12 +637,14 @@ describe('child process lifecycle', () => {
       yield* removeFile(scope, { force: true, recursive: true })
       const manager = createAgentManager()
       try {
-        expect(
-          manager.spawnAgent({
-            ...spawnParams(parentSessionId, 'worker', 'must not start'),
-            availableModels: AVAILABLE_MODELS.filter((model) => model.id !== 'gpt-5.6-luna'),
-          })
-        ).rejects.toThrow('not authenticated or available')
+        yield* Effect.promise(() =>
+          expect(
+            manager.spawnAgent({
+              ...spawnParams(parentSessionId, 'worker', 'must not start'),
+              availableModels: AVAILABLE_MODELS.filter((model) => model.id !== 'gpt-5.6-luna'),
+            })
+          ).rejects.toThrow('not authenticated or available')
+        )
         expect(yield* existsFile(scope)).toBe(false)
       } finally {
         yield* Effect.promise(() => manager.shutdown())
@@ -707,7 +717,7 @@ describe('child process lifecycle', () => {
         yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold initial')))
         expect(yield* Effect.promise(() => manager.sendMessage(parentSessionId, 'worker', 'one correction'))).toEqual({ delivery: 'steer' })
         expect(manager.getAgentInfo('worker', parentSessionId).followUpUsed).toBe(true)
-        expect(manager.sendMessage(parentSessionId, 'worker', 'another correction')).rejects.toThrow('single follow-up')
+        yield* Effect.promise(() => expect(manager.sendMessage(parentSessionId, 'worker', 'another correction')).rejects.toThrow('single follow-up'))
       } finally {
         yield* Effect.promise(() => manager.shutdown())
         yield* removeFile(scope, { force: true, recursive: true })
@@ -724,7 +734,7 @@ describe('child process lifecycle', () => {
       const parentSessionId = 'interrupted-follow-up'
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
       yield* removeFile(scope, { force: true, recursive: true })
-      const manager = new AgentManager({ piCommand: { command: FAKE_RPC_CHILD } })
+      const manager = new AgentManager({ piCommand: FAKE_RPC_COMMAND })
       try {
         yield* manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold initial'))
         const fiber = yield* Effect.forkChild(manager.sendMessage(parentSessionId, 'worker', 'interrupt me'))
@@ -936,9 +946,9 @@ describe('child process lifecycle', () => {
               return Effect.void
             }
             replaced = true
-            return bunFileSystem.rename(file, displacedLock).pipe(
+            return nodeFileSystem.rename(file, displacedLock).pipe(
               Effect.andThen(
-                bunFileSystem.writeFileString(
+                nodeFileSystem.writeFileString(
                   file,
                   jsonText({
                     createdAt: nowMs(),
@@ -952,7 +962,9 @@ describe('child process lifecycle', () => {
           }),
       })
       try {
-        expect(manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'must not start'))).rejects.toThrow('already being created')
+        yield* Effect.promise(() =>
+          expect(manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'must not start'))).rejects.toThrow('already being created')
+        )
         expect(replaced).toBe(true)
         expect(parseJsonText(yield* readText(lockFile))).toMatchObject({
           pid: process.pid,
@@ -980,9 +992,9 @@ describe('child process lifecycle', () => {
               return Effect.void
             }
             replaced = true
-            return bunFileSystem.rename(file, `${file}.displaced`).pipe(
+            return nodeFileSystem.rename(file, `${file}.displaced`).pipe(
               Effect.andThen(
-                bunFileSystem.writeFileString(
+                nodeFileSystem.writeFileString(
                   file,
                   jsonText({
                     createdAt: nowMs(),
@@ -1076,7 +1088,7 @@ describe('child process lifecycle', () => {
         )
         const starting = manager.getAgentInfo('worker', parentSessionId)
         expect(starting.status).toBe('starting')
-        expect(starting.childProcess?.pid).toBeNumber()
+        expect(starting.childProcess?.pid).toBeTypeOf('number')
         expect(pidAlive(requireChildProcess(starting.childProcess).pid)).toBe(true)
         expect(spawnSettled).toBe(false)
         yield* Effect.promise(() => spawning)
@@ -1124,7 +1136,7 @@ describe('child process lifecycle', () => {
         expect(pidAlive(secondPid)).toBe(false)
         expect(manager.readAgentResponse('worker', parentSessionId).finalResponse).toBe('response:second')
         expect(manager.getAgentInfo('worker', parentSessionId).followUpUsed).toBe(true)
-        expect(manager.sendMessage(parentSessionId, 'worker', 'third')).rejects.toThrow('single follow-up')
+        yield* Effect.promise(() => expect(manager.sendMessage(parentSessionId, 'worker', 'third')).rejects.toThrow('single follow-up'))
         const sessionRecords = (yield* readText(first.sessionFile))
           .trim()
           .split('\n')
@@ -1132,7 +1144,7 @@ describe('child process lifecycle', () => {
         const starts = sessionRecords.filter((entry) => entry.type === 'started')
         expect(new Set(starts.map((entry) => entry.pid)).size).toBe(2)
         for (const start of starts) {
-          expect(start.runtime).toBe('bun')
+          expect(start.runtime).toBe('node')
           expect(start.pid).not.toBe(process.pid)
           expect(start.args).toContain('--no-context-files')
           expect(start.args).toContain('--no-skills')
@@ -1153,7 +1165,7 @@ describe('child process lifecycle', () => {
             PI_SUBAGENT_PROFILE: 'scout',
             PI_SUBAGENT_READONLY: '1',
           })
-          expect(start.env.PI_SUBAGENT_OWNER_TOKEN).toBeString()
+          expect(start.env.PI_SUBAGENT_OWNER_TOKEN).toBeTypeOf('string')
           expect(start.env).not.toHaveProperty('PI_SESSION_ID')
           expect(start.env).not.toHaveProperty('PI_SESSION_FILE')
           expect(start.env).not.toHaveProperty('PI_PROVIDER')
@@ -1190,7 +1202,9 @@ describe('child process lifecycle', () => {
           prettyJsonText({ ...info, agentType: 'retired', allowedTools: ['write'], isReadonly: false, profile: 'retired' })
         )
 
-        expect(manager.sendMessage(parentSessionId, 'worker', 'must not restart')).rejects.toThrow('unavailable profile: retired')
+        yield* Effect.promise(() =>
+          expect(manager.sendMessage(parentSessionId, 'worker', 'must not restart')).rejects.toThrow('unavailable profile: retired')
+        )
         expect(manager.getAgentInfo('worker', parentSessionId).childProcess).toBeUndefined()
       } finally {
         yield* Effect.promise(() => manager.shutdown())
@@ -1425,7 +1439,7 @@ describe('child process lifecycle', () => {
       try {
         yield* Effect.promise(() => manager.spawnAgent(spawnParams(parentSessionId, 'worker', 'hold darwin')))
         const running = manager.getAgentInfo('worker', parentSessionId)
-        expect(running.childProcess?.pid).toBeNumber()
+        expect(running.childProcess?.pid).toBeTypeOf('number')
         expect(pidAlive(requireChildProcess(running.childProcess).pid)).toBe(true)
       } finally {
         yield* Effect.promise(() => manager.shutdown())
@@ -1880,7 +1894,7 @@ describe('completion delivery', () => {
         yield* Effect.promise(() => waitUntil(() => manager.getAgentInfo('fast', parentSessionId).status === 'completed'))
         expect(completions).toEqual([])
         controller.abort(new Error('cancelled'))
-        expect(wait).rejects.toThrow('cancelled')
+        yield* Effect.promise(() => expect(wait).rejects.toThrow('cancelled'))
         yield* Effect.promise(() => waitUntil(() => completions.some((event) => event.agentName === '/fast')))
         expect(completions.filter((event) => event.agentName === '/fast')).toHaveLength(1)
       } finally {
@@ -1911,7 +1925,7 @@ describe('completion delivery', () => {
 
         const settled = manager.getAgentInfo('worker', parentSessionId)
         const rejectedAt = activity.length
-        expect(manager.sendMessage(parentSessionId, 'worker', 'reject restart')).rejects.toThrow('fake prompt rejection')
+        yield* Effect.promise(() => expect(manager.sendMessage(parentSessionId, 'worker', 'reject restart')).rejects.toThrow('fake prompt rejection'))
         expect(manager.getAgentInfo('worker', parentSessionId)).toMatchObject({
           completedAt: settled.completedAt,
           finalResponse: settled.finalResponse,
@@ -1980,7 +1994,7 @@ describe('completion delivery', () => {
         yield* Effect.promise(() => sleep(20))
         expect(secondSettled).toBe(false)
         secondController.abort(new Error('no second completion is coming'))
-        expect(second).rejects.toThrow('no second completion is coming')
+        yield* Effect.promise(() => expect(second).rejects.toThrow('no second completion is coming'))
         yield* Effect.promise(() => waitUntil(() => secondSettled))
       } finally {
         yield* Effect.promise(() => manager.shutdown())
@@ -2069,8 +2083,8 @@ describe('extension completion delivery and status activity', () => {
       }
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
       yield* removeFile(scope, { force: true, recursive: true })
-      const { register: subagentExtension } = yield* Effect.promise(() => import('@/features/sub_agents/index.js'))
-      subagentExtension(asExtensionApi(pi), runtime, { inactivityTimeoutMs: 5000, piCommand: { command: FAKE_RPC_CHILD } })
+      const { register: subagentExtension } = yield* Effect.promise(() => import('#features/sub_agents/index'))
+      subagentExtension(asExtensionApi(pi), runtime, { inactivityTimeoutMs: 5000, piCommand: FAKE_RPC_COMMAND })
       const emit = (name: string, event: unknown = {}): Promise<void> =>
         promiseFromEffect(
           Effect.forEach(handlers.get(name) ?? [], (handler) => Effect.promise(() => Promise.resolve(handler(event, ctx))), {
@@ -2227,7 +2241,7 @@ describe('extension completion delivery and status activity', () => {
         expect(largeForeground.content[0].text.split('\n').length).toBeLessThanOrEqual(2000)
         expect(largeForeground.content[0].text).toContain('Output truncated')
         const { fullOutputPath } = largeForeground.details
-        expect(fullOutputPath).toBeString()
+        expect(fullOutputPath).toBeTypeOf('string')
         if (typeof fullOutputPath !== 'string') {
           throw new Error('expected a full output path')
         }
@@ -2277,7 +2291,7 @@ describe('extension completion delivery and status activity', () => {
         }
         expect(Buffer.byteLength(large.content, 'utf8')).toBeLessThanOrEqual(50 * 1024)
         expect(large.content).toContain('Output truncated')
-        expect(large.details.fullOutputPath).toBeString()
+        expect(large.details.fullOutputPath).toBeTypeOf('string')
         expect(yield* existsFile(large.details.fullOutputPath)).toBe(true)
 
         yield* Effect.promise(() =>

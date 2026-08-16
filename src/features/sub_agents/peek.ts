@@ -16,11 +16,11 @@ import {
 import { Container, matchesKey, truncateToWidth, visibleWidth, type TUI } from '@earendil-works/pi-tui'
 import { DateTime, Effect, Exit, Fiber, Schema, Scope } from 'effect'
 
-import { bunFileSystem } from '@/shared/effect/bun_services.js'
-import { isEmptyString, isNotEmptyString } from '@/shared/utils/predicates.js'
+import { nodeFileSystem } from '#shared/effect/node_services'
+import { isEmptyString, isNotEmptyString } from '#shared/utils/predicates'
 
-import { getSocketPath, isPeekActive, type AgentInfo } from './core.js'
-import { persistedProfileColor } from './profiles.js'
+import { getSocketPath, isPeekActive, type AgentInfo } from './core'
+import { persistedProfileColor } from './profiles'
 
 // oxlint-disable-next-line no-control-regex -- OSC 133 terminal markers contain ESC and BEL.
 const OSC133_PROMPT_MARKER_RE = /\x1b\]133;[ABC]\x07/g
@@ -289,8 +289,8 @@ export class SubagentPeekOverlay {
 
   private loadSession(generation: number): Effect.Effect<boolean> {
     return Effect.gen({ self: this }, function* () {
-      const content = yield* bunFileSystem.readFileString(this.sessionFile)
-      const info = yield* bunFileSystem.stat(this.sessionFile)
+      const content = yield* nodeFileSystem.readFileString(this.sessionFile)
+      const info = yield* nodeFileSystem.stat(this.sessionFile)
       if (Buffer.byteLength(content, 'utf8') !== Number(info.size)) {
         return false
       }
@@ -696,7 +696,7 @@ export class SubagentPeekOverlay {
       ) {
         this.connectSocket()
       }
-      const { size } = yield* bunFileSystem.stat(this.sessionFile)
+      const { size } = yield* nodeFileSystem.stat(this.sessionFile)
       if (Number(size) === this.lastFileSize) {
         return
       }

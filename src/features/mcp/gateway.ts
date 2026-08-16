@@ -6,16 +6,16 @@ import { type FileSystem } from 'effect/FileSystem'
 import { type Path } from 'effect/Path'
 import { Type, type Static } from 'typebox'
 
-import { type AppServices } from '@/shared/effect/app_services.js'
-import { bunPath } from '@/shared/effect/bun_services.js'
-import { ToolFailure } from '@/shared/effect/errors.js'
-import { createStatusChannel } from '@/shared/state/status_bar.js'
-import { type JsonObject, type JsonValue, jsonText } from '@/shared/utils/json.js'
-import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
-import { isRecord } from '@/shared/utils/records.js'
+import { type AppServices } from '#shared/effect/app_services'
+import { ToolFailure } from '#shared/effect/errors'
+import { nodePath } from '#shared/effect/node_services'
+import { createStatusChannel } from '#shared/state/status_bar'
+import { type JsonObject, type JsonValue, jsonText } from '#shared/utils/json'
+import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '#shared/utils/predicates'
+import { isRecord } from '#shared/utils/records'
 
-import { loadGlobalMcpConfig } from './config.js'
-import { boundGatewayOutput } from './output.js'
+import { loadGlobalMcpConfig } from './config'
+import { boundGatewayOutput } from './output'
 import {
   assertOpenableAuthorizationUrl,
   type McpGatewayPolicy,
@@ -23,9 +23,9 @@ import {
   type McpServerMap,
   type McpServerStatus as McpServerStatusValue,
   type McpToolAnnotations,
-} from './types.js'
+} from './types'
 
-const { join } = bunPath
+const { join } = nodePath
 
 const SEARCH_RESULT_LIMIT = 30
 const SEARCH_FETCH_LIMIT = SEARCH_RESULT_LIMIT + 1
@@ -574,7 +574,7 @@ export const McpGatewayLive: Layer.Layer<McpGateway> = Layer.succeed(McpGateway)
    * registering the gateway must not initialize MCP SDK transports or native OAuth storage.
    */
   createManager: (config, { callbacks, pi, policy }) =>
-    import('./manager.js').then(
+    import('./manager').then(
       ({ McpManager: Manager }) =>
         new Manager(config, {
           onStatusChange: callbacks.onStatusChange,

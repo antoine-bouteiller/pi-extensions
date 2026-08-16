@@ -1,4 +1,4 @@
-import { isNotNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
+import { isNotNullOrUndefined, isTrue } from '#shared/utils/predicates'
 
 /**
  * Names the parent Pi owns for itself: inheriting them would make the child resume the parent's

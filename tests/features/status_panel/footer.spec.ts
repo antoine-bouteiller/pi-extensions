@@ -1,9 +1,9 @@
 import { visibleWidth } from '@earendil-works/pi-tui'
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { runtime } from '@tests/utils/runtime.js'
 import { Effect, Path } from 'effect'
 
-import { renderFooterLines as renderFooterLinesWithPath, type FooterState, type FooterTheme } from '@/features/status_panel/footer.js'
+import { renderFooterLines as renderFooterLinesWithPath, type FooterState, type FooterTheme } from '#features/status_panel/footer'
+import { describe, expect, it } from '#tests/utils/effect'
+import { runtime } from '#tests/utils/runtime'
 
 const theme = { fg: (_color: string, text: string) => text }
 const path = runtime.runSync(Path.Path)
@@ -97,7 +97,7 @@ describe('renderFooterLines', () => {
         40
       )
 
-      expect(lines.every((line) => visibleWidth(line) <= 40)).toBeTrue()
+      expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true)
     })
   )
 })

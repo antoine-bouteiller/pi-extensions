@@ -1,8 +1,8 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
-import { type AppRuntime } from '@/shared/effect/app_services.js'
+import { type AppRuntime } from '#shared/effect/app_services'
 
-import { makeKeepAwake, productionDependencies, type CaffeinateDependencies } from './keep_awake.js'
+import { makeKeepAwake, productionDependencies, type CaffeinateDependencies } from './keep_awake'
 
 export const register = (pi: ExtensionAPI, _runtime: AppRuntime, dependencies: CaffeinateDependencies = productionDependencies): void => {
   if (dependencies.isSubagent) {

@@ -1,15 +1,17 @@
 import { randomBytes } from 'node:crypto'
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- NodeHttpServer.make requires a lazy Node HTTP server constructor.
+import { createServer } from 'node:http'
 
-import { BunHttpServer } from '@effect/platform-bun'
+import { NodeHttpServer } from '@effect/platform-node'
 import { UnauthorizedError, type OAuthClientProvider, type OAuthDiscoveryState } from '@modelcontextprotocol/sdk/client/auth.js'
 import { type OAuthClientInformationMixed, type OAuthClientMetadata, type OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js'
 import { Cause, Deferred, Effect, Exit, Scope, Semaphore } from 'effect'
 import { HttpServerRequest, HttpServerResponse } from 'effect/unstable/http'
 
-import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
+import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '#shared/utils/predicates'
 
-import { type CredentialStore, type OAuthCredentialPayload } from './keychain.js'
-import { assertOpenableAuthorizationUrl, McpError, type OAuthConfig } from './types.js'
+import { type CredentialStore, type OAuthCredentialPayload } from './keychain'
+import { assertOpenableAuthorizationUrl, McpError, type OAuthConfig } from './types'
 
 const CALLBACK_TIMEOUT_MS = 5 * 60 * 1000
 const DEFAULT_CALLBACK_PORT = 3334
@@ -73,7 +75,7 @@ const callbackUrl = (options: OAuthCallbackOptions): CallbackUrl => {
 
 const listenerError = (port: number, cause: Cause.Cause<unknown>): McpError => {
   const error = Cause.squash(cause)
-  const message = String(error)
+  const message = `${String(error)} ${error instanceof Error && 'cause' in error ? String(error.cause) : ''}`
   return new McpError({
     cause: error,
     message:
@@ -142,7 +144,7 @@ interface CallbackHandlerOptions {
 
 /**
  * One-shot, loopback-only OAuth callback listener, scoped so the port is released even when the
- * authorization flow fails: the code arrives through the Bun server handler and is handed to the
+ * authorization flow fails: the code arrives through the HTTP server handler and is handed to the
  * waiting fiber through a Deferred.
  */
 export const startOAuthCallback = (options: OAuthCallbackOptions): Effect.Effect<OAuthCallback, McpError, Scope.Scope> =>
@@ -156,7 +158,7 @@ export const startOAuthCallback = (options: OAuthCallbackOptions): Effect.Effect
     })
     const code = yield* Deferred.make<string, McpError>()
     const listenerScope = yield* Effect.acquireRelease(Scope.make(), (scope) => Scope.close(scope, Exit.void))
-    const server = yield* BunHttpServer.make({ hostname: bindHost, port: options.port }).pipe(
+    const server = yield* NodeHttpServer.make(() => createServer(), { host: bindHost, port: options.port }).pipe(
       Effect.provideService(Scope.Scope, listenerScope),
       Effect.catchCause((cause) => Effect.fail(listenerError(options.port, cause)))
     )
@@ -171,6 +173,9 @@ export const startOAuthCallback = (options: OAuthCallbackOptions): Effect.Effect
 
     if (server.address._tag !== 'TcpAddress') {
       return yield* new McpError({ message: 'Could not determine the OAuth callback listener address' })
+    }
+    if (server.address.hostname !== '127.0.0.1' && server.address.hostname !== '::1') {
+      return yield* new McpError({ message: `OAuth callback listener must bind to a loopback address, got ${server.address.hostname}` })
     }
 
     const { signal } = options

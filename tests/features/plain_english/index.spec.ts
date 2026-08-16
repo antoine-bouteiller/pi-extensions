@@ -1,11 +1,11 @@
 import { type AssistantMessage } from '@earendil-works/pi-ai'
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asCommand, asExtensionContext, asNarrowed } from '@tests/utils/casts.js'
-import { createFakePi } from '@tests/utils/fake_pi.js'
-import { runtime } from '@tests/utils/runtime.js'
 import { Effect } from 'effect'
 
-import { register } from '@/features/plain_english/index.js'
+import { register } from '#features/plain_english/index'
+import { asCommand, asExtensionContext, asNarrowed } from '#tests/utils/casts'
+import { describe, expect, it } from '#tests/utils/effect'
+import { createFakePi } from '#tests/utils/fake_pi'
+import { runtime } from '#tests/utils/runtime'
 
 interface CommandHandler {
   handler: (args: string, ctx: unknown) => Promise<void>

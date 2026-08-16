@@ -6,22 +6,30 @@
     "pi-package"
   ],
   "type": "module",
+  "imports": {
+    "#features/*": "./src/features/*.ts",
+    "#config/*": "./src/config/*.ts",
+    "#shared/*": "./src/shared/*.ts",
+    "#tests/*": "./tests/*.ts"
+  },
   "scripts": {
     "prepare": "effect-tsgo patch --typescript --oxlint",
-    "check": "bun run fmt:check && bun run lint && bun run knip && bun run test",
+    "check": "pnpm run fmt:check && pnpm run lint && pnpm run knip && pnpm run test",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
     "knip": "knip",
     "lint": "oxlint --deny-warnings --report-unused-disable-directives",
-    "test": "bun test",
-    "test:coverage": "bun test --coverage --reporter=junit --reporter-outfile=./junit.xml",
+    "test": "vitest run --project app",
+    "test:rules": "vitest run --project rules",
+    "test:coverage": "vitest run --project app --coverage --reporter=default --reporter=junit --outputFile.junit=./junit.xml",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@effect/platform-bun": "4.0.0-rc.109",
+    "@effect/platform-node": "4.0.0-rc.109",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@napi-rs/keyring": "1.3.0",
     "effect": "4.0.0-rc.109",
+    "picomatch": "4.0.5",
     "turndown": "7.2.4"
   },
   "devDependencies": {
@@ -30,17 +38,22 @@
     "@earendil-works/pi-tui": "0.84.2",
     "@effect/language-service": "0.87.2",
     "@effect/tsgo": "0.36.5",
+    "@effect/vitest": "4.0.0-rc.109",
     "@oxlint/plugins": "^1.78.0",
-    "@types/bun": "1.3.14",
     "@types/node": "26.2.0",
+    "@types/picomatch": "4.0.3",
     "@types/turndown": "5.0.6",
+    "@vitest/coverage-v8": "4.1.10",
+    "jiti": "2.7.0",
     "knip": "6.32.2",
     "lefthook": "^2.1.10",
-    "oxfmt": "0.62.0",
-    "oxlint": "1.77.0",
+    "oxfmt": "0.63.0",
+    "oxlint": "1.78.0",
     "oxlint-tsgolint": "7.0.2001",
     "typebox": "1.3.14",
-    "typescript": "7.0.2"
+    "typescript": "7.0.2",
+    "vitest": "4.1.10",
+    "zod": "4.4.3"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
@@ -48,7 +61,10 @@
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
-  "packageManager": "bun@1.3.14",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "packageManager": "pnpm@11.21.0",
   "pi": {
     "extensions": [
       "./src/index.ts"

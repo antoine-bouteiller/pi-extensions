@@ -33,7 +33,7 @@ times.
 | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `[KD-1]` Runtime instances     | One lazily-memoized process-wide `ProcessRuntime`, threaded to every `register(pi, runtime)`                                                                                 | `ManagedRuntime.make` memoizes layers by reference, so a second runtime silently duplicates `StatusBar`, `AgentActivity`, and `McpGateway` — state that features assume is shared (`src/config/runtime.ts:11`)      |
 | `[KD-2]` Boundary location     | Only `src/features/<name>/index.ts` may call `pi.registerTool`/`registerCommand`/`pi.on` or a bridge helper                                                                  | Confines Pi's callback signatures to one file per feature, which is why `effecttsgo/async-function` can be relaxed there alone (`oxlint.config.ts:30`); siblings then have a single return type, `Effect`           |
-| `[KD-3]` Tool bridging         | `makeToolExecutor` is mandatory, never an inline `runtime.runPromise`                                                                                                        | It bundles three easily-forgotten steps — suspend before dispatch, pass `{ signal }` to `runPromise`, provide `PiCtx`/`Ui` per call — and every inline bridge in the repo today drops at least one                  |
+| `[KD-3]` Tool bridging         | `makeToolExecutor` is mandatory, never an inline `runtime.runPromise`                                                                                                        | It combines three easily-forgotten steps — suspend before dispatch, pass `{ signal }` to `runPromise`, provide `PiCtx`/`Ui` per call — and every inline bridge in the repo today drops at least one                 |
 | `[KD-4]` Event bridging        | `makeEventHandler`, deliberately generic in its error channel                                                                                                                | Some events must keep rejecting so Pi surfaces the failure (`rules` propagates discovery failures) while others are best-effort; fixing the channel in the helper would force one policy on both                    |
 | `[KD-5]` Command bridging      | Add `makeCommandHandler`, typed to Pi's real command signature                                                                                                               | Commands need the same per-invocation `PiCtx`/`Ui` provisioning as tools, but four of them bridge inline today with no shared helper to reach for                                                                   |
 | `[KD-6]` `Effect.runSync`      | Permitted only for in-memory state inside synchronous Pi/TUI callbacks                                                                                                       | Those callbacks must return a value synchronously and have no way to handle a defect; restricting the effect to non-suspending, non-failing state operations is what makes the bridge safe (`oxlint.config.ts:103`) |
@@ -42,7 +42,7 @@ times.
 | `[KD-9]` Error channel         | Tagged errors in feature modules, mapped to `ToolFailure` at the boundary; `orDie` for broken invariants only; every `ignore`/`ignoreCause`/`orElseSucceed` carries a reason | Mapping early destroys the discrimination intermediate code needs; undocumented swallows convert Effect's main advantage back into `catch {}`                                                                       |
 | `[KD-10]` Context lifetime     | `pi` may be captured at registration; `ExtensionContext` is never stored                                                                                                     | `ExtensionAPI` is process-stable, `ExtensionContext` is per-invocation — capturing it freezes the first call's context for every later one (`src/shared/effect/runtime.ts:9`)                                       |
 | `[KD-11]` Cancellation         | Tool bodies receive `(params)` only and reach the signal through `withAbortSignal`                                                                                           | The fiber's signal is the one that interruption actually drives; handing the host signal to bodies invites `signal.aborted` polling and a second, unrelated controller                                              |
-| `[KD-12]` Test boundary        | Feature logic tested as `Effect` under `it.effect`/`it.scoped` with `TestClock`; registration tested through the fake Pi                                                     | Virtual time keeps lifecycle tests deterministic, and driving the registered callback is the only way to catch a `[KD-3]` regression                                                                                |
+| `[KD-12]` Test boundary        | Feature logic tested as `Effect` under `it.effect` with `TestClock`; registration tested through the fake Pi                                                                 | Virtual time keeps lifecycle tests deterministic, and driving the registered callback is the only way to catch a `[KD-3]` regression                                                                                |
 | `[KD-13]` Existing divergences | Recorded in a conformance table, not migrated by this spec                                                                                                                   | Fifteen features' worth of rewriting is a separate, sequenced change; naming the divergences is what stops them propagating in the meantime                                                                         |
 | `[KD-14]` Enforcement          | An oxlint rule bans `Effect.run*` and `pi.register*` outside `src/features/*/index.ts`                                                                                       | `[PI-5]` only holds if divergence is detected at the moment it is written; a review rule that fifteen features already violate will not survive the sixteenth                                                       |
 
@@ -74,7 +74,7 @@ times.
 
 ## 6. Caveats
 
-- `[C-1]` `src/shared/effect/bun_services.ts:12` builds a second `ManagedRuntime` and
+- `[C-1]` `src/shared/effect/node_services.ts:12` builds a second `ManagedRuntime` and
   resolves `FileSystem`, `Path`, and `ChildProcessSpawner` eagerly, because that code runs
   before the process runtime exists. It is a deliberate exception to `[KD-1]` and is
   intended to remain the only one.
@@ -124,14 +124,14 @@ times.
 | Fiber ownership      | convention, no module                               | Bind every background fiber to a scope or a handle                                          | `Effect.forkIn`, `Effect.ensuring`, tracked `Fiber` refs                                         |
 | Feature registration | `src/features/*/index.ts`, `src/config/features.ts` | Wire Pi to Effect once per feature, in registry order                                       | `register(pi, runtime)`, `registerFeatures`                                                      |
 | Boundary lint rule   | `oxlint.config.ts`                                  | Fail the build when a crossing happens outside a bridge helper                              | `no-restricted-syntax` overrides keyed on `src/features/*/index.ts`                              |
-| Test boundary        | `tests/utils/{bun_effect,fake_pi,runtime}.ts`       | Exercise Effect logic under virtual time and registration through a fake host               | `it.effect`, `it.scoped`, `it.live`, `createFakePi`, `testRuntime`                               |
+| Test boundary        | `tests/utils/{effect,fake_pi,runtime}.ts`           | Exercise Effect logic under virtual time and registration through a fake host               | `it.effect`, `it.live`, `createFakePi`, `testRuntime`                                            |
 
 ## 8. Detailed Design
 
 ### 8.1 Process runtime
 
 `getOrCreateProcessRuntime()` (`src/config/runtime.ts:33`) memoizes one
-`ManagedRuntime<ProcessServices, never>` built from `AppLayer` — Bun filesystem and path,
+`ManagedRuntime<ProcessServices, never>` built from `AppLayer` — `NodeFileSystem`, `NodePath`,
 `FetchHttpClient`, `StatusBarLive`, `AgentActivityLive`, `McpGatewayLive`. `src/index.ts`
 calls it once and hands the result to `registerFeatures(pi, runtime)`.
 
@@ -270,13 +270,14 @@ mistaken for precedent. Line numbers are as of `16020a5` (`[C-4]`).
 | `[KD-8]` | Runtime re-entered from inside a running effect                                                                                 | `src/features/safe_rm/remove.ts:371`                                                                                                                                                                                                                                                                               |
 | `[KD-9]` | Undocumented `orDie`                                                                                                            | `src/features/claude_code/discovery.ts:254`, `src/features/sub_agents/core.ts:480`, `:722`, `:877`                                                                                                                                                                                                                 |
 | `[KD-9]` | Undocumented `ignoreCause`                                                                                                      | `src/features/status_panel/provider.ts:50`, `src/features/sub_agents/peek.ts:287`, `src/features/sub_agents/core.ts:2181`                                                                                                                                                                                          |
-| `[KD-1]` | A second `ManagedRuntime`, resolved eagerly — the sanctioned exception of `[C-1]`                                               | `src/shared/effect/bun_services.ts:12`                                                                                                                                                                                                                                                                             |
+| `[KD-1]` | A second `ManagedRuntime`, resolved eagerly — the sanctioned exception of `[C-1]`                                               | `src/shared/effect/node_services.ts:12`                                                                                                                                                                                                                                                                            |
 
 ### 8.9 Test boundary
 
-- Feature logic is tested as `Effect` values under `it.effect`/`it.scoped`, which supply
-  `TestClock` (`tests/utils/bun_effect.ts:14`). `it.live` exists for cases that genuinely
-  need a real clock and is the only place `Effect.sleep` may wait.
+- Feature logic is tested as `Effect` values under `it.effect` from `@effect/vitest`, which is
+  already scoped and supplies `TestClock` (`tests/utils/effect.ts`). `@effect/vitest` has no
+  `it.scoped`; `it.live` exists for cases that genuinely need a real clock and is the only place
+  `Effect.sleep` may wait.
 - Registration is tested through `createFakePi` (`tests/utils/fake_pi.ts:27`): events are
   dispatched with `emit()`, and registered tools and commands are captured in maps and
   invoked by the spec with the argument shape Pi uses.

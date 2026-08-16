@@ -1,6 +1,6 @@
 import { type ThemeColor } from '@earendil-works/pi-coding-agent'
 
-import { isEmptyString } from '@/shared/utils/predicates.js'
+import { isEmptyString } from '#shared/utils/predicates'
 
 export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number]

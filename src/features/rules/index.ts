@@ -1,9 +1,9 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
-import { type AppRuntime } from '@/shared/effect/app_services.js'
-import { makeEventHandler } from '@/shared/effect/runtime.js'
+import { type AppRuntime } from '#shared/effect/app_services'
+import { makeEventHandler } from '#shared/effect/runtime'
 
-import { defaultRulesEnvironment, makeRulesHandlers, type RulesEnvironment } from './rules.js'
+import { defaultRulesEnvironment, makeRulesHandlers, type RulesEnvironment } from './rules'
 
 export const register = (pi: ExtensionAPI, runtime: AppRuntime, environment: RulesEnvironment = defaultRulesEnvironment()): void => {
   const handlers = makeRulesHandlers(environment)

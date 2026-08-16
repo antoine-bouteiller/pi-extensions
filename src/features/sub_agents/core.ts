@@ -18,14 +18,14 @@ import {
   withHeldFile,
   type HeldFile,
   type HostDirectoryEntry,
-} from '@/shared/effect/bun_host_file_system.js'
-import { bunChildProcessSpawner, bunFileSystem, bunPath, type BunChildProcessSpawner } from '@/shared/effect/bun_services.js'
-import { azureQuota, consumeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
-import { jsonText, parseJsonText, prettyJsonText, type JsonObject } from '@/shared/utils/json.js'
-import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
-import { isRecord } from '@/shared/utils/records.js'
+} from '#shared/effect/node_host_file_system'
+import { nodeChildProcessSpawner, nodeFileSystem, nodePath, type NodeChildProcessSpawner } from '#shared/effect/node_services'
+import { azureQuota, consumeSubagentAzureQuota } from '#shared/state/azure_quota'
+import { jsonText, parseJsonText, prettyJsonText, type JsonObject } from '#shared/utils/json'
+import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '#shared/utils/predicates'
+import { isRecord } from '#shared/utils/records'
 
-import { buildChildEnv } from './child_env.js'
+import { buildChildEnv } from './child_env'
 import {
   nodeProcessProbe,
   processAlive,
@@ -33,7 +33,7 @@ import {
   processOwnerIsActive,
   type ProcessInspectorApi,
   type ProcessSnapshot,
-} from './process_ownership.js'
+} from './process_ownership'
 import {
   AGENT_CONFIGS,
   isClaudeModelId,
@@ -44,11 +44,11 @@ import {
   type AgentProfileName,
   type AvailableModel,
   type ThinkingLevel,
-} from './profiles.js'
-import { consumeFirstMatchingMailboxEvent, RpcJsonlDecoder } from './rpc.js'
+} from './profiles'
+import { consumeFirstMatchingMailboxEvent, RpcJsonlDecoder } from './rpc'
 
-const { dirname, isAbsolute, join, resolve: resolvePath, sep } = bunPath
-export { consumeFirstMatchingMailboxEvent, MAX_RPC_FRAME_CHARS, RpcJsonlDecoder } from './rpc.js'
+const { dirname, isAbsolute, join, resolve: resolvePath, sep } = nodePath
+export { consumeFirstMatchingMailboxEvent, MAX_RPC_FRAME_CHARS, RpcJsonlDecoder } from './rpc'
 
 const PACKAGE_BASENAME = 'pi-codex-subagents'
 const SUBAGENT_DIR = join(getAgentDir(), PACKAGE_BASENAME)
@@ -302,7 +302,7 @@ export interface AgentManagerOptions {
   beforeReleaseTaskLockRemoval?: (lockFile: string) => Effect.Effect<void, Cause.UnknownError>
   /** Override process identity inspection so tests can drive Linux/Darwin/Windows branches on any host. */
   processInspector?: ProcessInspectorApi
-  processSpawner?: BunChildProcessSpawner
+  processSpawner?: NodeChildProcessSpawner
   afterProcessSpawn?: () => Effect.Effect<void>
   /** Override the platform used to choose between POSIX signals and Windows taskkill for tests. */
   platform?: NodeJS.Platform
@@ -455,7 +455,7 @@ const normalizeConfig = (value: unknown): SubagentConfig => {
 
 /** An absent or malformed config file means defaults; an unreadable one is a real failure and must not be hidden. */
 const loadSubagentConfigEffect = (): Effect.Effect<SubagentConfig> =>
-  bunFileSystem.readFileString(CONFIG_PATH).pipe(
+  nodeFileSystem.readFileString(CONFIG_PATH).pipe(
     Effect.matchEffect({
       onFailure: (error) => (isMissingFileError(error) ? Effect.succeed<SubagentConfig>({}) : Effect.die(error)),
       onSuccess: (content) => Effect.try(() => normalizeConfig(parseJsonText(content))).pipe(Effect.orElseSucceed((): SubagentConfig => ({}))),
@@ -478,10 +478,10 @@ export const getRunsDir = (): string => configuredRunsDir
 
 const ensurePrivateDirEffect = (directory: string, enforceMode = false): Effect.Effect<void> =>
   Effect.gen(function* () {
-    const existed = yield* bunFileSystem.exists(directory)
-    yield* bunFileSystem.makeDirectory(directory, { mode: 0o700, recursive: true })
+    const existed = yield* nodeFileSystem.exists(directory)
+    yield* nodeFileSystem.makeDirectory(directory, { mode: 0o700, recursive: true })
     if (process.platform !== 'win32' && (enforceMode || !existed)) {
-      yield* bunFileSystem.chmod(directory, 0o700)
+      yield* nodeFileSystem.chmod(directory, 0o700)
     }
   }).pipe(Effect.orDie)
 
@@ -506,7 +506,7 @@ const isAgentArtifact = (name: string, agentId: string): boolean =>
   new RegExp(`^${agentId}[.]info[.]json[.][0-9]+[.]tmp$`).test(name)
 
 const fileMtimeMs = (path: string): Effect.Effect<number> =>
-  bunFileSystem.stat(path).pipe(
+  nodeFileSystem.stat(path).pipe(
     Effect.map((info) => Option.match(info.mtime, { onNone: () => 0, onSome: (mtime) => mtime.getTime() })),
     Effect.orElseSucceed(() => 0)
   )
@@ -515,7 +515,7 @@ const latestArtifactMtime = (directory: string, agentEntries: HostDirectoryEntry
   Effect.all(agentEntries.map((artifact) => fileMtimeMs(join(directory, artifact.name)))).pipe(Effect.map((mtimes) => Math.max(0, ...mtimes)))
 
 const removeAgentArtifacts = (directory: string, artifacts: HostDirectoryEntry[]): Effect.Effect<boolean> =>
-  Effect.all(artifacts.map((artifact) => Effect.exit(bunFileSystem.remove(join(directory, artifact.name), { force: true })))).pipe(
+  Effect.all(artifacts.map((artifact) => Effect.exit(nodeFileSystem.remove(join(directory, artifact.name), { force: true })))).pipe(
     Effect.map((exits) => exits.some((exit) => Exit.isFailure(exit)))
   )
 
@@ -543,7 +543,7 @@ const pruneAgentEntry = ({ directory, entries, entry, cutoff }: PruneAgentEntryP
     if (yield* removeAgentArtifacts(directory, otherArtifacts)) {
       return
     }
-    yield* bunFileSystem.remove(join(directory, entry.name), { force: true }).pipe(Effect.ignore)
+    yield* nodeFileSystem.remove(join(directory, entry.name), { force: true }).pipe(Effect.ignore)
   })
 
 const pruneStaleTaskLock = (directory: string, entry: HostDirectoryEntry, cutoff: number): Effect.Effect<void> =>
@@ -568,7 +568,7 @@ const pruneScope = (directory: string, cutoff: number): Effect.Effect<void> =>
       (entry) => pruneStaleTaskLock(directory, entry, cutoff),
       { discard: true }
     )
-    yield* bunFileSystem.remove(directory).pipe(Effect.ignore)
+    yield* nodeFileSystem.remove(directory).pipe(Effect.ignore)
   }).pipe(Effect.ignore)
 
 const pruneOutputFiles = (target: string, cutoff: number): Effect.Effect<void> =>
@@ -580,7 +580,7 @@ const pruneOutputFiles = (target: string, cutoff: number): Effect.Effect<void> =
           Effect.gen(function* () {
             const outputPath = join(target, output.name)
             if ((yield* fileMtimeMs(outputPath)) < cutoff) {
-              yield* bunFileSystem.remove(outputPath, { force: true }).pipe(Effect.ignore)
+              yield* nodeFileSystem.remove(outputPath, { force: true }).pipe(Effect.ignore)
             }
           }),
         { discard: true }
@@ -648,7 +648,7 @@ const TaskLockOwnerSchema = Type.Object({
 
 const taskLockIsActive = (parentSessionId: string, taskName: string): Effect.Effect<boolean> =>
   Effect.gen(function* () {
-    const content = yield* bunFileSystem.readFileString(taskLockFile(parentSessionId, taskName))
+    const content = yield* nodeFileSystem.readFileString(taskLockFile(parentSessionId, taskName))
     // A half-written lock is a normal race, not a defect: `Effect.try` keeps it a typed failure the fallback below recovers.
     const owner = yield* Effect.try(() => parseJsonText(content))
     return Check(TaskLockOwnerSchema, owner) && (yield* processOwnerIsActive(owner))
@@ -716,12 +716,12 @@ const saveInfo = (info: AgentInfo): Effect.Effect<void> =>
   infoWrites
     .withPermits(1)(
       Effect.gen(function* () {
-        yield* bunFileSystem.makeDirectory(dirname(info.infoFile), { mode: 0o700, recursive: true })
+        yield* nodeFileSystem.makeDirectory(dirname(info.infoFile), { mode: 0o700, recursive: true })
         info.updatedAt = yield* Clock.currentTimeMillis
         const snapshot = structuredClone(info)
         const temporary = `${info.infoFile}.${process.pid}.tmp`
-        yield* bunFileSystem.writeFileString(temporary, prettyJsonText(snapshot), { mode: 0o600 })
-        yield* bunFileSystem.rename(temporary, info.infoFile)
+        yield* nodeFileSystem.writeFileString(temporary, prettyJsonText(snapshot), { mode: 0o600 })
+        yield* nodeFileSystem.rename(temporary, info.infoFile)
         infoCache.set(info.infoFile, snapshot)
       })
     )
@@ -783,14 +783,14 @@ const isMissingFileError = (error: unknown): boolean => {
 }
 
 const readInfoFileEffect = (file: string) =>
-  bunFileSystem.readFileString(file).pipe(
+  nodeFileSystem.readFileString(file).pipe(
     Effect.map((content) => parseInfoFile(file, content)),
     Effect.tap((info) => Effect.sync(() => publishInfoSnapshot(file, info))),
     Effect.catch((error) => (isMissingFileError(error) ? Effect.as(Effect.void, undefined as AgentInfo | undefined) : Effect.die(error)))
   )
 
 const readInfos = (directory: string) =>
-  bunFileSystem.readDirectory(directory).pipe(
+  nodeFileSystem.readDirectory(directory).pipe(
     Effect.flatMap((names) =>
       Effect.forEach(
         names.filter((name) => name.endsWith('.info.json')),
@@ -878,8 +878,8 @@ const markActive = (agentId: string, kind: 'active' | 'peek', marker: PeekMarker
   Effect.gen(function* () {
     const file = markerPath(agentId, kind)
     const temporary = `${file}.${marker.token}.tmp`
-    yield* bunFileSystem.writeFileString(temporary, prettyJsonText(marker), { mode: 0o600 })
-    yield* bunFileSystem.rename(temporary, file)
+    yield* nodeFileSystem.writeFileString(temporary, prettyJsonText(marker), { mode: 0o600 })
+    yield* nodeFileSystem.rename(temporary, file)
   }).pipe(Effect.orDie)
 
 const clearActive = (agentId: string, kind: 'active' | 'peek', owner?: Pick<PeekMarker, 'pid' | 'token'>): Effect.Effect<void> => {
@@ -1026,9 +1026,9 @@ class SessionLogger {
     }
     const line = `${JSON.stringify(loggedEntry)}\n`
     return this.writes.withPermits(1)(
-      bunFileSystem
+      nodeFileSystem
         .makeDirectory(dirname(this.file), { mode: 0o700, recursive: true })
-        .pipe(Effect.andThen(bunFileSystem.writeFileString(this.file, line, { flag: 'a', mode: 0o600 })), Effect.ignore)
+        .pipe(Effect.andThen(nodeFileSystem.writeFileString(this.file, line, { flag: 'a', mode: 0o600 })), Effect.ignore)
     )
   }
   info(category: string, message: string, data?: unknown): Effect.Effect<void> {
@@ -1075,7 +1075,7 @@ class EventBroadcaster {
             yield* markActive(this.agentId, 'active', this.marker)
             const socketPath = getSocketPath(this.agentId)
             if (process.platform !== 'win32') {
-              yield* bunFileSystem.remove(socketPath, { force: true }).pipe(Effect.ignore)
+              yield* nodeFileSystem.remove(socketPath, { force: true }).pipe(Effect.ignore)
             }
             this.openSocket(socketPath)
           })
@@ -1328,7 +1328,7 @@ const getPiCommand = (override?: AgentManagerOptions['piCommand']) => {
       return { command: configuredPiBin, prefixArgs: [] }
     }
     const [, currentEntry] = process.argv
-    return isNotEmptyString(currentEntry) && (yield* bunFileSystem.exists(currentEntry).pipe(Effect.orElseSucceed(() => false)))
+    return isNotEmptyString(currentEntry) && (yield* nodeFileSystem.exists(currentEntry).pipe(Effect.orElseSucceed(() => false)))
       ? { command: process.execPath, prefixArgs: [currentEntry] }
       : { command: process.execPath, prefixArgs: [] }
   })
@@ -1347,7 +1347,7 @@ const targetMatches = (event: AgentCompletionEvent, targets?: Set<string>): bool
 
 const latestContextTokens = (sessionFile: string): Effect.Effect<number | undefined> =>
   Effect.gen(function* () {
-    const entries = parseSessionEntries(yield* bunFileSystem.readFileString(sessionFile))
+    const entries = parseSessionEntries(yield* nodeFileSystem.readFileString(sessionFile))
     migrateSessionEntries(entries)
     const sessionEntries = entries.filter((entry): entry is SessionEntry => entry.type !== 'session')
     const byId = new Map(sessionEntries.map((entry) => [entry.id, entry]))
@@ -1459,7 +1459,7 @@ export class AgentManager {
   private shuttingDown?: Deferred.Deferred<void>
   private readonly inspector: ProcessInspectorApi
   private readonly platform: NodeJS.Platform
-  private readonly processSpawner: BunChildProcessSpawner
+  private readonly processSpawner: NodeChildProcessSpawner
   private ownerProcessIdentity: string | undefined
   private readonly reconciliation: Fiber.Fiber<void>
   /** Launches and terminations are forked here so an aborted caller leaves the child it started alone. */
@@ -1472,7 +1472,7 @@ export class AgentManager {
     this.options = options
     this.inspector = options.processInspector ?? processInspectorFromProbe(nodeProcessProbe)
     this.platform = options.platform ?? process.platform
-    this.processSpawner = options.processSpawner ?? bunChildProcessSpawner
+    this.processSpawner = options.processSpawner ?? nodeChildProcessSpawner
     this.reconciliation = Effect.runFork(this.initialize())
   }
 
@@ -2086,7 +2086,7 @@ export class AgentManager {
           live.info = persisted
           live.finalizedRun = true
         }
-        if (!live.expectedExit && !live.finalizedRun && !FINAL_STATUSES.has(live.info.status)) {
+        if ((!live.expectedExit || live.streamError !== undefined) && !live.finalizedRun && !FINAL_STATUSES.has(live.info.status)) {
           yield* this.markFailed(live, error?.message ?? 'Child Pi process exited unexpectedly.')
         }
         /*
@@ -3142,6 +3142,6 @@ export const writeFullToolOutput = (content: string) =>
     const directory = join(getRunsDir(), '_outputs')
     yield* ensurePrivateDirEffect(directory, true)
     const file = join(directory, `${yield* Clock.currentTimeMillis}-${randomUUID()}.txt`)
-    yield* bunFileSystem.writeFileString(file, content)
+    yield* nodeFileSystem.writeFileString(file, content)
     return file
   })

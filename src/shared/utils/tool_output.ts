@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os'
 import { formatSize, truncateHead, truncateTail } from '@earendil-works/pi-coding-agent'
 import { type Cause, Effect, Option } from 'effect'
 
-import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
-import { unknownError } from '@/shared/effect/errors.js'
+import { unknownError } from '#shared/effect/errors'
+import { nodeFileSystem, nodePath } from '#shared/effect/node_services'
 
 export interface Truncation {
   content: string
@@ -59,16 +59,16 @@ const reapExpiredSpills = (prefix: string): Effect.Effect<void> =>
   Effect.gen(function* () {
     const root = tmpdir()
     const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis)
-    const entries = yield* bunFileSystem.readDirectory(root)
+    const entries = yield* nodeFileSystem.readDirectory(root)
     yield* Effect.forEach(
       entries.filter((entry) => entry.startsWith(prefix)),
       (entry) => {
-        const path = bunPath.join(root, entry)
-        return bunFileSystem.stat(path).pipe(
+        const path = nodePath.join(root, entry)
+        return nodeFileSystem.stat(path).pipe(
           Effect.flatMap((info) => {
             const modified = Option.getOrUndefined(info.mtime)
             return modified !== undefined && now - modified.getTime() > SPILL_TTL_MS
-              ? bunFileSystem.remove(path, { force: true, recursive: true })
+              ? nodeFileSystem.remove(path, { force: true, recursive: true })
               : Effect.void
           }),
           Effect.ignore
@@ -85,11 +85,11 @@ export const writePrivateTempFileEffect = (
 ): Effect.Effect<string, Cause.UnknownError> =>
   Effect.gen(function* () {
     yield* reapExpiredSpills(prefix)
-    const directory = yield* bunFileSystem.makeTempDirectory({ prefix })
-    const path = bunPath.join(directory, filename)
-    yield* bunFileSystem
+    const directory = yield* nodeFileSystem.makeTempDirectory({ prefix })
+    const path = nodePath.join(directory, filename)
+    yield* nodeFileSystem
       .writeFileString(path, content, { mode: 0o600 })
-      .pipe(Effect.onError(() => bunFileSystem.remove(directory, { force: true, recursive: true }).pipe(Effect.ignore)))
+      .pipe(Effect.onError(() => nodeFileSystem.remove(directory, { force: true, recursive: true }).pipe(Effect.ignore)))
     return path
   }).pipe(Effect.mapError(unknownError))
 

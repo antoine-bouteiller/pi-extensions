@@ -1,12 +1,12 @@
 import { tmpdir } from 'node:os'
 
-import { describe, expect, it, promiseFromEffect } from '@tests/utils/bun_effect.js'
-import { asExtensionContext, asNarrowed } from '@tests/utils/casts.js'
 import { Deferred, Effect, Fiber, FileSystem, Option, Path } from 'effect'
 
-import { loadConfig, type PlainEnglishConfig } from '@/features/plain_english/config.js'
-import { makeMarkdownCommand } from '@/features/plain_english/markdown.js'
-import { PiCtx, Ui, type UiApi } from '@/shared/effect/pi_services.js'
+import { loadConfig, type PlainEnglishConfig } from '#features/plain_english/config'
+import { makeMarkdownCommand } from '#features/plain_english/markdown'
+import { PiCtx, Ui, type UiApi } from '#shared/effect/pi_services'
+import { asExtensionContext, asNarrowed } from '#tests/utils/casts'
+import { describe, expect, it, promiseFromEffect } from '#tests/utils/effect'
 
 const marker = '<!-- plain-english:rewritten -->'
 const modelRef = { modelId: 'rewriter', provider: 'test' }
@@ -63,7 +63,7 @@ const run = (args: string, ctx: ReturnType<typeof contextWith>, ui: UiApi, comma
   command(args, ctx).pipe(Effect.provideService(PiCtx, ctx), Effect.provideService(Ui, ui))
 
 describe('plain_english markdown command', () => {
-  it.scoped('writes a sibling Markdown file, retaining frontmatter and source bytes', () =>
+  it.effect('writes a sibling Markdown file, retaining frontmatter and source bytes', () =>
     Effect.gen(function* () {
       const { directory, fs, path } = yield* workspace
       const source = path.join(directory, 'guide.md')
@@ -80,7 +80,7 @@ describe('plain_english markdown command', () => {
     })
   )
 
-  it.scoped('overwrites once with a marker and skips a second pass', () =>
+  it.effect('overwrites once with a marker and skips a second pass', () =>
     Effect.gen(function* () {
       const { directory, fs, path } = yield* workspace
       const source = path.join(directory, 'guide.md')
@@ -102,7 +102,7 @@ describe('plain_english markdown command', () => {
     })
   )
 
-  it.scoped('preserves a 0600 source mode for sibling and overwrite output', () =>
+  it.effect('preserves a 0600 source mode for sibling and overwrite output', () =>
     Effect.gen(function* () {
       const { directory, fs, path } = yield* workspace
       const sibling = path.join(directory, 'sibling.md')
@@ -120,7 +120,7 @@ describe('plain_english markdown command', () => {
     })
   )
 
-  it.scoped('does not write output for resolved error or aborted completions', () =>
+  it.effect('does not write output for resolved error or aborted completions', () =>
     Effect.gen(function* () {
       const { directory, fs, path } = yield* workspace
       for (const stopReason of ['error', 'aborted'] as const) {
@@ -138,7 +138,7 @@ describe('plain_english markdown command', () => {
     })
   )
 
-  it.scoped('aborts an overwrite when the source changes while the rewrite is pending', () =>
+  it.effect('aborts an overwrite when the source changes while the rewrite is pending', () =>
     Effect.gen(function* () {
       const { directory, fs, path } = yield* workspace
       const source = path.join(directory, 'guide.md')
@@ -164,7 +164,7 @@ describe('plain_english markdown command', () => {
     })
   )
 
-  it.scoped('rejects invalid, short, and unconfigured requests without writing', () =>
+  it.effect('rejects invalid, short, and unconfigured requests without writing', () =>
     Effect.gen(function* () {
       const { directory, fs, path } = yield* workspace
       const source = path.join(directory, 'short.md')
@@ -188,7 +188,7 @@ describe('plain_english markdown command', () => {
     })
   )
 
-  it.scoped('reports rewrite failures without modifying the source or writing output', () =>
+  it.effect('reports rewrite failures without modifying the source or writing output', () =>
     Effect.gen(function* () {
       const { directory, fs, path } = yield* workspace
       const source = path.join(directory, 'guide.md')

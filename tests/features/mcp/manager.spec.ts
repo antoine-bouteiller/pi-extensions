@@ -1,3 +1,4 @@
+import { setTimeout } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 
 import { DEFAULT_MAX_BYTES } from '@earendil-works/pi-coding-agent'
@@ -5,19 +6,19 @@ import { UnauthorizedError, type OAuthClientProvider } from '@modelcontextprotoc
 import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { type Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { type JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
-import { makeAbortController } from '@tests/utils/abort_controller.js'
-import { promiseFromEffect, tryEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asError } from '@tests/utils/casts.js'
-import { deferred } from '@tests/utils/deferred.js'
-import { httpGet } from '@tests/utils/http.js'
-import { freeLoopbackPort } from '@tests/utils/loopback_port.js'
 import { Effect, Fiber, FileSystem, Path } from 'effect'
 
-import { readonlyMcpPolicy, type McpOperationOptions, type McpSearchOptions } from '@/features/mcp/gateway.js'
-import { KeychainCredentialError, type CredentialStore } from '@/features/mcp/keychain.js'
-import { McpManager, McpManagerService, mcpManagerLayer } from '@/features/mcp/manager.js'
-import { type McpGatewayPolicy, type McpServerMap } from '@/features/mcp/types.js'
-import { type JsonObject, jsonText } from '@/shared/utils/json.js'
+import { readonlyMcpPolicy, type McpOperationOptions, type McpSearchOptions } from '#features/mcp/gateway'
+import { KeychainCredentialError, type CredentialStore } from '#features/mcp/keychain'
+import { McpManager, McpManagerService, mcpManagerLayer } from '#features/mcp/manager'
+import { type McpGatewayPolicy, type McpServerMap } from '#features/mcp/types'
+import { type JsonObject, jsonText } from '#shared/utils/json'
+import { makeAbortController } from '#tests/utils/abort_controller'
+import { asError } from '#tests/utils/casts'
+import { deferred } from '#tests/utils/deferred'
+import { promiseFromEffect, tryEffect, describe, expect, it } from '#tests/utils/effect'
+import { httpGet } from '#tests/utils/http'
+import { freeLoopbackPort } from '#tests/utils/loopback_port'
 
 class FakeTransport {
   onclose?: () => void
@@ -298,14 +299,14 @@ describe('MCP manager', () => {
             })
           ),
       })
-      expect(unauthorized.manager.list('remote')).rejects.toThrow()
+      yield* Effect.promise(() => expect(unauthorized.manager.list('remote')).rejects.toThrow())
       expect(unauthorized.calls.connects).toEqual(['streamable-http', 'streamable-http'])
 
       const broken = harness({
         config: { remote: { type: 'http', url: 'https://example.test/mcp' } },
         connect: () => promiseFromEffect(Effect.fail(new StreamableHTTPError(500, 'broken'))),
       })
-      expect(broken.manager.list('remote')).rejects.toThrow()
+      yield* Effect.promise(() => expect(broken.manager.list('remote')).rejects.toThrow())
       expect(broken.calls.connects).toEqual(['streamable-http'])
     })
   )
@@ -487,8 +488,10 @@ describe('MCP manager', () => {
       yield* Effect.promise(() => fixture.manager.call('linear_get_issue', {}))
 
       for (const denied of ['create_issue', 'dangerous_read', 'mystery']) {
-        expect(fixture.manager.describe(denied, { server: 'linear' })).rejects.toThrow('read-only policy')
-        expect(fixture.manager.call(denied, {}, { server: 'linear' })).rejects.toThrow(`MCP tool "${denied}" on server "linear"`)
+        yield* Effect.promise(() => expect(fixture.manager.describe(denied, { server: 'linear' })).rejects.toThrow('read-only policy'))
+        yield* Effect.promise(() =>
+          expect(fixture.manager.call(denied, {}, { server: 'linear' })).rejects.toThrow(`MCP tool "${denied}" on server "linear"`)
+        )
       }
       expect(fixture.calls.toolCalls.map((call) => call.name)).toEqual(['get_issue'])
     })
@@ -521,8 +524,8 @@ describe('MCP manager', () => {
         yield* Effect.promise(() => fixture.manager.call(tool, {}, { server: 'dbx' }))
       }
       for (const tool of denied) {
-        expect(fixture.manager.describe(tool, { server: 'dbx' })).rejects.toThrow('read-only policy')
-        expect(fixture.manager.call(tool, {}, { server: 'dbx' })).rejects.toThrow('read-only policy')
+        yield* Effect.promise(() => expect(fixture.manager.describe(tool, { server: 'dbx' })).rejects.toThrow('read-only policy'))
+        yield* Effect.promise(() => expect(fixture.manager.call(tool, {}, { server: 'dbx' })).rejects.toThrow('read-only policy'))
       }
       expect(fixture.calls.toolCalls.map((call) => call.name)).toEqual(allowed)
 
@@ -536,7 +539,7 @@ describe('MCP manager', () => {
         policy: readonlyMcpPolicy,
       })
       expect(yield* Effect.promise(() => impersonator.manager.list('other'))).toEqual([])
-      expect(impersonator.manager.call('other_dbx_list_tables', {})).rejects.toThrow('read-only policy')
+      yield* Effect.promise(() => expect(impersonator.manager.call('other_dbx_list_tables', {})).rejects.toThrow('read-only policy'))
     })
   )
 
@@ -591,7 +594,7 @@ describe('MCP manager', () => {
           },
         },
       })
-      expect(collision.manager.list('local')).rejects.toThrow('collision')
+      yield* Effect.promise(() => expect(collision.manager.list('local')).rejects.toThrow('collision'))
 
       const cursor = harness({
         pages: {
@@ -599,17 +602,17 @@ describe('MCP manager', () => {
           root: { nextCursor: 'again', tools: [] },
         },
       })
-      expect(cursor.manager.list('local')).rejects.toThrow('repeated a tools cursor')
+      yield* Effect.promise(() => expect(cursor.manager.list('local')).rejects.toThrow('repeated a tools cursor'))
 
       const regex = harness()
       for (const unsafe of ['[', 'a*a*a*a*a*a*a*a*b', '(a+)+$']) {
-        expect(regex.manager.search(unsafe, { regex: true })).rejects.toThrow('regular expression')
+        yield* Effect.promise(() => expect(regex.manager.search(unsafe, { regex: true })).rejects.toThrow('regular expression'))
       }
 
       const toolError = harness({
         callResult: { content: [{ text: 'remote failed', type: 'text' }], isError: true },
       })
-      expect(toolError.manager.call('local_echo', {})).rejects.toThrow('remote failed')
+      yield* Effect.promise(() => expect(toolError.manager.call('local_echo', {})).rejects.toThrow('remote failed'))
 
       const oversizedError = harness({
         callResult: {
@@ -756,7 +759,7 @@ describe('MCP manager', () => {
         },
       })
       yield* Effect.promise(() => fixture.manager.connect('same.name'))
-      expect(fixture.manager.authenticate('same_name')).rejects.toThrow('collision')
+      yield* Effect.promise(() => expect(fixture.manager.authenticate('same_name')).rejects.toThrow('collision'))
       expect(fixture.manager.status().find((server) => server.name === 'same_name')?.status).toBe('failed')
       expect(fixture.calls.closes).toBe(1)
     })
@@ -796,7 +799,7 @@ describe('MCP manager', () => {
         const pid = Number(yield* fs.readFileString(marker))
 
         yield* Effect.promise(() => manager.close())
-        yield* Effect.promise(() => Bun.sleep(20))
+        yield* Effect.promise(() => setTimeout(20))
         expect(() => process.kill(pid, 0)).toThrow()
       })
     )
@@ -868,8 +871,8 @@ describe('MCP manager', () => {
       const connecting = fixture.manager.connect('local', { signal: controller.signal })
       yield* Effect.promise(() => Promise.resolve())
       controller.abort()
-      expect(connecting).rejects.toThrow()
-      yield* Effect.promise(() => Bun.sleep(0))
+      yield* Effect.promise(() => expect(connecting).rejects.toThrow())
+      yield* Effect.promise(() => setTimeout(0))
       expect(fixture.calls.closes).toBe(1)
     })
   )
@@ -880,7 +883,7 @@ describe('MCP manager', () => {
       const connecting = fixture.manager.connect('local')
       yield* Effect.promise(() => Promise.resolve())
       yield* Effect.promise(() => fixture.manager.close())
-      expect(connecting).rejects.toThrow()
+      yield* Effect.promise(() => expect(connecting).rejects.toThrow())
       expect(fixture.calls.closes).toBe(1)
     })
   )
@@ -928,7 +931,7 @@ describe('MCP manager', () => {
       yield* Effect.promise(() => Promise.resolve())
       yield* Effect.promise(() => fixture.manager.close())
 
-      expect(connecting).rejects.toThrow()
+      yield* Effect.promise(() => expect(connecting).rejects.toThrow())
       expect(fixture.calls.closes).toBe(1)
     })
   )

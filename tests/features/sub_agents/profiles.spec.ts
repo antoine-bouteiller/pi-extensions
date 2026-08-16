@@ -1,4 +1,3 @@
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Effect } from 'effect'
 
 import {
@@ -15,7 +14,8 @@ import {
   resolveModelSelector,
   type AgentConfig,
   type ModelSelectorContext,
-} from '@/features/sub_agents/profiles.js'
+} from '#features/sub_agents/profiles'
+import { describe, expect, it } from '#tests/utils/effect'
 
 const availableModels = [
   { id: 'gpt-5.6-luna', provider: 'azure-openai-responses' },

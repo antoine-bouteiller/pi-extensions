@@ -1,16 +1,23 @@
-import { afterEach } from 'bun:test'
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- `stat` preserves file-only existence semantics.
+import { stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 
-import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asExtensionApi, asResult } from '@tests/utils/casts.js'
-import { runtime } from '@tests/utils/runtime.js'
 import { Effect, FileSystem, Path } from 'effect'
+import { afterEach } from 'vitest'
 
-import { register as safeRm } from '@/features/safe_rm/index.js'
-import { SAFETY_STATUS_KEY } from '@/features/safety_guard/constants.js'
-import { register as safetyGuard } from '@/features/safety_guard/index.js'
-import { publishStatus, statusBar } from '@/shared/state/status_bar.js'
-import { isTrue } from '@/shared/utils/predicates.js'
+import { register as safeRm } from '#features/safe_rm/index'
+import { SAFETY_STATUS_KEY } from '#features/safety_guard/constants'
+import { register as safetyGuard } from '#features/safety_guard/index'
+import { publishStatus, statusBar } from '#shared/state/status_bar'
+import { isTrue } from '#shared/utils/predicates'
+import { asExtensionApi, asResult } from '#tests/utils/casts'
+import { promiseFromEffect, describe, expect, it } from '#tests/utils/effect'
+import { runtime } from '#tests/utils/runtime'
+
+const fileExists = (path: string): Promise<boolean> =>
+  stat(path)
+    .then((info) => info.isFile())
+    .catch(() => false)
 
 const pathService = runtime.runSync(Path.Path)
 const { join } = pathService
@@ -164,11 +171,11 @@ describe('safety guard', () => {
       expect(directoryCall.input.command).toBe(': # pi-safe-rm')
       const directory = yield* Effect.promise(() => resultHandler(resultEvent('rm-directory'), ctx))
       expect(directory?.content?.[0]?.text).toContain('Removed: build, @types')
-      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'first.log')).exists())).toBeFalse()
-      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'second.log')).exists())).toBeFalse()
-      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'build', 'output.txt')).exists())).toBeFalse()
-      expect(yield* Effect.promise(() => Bun.file(join(cwd, '@types', 'marker')).exists())).toBeFalse()
-      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'types', 'marker')).exists())).toBeTrue()
+      expect(yield* Effect.promise(() => fileExists(join(cwd, 'first.log')))).toBe(false)
+      expect(yield* Effect.promise(() => fileExists(join(cwd, 'second.log')))).toBe(false)
+      expect(yield* Effect.promise(() => fileExists(join(cwd, 'build', 'output.txt')))).toBe(false)
+      expect(yield* Effect.promise(() => fileExists(join(cwd, '@types', 'marker')))).toBe(false)
+      expect(yield* Effect.promise(() => fileExists(join(cwd, 'types', 'marker')))).toBe(true)
     })
   )
 
@@ -184,7 +191,7 @@ describe('safety guard', () => {
       const failed = resultEvent('failed-rm')
       failed.isError = true
       expect(yield* Effect.promise(() => resultHandler(failed, ctx))).toBeUndefined()
-      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'keep.log')).exists())).toBeTrue()
+      expect(yield* Effect.promise(() => fileExists(join(cwd, 'keep.log')))).toBe(true)
     })
   )
 
@@ -194,7 +201,7 @@ describe('safety guard', () => {
       const { resultHandler } = setup()
 
       const result = yield* Effect.promise(() => resultHandler(resultEvent('missing-route'), { cwd, hasUI: false }))
-      expect(result?.isError).toBeTrue()
+      expect(result?.isError).toBe(true)
       expect(result?.content?.[0]?.text).toContain('handoff was lost')
     })
   )
@@ -226,7 +233,7 @@ describe('safety guard', () => {
         String.raw`printf '%s\n' build.log | xargs rm`,
       ]) {
         const result = yield* Effect.promise(() => handler(event(command), ctx))
-        expect(result?.block, command).toBeTrue()
+        expect(result?.block, command).toBe(true)
         expect(result?.reason, command).toContain('safe_rm')
         expect(result?.reason, command).toContain('CRITICAL')
       }
@@ -244,7 +251,7 @@ describe('safety guard', () => {
       const call = event('git rm -q --cached src/App.tsx;\n rm -f src/App.tsx; git add src/app.tsx; ls src/')
       expect(yield* Effect.promise(() => handler(call, ctx))).toBeUndefined()
       expect(call.input.command).toContain('rm -f src/App.tsx')
-      expect(yield* Effect.promise(() => Bun.file(join(cwd, 'src', 'App.tsx')).exists())).toBeTrue()
+      expect(yield* Effect.promise(() => fileExists(join(cwd, 'src', 'App.tsx')))).toBe(true)
     })
   )
 
@@ -254,7 +261,7 @@ describe('safety guard', () => {
       const { handler } = setup()
 
       const result = yield* Effect.promise(() => handler(event('echo start && rm -f /etc/hosts && echo done'), { cwd, hasUI: false }))
-      expect(result?.block).toBeTrue()
+      expect(result?.block).toBe(true)
       expect(result?.reason).toContain('working directory or /tmp')
     })
   )
@@ -291,7 +298,7 @@ describe('safety guard', () => {
     Effect.gen(function* () {
       const { handler } = setup()
       const result = yield* Effect.promise(() => handler(event('mkfs /dev/sda'), { cwd: '/work/project', hasUI: false }))
-      expect(result?.block).toBeTrue()
+      expect(result?.block).toBe(true)
       expect(result?.reason).toContain('CRITICAL')
     })
   )
@@ -302,7 +309,7 @@ describe('safety guard', () => {
       const result = yield* Effect.promise(() =>
         handler({ input: { command: 'rm -rf build' }, toolName: 'background_poll' }, { cwd: '/work/project', hasUI: false })
       )
-      expect(result?.block).toBeTrue()
+      expect(result?.block).toBe(true)
       expect(result?.reason).toContain('safe_rm')
     })
   )
@@ -313,7 +320,7 @@ describe('safety guard', () => {
       const call = event('rm build.log')
 
       const result = yield* Effect.promise(() => handler(call, { cwd: '/work/project', hasUI: false }))
-      expect(result?.block).toBeTrue()
+      expect(result?.block).toBe(true)
       expect(call.input.command).toBe('rm build.log')
     })
   )
@@ -339,7 +346,7 @@ describe('safety guard', () => {
         })
       )
       expect(result).toBeUndefined()
-      expect(confirmed).toBeFalse()
+      expect(confirmed).toBe(false)
     })
   )
 
@@ -355,7 +362,7 @@ describe('safety guard', () => {
         'psql -c "DROP TABLE users"',
       ]) {
         const result = yield* Effect.promise(() => handler(event(command), ctx))
-        expect(result?.block, command).toBeTrue()
+        expect(result?.block, command).toBe(true)
       }
     })
   )
@@ -386,7 +393,7 @@ ce origin main`,
         'git push --force; echo done',
       ]) {
         const result = yield* Effect.promise(() => handler(event(command), ctx))
-        expect(result?.block, command).toBeTrue()
+        expect(result?.block, command).toBe(true)
         expect(result?.reason, command).toContain('Git force push')
         expect(result?.reason, command).toContain('CRITICAL')
       }
@@ -435,12 +442,12 @@ ce origin main`,
 
       for (const toolName of ['read', 'write', 'edit']) {
         const result = yield* Effect.promise(() => handler({ input: { path: '.env' }, toolName }, ctx))
-        expect(result?.block, toolName).toBeTrue()
+        expect(result?.block, toolName).toBe(true)
         expect(result?.reason).toContain(`Protected file ${toolName}`)
       }
 
       const atPrefixed = yield* Effect.promise(() => handler({ input: { path: '@.env' }, toolName: 'read' }, ctx))
-      expect(atPrefixed?.block).toBeTrue()
+      expect(atPrefixed?.block).toBe(true)
       expect(atPrefixed?.reason).toContain('Protected file read')
 
       expect(yield* Effect.promise(() => handler({ input: { path: '.env.example' }, toolName: 'read' }, ctx))).toBeUndefined()
@@ -463,7 +470,7 @@ ce origin main`,
       const ctx = { cwd, hasUI: false }
       for (const path of ['innocent.txt', 'linked-secrets/config', 'linked-secrets/new-key.pem']) {
         const result = yield* Effect.promise(() => handler({ input: { path }, toolName: 'read' }, ctx))
-        expect(result?.block, path).toBeTrue()
+        expect(result?.block, path).toBe(true)
       }
     })
   )
@@ -492,9 +499,9 @@ ce origin main`,
       expect(yield* Effect.promise(() => handler(call, ctx))).toBeUndefined()
       expect(call.input.command).toBe(': # pi-safe-rm')
       const result = yield* Effect.promise(() => resultHandler(resultEvent('rm-root'), ctx))
-      expect(result?.isError).toBeTrue()
+      expect(result?.isError).toBe(true)
       expect(result?.content?.[0]?.text).toContain('working directory or /tmp')
-      expect(confirmed).toBeFalse()
+      expect(confirmed).toBe(false)
     })
   )
 
@@ -508,7 +515,7 @@ ce origin main`,
           ui: { confirm: () => promiseFromEffect(Effect.succeed(false)), notify: () => undefined },
         })
       )
-      expect(result?.block).toBeTrue()
+      expect(result?.block).toBe(true)
       expect(emitted).toEqual([
         ['herdr:blocked', { active: true, label: 'Elevated privileges (sudo)' }],
         ['herdr:blocked', { active: false }],

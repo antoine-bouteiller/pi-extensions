@@ -13,13 +13,13 @@ import {
 } from '@earendil-works/pi-tui'
 import { Data, Effect } from 'effect'
 import { Type, type Static } from 'typebox'
-import { Check } from 'typebox/schema'
+import { Check } from 'typebox/value'
 
-import { ToolFailure } from '@/shared/effect/errors.js'
-import { PiCtx } from '@/shared/effect/pi_services.js'
-import { isEmptyString, isTrue } from '@/shared/utils/predicates.js'
+import { ToolFailure } from '#shared/effect/errors'
+import { PiCtx } from '#shared/effect/pi_services'
+import { isEmptyString, isTrue } from '#shared/utils/predicates'
 
-import { ASK_USER_MALFORMED_CALL_MESSAGE, ASK_USER_PARAMETER_DESCRIPTIONS, buildAskUserResultMessage } from './prompt.js'
+import { ASK_USER_MALFORMED_CALL_MESSAGE, ASK_USER_PARAMETER_DESCRIPTIONS, buildAskUserResultMessage } from './prompt'
 
 const MIN_OPTIONS = 2
 const MAX_OPTIONS = 5

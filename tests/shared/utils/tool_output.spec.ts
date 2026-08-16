@@ -1,9 +1,9 @@
-import { BunFileSystem } from '@effect/platform-bun'
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { NodeFileSystem } from '@effect/platform-node'
 import { DateTime, Effect, FileSystem } from 'effect'
 
-import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
-import { boundToolTextEffect, SPILL_TTL_MS, truncateOutput, truncationNotice, writePrivateTempFileEffect } from '@/shared/utils/tool_output.js'
+import { nodeFileSystem, nodePath } from '#shared/effect/node_services'
+import { boundToolTextEffect, SPILL_TTL_MS, truncateOutput, truncationNotice, writePrivateTempFileEffect } from '#shared/utils/tool_output'
+import { describe, expect, it } from '#tests/utils/effect'
 
 const lines = (count: number) => Array.from({ length: count }, (_value, index) => `line ${index}`).join('\n')
 
@@ -15,7 +15,7 @@ describe('truncateOutput', () => {
       const head = truncateOutput(text, { maxBytes: 1_000_000, maxLines: 5 })
       const tail = truncateOutput(text, { from: 'tail', maxBytes: 1_000_000, maxLines: 5 })
 
-      expect(head.truncated).toBeTrue()
+      expect(head.truncated).toBe(true)
       expect(head.content).toContain('line 0')
       expect(tail.content).toContain('line 99')
       expect(tail.content).not.toContain('line 0\n')
@@ -26,7 +26,7 @@ describe('truncateOutput', () => {
     Effect.sync(() => {
       const result = truncateOutput('short', { maxBytes: 1000, maxLines: 10 })
 
-      expect(result.truncated).toBeFalse()
+      expect(result.truncated).toBe(false)
       expect(result.content).toBe('short')
     })
   )
@@ -63,22 +63,22 @@ describe('bounded tool output', () => {
       const path = yield* writePrivateTempFileEffect('secret', { prefix: 'tool-output-effect-' })
 
       expect(yield* fs.readFileString(path)).toBe('secret')
-      expect((yield* fs.stat(bunPath.dirname(path))).mode & 0o777).toBe(0o700)
+      expect((yield* fs.stat(nodePath.dirname(path))).mode & 0o777).toBe(0o700)
       expect((yield* fs.stat(path)).mode & 0o777).toBe(0o600)
-    }).pipe(Effect.provide(BunFileSystem.layer))
+    }).pipe(Effect.provide(NodeFileSystem.layer))
   )
 
   it.effect('writePrivateTempFileEffect leaves no directory behind when the write fails', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
-      const before = yield* fs.readDirectory(bunPath.dirname(yield* fs.makeTempDirectory({ prefix: 'tool-output-probe-' })))
+      const before = yield* fs.readDirectory(nodePath.dirname(yield* fs.makeTempDirectory({ prefix: 'tool-output-probe-' })))
 
       yield* Effect.flip(writePrivateTempFileEffect('secret', { filename: 'missing/output.txt', prefix: 'tool-output-failure-' }))
 
-      const after = yield* fs.readDirectory(bunPath.dirname(yield* fs.makeTempDirectory({ prefix: 'tool-output-probe-' })))
+      const after = yield* fs.readDirectory(nodePath.dirname(yield* fs.makeTempDirectory({ prefix: 'tool-output-probe-' })))
       expect(after.filter((entry) => entry.startsWith('tool-output-failure-'))).toEqual([])
       expect(before.filter((entry) => entry.startsWith('tool-output-failure-'))).toEqual([])
-    }).pipe(Effect.provide(BunFileSystem.layer))
+    }).pipe(Effect.provide(NodeFileSystem.layer))
   )
 
   it.effect('boundToolTextEffect spills the complete text and keeps the notice inside the budget', () =>
@@ -99,7 +99,7 @@ describe('bounded tool output', () => {
       })
 
       expect(saved).toBe(text)
-      expect(result.truncated).toBeTrue()
+      expect(result.truncated).toBe(true)
       expect(result.fullOutputPath).toBe('/tmp/full.txt')
       expect(result.text).toContain('Full output saved to: /tmp/full.txt')
       expect(result.text.split('\n').length).toBeLessThanOrEqual(50)
@@ -142,19 +142,19 @@ describe('bounded tool output', () => {
       const prefix = `tool-output-reap-${process.pid}-`
 
       const stale = yield* writePrivateTempFileEffect('stale', { prefix })
-      const staleDirectory = bunPath.dirname(stale)
+      const staleDirectory = nodePath.dirname(stale)
       const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis)
       // `utimes` reads a bare number as nanoseconds, so the age is applied as a Date.
       const expired = DateTime.toDateUtc(DateTime.makeUnsafe(now - SPILL_TTL_MS - 60_000))
-      yield* bunFileSystem.utimes(staleDirectory, expired, expired)
+      yield* nodeFileSystem.utimes(staleDirectory, expired, expired)
 
       const fresh = yield* writePrivateTempFileEffect('fresh', { prefix })
-      const freshDirectory = bunPath.dirname(fresh)
+      const freshDirectory = nodePath.dirname(fresh)
 
-      expect(yield* bunFileSystem.exists(staleDirectory)).toBeFalse()
-      expect(yield* bunFileSystem.exists(freshDirectory)).toBeTrue()
+      expect(yield* nodeFileSystem.exists(staleDirectory)).toBe(false)
+      expect(yield* nodeFileSystem.exists(freshDirectory)).toBe(true)
 
-      yield* bunFileSystem.remove(freshDirectory, { force: true, recursive: true })
+      yield* nodeFileSystem.remove(freshDirectory, { force: true, recursive: true })
     })
   )
 })

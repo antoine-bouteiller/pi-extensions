@@ -1,0 +1,5 @@
+allowBuilds:
+  '@google/genai': false
+  lefthook: true
+  msgpackr-extract: false
+  protobufjs: false

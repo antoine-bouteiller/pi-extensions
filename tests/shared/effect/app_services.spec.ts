@@ -1,11 +1,11 @@
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asExtensionContext } from '@tests/utils/casts.js'
 import { Effect, Layer, ManagedRuntime } from 'effect'
 
-import { AgentActivity, AgentActivityLive, StatusBar, StatusBarLive } from '@/shared/effect/app_services.js'
-import { perInvocation } from '@/shared/effect/runtime.js'
-import { runningAgents } from '@/shared/state/agent_activity.js'
-import { statusBar } from '@/shared/state/status_bar.js'
+import { AgentActivity, AgentActivityLive, StatusBar, StatusBarLive } from '#shared/effect/app_services'
+import { perInvocation } from '#shared/effect/runtime'
+import { runningAgents } from '#shared/state/agent_activity'
+import { statusBar } from '#shared/state/status_bar'
+import { asExtensionContext } from '#tests/utils/casts'
+import { describe, expect, it } from '#tests/utils/effect'
 
 const uiContext = () => {
   const statuses: { key: string; text: string | undefined }[] = []

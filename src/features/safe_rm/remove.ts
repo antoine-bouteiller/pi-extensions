@@ -12,13 +12,13 @@ import { type FileSystem } from 'effect/FileSystem'
 import { type PlatformError } from 'effect/PlatformError'
 import { Type } from 'typebox'
 
-import { type AppRuntime } from '@/shared/effect/app_services.js'
-import { lstatHostFile, readHostDirectoryEntries } from '@/shared/effect/bun_host_file_system.js'
-import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
-import { unknownError } from '@/shared/effect/errors.js'
-import { type JsonObject } from '@/shared/utils/json.js'
-import { isEmptyString, isNotEmptyString } from '@/shared/utils/predicates.js'
-import { assertUnprotectedPathEffect, ProtectedPathError } from '@/shared/utils/protected_paths.js'
+import { type AppRuntime } from '#shared/effect/app_services'
+import { unknownError } from '#shared/effect/errors'
+import { lstatHostFile, readHostDirectoryEntries } from '#shared/effect/node_host_file_system'
+import { nodeFileSystem, nodePath } from '#shared/effect/node_services'
+import { type JsonObject } from '#shared/utils/json'
+import { isEmptyString, isNotEmptyString } from '#shared/utils/predicates'
+import { assertUnprotectedPathEffect, ProtectedPathError } from '#shared/utils/protected_paths'
 
 import {
   CancelledError,
@@ -28,9 +28,9 @@ import {
   RecursiveRequiredError,
   SymlinkEscapeError,
   TargetChangedError,
-} from './errors.js'
+} from './errors'
 
-const { dirname, isAbsolute, join, relative, resolve, sep } = bunPath
+const { dirname, isAbsolute, join, relative, resolve, sep } = nodePath
 
 const MAX_TARGETS = 50
 const ROUTED_RM_SENTINEL = ': # pi-safe-rm'
@@ -145,10 +145,10 @@ const normalizeInput = (path: string): Effect.Effect<string, InvalidPathError> =
   return Effect.succeed(path)
 }
 
-const realpathEffect = (path: string): Effect.Effect<string, Cause.UnknownError> => bunFileSystem.realPath(path).pipe(Effect.mapError(unknownError))
+const realpathEffect = (path: string): Effect.Effect<string, Cause.UnknownError> => nodeFileSystem.realPath(path).pipe(Effect.mapError(unknownError))
 
 const removeEffect = (path: string, options: { force: boolean; recursive: boolean }): Effect.Effect<void, Cause.UnknownError> =>
-  bunFileSystem.remove(path, options).pipe(Effect.mapError(unknownError))
+  nodeFileSystem.remove(path, options).pipe(Effect.mapError(unknownError))
 
 /**
  * Recursive removal must not turn a harmless-looking parent directory into

@@ -1,13 +1,7 @@
-import { afterEach } from 'bun:test'
-
 import { type AgentToolResult } from '@earendil-works/pi-coding-agent'
-import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asCommand, asTool } from '@tests/utils/casts.js'
-import { deferred } from '@tests/utils/deferred.js'
-import { createFakePi } from '@tests/utils/fake_pi.js'
-import { testRuntime } from '@tests/utils/runtime.js'
 import { Effect, Layer } from 'effect'
 import { FetchHttpClient } from 'effect/unstable/http'
+import { afterEach } from 'vitest'
 
 import {
   McpGateway,
@@ -20,11 +14,16 @@ import {
   type McpOperationOptions,
   type McpSearchOptions,
   type McpToolDescription,
-} from '@/features/mcp/gateway.js'
-import { register } from '@/features/mcp/index.js'
-import { type McpServerMap } from '@/features/mcp/types.js'
-import { publishStatus } from '@/shared/state/status_bar.js'
-import { type JsonObject, parseJsonText } from '@/shared/utils/json.js'
+} from '#features/mcp/gateway'
+import { register } from '#features/mcp/index'
+import { type McpServerMap } from '#features/mcp/types'
+import { publishStatus } from '#shared/state/status_bar'
+import { type JsonObject, parseJsonText } from '#shared/utils/json'
+import { asCommand, asTool } from '#tests/utils/casts'
+import { deferred } from '#tests/utils/deferred'
+import { promiseFromEffect, describe, expect, it } from '#tests/utils/effect'
+import { createFakePi } from '#tests/utils/fake_pi'
+import { testRuntime } from '#tests/utils/runtime'
 
 afterEach(() => publishStatus('mcp', undefined))
 interface RecordedCall {
@@ -218,13 +217,13 @@ describe('MCP gateway policy selection', () => {
         remoteName: 'get_issue',
         server: 'linear',
       }
-      expect(readonlyMcpPolicy.allows(request)).toBeTrue()
+      expect(readonlyMcpPolicy.allows(request)).toBe(true)
       expect(
         readonlyMcpPolicy.allows({
           ...request,
           annotations: { destructiveHint: true, readOnlyHint: true },
         })
-      ).toBeFalse()
+      ).toBe(false)
       expect(
         readonlyMcpPolicy.allows({
           ...request,
@@ -232,7 +231,7 @@ describe('MCP gateway policy selection', () => {
           remoteName: 'dbx_list_tables',
           server: 'dbx',
         })
-      ).toBeTrue()
+      ).toBe(true)
       expect(
         readonlyMcpPolicy.allows({
           ...request,
@@ -241,7 +240,7 @@ describe('MCP gateway policy selection', () => {
           remoteName: 'list_tables',
           server: 'dbx',
         })
-      ).toBeFalse()
+      ).toBe(false)
       expect(
         readonlyMcpPolicy.allows({
           ...request,
@@ -249,7 +248,7 @@ describe('MCP gateway policy selection', () => {
           remoteName: 'dbx_execute_sql',
           server: 'dbx',
         })
-      ).toBeFalse()
+      ).toBe(false)
       expect(
         readonlyMcpPolicy.allows({
           ...request,
@@ -257,7 +256,7 @@ describe('MCP gateway policy selection', () => {
           remoteName: 'dbx_list_tables',
           server: 'dbx',
         })
-      ).toBeFalse()
+      ).toBe(false)
     })
   )
 })
@@ -269,8 +268,8 @@ describe('MCP gateway registration and lifecycle', () => {
 
       expect([...harness.fixture.state.tools.keys()]).toEqual(['mcp'])
       expect([...harness.fixture.state.commands.keys()]).toEqual(['mcp-auth'])
-      expect(harness.fixture.state.handlers.has('session_start')).toBeTrue()
-      expect(harness.fixture.state.handlers.has('session_shutdown')).toBeTrue()
+      expect(harness.fixture.state.handlers.has('session_start')).toBe(true)
+      expect(harness.fixture.state.handlers.has('session_shutdown')).toBe(true)
       expect(harness.loadCount()).toBe(0)
       expect(harness.calls).toEqual([])
     })
@@ -490,9 +489,9 @@ describe('MCP gateway registration and lifecycle', () => {
       )
 
       expect(rejection).toMatchObject({ _tag: 'ToolFailure', message: expect.stringContaining('Ambiguous mcp request') })
-      expect(harness.execute({ connect: 'one', server: 'two' })).rejects.toThrow('connect already names the server')
-      expect(harness.execute({ args: {} })).rejects.toThrow('args can only be used with tool')
-      expect(harness.execute({ regex: true })).rejects.toThrow('regex can only be used with search')
+      yield* Effect.promise(() => expect(harness.execute({ connect: 'one', server: 'two' })).rejects.toThrow('connect already names the server'))
+      yield* Effect.promise(() => expect(harness.execute({ args: {} })).rejects.toThrow('args can only be used with tool'))
+      yield* Effect.promise(() => expect(harness.execute({ regex: true })).rejects.toThrow('regex can only be used with search'))
       expect(callsFor(harness, 'call')).toHaveLength(0)
       expect(callsFor(harness, 'search')).toHaveLength(0)
     })
@@ -503,9 +502,9 @@ describe('MCP gateway registration and lifecycle', () => {
       const harness = createHarness()
       yield* Effect.promise(() => harness.start())
 
-      expect(harness.execute({ args: '{', tool: 'one' })).rejects.toThrow('valid JSON')
+      yield* Effect.promise(() => expect(harness.execute({ args: '{', tool: 'one' })).rejects.toThrow('valid JSON'))
       for (const args of ['null', '[]', '42', '"value"', parseJsonText('null'), [], 42]) {
-        expect(harness.execute({ args, tool: 'one' })).rejects.toThrow('must be a JSON object')
+        yield* Effect.promise(() => expect(harness.execute({ args, tool: 'one' })).rejects.toThrow('must be a JSON object'))
       }
       expect(callsFor(harness, 'call')).toHaveLength(0)
     })
@@ -556,7 +555,7 @@ describe('MCP gateway registration and lifecycle', () => {
         shutdownFinished = true
       })
       yield* Effect.promise(() => Promise.resolve())
-      expect(shutdownFinished).toBeFalse()
+      expect(shutdownFinished).toBe(false)
 
       permitClose.resolve()
       yield* Effect.promise(() => Promise.all([starting, shuttingDown]))

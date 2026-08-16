@@ -1,4 +1,4 @@
-import { BunServices } from '@effect/platform-bun'
+import { NodeServices } from '@effect/platform-node'
 import { FileSystem, ManagedRuntime, Path } from 'effect'
 import { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner'
 
@@ -10,10 +10,10 @@ import { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner
  * ponytail: process-wide singleton, so these services cannot be substituted per test; require
  * `FileSystem`/`Path` from context instead once every consumer is reachable from an Effect.
  */
-const runtime = ManagedRuntime.make(BunServices.layer)
+const runtime = ManagedRuntime.make(NodeServices.layer)
 
-export type BunChildProcessSpawner = typeof ChildProcessSpawner.Service
+export type NodeChildProcessSpawner = typeof ChildProcessSpawner.Service
 
-export const bunFileSystem = runtime.runSync(FileSystem.FileSystem)
-export const bunPath = runtime.runSync(Path.Path)
-export const bunChildProcessSpawner: BunChildProcessSpawner = runtime.runSync(ChildProcessSpawner)
+export const nodeFileSystem = runtime.runSync(FileSystem.FileSystem)
+export const nodePath = runtime.runSync(Path.Path)
+export const nodeChildProcessSpawner: NodeChildProcessSpawner = runtime.runSync(ChildProcessSpawner)

@@ -2,9 +2,9 @@ import { Effect, Schema } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
 import { type PlatformError } from 'effect/PlatformError'
 
-import { bunPath } from '@/shared/effect/bun_services.js'
+import { nodePath } from '#shared/effect/node_services'
 
-const { basename, dirname, resolve } = bunPath
+const { basename, dirname, resolve } = nodePath
 /** Filenames that look like dotenv files but are intended to be public examples. */
 const PUBLIC_ENV_FILENAMES = new Set(['.env.example', '.env.sample', '.env.template'])
 

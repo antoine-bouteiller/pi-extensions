@@ -1,9 +1,9 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
-import { type AppRuntime } from '@/shared/effect/app_services.js'
-import { makeEventHandler } from '@/shared/effect/runtime.js'
+import { type AppRuntime } from '#shared/effect/app_services'
+import { makeEventHandler } from '#shared/effect/runtime'
 
-import { makeRmRouter, makeSafeRmRunner, SafeRmParams } from './remove.js'
+import { makeRmRouter, makeSafeRmRunner, SafeRmParams } from './remove'
 
 export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
   const run = makeSafeRmRunner(runtime)

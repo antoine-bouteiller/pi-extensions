@@ -1,7 +1,7 @@
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Option } from 'effect'
 
-import { loadConfig, makeToggle, proseLength } from '@/features/plain_english/config.js'
+import { loadConfig, makeToggle, proseLength } from '#features/plain_english/config'
+import { describe, expect, it } from '#tests/utils/effect'
 
 describe('plain_english configuration', () => {
   it('uses defaults when no environment values are configured', () => {

@@ -1,6 +1,6 @@
 import { type ReadonlyFooterDataProvider, type ThemeColor } from '@earendil-works/pi-coding-agent'
 
-import { formatStatusText, statusBar, type StatusEntry, type StatusTone } from '@/shared/state/status_bar.js'
+import { formatStatusText, statusBar, type StatusEntry, type StatusTone } from '#shared/state/status_bar'
 
 export const STATUS_TONE_COLORS = {
   error: 'error',

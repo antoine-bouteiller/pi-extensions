@@ -1,7 +1,7 @@
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Effect } from 'effect'
 
-import { buildAskUserResultMessage } from '@/features/ask_user/prompt.js'
+import { buildAskUserResultMessage } from '#features/ask_user/prompt'
+import { describe, expect, it } from '#tests/utils/effect'
 
 describe('ask_user result messages', () => {
   it.effect('describes selected and custom answers', () =>

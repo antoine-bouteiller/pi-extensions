@@ -10,11 +10,11 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Effect } from 'effect'
 
-import { type AppRuntime } from '@/shared/effect/app_services.js'
-import { perInvocation } from '@/shared/effect/runtime.js'
+import { type AppRuntime } from '#shared/effect/app_services'
+import { perInvocation } from '#shared/effect/runtime'
 
-import { ASK_USER_PROMPT_GUIDELINES, ASK_USER_PROMPT_SNIPPET, ASK_USER_TOOL_DESCRIPTION } from './prompt.js'
-import { askUserEffect, AskUserParams, renderAskUserCall, renderAskUserResult } from './tool.js'
+import { ASK_USER_PROMPT_GUIDELINES, ASK_USER_PROMPT_SNIPPET, ASK_USER_TOOL_DESCRIPTION } from './prompt'
+import { askUserEffect, AskUserParams, renderAskUserCall, renderAskUserResult } from './tool'
 
 export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
   pi.registerTool({

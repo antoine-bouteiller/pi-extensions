@@ -1,9 +1,9 @@
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asExtensionContext, asFooterDataProvider } from '@tests/utils/casts.js'
 import { Effect } from 'effect'
 
-import { collectStatuses, statusLines } from '@/features/status_panel/statuses.js'
-import { createStatusChannel } from '@/shared/state/status_bar.js'
+import { collectStatuses, statusLines } from '#features/status_panel/statuses'
+import { createStatusChannel } from '#shared/state/status_bar'
+import { asExtensionContext, asFooterDataProvider } from '#tests/utils/casts'
+import { describe, expect, it } from '#tests/utils/effect'
 
 const ctx = asExtensionContext({
   hasUI: true,
@@ -33,7 +33,7 @@ describe('collectStatuses', () => {
       const collected = collectStatuses(footerData({ other: 'first\nsecond' }))
 
       expect(statusLines(collected)).toEqual(['first', 'second'])
-      expect(collected.every((entry) => entry.tone === 'muted')).toBeTrue()
+      expect(collected.every((entry) => entry.tone === 'muted')).toBe(true)
     })
   )
 

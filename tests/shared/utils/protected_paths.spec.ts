@@ -1,10 +1,10 @@
-import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Effect, FileSystem, Path } from 'effect'
 import { layerNoop } from 'effect/FileSystem'
 import { systemError } from 'effect/PlatformError'
 
-import { assertUnprotectedPathEffect, ProtectedPathError, resolveProtectedPathEffect } from '@/shared/utils/protected_paths.js'
-import { isRecord } from '@/shared/utils/records.js'
+import { assertUnprotectedPathEffect, ProtectedPathError, resolveProtectedPathEffect } from '#shared/utils/protected_paths'
+import { isRecord } from '#shared/utils/records'
+import { describe, expect, it } from '#tests/utils/effect'
 
 const makeRoot = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem

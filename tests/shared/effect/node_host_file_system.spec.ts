@@ -9,15 +9,15 @@ import {
   readHostDirectoryEntries,
   removeHeldFileIfUnchanged,
   withHeldFile,
-} from '@/shared/effect/bun_host_file_system.js'
-import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
+} from '#shared/effect/node_host_file_system'
+import { nodeFileSystem, nodePath } from '#shared/effect/node_services'
 
-import { describe, expect, it } from '../../utils/bun_effect.js'
+import { describe, expect, it } from '../../utils/effect'
 
-describe('Bun host filesystem boundary', () => {
+describe('Node host filesystem boundary', () => {
   it.live('exports only missing host capabilities', () =>
     Effect.gen(function* () {
-      const hostFileSystem = yield* Effect.promise(() => import('@/shared/effect/bun_host_file_system.js'))
+      const hostFileSystem = yield* Effect.promise(() => import('#shared/effect/node_host_file_system'))
       expect(Object.keys(hostFileSystem).toSorted()).toEqual([
         'closeHeldFile',
         'createHeldFile',
@@ -33,9 +33,9 @@ describe('Bun host filesystem boundary', () => {
 
   it.live('refuses to read a held file larger than the lock-record ceiling', () =>
     Effect.gen(function* () {
-      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'bun-host-lock-' })
-      const path = bunPath.join(root, 'oversized')
-      yield* bunFileSystem.writeFileString(path, 'x'.repeat(64 * 1024 + 1))
+      const root = yield* nodeFileSystem.makeTempDirectory({ prefix: 'node-host-lock-' })
+      const path = nodePath.join(root, 'oversized')
+      yield* nodeFileSystem.writeFileString(path, 'x'.repeat(64 * 1024 + 1))
       const opened = yield* Effect.result(openHeldFile(path))
       expect(Result.isFailure(opened)).toBe(true)
     })
@@ -43,11 +43,11 @@ describe('Bun host filesystem boundary', () => {
 
   it.live('reports symlinks without following them and retains typed entries', () =>
     Effect.gen(function* () {
-      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'bun-host-fs-' })
-      const target = bunPath.join(root, 'target')
-      const link = bunPath.join(root, 'link')
-      yield* bunFileSystem.makeDirectory(target)
-      yield* bunFileSystem.symlink(target, link)
+      const root = yield* nodeFileSystem.makeTempDirectory({ prefix: 'node-host-fs-' })
+      const target = nodePath.join(root, 'target')
+      const link = nodePath.join(root, 'link')
+      yield* nodeFileSystem.makeDirectory(target)
+      yield* nodeFileSystem.symlink(target, link)
 
       const info = yield* lstatHostFile(link)
       const entries = yield* readHostDirectoryEntries(root)
@@ -58,15 +58,15 @@ describe('Bun host filesystem boundary', () => {
 
   it.live('rejects a pathname replacement before the final descriptor check', () =>
     Effect.gen(function* () {
-      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'bun-host-lock-' })
-      const path = bunPath.join(root, 'lock')
-      const displaced = bunPath.join(root, 'displaced')
+      const root = yield* nodeFileSystem.makeTempDirectory({ prefix: 'node-host-lock-' })
+      const path = nodePath.join(root, 'lock')
+      const displaced = nodePath.join(root, 'displaced')
       const held = yield* createHeldFile({ content: 'owned', path })
       try {
         const removed = yield* removeHeldFileIfUnchanged({
           beforeRevalidate: () =>
-            bunFileSystem.rename(path, displaced).pipe(
-              Effect.andThen(bunFileSystem.writeFileString(path, 'replacement')),
+            nodeFileSystem.rename(path, displaced).pipe(
+              Effect.andThen(nodeFileSystem.writeFileString(path, 'replacement')),
               Effect.mapError((cause) => new Cause.UnknownError(cause))
             ),
           contentMatches: (content) => content === 'owned',
@@ -74,7 +74,7 @@ describe('Bun host filesystem boundary', () => {
           path,
         })
         expect(removed).toBe(false)
-        expect(yield* bunFileSystem.readFileString(path)).toBe('replacement')
+        expect(yield* nodeFileSystem.readFileString(path)).toBe('replacement')
       } finally {
         closeHeldFile(held)
       }
@@ -83,12 +83,12 @@ describe('Bun host filesystem boundary', () => {
 
   it.live('removes only the still-owned file with matching content', () =>
     Effect.gen(function* () {
-      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'bun-host-owned-' })
-      const path = bunPath.join(root, 'lock')
+      const root = yield* nodeFileSystem.makeTempDirectory({ prefix: 'node-host-owned-' })
+      const path = nodePath.join(root, 'lock')
       const held = yield* createHeldFile({ content: 'owned', path })
       try {
         expect(yield* removeHeldFileIfUnchanged({ contentMatches: (content) => content === 'owned', handle: held, path })).toBe(true)
-        expect(yield* bunFileSystem.exists(path)).toBe(false)
+        expect(yield* nodeFileSystem.exists(path)).toBe(false)
       } finally {
         closeHeldFile(held)
       }
@@ -97,9 +97,9 @@ describe('Bun host filesystem boundary', () => {
 
   it.live('reads a held file through a scope that closes it on failure', () =>
     Effect.gen(function* () {
-      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'bun-host-scoped-' })
-      const path = bunPath.join(root, 'lock')
-      yield* bunFileSystem.writeFileString(path, 'owned')
+      const root = yield* nodeFileSystem.makeTempDirectory({ prefix: 'node-host-scoped-' })
+      const path = nodePath.join(root, 'lock')
+      yield* nodeFileSystem.writeFileString(path, 'owned')
 
       expect(yield* withHeldFile(path, (held) => Effect.succeed(heldFileContent(held)))).toBe('owned')
       const outcome = yield* Effect.result(withHeldFile(path, () => Effect.fail('use failed')))
@@ -109,8 +109,8 @@ describe('Bun host filesystem boundary', () => {
 
   it.live('reports an absent file as unremoved but surfaces a revalidation failure', () =>
     Effect.gen(function* () {
-      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'bun-host-absent-' })
-      const path = bunPath.join(root, 'lock')
+      const root = yield* nodeFileSystem.makeTempDirectory({ prefix: 'node-host-absent-' })
+      const path = nodePath.join(root, 'lock')
       const held = yield* createHeldFile({ content: 'owned', path })
       try {
         const failure = yield* Effect.result(
@@ -123,7 +123,7 @@ describe('Bun host filesystem boundary', () => {
         )
         expect(Result.isFailure(failure)).toBe(true)
 
-        yield* bunFileSystem.remove(path)
+        yield* nodeFileSystem.remove(path)
         expect(yield* removeHeldFileIfUnchanged({ contentMatches: () => true, handle: held, path })).toBe(false)
       } finally {
         closeHeldFile(held)
@@ -133,12 +133,12 @@ describe('Bun host filesystem boundary', () => {
 
   it.live('keeps an owned file when its content token does not match', () =>
     Effect.gen(function* () {
-      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'bun-host-token-' })
-      const path = bunPath.join(root, 'lock')
+      const root = yield* nodeFileSystem.makeTempDirectory({ prefix: 'node-host-token-' })
+      const path = nodePath.join(root, 'lock')
       const held = yield* createHeldFile({ content: 'owned', path })
       try {
         expect(yield* removeHeldFileIfUnchanged({ contentMatches: (content) => content === 'other', handle: held, path })).toBe(false)
-        expect(yield* bunFileSystem.readFileString(path)).toBe('owned')
+        expect(yield* nodeFileSystem.readFileString(path)).toBe('owned')
       } finally {
         closeHeldFile(held)
       }
