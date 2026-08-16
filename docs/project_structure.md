@@ -21,7 +21,6 @@ src/
 │   ├── caffeinate/{index,keep_awake}.ts
 │   ├── claude_code/{index,discovery}.ts
 │   ├── comment_checker/{index,checker}.ts
-│   ├── hashline/{index,tools}.ts
 │   ├── mcp/{index,gateway,config,keychain,manager,oauth,output,types}.ts
 │   ├── meridian_session_affinity/{index,affinity,scrub}.ts
 │   ├── prompt_rewind/{index,rewind}.ts

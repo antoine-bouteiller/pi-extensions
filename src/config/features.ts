@@ -6,7 +6,6 @@ import { register as backgroundPoll } from '@/features/background_poll/index.js'
 import { register as caffeinate } from '@/features/caffeinate/index.js'
 import { register as claudeCode } from '@/features/claude_code/index.js'
 import { register as commentChecker } from '@/features/comment_checker/index.js'
-import { register as hashline } from '@/features/hashline/index.js'
 import { register as mcp } from '@/features/mcp/index.js'
 import { register as meridianSessionAffinity } from '@/features/meridian_session_affinity/index.js'
 import { register as plainEnglish } from '@/features/plain_english/index.js'
@@ -29,7 +28,6 @@ export const features: readonly FeatureRegistration[] = [
   { name: 'caffeinate', register: caffeinate },
   { name: 'claude-code', register: claudeCode },
   { name: 'comment-checker', register: commentChecker },
-  { name: 'hashline', register: hashline },
   { name: 'mcp', register: mcp },
   { name: 'meridian-session-affinity', register: meridianSessionAffinity },
   { name: 'plain-english', register: plainEnglish },

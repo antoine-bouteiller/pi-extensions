@@ -9,7 +9,7 @@ import { runtime } from '@tests/utils/runtime.js'
 import { Effect, FileSystem, Path } from 'effect'
 
 import { register as registerRules } from '@/features/rules/index.js'
-import { extractToolPaths, parseRuleFrontmatter } from '@/features/rules/rules.js'
+import { parseRuleFrontmatter } from '@/features/rules/rules.js'
 
 const pathService = runtime.runSync(Path.Path)
 const { dirname, join } = pathService
@@ -271,47 +271,6 @@ describe('path-scoped injection', () => {
       const result = yield* Effect.promise(() => fixture.invoke<ToolResult>('tool_result', readEvent('src/main.ts'), false))
       expect(result?.content.at(-1)?.text).toContain('Global scope')
       expect(result?.content.at(-1)?.text).not.toContain('Local scope')
-    })
-  )
-
-  it.effect('extracts built-in and hashline file paths', () =>
-    Effect.sync(() => {
-      expect(extractToolPaths(readEvent('src/main.ts'), '/project', pathService)).toEqual(['/project/src/main.ts'])
-      expect(extractToolPaths(readEvent('/outside/main.ts'), '/project', pathService)).toEqual(['/outside/main.ts'])
-      expect(
-        extractToolPaths(
-          {
-            content: [],
-            details: {
-              sections: [{ moveDest: 'src/moved.ts', path: 'src/main.ts' }],
-            },
-            input: { patch: '[src/main.ts#ABCD]\nPUT 1.=1:\n+next' },
-            isError: false,
-            toolCallId: 'call-2',
-            toolName: 'hashline_write',
-            type: 'tool_result',
-          },
-          '/project',
-          pathService
-        )
-      ).toEqual(['/project/src/main.ts', '/project/src/moved.ts'])
-      expect(
-        extractToolPaths(
-          {
-            content: [],
-            details: {},
-            input: {
-              patch: '[src/one.ts#ABCD]\nPUT 1.=1:\n+one\n[src/two.ts#EFGH]\nPUT 1.=1:\n+two',
-            },
-            isError: false,
-            toolCallId: 'call-3',
-            toolName: 'hashline_write',
-            type: 'tool_result',
-          },
-          '/project',
-          pathService
-        )
-      ).toEqual(['/project/src/one.ts', '/project/src/two.ts'])
     })
   )
 })

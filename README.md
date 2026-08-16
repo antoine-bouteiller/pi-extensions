@@ -54,7 +54,6 @@ This package tracks an Effect v4 prerelease while the API surface keeps moving, 
 | `caffeinate`                | Prevents macOS idle sleep while the parent Pi session runs                                                  |
 | `claude_code`               | Converts global and trusted-project `.claude/commands/` files into temporary Pi skills                      |
 | `comment_checker`           | Runs the `comment-checker` binary after successful writes and edits, appending warnings to the tool result  |
-| `hashline`                  | Content-hash anchored file reads and writes that reject stale edits                                         |
 | `mcp`                       | One deliberately narrow, lazy MCP gateway (see below)                                                       |
 | `meridian_session_affinity` | Adds Pi's session ID to Meridian requests so SDK sessions resume across client-side tool loops              |
 | `prompt_rewind`             | Escape before the first assistant output restores the cancelled prompt's raw text for editing               |

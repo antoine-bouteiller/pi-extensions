@@ -25,9 +25,9 @@ const isMissingPathError = (error: unknown): boolean =>
   ((error as { code?: unknown }).code === 'ENOENT' || (error as { code?: unknown }).code === 'ENOTDIR')
 
 /** Strip the leading `@` accepted by pi's path-oriented tools. */
-export const stripToolPathPrefix = (path: string): string => (path.startsWith('@') ? path.slice(1) : path)
+const stripToolPathPrefix = (path: string): string => (path.startsWith('@') ? path.slice(1) : path)
 
-export const resolveToolPath = (path: string, cwd: string): string => resolve(cwd, stripToolPathPrefix(path))
+const resolveToolPath = (path: string, cwd: string): string => resolve(cwd, stripToolPathPrefix(path))
 
 const matchesProtectedPolicy = (path: string): boolean => {
   const normalized = path.replaceAll('\\', '/').toLowerCase()
