@@ -115,6 +115,7 @@ export default defineConfig({
     // Synchronous Pi/TUI callbacks have to bridge through `Effect.runSync` and `Schema.*Sync`.
     'no-sync': 'off',
     'no-ternary': 'off',
+    'one-var': 'off',
     'prefer-default-export': 'off',
     'sort-imports': 'off',
     'sort-keys': ['error', 'asc', { allowLineSeparatedGroups: true, natural: true }],
