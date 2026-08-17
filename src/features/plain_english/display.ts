@@ -4,7 +4,21 @@ import { Effect, Exit, Option, Ref, Scope } from 'effect'
 
 import { type PlainEnglishConfig, proseLength } from '#features/plain_english/config'
 import { rewriteMessage } from '#features/plain_english/rewrite'
+import { StatusBar } from '#shared/effect/app_services'
 import { type PiCtx, Ui } from '#shared/effect/pi_services'
+import { publishStatus, type StatusItem } from '#shared/state/status_bar'
+
+const STATUS_KEY = 'plain-english'
+
+const statusItem = (config: PlainEnglishConfig, enabled: boolean): StatusItem =>
+  Option.isNone(config.model)
+    ? { icon: '💬', priority: 20, text: 'PI_PLAIN_ENGLISH_MODEL unset', tone: 'error' }
+    : {
+        icon: '💬',
+        priority: 20,
+        text: `${config.model.value.provider}/${config.model.value.modelId}${enabled ? '' : ' (off)'}`,
+        tone: enabled ? 'success' : 'muted',
+      }
 
 interface Toggle {
   readonly get: () => boolean
@@ -59,7 +73,19 @@ export const makeDisplay = ({ pi, config, toggle }: DisplayOptions) => {
     })
   )
 
+  /*
+   * Published straight to the store at construction: a reload re-registers the extension without
+   * replaying `session_start`, so waiting for that event leaves the status bar empty.
+   */
+  publishStatus(STATUS_KEY, statusItem(config, toggle.get()))
+
+  const announceStatus: Effect.Effect<void, never, StatusBar | Ui> = Effect.gen(function* () {
+    const bar = yield* StatusBar
+    yield* bar.channel(STATUS_KEY).set(statusItem(config, toggle.get()))
+  })
+
   const onSessionStart = Effect.gen(function* () {
+    yield* announceStatus
     const next = yield* Scope.make()
     yield* Ref.set(state.alreadyNotified, false)
     const previous = yield* Ref.getAndSet(state.sessionScope, Option.some(next))
@@ -69,6 +95,8 @@ export const makeDisplay = ({ pi, config, toggle }: DisplayOptions) => {
   })
 
   const onSessionShutdown = Effect.gen(function* () {
+    const bar = yield* StatusBar
+    yield* bar.channel(STATUS_KEY).clear
     const current = yield* Ref.getAndSet(state.sessionScope, Option.none())
     if (Option.isSome(current)) {
       yield* Scope.close(current.value, Exit.void)
@@ -111,5 +139,5 @@ export const makeDisplay = ({ pi, config, toggle }: DisplayOptions) => {
       })
     }).pipe(Effect.as(undefined))
 
-  return { handleMessageEnd, onSessionShutdown, onSessionStart, renderRewriteEntry }
+  return { announceStatus, handleMessageEnd, onSessionShutdown, onSessionStart, renderRewriteEntry }
 }

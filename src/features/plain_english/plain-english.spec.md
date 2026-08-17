@@ -176,6 +176,14 @@ pi.appendEntry('plain-english', { text: rewrite, messageId })
 `renderRewriteEntry(entry, options, theme)` renders a `💬 In plain English:` header followed by
 the rewrite, dimmed, honouring `options.expanded`. On failure the fiber emits nothing.
 
+The feature owns one status-bar entry (`#shared/state/status_bar`, key `plain-english`):
+`💬 provider/model-id`, with ` (off)` appended and a muted tone while rewrites are disabled, and
+`💬 PI_PLAIN_ENGLISH_MODEL unset` in an error tone when no model is configured — an inert feature
+the reader cannot see is indistinguishable from a broken one. It is written to the store at
+registration, because reloading the extension does not replay `session_start`, and re-published
+through the channel on `session_start` and on every `/plain-english` toggle so the stock footer
+mirrors it too. Session shutdown clears it.
+
 Session shutdown interrupts the scope, so a rewrite in flight when the session ends is dropped
 rather than appended to a dead session.
 
@@ -230,7 +238,8 @@ None.
 
 ## Changelog
 
-| Date       | Amendment                                          | Sections affected      | Reason                                                                   |
-| ---------- | -------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------ |
-| 2026-08-15 | Add `/plain-english-md <path>` command             | 2, 3, 7, 8.1, 8.5, 8.7 | On-demand rewrite of an existing Markdown file                           |
-| 2026-08-15 | Drop the automatic `write`/`edit` Markdown rewrite | 2, 3, 6, 7, 8.1–8.7    | Unasked-for file rewrites and per-write latency outweigh the convenience |
+| Date       | Amendment                                                                    | Sections affected      | Reason                                                                             |
+| ---------- | ---------------------------------------------------------------------------- | ---------------------- | ---------------------------------------------------------------------------------- |
+| 2026-08-15 | Add `/plain-english-md <path>` command                                       | 2, 3, 7, 8.1, 8.5, 8.7 | On-demand rewrite of an existing Markdown file                                     |
+| 2026-08-15 | Drop the automatic `write`/`edit` Markdown rewrite                           | 2, 3, 6, 7, 8.1–8.7    | Unasked-for file rewrites and per-write latency outweigh the convenience           |
+| 2026-08-17 | Publish a status-bar entry naming the rewriter model, error-toned when unset | 8.4                    | `[C-2]` matters only if the reader can see which model is receiving their messages |

@@ -55,6 +55,7 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, environment: Rea
         Effect.gen(function* () {
           const ui = yield* Ui
           yield* ui.notify(toggleMessage(enabled), 'info')
+          yield* display.announceStatus
         }).pipe(Effect.provide(perInvocation(ctx)))
       )
     },
