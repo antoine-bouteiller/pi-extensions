@@ -15,11 +15,10 @@ import { feature as promptRewind } from '#features/prompt_rewind/index'
 import { feature as rules } from '#features/rules/index'
 import { feature as safetyGuard } from '#features/safety_guard/index'
 import { feature as statusPanel } from '#features/status_panel/index'
-import { feature as subAgents } from '#features/sub_agents/index'
 import { feature as webfetch } from '#features/webfetch/index'
 import { type FeaturePlugin } from '#shared/effect/feature'
 
-export const features = [
+const features = [
   askUser,
   autoTheme,
   backgroundPoll,
@@ -33,7 +32,6 @@ export const features = [
   rules,
   safetyGuard,
   statusPanel,
-  subAgents,
   webfetch,
 ] satisfies readonly FeaturePlugin[]
 

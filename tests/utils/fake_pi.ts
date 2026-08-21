@@ -23,7 +23,7 @@ interface FakePiResult {
   state: FakePiState
 }
 
-export interface FakePiState {
+interface FakePiState {
   entries: { customType: string; data: unknown }[]
   entryRenderers: Map<string, (...args: unknown[]) => unknown>
   handlers: Map<string, EventHandler[]>

@@ -66,7 +66,6 @@ This package uses a pre-release version of Effect v4. Because the API changes fr
 | `rules`                     | Loads `.md` and `.mdc` rules from `.claude/rules/` and `.agents/rules/`.                                         |
 | `safety_guard`              | Provides `safe_rm`, redirects simple `rm` commands through it, and blocks dangerous commands or protected paths. |
 | `status_panel`              | A sidebar showing the model, context usage, git status, provider limits, and active subagents.                   |
-| `sub_agents`                | Creates session-specific subagents in separate Pi processes ([details](src/features/sub_agents/README.md)).      |
 | `webfetch`                  | Fetches a URL and provides the content as markdown, plain text, or HTML.                                         |
 
 The `mcp` feature only reads `~/.config/mcp/mcp.json`. It supports tools via stdio and HTTP/SSE, uses the system keyring to store credentials, and does not open connections at startup. It also handles automatic OAuth through `/mcp-auth`. For HTTP servers like Linear (`https://mcp.linear.app/mcp`), OAuth is detected automatically after a 401 error, so no extra configuration is needed. Custom HTTP headers will stop this automatic detection unless `oauth` is manually set.
