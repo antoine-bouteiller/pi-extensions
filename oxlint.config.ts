@@ -46,6 +46,7 @@ export default defineConfig({
        * other module must keep environment access inside an Effect.
        */
       files: [
+        'src/features/auto_theme/index.ts',
         'src/features/caffeinate/keep_awake.ts',
         'src/features/mcp/gateway.ts',
         'src/features/mcp/manager.ts',

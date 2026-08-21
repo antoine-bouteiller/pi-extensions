@@ -2,6 +2,7 @@ import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
 import { type ProcessRuntime } from '#config/runtime'
 import { register as askUser } from '#features/ask_user/index'
+import { register as autoTheme } from '#features/auto_theme/index'
 import { register as backgroundPoll } from '#features/background_poll/index'
 import { register as caffeinate } from '#features/caffeinate/index'
 import { register as claudeCode } from '#features/claude_code/index'
@@ -24,6 +25,7 @@ export interface FeatureRegistration {
 
 export const features: readonly FeatureRegistration[] = [
   { name: 'ask-user', register: askUser },
+  { name: 'auto-theme', register: autoTheme },
   { name: 'background-poll', register: backgroundPoll },
   { name: 'caffeinate', register: caffeinate },
   { name: 'claude-code', register: claudeCode },
