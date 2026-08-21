@@ -9,7 +9,6 @@ import { register as commentChecker } from '#features/comment_checker/index'
 import { register as hashline } from '#features/hashline/index'
 import { register as mcp } from '#features/mcp/index'
 import { register as meridianSessionAffinity } from '#features/meridian_session_affinity/index'
-import { register as plainEnglish } from '#features/plain_english/index'
 import { register as promptRewind } from '#features/prompt_rewind/index'
 import { register as rules } from '#features/rules/index'
 import { register as safeRm } from '#features/safe_rm/index'
@@ -32,7 +31,6 @@ export const features: readonly FeatureRegistration[] = [
   { name: 'hashline', register: hashline },
   { name: 'mcp', register: mcp },
   { name: 'meridian-session-affinity', register: meridianSessionAffinity },
-  { name: 'plain-english', register: plainEnglish },
   { name: 'prompt-rewind', register: promptRewind },
   { name: 'rules', register: rules },
   { name: 'safe-rm', register: safeRm },
