@@ -1,12 +1,12 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Effect, Option } from 'effect'
 
-import { loadConfig, makeToggle } from '@/features/plain_english/config.js'
-import { makeDisplay } from '@/features/plain_english/display.js'
-import { makeMarkdownCommand } from '@/features/plain_english/markdown.js'
-import { type AppRuntime } from '@/shared/effect/app_services.js'
-import { Ui } from '@/shared/effect/pi_services.js'
-import { makeEventHandler, perInvocation } from '@/shared/effect/runtime.js'
+import { loadConfig, makeToggle } from '#features/plain_english/config'
+import { makeDisplay } from '#features/plain_english/display'
+import { makeMarkdownCommand } from '#features/plain_english/markdown'
+import { type AppRuntime } from '#shared/effect/app_services'
+import { Ui } from '#shared/effect/pi_services'
+import { makeEventHandler, perInvocation } from '#shared/effect/runtime'
 
 const toggleMessage = (enabled: boolean) => `Plain-English rewrites are ${enabled ? 'on' : 'off'}.`
 

@@ -1,6 +1,6 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
-import { type AppRuntime } from '@/shared/effect/app_services.js'
+import { type AppRuntime } from '#shared/effect/app_services'
 
 import { makeSubagentFeature } from './agents.js'
 import { type AgentManagerOptions } from './core.js'

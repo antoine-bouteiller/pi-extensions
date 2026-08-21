@@ -6,7 +6,7 @@ import { type OAuthClientInformationMixed, type OAuthClientMetadata, type OAuthT
 import { Cause, Deferred, Effect, Exit, Scope, Semaphore } from 'effect'
 import { HttpServerRequest, HttpServerResponse } from 'effect/unstable/http'
 
-import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
+import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '#shared/utils/predicates'
 
 import { type CredentialStore, type OAuthCredentialPayload } from './keychain.js'
 import { assertOpenableAuthorizationUrl, McpError, type OAuthConfig } from './types.js'

@@ -3,7 +3,7 @@ import { HttpClient, type HttpClientError } from 'effect/unstable/http'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
-import { isEmptyString, isTrue } from '@/shared/utils/predicates.js'
+import { isEmptyString, isTrue } from '#shared/utils/predicates'
 
 import { progressBar } from './render.js'
 import { type ProviderQuota, type QuotaWindow } from './state.js'

@@ -2,9 +2,9 @@ import { type ExtensionAPI, type ExtensionContext, type ExtensionEvent, type Rea
 import { Effect, Path, Ref } from 'effect'
 import { type HttpClient } from 'effect/unstable/http'
 
-import { type AppRuntime, AgentActivity, StatusBar } from '@/shared/effect/app_services.js'
-import { azureQuota, writeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
-import { isEmptyString, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
+import { type AppRuntime, AgentActivity, StatusBar } from '#shared/effect/app_services'
+import { azureQuota, writeSubagentAzureQuota } from '#shared/state/azure_quota'
+import { isEmptyString, isNullOrUndefined, isTrue } from '#shared/utils/predicates'
 
 import { renderFooterLines } from './footer.js'
 import { fetchGitInfo } from './git.js'

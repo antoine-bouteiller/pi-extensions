@@ -3,10 +3,10 @@ import { Cause, Context, Effect, Stream } from 'effect'
 import { type PlatformError } from 'effect/PlatformError'
 import { ChildProcess } from 'effect/unstable/process'
 
-import { bunChildProcessSpawner } from '@/shared/effect/bun_services.js'
-import { jsonText, type JsonObject } from '@/shared/utils/json.js'
-import { isEmptyString } from '@/shared/utils/predicates.js'
-import { isRecord } from '@/shared/utils/records.js'
+import { bunChildProcessSpawner } from '#shared/effect/bun_services'
+import { jsonText, type JsonObject } from '#shared/utils/json'
+import { isEmptyString } from '#shared/utils/predicates'
+import { isRecord } from '#shared/utils/records'
 
 const MAX_OUTPUT_BYTES = 64 * 1024
 const PROCESS_TIMEOUT_MS = 30_000

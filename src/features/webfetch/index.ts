@@ -1,6 +1,6 @@
 import { type ExtensionAPI, formatSize } from '@earendil-works/pi-coding-agent'
 
-import { type AppRuntime } from '@/shared/effect/app_services.js'
+import { type AppRuntime } from '#shared/effect/app_services'
 
 import { makeWebfetchRunner, MAX_DOWNLOAD_BYTES, MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES, renderWebfetchResult, WebfetchParams } from './fetch.js'
 

@@ -19,7 +19,7 @@ import {
 import { type EditorComponent, isKeyRelease, isKeyRepeat, matchesKey, type TUI } from '@earendil-works/pi-tui'
 import { Effect } from 'effect'
 
-import { isNotEmptyString, isTrue } from '@/shared/utils/predicates.js'
+import { isNotEmptyString, isTrue } from '#shared/utils/predicates'
 
 export const REWIND_COMMAND = 'prompt-rewind-cancel'
 

@@ -3,9 +3,9 @@ import { getCapabilities, truncateToWidth, visibleWidth, type Component, type Ov
 import { DateTime, Effect, Exit, Ref, Scope } from 'effect'
 import { type Path } from 'effect/Path'
 
-import { type RunningAgent } from '@/shared/state/agent_activity.js'
-import { formatStatusText, type StatusEntry, type StatusTone } from '@/shared/state/status_bar.js'
-import { isEmptyString, isNotEmptyString } from '@/shared/utils/predicates.js'
+import { type RunningAgent } from '#shared/state/agent_activity'
+import { formatStatusText, type StatusEntry, type StatusTone } from '#shared/state/status_bar'
+import { isEmptyString, isNotEmptyString } from '#shared/utils/predicates'
 
 import { formatDirectory, formatTokens } from './render.js'
 import { createSplitPaneController, type SplitPaneController } from './split_pane.js'

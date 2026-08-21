@@ -16,8 +16,8 @@ import {
 import { Container, matchesKey, truncateToWidth, visibleWidth, type TUI } from '@earendil-works/pi-tui'
 import { DateTime, Effect, Exit, Fiber, Schema, Scope } from 'effect'
 
-import { bunFileSystem } from '@/shared/effect/bun_services.js'
-import { isEmptyString, isNotEmptyString } from '@/shared/utils/predicates.js'
+import { bunFileSystem } from '#shared/effect/bun_services'
+import { isEmptyString, isNotEmptyString } from '#shared/utils/predicates'
 
 import { getSocketPath, isPeekActive, type AgentInfo } from './core.js'
 import { persistedProfileColor } from './profiles.js'

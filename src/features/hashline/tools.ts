@@ -23,14 +23,14 @@ import { Context, Data, Effect, Path } from 'effect'
 import { type FileSystem } from 'effect/FileSystem'
 import { Type, type Static } from 'typebox'
 
-import { type AppRuntime } from '@/shared/effect/app_services.js'
-import { PiCtx } from '@/shared/effect/pi_services.js'
-import { type HandlerServices } from '@/shared/effect/runtime.js'
-import { type JsonObject } from '@/shared/utils/json.js'
-import { isTrue } from '@/shared/utils/predicates.js'
-import { assertUnprotectedPathEffect, resolveToolPath, stripToolPathPrefix } from '@/shared/utils/protected_paths.js'
-import { isRecord } from '@/shared/utils/records.js'
-import { truncateOutput } from '@/shared/utils/tool_output.js'
+import { type AppRuntime } from '#shared/effect/app_services'
+import { PiCtx } from '#shared/effect/pi_services'
+import { type HandlerServices } from '#shared/effect/runtime'
+import { type JsonObject } from '#shared/utils/json'
+import { isTrue } from '#shared/utils/predicates'
+import { assertUnprotectedPathEffect, resolveToolPath, stripToolPathPrefix } from '#shared/utils/protected_paths'
+import { isRecord } from '#shared/utils/records'
+import { truncateOutput } from '#shared/utils/tool_output'
 
 export const readSchema = Type.Object({
   limit: Type.Optional(Type.Integer({ description: 'Maximum number of lines to return.', minimum: 1 })),

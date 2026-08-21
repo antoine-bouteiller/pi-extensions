@@ -4,8 +4,8 @@ import { Cause, Context, Effect, Layer, Stream } from 'effect'
 import { type PlatformError } from 'effect/PlatformError'
 import { ChildProcess } from 'effect/unstable/process'
 
-import { bunChildProcessSpawner, bunFileSystem } from '@/shared/effect/bun_services.js'
-import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined } from '@/shared/utils/predicates.js'
+import { bunChildProcessSpawner, bunFileSystem } from '#shared/effect/bun_services'
+import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined } from '#shared/utils/predicates'
 
 export interface ProcessSnapshot {
   identity: string

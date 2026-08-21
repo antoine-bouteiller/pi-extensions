@@ -3,8 +3,8 @@ import { tmpdir, userInfo } from 'node:os'
 
 import { Effect } from 'effect'
 
-import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
-import { jsonText, parseJsonText } from '@/shared/utils/json.js'
+import { bunFileSystem, bunPath } from '#shared/effect/bun_services'
+import { jsonText, parseJsonText } from '#shared/utils/json'
 
 import { createObservableStore } from './store.js'
 

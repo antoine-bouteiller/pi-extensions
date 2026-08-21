@@ -13,10 +13,10 @@ import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest, type H
 import TurndownService from 'turndown'
 import { Type, type Static } from 'typebox'
 
-import { type AppRuntime } from '@/shared/effect/app_services.js'
-import { ToolFailure } from '@/shared/effect/errors.js'
-import { isEmptyString, isNotEmptyString, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
-import { boundToolTextEffect, writePrivateTempFileEffect } from '@/shared/utils/tool_output.js'
+import { type AppRuntime } from '#shared/effect/app_services'
+import { ToolFailure } from '#shared/effect/errors'
+import { isEmptyString, isNotEmptyString, isNullOrUndefined, isTrue } from '#shared/utils/predicates'
+import { boundToolTextEffect, writePrivateTempFileEffect } from '#shared/utils/tool_output'
 
 const DEFAULT_TIMEOUT_SECONDS = 30
 const MAX_TIMEOUT_SECONDS = 120

@@ -18,12 +18,12 @@ import {
   withHeldFile,
   type HeldFile,
   type HostDirectoryEntry,
-} from '@/shared/effect/bun_host_file_system.js'
-import { bunChildProcessSpawner, bunFileSystem, bunPath, type BunChildProcessSpawner } from '@/shared/effect/bun_services.js'
-import { azureQuota, consumeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
-import { jsonText, parseJsonText, prettyJsonText, type JsonObject } from '@/shared/utils/json.js'
-import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
-import { isRecord } from '@/shared/utils/records.js'
+} from '#shared/effect/bun_host_file_system'
+import { bunChildProcessSpawner, bunFileSystem, bunPath, type BunChildProcessSpawner } from '#shared/effect/bun_services'
+import { azureQuota, consumeSubagentAzureQuota } from '#shared/state/azure_quota'
+import { jsonText, parseJsonText, prettyJsonText, type JsonObject } from '#shared/utils/json'
+import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '#shared/utils/predicates'
+import { isRecord } from '#shared/utils/records'
 
 import { buildChildEnv } from './child_env.js'
 import {

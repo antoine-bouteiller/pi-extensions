@@ -12,13 +12,13 @@ import { type FileSystem } from 'effect/FileSystem'
 import { type PlatformError } from 'effect/PlatformError'
 import { Type } from 'typebox'
 
-import { type AppRuntime } from '@/shared/effect/app_services.js'
-import { lstatHostFile, readHostDirectoryEntries } from '@/shared/effect/bun_host_file_system.js'
-import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
-import { unknownError } from '@/shared/effect/errors.js'
-import { type JsonObject } from '@/shared/utils/json.js'
-import { isEmptyString, isNotEmptyString } from '@/shared/utils/predicates.js'
-import { assertUnprotectedPathEffect, ProtectedPathError } from '@/shared/utils/protected_paths.js'
+import { type AppRuntime } from '#shared/effect/app_services'
+import { lstatHostFile, readHostDirectoryEntries } from '#shared/effect/bun_host_file_system'
+import { bunFileSystem, bunPath } from '#shared/effect/bun_services'
+import { unknownError } from '#shared/effect/errors'
+import { type JsonObject } from '#shared/utils/json'
+import { isEmptyString, isNotEmptyString } from '#shared/utils/predicates'
+import { assertUnprotectedPathEffect, ProtectedPathError } from '#shared/utils/protected_paths'
 
 import {
   CancelledError,

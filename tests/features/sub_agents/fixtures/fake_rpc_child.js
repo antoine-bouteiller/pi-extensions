@@ -96,6 +96,8 @@ const staysAlive = (message) => {
   return message.startsWith('hold')
 }
 
+const promptMessage = (value) => (typeof value === 'string' ? value : '')
+
 /** @param {string} line */
 const handle = (line) =>
   Effect.gen(function* () {
@@ -116,7 +118,7 @@ const handle = (line) =>
       return
     }
     if (command.type === 'prompt') {
-      const message = String(command.message)
+      const message = promptMessage(command.message)
       yield* record({ message: command.message, type: 'prompt' })
       if (message.startsWith('reject')) {
         send({ error: 'fake prompt rejection', id: command.id, success: false, type: 'response' })

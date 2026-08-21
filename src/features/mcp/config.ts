@@ -5,8 +5,8 @@ import { FileSystem } from 'effect/FileSystem'
 import { Path } from 'effect/Path'
 import { type PlatformError } from 'effect/PlatformError'
 
-import { type JsonObject } from '@/shared/utils/json.js'
-import { isEmptyString, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
+import { type JsonObject } from '#shared/utils/json'
+import { isEmptyString, isNullOrUndefined, isTrue } from '#shared/utils/predicates'
 
 import {
   type DisabledServerConfig,

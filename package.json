@@ -6,6 +6,12 @@
     "pi-package"
   ],
   "type": "module",
+  "imports": {
+    "#features/*": "./src/features/*.ts",
+    "#config/*": "./src/config/*.ts",
+    "#shared/*": "./src/shared/*.ts",
+    "#tests/*": "./tests/*.ts"
+  },
   "scripts": {
     "prepare": "effect-tsgo patch --typescript --oxlint",
     "check": "bun run fmt:check && bun run lint && bun run knip && bun run test",
@@ -38,7 +44,7 @@
     "knip": "6.32.2",
     "lefthook": "^2.1.10",
     "oxfmt": "0.62.0",
-    "oxlint": "1.77.0",
+    "oxlint": "1.78.0",
     "oxlint-tsgolint": "7.0.2001",
     "typebox": "1.3.16",
     "typescript": "7.0.2"

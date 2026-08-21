@@ -1,8 +1,8 @@
 import { Effect, FileSystem, Option, Path } from 'effect'
 
-import { type PlainEnglishConfig, proseLength } from '@/features/plain_english/config.js'
-import { rewriteDocument } from '@/features/plain_english/rewrite.js'
-import { type PiCtx, Ui } from '@/shared/effect/pi_services.js'
+import { type PlainEnglishConfig, proseLength } from '#features/plain_english/config'
+import { rewriteDocument } from '#features/plain_english/rewrite'
+import { type PiCtx, Ui } from '#shared/effect/pi_services'
 
 const REWRITTEN_MARKER = '<!-- plain-english:rewritten -->'
 

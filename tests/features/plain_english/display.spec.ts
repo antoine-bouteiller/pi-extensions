@@ -1,3 +1,5 @@
+import { afterEach } from 'bun:test'
+
 import { type Api, type AssistantMessage, type Context, type Model } from '@earendil-works/pi-ai'
 import { type MessageEndEvent } from '@earendil-works/pi-coding-agent'
 import { describe, expect, it, promiseFromEffect } from '@tests/utils/bun_effect.js'
@@ -9,7 +11,7 @@ import { type PlainEnglishConfig, makeToggle } from '@/features/plain_english/co
 import { makeDisplay } from '@/features/plain_english/display.js'
 import { StatusBarLive } from '@/shared/effect/app_services.js'
 import { PiCtx, Ui, type UiApi } from '@/shared/effect/pi_services.js'
-import { statusBar } from '@/shared/state/status_bar.js'
+import { publishStatus, statusBar } from '@/shared/state/status_bar.js'
 
 type TestModel = Model<Api>
 
@@ -46,6 +48,8 @@ const ui = (notifications: { message: string; level: string }[]): UiApi => ({
 const settle = Effect.yieldNow.pipe(Effect.andThen(Effect.yieldNow))
 
 const status = () => statusBar.list().find((entry) => entry.key === 'plain-english')
+
+afterEach(() => publishStatus('plain-english', undefined))
 
 describe('plain_english display', () => {
   it.scoped('appends one rewrite for an eligible assistant message without replacing it', () => {

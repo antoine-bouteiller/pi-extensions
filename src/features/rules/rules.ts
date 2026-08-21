@@ -14,9 +14,9 @@ import { Context, Deferred, Effect, HashSet, Path, Ref } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
 import { type PlatformError } from 'effect/PlatformError'
 
-import { type JsonObject } from '@/shared/utils/json.js'
-import { isEmptyString, isNotEmptyString, isNullOrUndefined } from '@/shared/utils/predicates.js'
-import { isRecord } from '@/shared/utils/records.js'
+import { type JsonObject } from '#shared/utils/json'
+import { isEmptyString, isNotEmptyString, isNullOrUndefined } from '#shared/utils/predicates'
+import { isRecord } from '#shared/utils/records'
 
 const RULE_DIRECTORIES = ['.claude/rules', '.agents/rules'] as const
 const RULE_EXTENSIONS = new Set(['.md', '.mdc'])

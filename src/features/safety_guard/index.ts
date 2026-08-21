@@ -1,9 +1,9 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Effect } from 'effect'
 
-import { type AppRuntime } from '@/shared/effect/app_services.js'
-import { piContext } from '@/shared/effect/pi_services.js'
-import { makeEventHandler } from '@/shared/effect/runtime.js'
+import { type AppRuntime } from '#shared/effect/app_services'
+import { piContext } from '#shared/effect/pi_services'
+import { makeEventHandler } from '#shared/effect/runtime'
 
 import { announceGuardStatus, handleToolCall } from './guard.js'
 

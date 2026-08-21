@@ -1,7 +1,7 @@
 import { type BeforeAgentStartEvent, type BeforeProviderHeadersEvent, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { Effect } from 'effect'
 
-import { isEmptyString, isNullOrUndefined } from '@/shared/utils/predicates.js'
+import { isEmptyString, isNullOrUndefined } from '#shared/utils/predicates'
 
 import { scrubPiFingerprints } from './scrub.js'
 

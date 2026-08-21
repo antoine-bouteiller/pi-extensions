@@ -1,8 +1,8 @@
 import { type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { Effect } from 'effect'
 
-import { type AppServices, type AppRuntime } from '@/shared/effect/app_services.js'
-import { perInvocation, type HandlerServices } from '@/shared/effect/runtime.js'
+import { type AppServices, type AppRuntime } from '#shared/effect/app_services'
+import { perInvocation, type HandlerServices } from '#shared/effect/runtime'
 
 import { makeHashlineTools, pruneSupersededReads, readSchema, renderHashlineRead, writeSchema, type HashlineToolError } from './tools.js'
 

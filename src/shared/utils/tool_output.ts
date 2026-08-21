@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os'
 import { formatSize, truncateHead, truncateTail } from '@earendil-works/pi-coding-agent'
 import { type Cause, Effect, Option } from 'effect'
 
-import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
-import { unknownError } from '@/shared/effect/errors.js'
+import { bunFileSystem, bunPath } from '#shared/effect/bun_services'
+import { unknownError } from '#shared/effect/errors'
 
 export interface Truncation {
   content: string

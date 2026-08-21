@@ -1,7 +1,7 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
-import { type AppRuntime } from '@/shared/effect/app_services.js'
-import { makeEventHandler } from '@/shared/effect/runtime.js'
+import { type AppRuntime } from '#shared/effect/app_services'
+import { makeEventHandler } from '#shared/effect/runtime'
 
 import { makePanelController, recordSubagentQuota, type StatusPanelDependencies } from './panel.js'
 

@@ -3,8 +3,8 @@ import { type FileSystem } from 'effect/FileSystem'
 import { type Path } from 'effect/Path'
 import { type HttpClient } from 'effect/unstable/http'
 
-import { type AgentActivityStore, type RunningAgent, runningAgents } from '@/shared/state/agent_activity.js'
-import { formatStatusText, publishStatus, type StatusEntry, type StatusItem, statusBar } from '@/shared/state/status_bar.js'
+import { type AgentActivityStore, type RunningAgent, runningAgents } from '#shared/state/agent_activity'
+import { formatStatusText, publishStatus, type StatusEntry, type StatusItem, statusBar } from '#shared/state/status_bar'
 
 import { Ui } from './pi_services.js'
 

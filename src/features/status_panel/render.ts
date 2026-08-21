@@ -3,7 +3,7 @@ import { homedir } from 'node:os'
 import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui'
 import { type Path } from 'effect/Path'
 
-import { isEmptyString } from '@/shared/utils/predicates.js'
+import { isEmptyString } from '#shared/utils/predicates'
 
 export const formatTokens = (tokens: number) => {
   if (tokens < 1000) {

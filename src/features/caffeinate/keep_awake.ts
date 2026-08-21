@@ -1,7 +1,7 @@
 import { Effect, Exit, Scope } from 'effect'
 import { ChildProcess } from 'effect/unstable/process'
 
-import { bunChildProcessSpawner } from '@/shared/effect/bun_services.js'
+import { bunChildProcessSpawner } from '#shared/effect/bun_services'
 
 interface CaffeinateProcess {
   readonly exited: Promise<void>

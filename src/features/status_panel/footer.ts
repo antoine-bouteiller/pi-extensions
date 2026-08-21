@@ -2,7 +2,7 @@ import { type ThemeColor } from '@earendil-works/pi-coding-agent'
 import { truncateToWidth } from '@earendil-works/pi-tui'
 import { type Path } from 'effect/Path'
 
-import { formatStatusText, type StatusEntry } from '@/shared/state/status_bar.js'
+import { formatStatusText, type StatusEntry } from '#shared/state/status_bar'
 
 import { columns, formatDirectory, formatTokens, progressBar, progressLine } from './render.js'
 import { type GitInfoState, type ModelInfoState, type ProviderQuotas } from './state.js'
