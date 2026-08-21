@@ -29,8 +29,7 @@ src/
 │   ├── safe_rm/{index,remove,errors}.ts
 │   ├── safety_guard/{index,guard,constants}.ts
 │   ├── status_panel/{index,panel,footer,git,provider,render,sidebar,split_pane,state,statuses}.ts
-│   ├── sub_agents/{index,agents,child_env,core,peek,process_ownership,profiles,rpc}.ts
-│   ├── sub_agents/README.md
+│   ├── sub_agents/spec/{sub-agents,agent-profiles,orchestration,delegation-tools,operator-surface}.spec.md
 │   └── webfetch/{index,fetch}.ts
 └── shared/
     ├── effect/{app_services,bun_host_file_system,bun_services,errors,pi_services,runtime}.ts

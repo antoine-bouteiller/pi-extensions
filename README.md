@@ -61,8 +61,7 @@ This package tracks an Effect v4 prerelease while the API surface keeps moving, 
 | `rules`                     | Loads recursive `.md` and `.mdc` rules from `.claude/rules/` and `.agents/rules/`                           |
 | `safe_rm`                   | Validated deletion that refuses credentials and paths outside the working directory                         |
 | `safety_guard`              | Routes simple literal `rm` through `safe_rm`; blocks complex destructive shell commands and protected paths |
-| `status_panel`              | Docked status sidebar with model, context usage, git state, provider quota, and running subagents           |
-| `sub_agents`                | Session-scoped subagents in isolated child Pi processes ([details](src/features/sub_agents/README.md))      |
+| `status_panel`              | Renders a docked status sidebar with model, context usage, git state, provider quota, and running subagents |
 | `webfetch`                  | Fetches a URL and returns markdown, plain text, or raw HTML                                                 |
 
 `mcp` reads only `~/.config/mcp/mcp.json`. It supports stdio and HTTP/SSE tools plus automatic loopback OAuth through `/mcp-auth`, stores reusable credentials in the macOS Keychain, and opens no connections at startup. URL-only HTTP servers such as Linear (`https://mcp.linear.app/mcp`) auto-detect OAuth after a 401 challenge, so they need no empty `"oauth": {}` block; custom HTTP headers suppress that detection unless `oauth` is set explicitly.
