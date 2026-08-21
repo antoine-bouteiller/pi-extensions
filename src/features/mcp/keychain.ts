@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto'
+import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 
-import { AsyncEntry } from '@napi-rs/keyring'
+import { type AsyncEntry as AsyncEntryType } from '@napi-rs/keyring'
 import { Context, Effect, Layer, Option, Schema } from 'effect'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
@@ -60,8 +62,20 @@ export class CredentialStoreEffect extends Context.Service<CredentialStoreEffect
   'pi-extensions/features/mcp/keychain/CredentialStoreEffect'
 ) {}
 
-type KeyringEntry = Pick<AsyncEntry, 'deletePassword' | 'getPassword' | 'setPassword'>
+type KeyringEntry = Pick<AsyncEntryType, 'deletePassword' | 'getPassword' | 'setPassword'>
 type EntryFactory = (service: string, account: string) => KeyringEntry
+interface KeyringModule {
+  AsyncEntry: new (service: string, account: string) => AsyncEntryType
+}
+
+const isKeyringModule = (value: unknown): value is KeyringModule =>
+  typeof value === 'object' && value !== null && 'AsyncEntry' in value && typeof value.AsyncEntry === 'function'
+
+const nativeKeyring: unknown = createRequire(import.meta.url)(fileURLToPath(import.meta.resolve(`@napi-rs/keyring-darwin-${process.arch}`)))
+if (!isKeyringModule(nativeKeyring)) {
+  throw new Error('Failed to load macOS Keychain binding')
+}
+const { AsyncEntry } = nativeKeyring
 
 export interface KeychainCredentialStoreOptions {
   serviceName?: string
