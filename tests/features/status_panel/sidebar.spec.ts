@@ -86,6 +86,30 @@ describe('sidebar rendering', () => {
     })
   )
 
+  it.effect('uses semantic theme colors instead of a fixed RGB palette', () =>
+    withProcessEnv('NO_COLOR', undefined, () =>
+      Effect.sync(() => {
+        const colors = new Set<string>()
+        const lines = renderSidebarLines({
+          height: 36,
+          now: 0,
+          state,
+          theme: {
+            bold: (text: string) => text,
+            fg: (color: string, text: string) => {
+              colors.add(color)
+              return text
+            },
+          },
+          width: 44,
+        })
+
+        expect(colors).toEqual(new Set(['warning', 'text', 'muted', 'thinkingLow', 'accent']))
+        expect(lines.join('\n')).not.toContain('\x1b[38;2;')
+      })
+    )
+  )
+
   it.effect('does not apply palette or theme colors when NO_COLOR is set', () =>
     withProcessEnv('NO_COLOR', '1', () =>
       Effect.sync(() => {
