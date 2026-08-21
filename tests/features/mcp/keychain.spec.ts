@@ -213,7 +213,7 @@ describe('Keychain OAuth credential store', () => {
     })
   )
 
-  it.effect('rejects malformed JSON and malformed credential members', () =>
+  it.effect('deletes malformed JSON and malformed credential members', () =>
     Effect.gen(function* () {
       for (const serialized of [
         '{ nope',
@@ -234,16 +234,10 @@ describe('Keychain OAuth credential store', () => {
       ]) {
         const keyring = inMemoryKeyring({ [keychainAccount('slack')]: serialized })
         const store = new KeychainCredentialStore({ createEntry: keyring.createEntry })
-        yield* Effect.promise(() =>
-          store.get('slack', credential.serverUrl).then(
-            () => {
-              throw new Error('expected malformed Keychain credential')
-            },
-            (error: unknown) => {
-              expect(asError(error).message).toContain('credential for MCP server "slack" is malformed')
-            }
-          )
-        )
+
+        expect(yield* Effect.promise(() => store.get('slack', credential.serverUrl))).toBeUndefined()
+        expect(keyring.values.has(keychainAccount('slack'))).toBeFalse()
+        expect(keyring.calls.map(({ operation }) => operation)).toEqual(['get', 'delete'])
       }
     })
   )

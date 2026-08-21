@@ -213,18 +213,16 @@ export class KeychainCredentialStore implements CredentialStore {
     if (serialized === undefined) {
       return undefined
     }
-    if (typeof serialized !== 'string') {
-      throw malformed(serverName)
-    }
-
-    let parsed: unknown
     try {
-      parsed = JSON.parse(serialized) as unknown
+      if (typeof serialized !== 'string') {
+        throw malformed(serverName)
+      }
+      const credential = validateCredentialPayload(JSON.parse(serialized) as unknown, serverName)
+      return credential.serverUrl === serverUrl ? credential : undefined
     } catch {
-      throw malformed(serverName)
+      await this.delete(serverName, signal)
+      return undefined
     }
-    const credential = validateCredentialPayload(parsed, serverName)
-    return credential.serverUrl === serverUrl ? credential : undefined
   }
 
   // oxlint-disable-next-line effecttsgo/async-function -- Implements the promise-returning `CredentialStore` awaited by the MCP SDK's OAuth provider.
