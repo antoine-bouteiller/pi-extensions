@@ -37,7 +37,7 @@ records — and it must disappear silently whenever the rewriter is unavailable.
 | `[KD-8]` Markdown default    | `sibling` mode writing `NAME.plain.md`; `overwrite` exists but is opt-in and marker-guarded                               | A weak rewriter degrading a real document is unrecoverable; a sibling file is discardable                                                                                                                                                                       |
 | `[KD-9]` Kill switch         | A `/plain-english` command toggling in-memory session state                                                               | Pi owns commands natively, so the upstream flag-file polled on every hook fire buys nothing here                                                                                                                                                                |
 | `[KD-10]` Failure policy     | Fail open everywhere: on any error, timeout, or truncation, emit nothing and notify once per session via `ctx.ui.notify`  | A partial rewrite is more confusing than none, and a silent skip with no explanation reads as a bug                                                                                                                                                             |
-| `[KD-11]` Configuration      | Plain `process.env` reads resolved once at registration, except the toggle                                                | The repo has no settings API and existing features read `process.env` directly (`src/features/mcp/gateway.ts`, `src/features/sub_agents/core.ts`)                                                                                                               |
+| `[KD-11]` Configuration      | Plain `process.env` reads resolved once at registration, except the toggle                                                | The repo has no settings API and existing features read `process.env` directly (`src/features/mcp/gateway.ts`)                                                                                                                                                  |
 | `[KD-13]` Markdown trigger   | A `/plain-english-md <path>` command is the only way a file is rewritten; no `write`/`edit` hook                          | Rewriting `README.md` because the agent happened to touch it is data loss dressed as a feature, and a post-write rewrite charges the rewriter's latency to every Markdown write                                                                                 |
 
 ## 4. Principles & Intents
@@ -111,7 +111,7 @@ It registers, in order: `pi.registerEntryRenderer('plain-english', renderRewrite
 (`node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts:922`),
 `pi.on('message_end', ...)`
 (`node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts:897`), and the
-`/plain-english` and `/plain-english-md` commands (`src/features/sub_agents/index.ts:23`).
+`/plain-english` and `/plain-english-md` commands (`src/features/plain_english/index.ts:63`).
 Event handlers are bridged with
 `makeEventHandler` (`src/shared/effect/runtime.ts:35`). When `loadConfig` yields no usable model
 the feature registers the command and the renderer only, so a session with no configuration pays

@@ -53,8 +53,6 @@ export default defineConfig({
         'src/features/status_panel/index.ts',
         'src/features/status_panel/panel.ts',
         'src/features/status_panel/sidebar.ts',
-        'src/features/sub_agents/agents.ts',
-        'src/features/sub_agents/core.ts',
         'src/shared/state/azure_quota.ts',
       ],
       rules: {

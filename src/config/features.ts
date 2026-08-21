@@ -15,15 +15,14 @@ import { register as rules } from '#features/rules/index'
 import { register as safeRm } from '#features/safe_rm/index'
 import { register as safetyGuard } from '#features/safety_guard/index'
 import { register as statusPanel } from '#features/status_panel/index'
-import { register as subAgents } from '#features/sub_agents/index'
 import { register as webfetch } from '#features/webfetch/index'
 
-export interface FeatureRegistration {
+interface FeatureRegistration {
   readonly name: string
   readonly register: (pi: ExtensionAPI, runtime: ProcessRuntime) => void
 }
 
-export const features: readonly FeatureRegistration[] = [
+const features: readonly FeatureRegistration[] = [
   { name: 'ask-user', register: askUser },
   { name: 'background-poll', register: backgroundPoll },
   { name: 'caffeinate', register: caffeinate },
@@ -38,7 +37,6 @@ export const features: readonly FeatureRegistration[] = [
   { name: 'safe-rm', register: safeRm },
   { name: 'safety-guard', register: safetyGuard },
   { name: 'status-panel', register: statusPanel },
-  { name: 'sub-agents', register: subAgents },
   { name: 'webfetch', register: webfetch },
 ]
 

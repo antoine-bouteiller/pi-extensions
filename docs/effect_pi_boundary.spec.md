@@ -237,8 +237,9 @@ Effect.forkDetach         exceptional — fire-and-forget AND idempotent, with a
 ```
 
 `src/features/background_poll/poll.ts:306` is the reference for the first case: polls fork
-into the session scope, so session shutdown interrupts them. `src/features/sub_agents/peek.ts:846`
-is the reference for the second. Resources acquired by a forked fiber are released with
+into the session scope, so session shutdown interrupts them. `src/features/status_panel/provider.ts:75`
+is the reference for the second: the fiber is held in a field and interrupted at `:67` before the next
+one starts. Resources acquired by a forked fiber are released with
 `Effect.ensuring` or a `Scope` finalizer, never in a `finally` after an `await`.
 
 ### 8.7 Failure handling
@@ -262,15 +263,14 @@ outnumbered by `catchTag`s.
 The design above is the target. These are the known divergences, listed so they are not
 mistaken for precedent. Line numbers are as of `16020a5` (`[C-4]`).
 
-| Rule     | Divergence                                                                                                                      | Sites                                                                                                                                                                                                                                                                                                                                                   |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `[KD-3]` | Tool callbacks bridge inline; each drops the pre-dispatch check, the `{ signal }` option, or both                               | `src/features/ask_user/index.ts:28`, `src/features/background_poll/index.ts:14`, `src/features/hashline/index.ts:25`, `src/features/safe_rm/index.ts:15`, `src/features/mcp/index.ts:21` (no pre-check), `src/features/webfetch/index.ts:12` (no `{ signal }`), `src/features/sub_agents/agents.ts:423`, `:571`, `:637`, `:683`, `:720`, `:774`, `:839` |
-| `[KD-5]` | Commands bridge inline, with no helper to use                                                                                   | `src/features/prompt_rewind/index.ts:30`, `src/features/mcp/index.ts:39`, `src/features/sub_agents/agents.ts:1077`, `:1098` (one handler, two command names)                                                                                                                                                                                            |
-| `[KD-7]` | Forked fibers with no interrupting owner; `core.ts:1454` is tracked and joined by `ready()` and shutdown, but never interrupted | `src/features/sub_agents/core.ts:1116`, `:1454`                                                                                                                                                                                                                                                                                                         |
-| `[KD-8]` | Runtime re-entered from inside a running effect                                                                                 | `src/features/hashline/tools.ts:403`, `src/features/safe_rm/remove.ts:371`                                                                                                                                                                                                                                                                              |
-| `[KD-9]` | Undocumented `orDie`                                                                                                            | `src/features/claude_code/discovery.ts:254`, `src/features/sub_agents/core.ts:480`, `:722`, `:877`                                                                                                                                                                                                                                                      |
-| `[KD-9]` | Undocumented `ignoreCause`                                                                                                      | `src/features/status_panel/provider.ts:50`, `src/features/sub_agents/peek.ts:287`, `src/features/sub_agents/core.ts:2181`                                                                                                                                                                                                                               |
-| `[KD-1]` | A second `ManagedRuntime`, resolved eagerly — the sanctioned exception of `[C-1]`                                               | `src/shared/effect/bun_services.ts:12`                                                                                                                                                                                                                                                                                                                  |
+| Rule     | Divergence                                                                                        | Sites                                                                                                                                                                                                                                                                                                                                                   |
+| -------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `[KD-3]` | Tool callbacks bridge inline; each drops the pre-dispatch check, the `{ signal }` option, or both | `src/features/ask_user/index.ts:28`, `src/features/background_poll/index.ts:14`, `src/features/hashline/index.ts:25`, `src/features/safe_rm/index.ts:15`, `src/features/mcp/index.ts:21` (no pre-check), `src/features/webfetch/index.ts:12` (no `{ signal }`), `src/features/sub_agents/agents.ts:423`, `:571`, `:637`, `:683`, `:720`, `:774`, `:839` |
+| `[KD-5]` | Commands bridge inline, with no helper to use                                                     | `src/features/prompt_rewind/index.ts:30`, `src/features/mcp/index.ts:39`, `src/features/sub_agents/agents.ts:1077`, `:1098` (one handler, two command names)                                                                                                                                                                                            |
+| `[KD-8]` | Runtime re-entered from inside a running effect                                                   | `src/features/hashline/tools.ts:403`, `src/features/safe_rm/remove.ts:371`                                                                                                                                                                                                                                                                              |
+| `[KD-9]` | Undocumented `orDie`                                                                              | `src/features/claude_code/discovery.ts:254`, `src/features/sub_agents/core.ts:480`, `:722`, `:877`                                                                                                                                                                                                                                                      |
+| `[KD-9]` | Undocumented `ignoreCause`                                                                        | `src/features/status_panel/provider.ts:50`, `src/features/sub_agents/peek.ts:287`, `src/features/sub_agents/core.ts:2181`                                                                                                                                                                                                                               |
+| `[KD-1]` | A second `ManagedRuntime`, resolved eagerly — the sanctioned exception of `[C-1]`                 | `src/shared/effect/bun_services.ts:12`                                                                                                                                                                                                                                                                                                                  |
 
 ### 8.9 Test boundary
 
@@ -312,12 +312,12 @@ src/shared/**             deny:  pi.register*, pi.on
 ```
 
 Two carve-outs are unavoidable: `Effect.runSync` in synchronous TUI callbacks (§8.5) and the
-seven §8.8 rows. Both are expressed as per-site disable comments naming the rule and the
+six §8.8 rows. Both are expressed as per-site disable comments naming the rule and the
 conformance row, so the count of disables is the migration backlog — visible in `git grep`
 rather than in a document that drifts (`[PI-5]`, `[NG-3]`).
 
 ## 9. Open Questions
 
-- `[OQ-2]` Does joining a tracked fiber satisfy `[KD-7]`, or must teardown interrupt it? The
-  answer decides whether `src/features/sub_agents/core.ts:1454` is a divergence or
-  conformant. — owner: @antoine
+- `[OQ-2]` Does joining a tracked fiber satisfy `[KD-7]`, or must teardown interrupt it? The answer
+  decides whether a fiber that is awaited but never interrupted counts as conformant. — owner:
+  @antoine
