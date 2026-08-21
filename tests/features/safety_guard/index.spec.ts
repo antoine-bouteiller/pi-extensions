@@ -34,7 +34,7 @@ afterEach(() =>
 interface FakeToolCallEvent {
   toolCallId?: string
   toolName: string
-  input: { command?: string; path?: string }
+  input: { command?: string; patch?: string; path?: string }
 }
 
 interface FakeUi {
@@ -444,6 +444,7 @@ ce origin main`,
       expect(atPrefixed?.reason).toContain('Protected file read')
 
       expect(yield* Effect.promise(() => handler({ input: { path: '.env.example' }, toolName: 'read' }, ctx))).toBeUndefined()
+      expect(yield* Effect.promise(() => handler({ input: { patch: '[file.txt#ABCD]\nREM' }, toolName: 'write' }, ctx))).toBeUndefined()
     })
   )
 

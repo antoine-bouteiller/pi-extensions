@@ -4,7 +4,7 @@ import { Effect } from 'effect'
 import { type AppServices, type AppRuntime } from '#shared/effect/app_services'
 import { perInvocation, type HandlerServices } from '#shared/effect/runtime'
 
-import { makeHashlineTools, pruneSupersededReads, readSchema, renderHashlineRead, writeSchema, type HashlineToolError } from './tools.js'
+import { makeHashlineTools, readSchema, renderHashlineRead, writeSchema, type HashlineToolError } from './tools.js'
 
 export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
   const tools = makeHashlineTools(runtime)
@@ -25,27 +25,26 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
       runtime.runPromise(body(params, signal).pipe(Effect.provide(perInvocation(ctx))))
 
   pi.registerTool({
-    description: `Read a file with stable line anchors and a content hash for hashline_write. Output is bounded; use offset and limit for large files. Protected credential paths are refused by this tool itself.`,
+    description: `Read a file with stable line anchors and a content hash for write. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. Text output is bounded; use offset and limit for large files. Protected credential paths are refused by this tool itself.`,
     execute: runTool(tools.read),
-    label: 'Hashline Read',
-    name: 'hashline_read',
+    label: 'Read',
+    name: 'read',
     parameters: readSchema,
+    promptSnippet: 'Read text files with stable line anchors and images as attachments.',
     renderResult: renderHashlineRead,
   })
 
   pi.registerTool({
     description:
-      'Apply a hashline patch produced from hashline_read. Use hashline operations (PUT, CUT, MV, or REM), not unified-diff @@ hunks. Patches are content-hash anchored, reject stale edits, and refuse protected credential paths.',
+      'Apply a hashline patch produced from read. Use hashline operations (PUT, CUT, MV, or REM), not unified-diff @@ hunks. Patches are content-hash anchored, reject stale edits, and refuse protected credential paths.',
     execute: runTool(tools.write),
-    label: 'Hashline Write',
-    name: 'hashline_write',
+    label: 'Write',
+    name: 'write',
     parameters: writeSchema,
     promptGuidelines: [
-      'Use hashline_read before hashline_write so every section has a current [path#TAG] anchor.',
-      'In hashline_write, replace lines with `PUT N.=M:` followed by `+` body rows; never use unified-diff `@@` headers.',
-      'Use hashline_write for targeted edits; use the built-in write tool when creating a new file from scratch.',
+      'Use read before write so every section has a current [path#TAG] anchor.',
+      'In write, replace lines with `PUT N.=M:` followed by `+` body rows; never use unified-diff @@ headers.',
     ],
+    promptSnippet: 'Apply content-hash-anchored patches to files.',
   })
-
-  pi.on('context', (event) => ({ messages: pruneSupersededReads(event.messages) }))
 }

@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto'
 
 import {
+  createReadToolDefinition,
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
   withFileMutationQueue,
   type AgentToolResult,
-  type ContextEvent,
   type Theme,
 } from '@earendil-works/pi-coding-agent'
 import { Text, type Component } from '@earendil-works/pi-tui'
@@ -29,7 +29,6 @@ import { type HandlerServices } from '#shared/effect/runtime'
 import { type JsonObject } from '#shared/utils/json'
 import { isTrue } from '#shared/utils/predicates'
 import { assertUnprotectedPathEffect, resolveToolPath, stripToolPathPrefix } from '#shared/utils/protected_paths'
-import { isRecord } from '#shared/utils/records'
 import { truncateOutput } from '#shared/utils/tool_output'
 
 export const readSchema = Type.Object({
@@ -46,7 +45,7 @@ export const writeSchema = Type.Object({
 })
 
 interface ToolOutput {
-  content: { text: string; type: 'text' }[]
+  content: AgentToolResult<JsonObject>['content']
   details: JsonObject
 }
 type RenderableToolOutput = AgentToolResult<JsonObject> & { isError?: boolean }
@@ -136,128 +135,7 @@ const withMutationQueues = <Result>(paths: readonly string[], callback: () => Pr
   return acquire(0)
 }
 
-interface HashlineReadDetails {
-  hash: string
-  path: string
-  startLine?: number
-  endLine?: number
-  version?: string
-}
-
-interface HashlineWriteSection {
-  hash: string
-  moveDest?: string
-  op: string
-  path: string
-  sourcePath?: string
-  version: string
-}
-
 const fingerprint = (text: string): string => createHash('sha256').update(text).digest('hex')
-
-const readDetails = (value: unknown): HashlineReadDetails | undefined => {
-  if (!isRecord(value) || typeof value.hash !== 'string' || typeof value.path !== 'string') {
-    return undefined
-  }
-  return {
-    endLine: typeof value.endLine === 'number' ? value.endLine : undefined,
-    hash: value.hash,
-    path: value.path,
-    startLine: typeof value.startLine === 'number' ? value.startLine : undefined,
-    version: typeof value.version === 'string' ? value.version : undefined,
-  }
-}
-
-const writeSections = (value: unknown): HashlineWriteSection[] => {
-  const sections = isRecord(value) ? value.sections : undefined
-  if (!Array.isArray(sections)) {
-    return []
-  }
-  const valid: HashlineWriteSection[] = []
-  for (const section of sections) {
-    if (
-      !isRecord(section) ||
-      typeof section.hash !== 'string' ||
-      typeof section.op !== 'string' ||
-      typeof section.path !== 'string' ||
-      typeof section.version !== 'string'
-    ) {
-      continue
-    }
-    valid.push({
-      hash: section.hash,
-      moveDest: typeof section.moveDest === 'string' ? section.moveDest : undefined,
-      op: section.op,
-      path: section.path,
-      sourcePath: typeof section.sourcePath === 'string' ? section.sourcePath : undefined,
-      version: section.version,
-    })
-  }
-  return valid
-}
-
-type ContextToolResult = Extract<ContextEvent['messages'][number], { role: 'toolResult' }>
-
-const rememberWriteVersions = (details: unknown, latestVersionByPath: Map<string, string>): void => {
-  for (const section of writeSections(details)) {
-    const version = section.op === 'delete' ? `deleted:${section.version}` : section.version
-    latestVersionByPath.set(section.path, latestVersionByPath.get(section.path) ?? version)
-    if (section.sourcePath !== undefined && section.sourcePath !== section.path) {
-      latestVersionByPath.set(section.sourcePath, latestVersionByPath.get(section.sourcePath) ?? `moved:${section.version}`)
-    }
-    if (section.moveDest !== undefined) {
-      latestVersionByPath.set(section.moveDest, latestVersionByPath.get(section.moveDest) ?? section.version)
-    }
-  }
-}
-
-const pruneRead = (message: ContextToolResult, latestVersionByPath: Map<string, string>, seenRanges: Set<string>): ContextToolResult => {
-  if (message.toolName !== 'hashline_read') {
-    return message
-  }
-  const details = readDetails(message.details)
-  if (details === undefined) {
-    return message
-  }
-
-  const version = details.version ?? details.hash
-  const latestVersion = latestVersionByPath.get(details.path)
-  const rangeKey = `${details.path}\0${version}\0${details.startLine ?? '*'}\0${details.endLine ?? '*'}`
-  const superseded = latestVersion !== undefined && latestVersion !== version
-  const duplicate = !superseded && seenRanges.has(rangeKey)
-  if (latestVersion === undefined) {
-    latestVersionByPath.set(details.path, version)
-  }
-  if (!superseded) {
-    seenRanges.add(rangeKey)
-  }
-  return superseded || duplicate
-    ? {
-        ...message,
-        content: [{ text: `[Superseded hashline_read for ${details.path}; reread the file if its current contents are needed.]`, type: 'text' }],
-      }
-    : message
-}
-
-export const pruneSupersededReads = (messages: ContextEvent['messages']): ContextEvent['messages'] => {
-  const latestVersionByPath = new Map<string, string>()
-  const seenRanges = new Set<string>()
-  const pruned = [...messages]
-
-  for (let index = pruned.length - 1; index >= 0; index -= 1) {
-    const message = pruned[index]
-    if (message?.role !== 'toolResult' || message.isError) {
-      continue
-    }
-    if (message.toolName === 'hashline_write') {
-      rememberWriteVersions(message.details, latestVersionByPath)
-      continue
-    }
-    pruned[index] = pruneRead(message, latestVersionByPath, seenRanges)
-  }
-
-  return pruned
-}
 
 interface ReadHashlineFileOptions {
   cwd: string
@@ -452,6 +330,20 @@ export const makeHashlineTools = (runtime: AppRuntime): HashlineTools => {
         Effect.gen(function* () {
           const ctx = yield* PiCtx
           const snapshots = yield* Snapshots
+          const resolution = yield* assertUnprotectedPathEffect(path, ctx.cwd, 'read').pipe(Effect.mapError(hashlineToolError))
+          const fs = new CwdFilesystem(ctx.cwd, signal)
+          const exists = yield* Effect.tryPromise({ catch: hashlineToolError, try: () => fs.exists(resolution.absolutePath) })
+
+          if (exists) {
+            const builtInResult = yield* Effect.tryPromise({
+              catch: hashlineToolError,
+              try: () => createReadToolDefinition(ctx.cwd).execute('read', { limit, offset, path: resolution.absolutePath }, signal, undefined, ctx),
+            })
+            if (builtInResult.content.some((content) => content.type === 'image')) {
+              return { content: builtInResult.content, details: { path } }
+            }
+          }
+
           return yield* readHashlineFile({ cwd: ctx.cwd, limit, offset, path, signal, snapshots })
         })
       ),

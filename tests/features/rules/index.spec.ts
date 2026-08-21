@@ -274,7 +274,7 @@ describe('path-scoped injection', () => {
     })
   )
 
-  it.effect('extracts built-in and hashline file paths', () =>
+  it.effect('extracts paths from file tools and hashline write patches', () =>
     Effect.sync(() => {
       expect(extractToolPaths(readEvent('src/main.ts'), '/project', pathService)).toEqual(['/project/src/main.ts'])
       expect(extractToolPaths(readEvent('/outside/main.ts'), '/project', pathService)).toEqual(['/outside/main.ts'])
@@ -288,7 +288,7 @@ describe('path-scoped injection', () => {
             input: { patch: '[src/main.ts#ABCD]\nPUT 1.=1:\n+next' },
             isError: false,
             toolCallId: 'call-2',
-            toolName: 'hashline_write',
+            toolName: 'write',
             type: 'tool_result',
           },
           '/project',
@@ -305,7 +305,7 @@ describe('path-scoped injection', () => {
             },
             isError: false,
             toolCallId: 'call-3',
-            toolName: 'hashline_write',
+            toolName: 'write',
             type: 'tool_result',
           },
           '/project',

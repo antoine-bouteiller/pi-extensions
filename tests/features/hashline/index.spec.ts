@@ -25,6 +25,7 @@ const rm = (path: string, options?: { force?: boolean; recursive?: boolean }) =>
   FileSystem.FileSystem.pipe(Effect.flatMap((fs) => fs.remove(path, options)))
 const symlink = (fromPath: string, toPath: string) => FileSystem.FileSystem.pipe(Effect.flatMap((fs) => fs.symlink(fromPath, toPath)))
 const writeFile = (path: string, data: string) => FileSystem.FileSystem.pipe(Effect.flatMap((fs) => fs.writeFileString(path, data)))
+const writeBytes = (path: string, data: Uint8Array) => FileSystem.FileSystem.pipe(Effect.flatMap((fs) => fs.writeFile(path, data)))
 
 interface ToolOutput {
   content: { text: string; type: string }[]
@@ -54,8 +55,8 @@ const setup = (): HashlineTools => {
   const { pi, state } = createFakePi()
   hashline(pi, runtime)
   return {
-    read: asTool<Tool>(state.tools.get('hashline_read')),
-    write: asTool<Tool>(state.tools.get('hashline_write')),
+    read: asTool<Tool>(state.tools.get('read')),
+    write: asTool<Tool>(state.tools.get('write')),
   }
 }
 
@@ -74,27 +75,8 @@ const header = (tool: Tool, cwd: string, path: string): Promise<string> =>
 
 const put = (headerLine: string, line: number, replacement: string): string => `${headerLine}\nPUT ${line}.=${line}:\n+${replacement}`
 
-const hashlineResult = (toolCallId: string, hash: string, startLine: number, endLine: number, text: string) => ({
-  content: [{ text, type: 'text' }],
-  details: { endLine, hash, path: 'sample.txt', startLine, version: `version-${hash.toLowerCase()}` },
-  isError: false,
-  role: 'toolResult',
-  timestamp: 1,
-  toolCallId,
-  toolName: 'hashline_read',
-})
-
-const hashlineWriteResult = {
-  content: [{ text: 'update sample.txt [CCCC]', type: 'text' }],
-  details: { sections: [{ hash: 'CCCC', op: 'update', path: 'sample.txt', version: 'version-cccc' }] },
-  isError: false,
-  role: 'toolResult',
-  timestamp: 1,
-  toolCallId: 'write',
-  toolName: 'hashline_write',
-}
 describe('hashline extension', () => {
-  it.effect('registers anchored read and write tools', () =>
+  it.effect('replaces read and write with anchored tools', () =>
     Effect.gen(function* () {
       const tools = setup()
       const directory = yield* workspace
@@ -110,6 +92,29 @@ describe('hashline extension', () => {
         asTheme({ fg: (_color: string, text: string) => text })
       )
       expect(rendered.render(80).join('\n').trimEnd()).toBe('sample.txt')
+    })
+  )
+
+  it.effect('keeps image reads and does not install a context-history rewriter', () =>
+    Effect.gen(function* () {
+      const { pi, state } = createFakePi()
+      hashline(pi, runtime)
+      expect([...state.tools.keys()]).toEqual(['read', 'write'])
+      expect(state.handlers.has('context')).toBe(false)
+
+      const read = asTool<Tool>(state.tools.get('read'))
+      const directory = yield* workspace
+      yield* writeBytes(
+        join(directory, 'pixel.png'),
+        Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
+      )
+
+      const output = yield* Effect.promise(() => read.execute('image', { path: 'pixel.png' }, undefined, undefined, { cwd: directory }))
+      expect(output.content.some((content) => content.type === 'image')).toBe(true)
+
+      yield* writeFile(join(directory, 'not-an-image.txt'), 'Read image file [image/png]\nplain text\n')
+      const textOutput = yield* Effect.promise(() => read.execute('text', { path: 'not-an-image.txt' }, undefined, undefined, { cwd: directory }))
+      expect(textOutput.content[0].text).toMatch(/^\[not-an-image\.txt#[A-F0-9]+\]/)
     })
   )
 
@@ -182,91 +187,6 @@ describe('hashline extension', () => {
       })
     })
   )
-  it.effect('prunes superseded and duplicate reads without removing tool results', () =>
-    Effect.gen(function* () {
-      const { emit, pi } = createFakePi()
-      hashline(pi, runtime)
-      const collidingVersion = hashlineResult('old-version', 'BBBB', 1, 10, 'old colliding version')
-      const oldVersion = { ...collidingVersion, details: { ...collidingVersion.details, version: 'version-old' } }
-      const duplicate = hashlineResult('duplicate', 'BBBB', 1, 10, 'duplicate current range')
-      const distinctRange = hashlineResult('distinct-range', 'BBBB', 11, 20, 'distinct current range')
-      const latest = hashlineResult('latest', 'BBBB', 1, 10, 'latest current range')
-
-      const results = yield* Effect.promise(() => emit('context', { messages: [oldVersion, duplicate, distinctRange, latest] }))
-      const [contextResult] = results
-
-      expect(contextResult).toEqual({
-        messages: [
-          {
-            ...oldVersion,
-            content: [{ text: '[Superseded hashline_read for sample.txt; reread the file if its current contents are needed.]', type: 'text' }],
-          },
-          {
-            ...duplicate,
-            content: [{ text: '[Superseded hashline_read for sample.txt; reread the file if its current contents are needed.]', type: 'text' }],
-          },
-          distinctRange,
-          latest,
-        ],
-      })
-    })
-  )
-
-  it.effect('prunes reads superseded by a successful write', () =>
-    Effect.gen(function* () {
-      const { emit, pi } = createFakePi()
-      hashline(pi, runtime)
-      const previousRead = hashlineResult('read', 'BBBB', 1, 10, 'previous contents')
-
-      const results = yield* Effect.promise(() => emit('context', { messages: [previousRead, hashlineWriteResult] }))
-      const [contextResult] = results
-
-      expect(contextResult).toEqual({
-        messages: [
-          {
-            ...previousRead,
-            content: [{ text: '[Superseded hashline_read for sample.txt; reread the file if its current contents are needed.]', type: 'text' }],
-          },
-          hashlineWriteResult,
-        ],
-      })
-    })
-  )
-
-  it.effect('prunes source reads after deletes and moves', () =>
-    Effect.gen(function* () {
-      const { emit, pi } = createFakePi()
-      hashline(pi, runtime)
-      const previousRead = hashlineResult('read', 'BBBB', 1, 10, 'previous contents')
-      const transitions = [
-        {
-          ...hashlineWriteResult,
-          details: { sections: [{ hash: 'BBBB', op: 'delete', path: 'sample.txt', version: 'version-bbbb' }] },
-        },
-        {
-          ...hashlineWriteResult,
-          details: {
-            sections: [{ hash: 'BBBB', moveDest: 'moved.txt', op: 'update', path: 'moved.txt', sourcePath: 'sample.txt', version: 'version-bbbb' }],
-          },
-        },
-      ]
-
-      for (const transition of transitions) {
-        const results = yield* Effect.promise(() => emit('context', { messages: [previousRead, transition] }))
-        const [contextResult] = results
-        expect(contextResult).toEqual({
-          messages: [
-            {
-              ...previousRead,
-              content: [{ text: '[Superseded hashline_read for sample.txt; reread the file if its current contents are needed.]', type: 'text' }],
-            },
-            transition,
-          ],
-        })
-      }
-    })
-  )
-
   it.effect('applies a current patch and rejects a stale patch without overwriting', () =>
     Effect.gen(function* () {
       const { read, write } = setup()
@@ -397,10 +317,17 @@ describe('hashline extension', () => {
       const secret = join(directory, '.env')
       yield* writeFile(secret, 'TOKEN=secret\n')
       yield* symlink(secret, join(directory, 'ordinary.txt'))
+      const secretImage = join(directory, '.env.png')
+      yield* writeBytes(
+        secretImage,
+        Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
+      )
+      yield* symlink(secretImage, join(directory, 'image’s.png'))
 
       for (const path of ['.env', '@.env', 'ordinary.txt']) {
         expect(read.execute('protected-read', { path }, undefined, undefined, { cwd: directory })).rejects.toThrow('protected path')
       }
+      expect(read.execute('alternate-name-read', { path: "image's.png" }, undefined, undefined, { cwd: directory })).rejects.toThrow()
       expect(
         write.execute('protected-write', { patch: '[.env#0000]\nPUT 1.=1:\n+TOKEN=changed' }, undefined, undefined, { cwd: directory })
       ).rejects.toThrow('protected path')

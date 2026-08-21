@@ -43,7 +43,7 @@ const EXPLORATION_TOOLS = ['read', 'bash', 'grep', 'find', 'ls', 'mcp', 'fffind'
 
 export const AGENT_CONFIGS = {
   implementer: {
-    allowedTools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'hashline_read', 'hashline_write', 'safe_rm'],
+    allowedTools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'safe_rm'],
     color: 'success',
     description: 'Scoped code implementation and verification',
     isReadonly: false,

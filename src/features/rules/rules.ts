@@ -528,9 +528,8 @@ const stringProperty = (value: unknown, property: string): string | undefined =>
   return typeof candidate === 'string' && isNotEmptyString(candidate) ? candidate : undefined
 }
 
-/** Extract paths from Pi's file tools, including the local hashline compatibility tools. */
 export const extractToolPaths = (event: ToolResultEvent, cwd: string, pathService: Path.Path): string[] => {
-  if (event.isError || !['read', 'edit', 'write', 'hashline_read', 'hashline_write'].includes(event.toolName)) {
+  if (event.isError || !['read', 'edit', 'write'].includes(event.toolName)) {
     return []
   }
 
@@ -544,7 +543,7 @@ export const extractToolPaths = (event: ToolResultEvent, cwd: string, pathServic
   add(stringProperty(event.input, 'filePath'))
   add(stringProperty(event.details, 'filePath'))
 
-  if (event.toolName === 'hashline_write') {
+  if (event.toolName === 'write') {
     const patch = stringProperty(event.input, 'patch')
     if (!isNullOrUndefined(patch) && isNotEmptyString(patch)) {
       for (const match of patch.matchAll(/^\[(?<path>[^\]#]+)#[^\]]+\]/gm)) {

@@ -169,7 +169,7 @@ const extractProtectedTarget = (event: ToolCallEvent): { operation: 'edit' | 're
   if (isToolCallEventType('read', event)) {
     return { operation: 'read', path: event.input.path }
   }
-  if (isToolCallEventType('write', event)) {
+  if (isToolCallEventType('write', event) && typeof event.input.path === 'string') {
     return { operation: 'write', path: event.input.path }
   }
   if (isToolCallEventType('edit', event)) {

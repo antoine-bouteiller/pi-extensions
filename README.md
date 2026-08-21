@@ -54,7 +54,7 @@ This package uses a pre-release version of Effect v4. Because the API changes fr
 | `caffeinate`                | Prevents macOS from sleeping while a Pi session is active.                                                  |
 | `claude_code`               | Turns `.claude/commands/` files in global or trusted projects into temporary Pi skills.                     |
 | `comment_checker`           | Runs the `comment-checker` tool after file edits and adds any warnings to the result.                       |
-| `hashline`                  | Uses content hashes to read and write files, preventing edits based on outdated versions.                   |
+| `hashline`                  | Replaces `read` and `write` with content-hash-anchored file operations that reject stale edits.             |
 | `mcp`                       | A specific, limited MCP gateway (see details below).                                                        |
 | `meridian_session_affinity` | Includes Pi's session ID in Meridian requests so sessions stay active across tool loops.                    |
 | `prompt_rewind`             | Allows you to edit your original prompt if you cancel before the assistant responds.                        |
