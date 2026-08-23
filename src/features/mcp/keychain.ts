@@ -9,6 +9,7 @@ import { Check } from 'typebox/value'
 
 import { type JsonObject, type JsonValue } from '#shared/utils/json'
 import { isEmptyString } from '#shared/utils/predicates'
+import { isRecord } from '#shared/utils/records'
 
 export const MCP_OAUTH_KEYCHAIN_SERVICE = 'pi-mcp.oauth'
 
@@ -71,11 +72,23 @@ interface KeyringModule {
 const isKeyringModule = (value: unknown): value is KeyringModule =>
   typeof value === 'object' && value !== null && 'AsyncEntry' in value && typeof value.AsyncEntry === 'function'
 
-const nativeKeyring: unknown = createRequire(import.meta.url)(fileURLToPath(import.meta.resolve(`@napi-rs/keyring-darwin-${process.arch}`)))
-if (!isKeyringModule(nativeKeyring)) {
-  throw new Error('Failed to load macOS Keychain binding')
+export const nativeKeyringPackage = (platform: NodeJS.Platform, arch: string, musl = false): string => {
+  if (platform === 'darwin' && ['arm64', 'x64'].includes(arch)) {
+    return `@napi-rs/keyring-darwin-${arch}`
+  }
+  if (platform === 'linux' && ['arm64', 'x64'].includes(arch)) {
+    return `@napi-rs/keyring-linux-${arch}-${musl ? 'musl' : 'gnu'}`
+  }
+  throw new Error(`Unsupported keyring platform: ${platform}-${arch}`)
 }
-const { AsyncEntry } = nativeKeyring
+
+const isMusl = (): boolean => {
+  const report = process.report?.getReport()
+  if (!isRecord(report)) {
+    return false
+  }
+  return !isRecord(report.header) || typeof report.header.glibcVersionRuntime !== 'string'
+}
 
 export interface KeychainCredentialStoreOptions {
   serviceName?: string
@@ -181,8 +194,8 @@ const isMissingCredential = (error: unknown): boolean => {
 const operationError = (operation: string, serverName: string): Error =>
   KeychainCredentialError.make({
     message:
-      `macOS Keychain OAuth credential ${operation} failed for MCP server ` +
-      `${JSON.stringify(serverName)}. Ensure Keychain is available and unlocked, then retry.`,
+      `System keyring OAuth credential ${operation} failed for MCP server ` +
+      `${JSON.stringify(serverName)}. Ensure the keyring is available and unlocked, then retry.`,
   })
 
 export class KeychainCredentialStore implements CredentialStore {
@@ -191,7 +204,16 @@ export class KeychainCredentialStore implements CredentialStore {
 
   constructor(options: KeychainCredentialStoreOptions = {}) {
     this.serviceName = options.serviceName ?? MCP_OAUTH_KEYCHAIN_SERVICE
-    this.createEntry = options.createEntry ?? ((service, account) => new AsyncEntry(service, account))
+    this.createEntry =
+      options.createEntry ??
+      ((service, account) => {
+        const packageName = nativeKeyringPackage(process.platform, process.arch, process.platform === 'linux' && isMusl())
+        const nativeKeyring: unknown = createRequire(import.meta.url)(fileURLToPath(import.meta.resolve(packageName)))
+        if (!isKeyringModule(nativeKeyring)) {
+          throw new Error('Failed to load system keyring binding')
+        }
+        return new nativeKeyring.AsyncEntry(service, account)
+      })
   }
 
   private entry(serverName: string): KeyringEntry {
@@ -253,7 +275,7 @@ export class KeychainCredentialStore implements CredentialStore {
 export const createKeychainCredentialStore = (options: KeychainCredentialStoreOptions = {}): CredentialStore => new KeychainCredentialStore(options)
 
 const asKeychainError = (cause: unknown): KeychainCredentialError =>
-  Schema.is(KeychainCredentialError)(cause) ? cause : KeychainCredentialError.make({ message: 'macOS Keychain OAuth credential operation failed.' })
+  Schema.is(KeychainCredentialError)(cause) ? cause : KeychainCredentialError.make({ message: 'System keyring OAuth credential operation failed.' })
 
 export const credentialStoreEffectLayer = (options: KeychainCredentialStoreOptions = {}): Layer.Layer<CredentialStoreEffect> => {
   const store = createKeychainCredentialStore(options)

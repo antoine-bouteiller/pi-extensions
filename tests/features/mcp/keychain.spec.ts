@@ -8,6 +8,7 @@ import {
   MCP_OAUTH_KEYCHAIN_SERVICE,
   credentialStoreEffectLayer,
   keychainAccount,
+  nativeKeyringPackage,
   type OAuthCredentialPayload,
 } from '@/features/mcp/keychain.js'
 import { jsonText, parseJsonText } from '@/shared/utils/json.js'
@@ -102,6 +103,13 @@ const credential: OAuthCredentialPayload = {
 }
 
 describe('Keychain OAuth credential store', () => {
+  it('selects native bindings for macOS and Linux libc variants', () => {
+    expect(nativeKeyringPackage('darwin', 'arm64')).toBe('@napi-rs/keyring-darwin-arm64')
+    expect(nativeKeyringPackage('linux', 'x64')).toBe('@napi-rs/keyring-linux-x64-gnu')
+    expect(nativeKeyringPackage('linux', 'arm64', true)).toBe('@napi-rs/keyring-linux-arm64-musl')
+    expect(() => nativeKeyringPackage('win32', 'x64')).toThrow('Unsupported keyring platform: win32-x64')
+  })
+
   it.effect('round trips one validated URL-bound credential payload', () =>
     Effect.gen(function* () {
       const keyring = inMemoryKeyring()
@@ -281,7 +289,7 @@ describe('Keychain OAuth credential store', () => {
         const failure = yield* Effect.promise(() => request.then(undefined, (error: unknown) => error))
 
         expect(failure).toBeInstanceOf(Error)
-        expect(asError(failure).message).toContain('Ensure Keychain is available and unlocked')
+        expect(asError(failure).message).toContain('Ensure the keyring is available and unlocked')
         expect(asError(failure).message).not.toContain('secret-token')
         expect(asError(failure).message).not.toContain('access-secret')
       }

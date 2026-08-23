@@ -70,6 +70,6 @@ This package uses a pre-release version of Effect v4. Because the API changes fr
 | `sub_agents`                | Creates session-specific subagents in separate Pi processes ([details](src/features/sub_agents/README.md)). |
 | `webfetch`                  | Fetches a URL and provides the content as markdown, plain text, or HTML.                                    |
 
-The `mcp` feature only reads `~/.config/mcp/mcp.json`. It supports tools via stdio and HTTP/SSE, uses macOS Keychain to store credentials, and does not open connections at startup. It also handles automatic OAuth through `/mcp-auth`. For HTTP servers like Linear (`https://mcp.linear.app/mcp`), OAuth is detected automatically after a 401 error, so no extra configuration is needed. Custom HTTP headers will stop this automatic detection unless `oauth` is manually set.
+The `mcp` feature only reads `~/.config/mcp/mcp.json`. It supports tools via stdio and HTTP/SSE, uses the system keyring to store credentials, and does not open connections at startup. It also handles automatic OAuth through `/mcp-auth`. For HTTP servers like Linear (`https://mcp.linear.app/mcp`), OAuth is detected automatically after a 401 error, so no extra configuration is needed. Custom HTTP headers will stop this automatic detection unless `oauth` is manually set.
 
 The `rules` feature injects general rules immediately. Rules specific to a file path are injected after a tool's result matches a file.
