@@ -1,5 +1,5 @@
 import { type ExtensionContext, type ThemeColor } from '@earendil-works/pi-coding-agent'
-import { getCapabilities, truncateToWidth, visibleWidth, type Component, type OverlayHandle } from '@earendil-works/pi-tui'
+import { truncateToWidth, visibleWidth, type Component, type OverlayHandle } from '@earendil-works/pi-tui'
 import { DateTime, Effect, Exit, Ref, Scope } from 'effect'
 import { type Path } from 'effect/Path'
 
@@ -29,19 +29,8 @@ export interface SidebarState {
 const MAX_AGENT_ROWS = 5
 
 type PaletteColor = 'purple' | 'blue' | 'green' | 'red' | 'orange' | 'gray' | 'white'
-type Rgb = readonly [number, number, number]
 
-const COLORS = {
-  blue: [110, 168, 254],
-  gray: [128, 128, 128],
-  green: [95, 211, 148],
-  orange: [255, 159, 67],
-  purple: [177, 140, 255],
-  red: [255, 93, 115],
-  white: [212, 212, 212],
-} satisfies Record<PaletteColor, Rgb>
-
-const THEME_FALLBACKS = {
+const THEME_COLORS = {
   blue: 'thinkingLow',
   gray: 'muted',
   green: 'success',
@@ -55,11 +44,7 @@ const paint = (theme: SidebarTheme, color: PaletteColor, text: string) => {
   if (process.env.NO_COLOR !== undefined) {
     return text
   }
-  if (!getCapabilities().trueColor) {
-    return theme.fg(THEME_FALLBACKS[color], text)
-  }
-  const [red, green, blue] = COLORS[color]
-  return `\x1b[38;2;${red};${green};${blue}m${text}\x1b[39m`
+  return theme.fg(THEME_COLORS[color], text)
 }
 
 const bold = (theme: SidebarTheme, text: string) => theme.bold?.(text) ?? text
