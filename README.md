@@ -1,6 +1,10 @@
-# Pi extensions
+<h1 align="center">Pi extensions</h1>
 
-[![codecov](https://codecov.io/gh/antoine-bouteiller/pi-extensions/graph/badge.svg)](https://codecov.io/gh/antoine-bouteiller/pi-extensions)
+<p align="center">
+  <a href="https://github.com/antoine-bouteiller/pi-extensions/actions/workflows/quality-checks.yaml"><img alt="Quality Checks" src="https://img.shields.io/github/actions/workflow/status/antoine-bouteiller/pi-extensions/quality-checks.yaml?branch=main&amp;style=for-the-badge&amp;logo=githubactions&amp;logoColor=cad3f5&amp;labelColor=363a4f"></a>
+  <a href="https://codecov.io/gh/antoine-bouteiller/pi-extensions"><img alt="Codecov" src="https://img.shields.io/codecov/c/github/antoine-bouteiller/pi-extensions?style=for-the-badge&amp;logo=codecov&amp;logoColor=cad3f5&amp;colorA=363a4f"></a>
+  <a href="https://bun.sh/"><img alt="Bun" src="https://img.shields.io/badge/runtime-Bun-eed49f?style=for-the-badge&amp;logo=bun&amp;logoColor=cad3f5&amp;labelColor=363a4f"></a>
+</p>
 
 These are official extensions for [Pi](https://github.com/earendil-works/pi). They are built using a single Bun workspace and are installed as one package.
 
