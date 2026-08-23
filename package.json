@@ -19,8 +19,8 @@
     "fmt:check": "oxfmt --check",
     "knip": "knip",
     "lint": "oxlint --deny-warnings --report-unused-disable-directives",
-    "test": "bun test",
-    "test:coverage": "bun test --coverage --reporter=junit --reporter-outfile=./junit.xml",
+    "test": "bun test tests/ && node --test oxlint/rules/*.test.ts",
+    "test:coverage": "bun test tests/ --coverage --reporter=junit --reporter-outfile=./junit.xml && node --test oxlint/rules/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
