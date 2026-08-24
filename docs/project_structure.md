@@ -26,8 +26,7 @@ src/
 │   ├── meridian_session_affinity/{index,affinity,scrub}.ts
 │   ├── prompt_rewind/{index,rewind}.ts
 │   ├── rules/{index,rules}.ts
-│   ├── safe_rm/{index,remove,errors}.ts
-│   ├── safety_guard/{index,guard,constants}.ts
+│   ├── safety_guard/{index,guard,scan,constants,remove,errors}.ts
 │   ├── status_panel/{index,panel,footer,git,provider,render,sidebar,split_pane,state,statuses}.ts
 │   ├── sub_agents/{index,agents,child_env,core,peek,process_ownership,profiles,rpc}.ts
 │   ├── sub_agents/README.md
@@ -106,9 +105,9 @@ mirroring rule.
 
 ## Imports and aliases
 
-- Production code uses `./` imports within the same folder and `@/*` for every other source
-  import; `../` imports are not allowed under `src/`. All imports include `.js`, for example
-  `@/shared/utils/records.js`.
+- Production code uses `./` imports within the same folder and the `#config/*`, `#features/*`,
+  or `#shared/*` aliases for other source areas; `../` imports are not allowed under `src/`.
+  Relative imports include `.js`; package aliases name their source file without an extension.
 - Tests use `@/*` for source imports. Shared test utilities use `@tests/*`, and both aliases
   include `.js`, for example `@tests/utils/runtime.js`.
 

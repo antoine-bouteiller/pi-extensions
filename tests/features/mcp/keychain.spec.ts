@@ -1,5 +1,5 @@
 import { promiseFromEffect, tryEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asError, asOAuthCredentialPayload } from '@tests/utils/casts.js'
+import { asError, asNarrowed } from '@tests/utils/casts.js'
 import { Effect, Option } from 'effect'
 
 import {
@@ -254,7 +254,7 @@ describe('Keychain OAuth credential store', () => {
     Effect.gen(function* () {
       const keyring = inMemoryKeyring()
       const store = new KeychainCredentialStore({ createEntry: keyring.createEntry })
-      const malformed = asOAuthCredentialPayload({
+      const malformed = asNarrowed<OAuthCredentialPayload, { serverUrl: string; tokens: { access_token: string } }>({
         serverUrl: credential.serverUrl,
         tokens: { access_token: 'secret' },
       })

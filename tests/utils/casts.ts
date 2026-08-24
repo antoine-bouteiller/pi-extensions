@@ -3,9 +3,6 @@
 import { type ExtensionAPI, type ExtensionContext, type ReadonlyFooterDataProvider, type Theme } from '@earendil-works/pi-coding-agent'
 import { type TUI } from '@earendil-works/pi-tui'
 
-import { type OAuthCredentialPayload } from '@/features/mcp/keychain.js'
-import { type JsonObject } from '@/shared/utils/json.js'
-
 import { type CommandDefinition, type ToolDefinition } from './fake_pi.js'
 
 const requireObject = (value: unknown, expected: string): object | Function => {
@@ -35,15 +32,6 @@ export const asCommand = <Command>(command: CommandDefinition | undefined): Comm
 // ReadonlyFooterDataProvider is host-owned; status tests need only its status and branch callbacks.
 export const asFooterDataProvider = (double: unknown): ReadonlyFooterDataProvider =>
   requireObject(double, 'ReadonlyFooterDataProvider') as ReadonlyFooterDataProvider
-
-interface OAuthCredentialDouble {
-  clientInformation?: JsonObject
-  serverUrl: string
-  tokens?: JsonObject
-}
-
-// SDK credential payload contains opaque OAuth client/token types represented structurally in tests.
-export const asOAuthCredentialPayload = (double: OAuthCredentialDouble): OAuthCredentialPayload => double as OAuthCredentialPayload
 
 // SDK and Effect internals expose narrower opaque types than their structural test doubles.
 export const asNarrowed = <Narrow, Wide extends object>(value: Wide): Narrow => requireObject(value, 'value') as Narrow

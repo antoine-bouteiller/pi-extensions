@@ -6,7 +6,6 @@ import { asExtensionApi, asResult } from '@tests/utils/casts.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect, FileSystem, Path } from 'effect'
 
-import { register as safeRm } from '@/features/safe_rm/index.js'
 import { SAFETY_STATUS_KEY } from '@/features/safety_guard/constants.js'
 import { register as safetyGuard } from '@/features/safety_guard/index.js'
 import { publishStatus, statusBar } from '@/shared/state/status_bar.js'
@@ -92,7 +91,6 @@ const setup = (activeTools: string[] = ['safe_rm']) => {
     },
     registerTool: () => undefined,
   })
-  safeRm(pi, runtime)
   safetyGuard(pi, runtime)
 
   if (toolCallHandlers.length !== 2) {

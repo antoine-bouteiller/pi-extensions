@@ -6,7 +6,9 @@ import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
 import { describe, expect, it } from './utils/bun_effect.js'
 
 const SRC = bunPath.resolve(import.meta.dirname, '../src')
+const FEATURES = bunPath.join(SRC, 'features')
 const TESTS = import.meta.dirname
+const TEST_FEATURES = bunPath.join(TESTS, 'features')
 
 const namesByKind = (root: string) =>
   Effect.gen(function* () {
@@ -37,6 +39,31 @@ const descendants = (root: string): Effect.Effect<string[], PlatformError> =>
     )
   )
 
+const featureAtPath = (path: string, root: string): string | undefined => {
+  const relative = bunPath.relative(root, path)
+  if (relative === '..' || relative.startsWith(`..${bunPath.sep}`) || bunPath.isAbsolute(relative)) {
+    return undefined
+  }
+  return relative.split(bunPath.sep)[0]
+}
+
+const importedFeature = (specifier: string, importer: string): string | undefined => {
+  const alias = /^(?:#features|@\/features|#tests\/features|@tests\/features)\/(?<feature>[^/]+)/.exec(specifier)
+  if (alias?.groups?.feature !== undefined) {
+    return alias.groups.feature
+  }
+  if (!specifier.startsWith('.')) {
+    return undefined
+  }
+  const resolved = bunPath.resolve(bunPath.dirname(importer), specifier)
+  return featureAtPath(resolved, FEATURES) ?? featureAtPath(resolved, TEST_FEATURES)
+}
+
+const importSpecifiers = (source: string): string[] =>
+  [...source.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s*)['"](?<specifier>[^'"]+)['"]/g)].flatMap((match) =>
+    match.groups?.specifier === undefined ? [] : [match.groups.specifier]
+  )
+
 describe('project structure', () => {
   it.live('source has one entrypoint and the three canonical layers', () =>
     Effect.gen(function* () {
@@ -60,6 +87,29 @@ describe('project structure', () => {
           feature
         ).toBeTrue()
       }
+    })
+  )
+
+  it.live('features and shared code do not depend on other features', () =>
+    Effect.gen(function* () {
+      expect(importedFeature('@tests/features/example/index.js', SRC)).toBe('example')
+      expect(importedFeature('#tests/features/example/index', SRC)).toBe('example')
+
+      const roots = [FEATURES, bunPath.join(SRC, 'shared'), TEST_FEATURES, bunPath.join(TESTS, 'shared'), bunPath.join(TESTS, 'utils')]
+      const violations: string[] = []
+      for (const root of roots) {
+        const sources = (yield* descendants(root)).filter((path) => /\.[cm]?[jt]sx?$/.test(path))
+        for (const source of sources) {
+          const owner = featureAtPath(source, FEATURES) ?? featureAtPath(source, TEST_FEATURES)
+          for (const specifier of importSpecifiers(yield* bunFileSystem.readFileString(source))) {
+            const dependency = importedFeature(specifier, source)
+            if (dependency !== undefined && dependency !== owner) {
+              violations.push(`${bunPath.relative(bunPath.resolve(SRC, '..'), source)} -> ${specifier}`)
+            }
+          }
+        }
+      }
+      expect(violations).toEqual([])
     })
   )
 

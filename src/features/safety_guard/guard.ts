@@ -3,12 +3,12 @@ import { Cause, Effect, Match } from 'effect'
 import { type FileSystem } from 'effect/FileSystem'
 import { type PlatformError } from 'effect/PlatformError'
 
-import { parseSimpleRm, validateSafeRmTargets, type SafeRmToolParams } from '#features/safe_rm/remove'
 import { StatusBar } from '#shared/effect/app_services'
 import { Pi, Ui } from '#shared/effect/pi_services'
 import { resolveProtectedPathEffect } from '#shared/utils/protected_paths'
 
 import { ALL_PATTERNS, COMMAND_EXCERPT_CONTEXT_LINES, COMMAND_EXCERPT_MAX_LENGTH, SAFETY_STATUS_KEY, SHELL_DELETION_PATTERN } from './constants.js'
+import { parseSimpleRm, validateSafeRmTargets, type SafeRmToolParams } from './remove.js'
 import { commandSegments, maskProse } from './scan.js'
 
 const commandExcerpt = (command: string, pattern: RegExp): string => {

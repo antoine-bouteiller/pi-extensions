@@ -12,7 +12,6 @@ import { register as mcp } from '#features/mcp/index'
 import { register as meridianSessionAffinity } from '#features/meridian_session_affinity/index'
 import { register as promptRewind } from '#features/prompt_rewind/index'
 import { register as rules } from '#features/rules/index'
-import { register as safeRm } from '#features/safe_rm/index'
 import { register as safetyGuard } from '#features/safety_guard/index'
 import { register as statusPanel } from '#features/status_panel/index'
 import { register as subAgents } from '#features/sub_agents/index'
@@ -35,7 +34,6 @@ export const features: readonly FeatureRegistration[] = [
   { name: 'meridian-session-affinity', register: meridianSessionAffinity },
   { name: 'prompt-rewind', register: promptRewind },
   { name: 'rules', register: rules },
-  { name: 'safe-rm', register: safeRm },
   { name: 'safety-guard', register: safetyGuard },
   { name: 'status-panel', register: statusPanel },
   { name: 'sub-agents', register: subAgents },
