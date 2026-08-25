@@ -218,6 +218,7 @@ export const makePanelController = ({ dependencies, pi, runtime }: PanelControll
               git: state.git,
               model: state.model,
               quotas: state.quotas,
+              sessionId: ctx.sessionManager?.getSessionId() ?? undefined,
             }
           },
           onError: () => undefined,

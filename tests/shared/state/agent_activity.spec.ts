@@ -7,12 +7,14 @@ describe('agent activity store', () => {
   it.effect('publishes a snapshot that later mutations cannot change', () =>
     Effect.sync(() => {
       const store = createAgentActivityStore()
-      const published: RunningAgent[] = [{ color: 'accent', name: '/scout' }]
+      const published: RunningAgent[] = [
+        { agentId: 'scout', color: 'accent', lastActivityAt: 0, name: '/scout', sessionId: 'session', state: 'running' },
+      ]
 
       store.publish(published)
-      published.push({ color: 'warning', name: '/reviewer' })
+      published.push({ agentId: 'reviewer', color: 'warning', lastActivityAt: 0, name: '/reviewer', sessionId: 'session', state: 'running' })
 
-      expect(store.list()).toEqual([{ color: 'accent', name: '/scout' }])
+      expect(store.list()).toEqual([{ agentId: 'scout', color: 'accent', lastActivityAt: 0, name: '/scout', sessionId: 'session', state: 'running' }])
     })
   )
 
@@ -22,13 +24,13 @@ describe('agent activity store', () => {
       let notifications = 0
       const unsubscribe = store.subscribe(() => notifications++)
 
-      store.publish([{ color: 'accent', name: '/scout' }])
+      store.publish([{ agentId: 'scout', color: 'accent', lastActivityAt: 0, name: '/scout', sessionId: 'session', state: 'running' }])
       store.publish([])
       unsubscribe()
-      store.publish([{ color: 'accent', name: '/scout' }])
+      store.publish([{ agentId: 'scout', color: 'accent', lastActivityAt: 0, name: '/scout', sessionId: 'session', state: 'running' }])
 
       expect(notifications).toBe(2)
-      expect(store.list()).toEqual([{ color: 'accent', name: '/scout' }])
+      expect(store.list()).toEqual([{ agentId: 'scout', color: 'accent', lastActivityAt: 0, name: '/scout', sessionId: 'session', state: 'running' }])
     })
   )
 })

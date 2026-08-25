@@ -69,7 +69,7 @@ export const createFakePi = (options: FakePiOptions = {}): FakePiResult => {
         : promiseFromEffect(tryPromiseEffect(() => exec(command, args, execOptions)))
     },
     getActiveTools: () => [],
-    getAllTools: () => [],
+    getAllTools: () => [...state.tools.values()],
     getThinkingLevel: () => 'off',
     on(name: string, handler: EventHandler) {
       const handlers = state.handlers.get(name) ?? []
@@ -98,6 +98,9 @@ export const createFakePi = (options: FakePiOptions = {}): FakePiResult => {
       state.tools.set(tool.name, tool)
     },
     sendMessage(message: unknown, messageOptions: unknown) {
+      state.messages.push({ message, options: messageOptions })
+    },
+    sendUserMessage(message: unknown, messageOptions: unknown) {
       state.messages.push({ message, options: messageOptions })
     },
     setActiveTools() {

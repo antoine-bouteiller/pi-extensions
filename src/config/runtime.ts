@@ -2,7 +2,7 @@ import { BunFileSystem, BunPath } from '@effect/platform-bun'
 import { Layer, ManagedRuntime } from 'effect'
 import { FetchHttpClient } from 'effect/unstable/http'
 
-import { AgentActivityLive, type AppServices, StatusBarLive } from '#shared/effect/app_services'
+import { AgentActivityLive, type AppServices, StatusBarLive, SubagentOrchestratorProductionLive } from '#shared/effect/app_services'
 
 export type ProcessServices = AppServices
 export type ProcessRuntime = ManagedRuntime.ManagedRuntime<ProcessServices, never>
@@ -19,7 +19,8 @@ const AppLayer: Layer.Layer<ProcessServices> = Layer.mergeAll(
   BunPath.layer,
   FetchHttpClient.layer,
   StatusBarLive,
-  AgentActivityLive
+  AgentActivityLive,
+  SubagentOrchestratorProductionLive
 )
 
 let processRuntime: ProcessRuntime | undefined

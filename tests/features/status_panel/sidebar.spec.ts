@@ -54,9 +54,13 @@ const state: SidebarState = {
 const withAgents = (count: number): SidebarState => ({
   ...state,
   agents: Array.from({ length: count }, (_value, index) => ({
+    agentId: `scout-${index}`,
     color: 'accent' as const,
+    lastActivityAt: 0,
     name: `/scout-${index}`,
     profile: 'scout',
+    sessionId: 'session',
+    state: 'running' as const,
   })),
 })
 
