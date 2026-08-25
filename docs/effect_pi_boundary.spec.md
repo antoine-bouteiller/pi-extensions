@@ -1,6 +1,6 @@
 ---
 title: The Pi/Effect boundary
-status: review
+status: amended
 author: Antoine Bouteiller
 date: 2026-08-14
 related: [docs/project_structure.md]
@@ -8,316 +8,480 @@ related: [docs/project_structure.md]
 
 ## 2. Problem Statement
 
-Pi is a callback-and-promise host; this package is an Effect program. Every crossing between
-the two is written per feature today, and the fifteen features have drifted: some tool
-callbacks link Pi's `AbortSignal` to the runtime and some drop it, commands bridge inline
-with no shared helper, fibers are forked with no owner, and the runtime is re-entered from
-inside effects that are already running on it. The defects this produces — a tool that keeps
-working after the user cancels, a poll that outlives its session, a failure that reaches Pi
-as a defect instead of a tool result — are all boundary defects, not feature defects. This
-spec fixes the shape of that boundary so it is designed once instead of re-derived fifteen
-times.
+Pi is a callback-and-promise host; this package is an Effect program. Crossings have drifted:
+some tools drop Pi cancellation, commands enter the runtime inline, fibers have no owner, and
+the current process runtime imports and initializes MCP even when MCP is disabled. This spec
+defines one boundary and one independently enabled feature contract.
 
-- `[G-1]` Every Pi callback kind (tool, event, command) has exactly one supported way to
-  enter Effect, and one supported way for Effect to call back into Pi.
-- `[G-2]` Cancellation propagates from Pi's `AbortSignal` to the executing fiber for every
-  tool, including calls aborted before dispatch.
-- `[G-3]` No fiber, child process, socket, or lock outlives the lifetime that owns it.
-- `[G-4]` Expected failures reach Pi as tool failures; only bugs reach it as defects.
-- `[G-5]` Existing divergences are enumerated rather than silently tolerated, so they cannot
-  be cited as precedent by new code.
+- `[G-1]` Every Pi callback kind (tool, event, command) has one supported Effect entry and
+  one supported Effect-to-Pi service boundary.
+- `[G-2]` Pi `AbortSignal` cancellation reaches every tool fiber, including a call aborted
+  before dispatch.
+- `[G-3]` No fiber, child process, socket, lock, or session context outlives its owner.
+- `[G-4]` Expected failures reach Pi as tool failures; only bugs are defects.
+- `[G-5]` Existing divergences are enumerated rather than silently becoming precedent.
+- `[G-6]` Features are independent plugins. Their only enablement surface is one explicit
+  import and one registry entry in `src/config/features.ts`.
+- `[G-7]` Every enabled feature has a persistent, distinct icon/name health status.
+- `[G-8]` A failed external check registers no callbacks for its feature, reports a persistent
+  error, and retries in the next session without delaying `session_start`.
+- `[G-9]` Disabling MCP removes its import, service initialization, and resource acquisition.
 
 ## 3. Key Design Decisions
 
-| Decision                       | Choice                                                                                                                                                                       | Rationale                                                                                                                                                                                                           |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `[KD-1]` Runtime instances     | One lazily-memoized process-wide `ProcessRuntime`, threaded to every `register(pi, runtime)`                                                                                 | `ManagedRuntime.make` memoizes layers by reference, so a second runtime silently duplicates `StatusBar`, `AgentActivity`, and `McpGateway` — state that features assume is shared (`src/config/runtime.ts:11`)      |
-| `[KD-2]` Boundary location     | Only `src/features/<name>/index.ts` may call `pi.registerTool`/`registerCommand`/`pi.on` or a bridge helper                                                                  | Confines Pi's callback signatures to one file per feature, which is why `effecttsgo/async-function` can be relaxed there alone (`oxlint.config.ts:30`); siblings then have a single return type, `Effect`           |
-| `[KD-3]` Tool bridging         | `makeToolExecutor` is mandatory, never an inline `runtime.runPromise`                                                                                                        | It bundles three easily-forgotten steps — suspend before dispatch, pass `{ signal }` to `runPromise`, provide `PiCtx`/`Ui` per call — and every inline bridge in the repo today drops at least one                  |
-| `[KD-4]` Event bridging        | `makeEventHandler`, deliberately generic in its error channel                                                                                                                | Some events must keep rejecting so Pi surfaces the failure (`rules` propagates discovery failures) while others are best-effort; fixing the channel in the helper would force one policy on both                    |
-| `[KD-5]` Command bridging      | Add `makeCommandHandler`, typed to Pi's real command signature                                                                                                               | Commands need the same per-invocation `PiCtx`/`Ui` provisioning as tools, but four of them bridge inline today with no shared helper to reach for                                                                   |
-| `[KD-6]` `Effect.runSync`      | Permitted only for in-memory state inside synchronous Pi/TUI callbacks                                                                                                       | Those callbacks must return a value synchronously and have no way to handle a defect; restricting the effect to non-suspending, non-failing state operations is what makes the bridge safe (`oxlint.config.ts:103`) |
-| `[KD-7]` Fiber ownership       | Every fork names a `Scope` or a tracked `Fiber`; detached forks require a written justification                                                                              | An unowned fiber is a leak by construction. Scope ownership makes teardown automatic — session shutdown interrupts every poll with no bookkeeping (`src/features/background_poll/poll.ts:306`)                      |
-| `[KD-8]` Runtime re-entry      | Never call `runtime.runPromise` from code already running on the runtime                                                                                                     | Re-entry detaches the inner work: interruption stops propagating, the outer `Scope` stops owning inner resources, and the abort signal stops meaning anything                                                       |
-| `[KD-9]` Error channel         | Tagged errors in feature modules, mapped to `ToolFailure` at the boundary; `orDie` for broken invariants only; every `ignore`/`ignoreCause`/`orElseSucceed` carries a reason | Mapping early destroys the discrimination intermediate code needs; undocumented swallows convert Effect's main advantage back into `catch {}`                                                                       |
-| `[KD-10]` Context lifetime     | `pi` may be captured at registration; `ExtensionContext` is never stored                                                                                                     | `ExtensionAPI` is process-stable, `ExtensionContext` is per-invocation — capturing it freezes the first call's context for every later one (`src/shared/effect/runtime.ts:9`)                                       |
-| `[KD-11]` Cancellation         | Tool bodies receive `(params)` only and reach the signal through `withAbortSignal`                                                                                           | The fiber's signal is the one that interruption actually drives; handing the host signal to bodies invites `signal.aborted` polling and a second, unrelated controller                                              |
-| `[KD-12]` Test boundary        | Feature logic tested as `Effect` under `it.effect`/`it.scoped` with `TestClock`; registration tested through the fake Pi                                                     | Virtual time keeps lifecycle tests deterministic, and driving the registered callback is the only way to catch a `[KD-3]` regression                                                                                |
-| `[KD-13]` Existing divergences | Recorded in a conformance table, not migrated by this spec                                                                                                                   | Fifteen features' worth of rewriting is a separate, sequenced change; naming the divergences is what stops them propagating in the meantime                                                                         |
-| `[KD-14]` Enforcement          | An oxlint rule bans `Effect.run*` and `pi.register*` outside `src/features/*/index.ts`                                                                                       | `[PI-5]` only holds if divergence is detected at the moment it is written; a review rule that fifteen features already violate will not survive the sixteenth                                                       |
+| Decision                             | Choice                                                                                                                                                                                                                                                      | Rationale                                                                                                                                               |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `[KD-1]` Runtime instances           | One lazily memoized process-wide `AppRuntime`, containing only shared `AppServices`                                                                                                                                                                         | `AppRuntime` is already the shared runtime type in `src/shared/effect/app_services.ts:83`; it must not import a feature merely to build its base layer. |
+| `[KD-2]` Boundary location           | **Amended by `[KD-2a]`.** Feature indexes own feature registrations; the coordinator alone owns extension lifecycle registration.                                                                                                                           | Keeps Pi callback signatures at explicit owners.                                                                                                        |
+| `[KD-2a]` Registration owners        | `src/features/<name>/index.ts` may register that descriptor's tools, commands, and non-lifecycle events; `src/config/feature_coordinator.ts` alone registers `session_start`/`session_shutdown`.                                                            | Feature callbacks remain local, while one coordinator makes bootstrap and session ownership deterministic.                                              |
+| `[KD-3]` Tool bridging               | `makeToolExecutor` is mandatory, never inline `runtime.runPromise`.                                                                                                                                                                                         | It suspends before dispatch, forwards `{ signal }`, and provides `PiCtx`/`Ui` per invocation (`src/shared/effect/runtime.ts:15-29`).                    |
+| `[KD-4]` Event bridging              | `makeEventHandler`, deliberately generic in its error channel.                                                                                                                                                                                              | Event policy belongs to the event body, not a shared helper.                                                                                            |
+| `[KD-5]` Command bridging            | Add `makeCommandHandler`, typed to Pi's actual command signature.                                                                                                                                                                                           | Commands need the same per-invocation services as tools.                                                                                                |
+| `[KD-6]` `Effect.runSync`            | Only memory-only, non-failing, non-suspending state in synchronous Pi/TUI callbacks.                                                                                                                                                                        | A synchronous callback cannot recover a defect from a suspended effect.                                                                                 |
+| `[KD-7]` Fiber ownership             | Every fork names a `Scope` or a tracked `Fiber`; detached forks need a written justification.                                                                                                                                                               | An unowned fiber is a leak by construction.                                                                                                             |
+| `[KD-8]` Runtime re-entry            | Never call `runtime.runPromise` from work already running on that runtime.                                                                                                                                                                                  | Re-entry loses structural interruption and resource ownership.                                                                                          |
+| `[KD-9]` Error channel               | Feature modules use tagged errors; an index maps expected tool errors to `ToolFailure`; `orDie` is only for broken invariants.                                                                                                                              | Mapping early destroys useful error discrimination.                                                                                                     |
+| `[KD-10]` Context lifetime           | **Amended by `[KD-10a]`.** A process may capture `ExtensionAPI`; it never stores an `ExtensionContext`.                                                                                                                                                     | `PiCtx` is intentionally rebuilt from the invocation context by `perInvocation` (`src/shared/effect/runtime.ts:9-13`).                                  |
+| `[KD-10a]` Session context retention | The coordinator may retain `ExtensionContext` only in the current session record and fibers scoped to that session; it clears it after interrupting/awaiting that scope at shutdown. It never enters process runtime, descriptor, or process service state. | Late preparation needs the current session's activation/UI context, but a later session must never use it.                                              |
+| `[KD-11]` Cancellation               | Tool bodies receive `(params)` only and use `withAbortSignal` for host promises.                                                                                                                                                                            | The fiber signal, not a separately polled host signal, is what interruption drives.                                                                     |
+| `[KD-12]` Test boundary              | Logic is tested as `Effect` with `it.effect`/`it.scoped`; registration is tested through fake Pi.                                                                                                                                                           | Virtual time and registered callbacks expose lifecycle regressions.                                                                                     |
+| `[KD-13]` Existing divergences       | Record them in a conformance table; do not migrate them in this spec.                                                                                                                                                                                       | Visible exceptions cannot be cited as normal practice.                                                                                                  |
+| `[KD-14]` Enforcement                | **Amended by `[KD-14a]`.** An oxlint rule bans unsupported registration, bridge, runtime construction, and runtime entry locations.                                                                                                                         | The boundary must fail at author time, not in later review.                                                                                             |
+| `[KD-14a]` Enforcement owners        | The rule allows lifecycle `pi.on` only in the coordinator; descriptor registration and bridge calls only in a feature index; managed-runtime entry only in shared bridge implementations; canonical runtime construction only in config runtime.            | This matches `[KD-2a]` and has no broad “feature directory” exception.                                                                                  |
+| `[KD-15]` Feature contract           | `FeaturePlugin` is a discriminated union: eager descriptors expose an implementation; background preparation returns one.                                                                                                                                   | Prepared artifacts flow into registration/callback closures without shared-to-config types.                                                             |
+| `[KD-16]` Explicit enablement        | `src/config/features.ts` has one explicit import and one stable ordered registry entry per enabled feature. Commenting **both** lines disables it.                                                                                                          | There is no auto-discovery or side-effect enablement.                                                                                                   |
+| `[KD-17]` Mixed bootstrap            | Eager descriptors validate/register synchronously in registry order at extension load. Only comment-checker and Meridian background-prepare and late-register; eager activation is awaited in registry order per session.                                   | One-shot handlers cannot be missed; only external checks are nonblocking.                                                                               |
+| `[KD-18]` Feature health             | The coordinator owns one `FeatureHealth` enum (`checking`, `healthy`, `error`) and persistently publishes it for every enabled descriptor using §8.12 metadata.                                                                                             | Generic, distinct status makes independent failures observable without a second poisoned health state.                                                  |
+| `[KD-19]` MCP ownership              | The base runtime has no MCP import or `McpGateway` service. The eager MCP module constructs a plain feature-owned gateway value and provides it to its callback effects.                                                                                    | Commenting MCP's two config lines fully disables MCP.                                                                                                   |
 
 ## 4. Principles & Intents
 
-- `[PI-1]` **One shape per crossing** — when two features solve the same boundary problem
-  differently, at most one of them is right; the helper decides which.
-- `[PI-2]` **Lifetimes are structural** — ownership is expressed by `Scope` and `ensuring`,
-  never by a `finally` after an `await` or by remembering to clean up.
-- `[PI-3]` **Effect is a concurrency runtime here, not a style** — a rule earns its place by
-  preventing a leak, a lost cancellation, or a swallowed failure, not by being more
-  idiomatic.
-- `[PI-4]` **The host is the constraint** — Pi's signatures are fixed; helpers absorb the
-  ugliness so feature code never sees it.
-- `[PI-5]` **Divergence is visible or it is precedent** — an unlisted exception becomes the
-  next feature's template.
+- `[PI-1]` **One shape per crossing** — helpers, not individual features, choose the bridge.
+- `[PI-2]` **Lifetimes are structural** — use `Scope`, `ensuring`, and tracked fibers, not
+  `finally` after an `await`.
+- `[PI-3]` **Effect is a concurrency runtime** — rules prevent leaks, lost cancellation, and
+  swallowed errors rather than enforce a style.
+- `[PI-4]` **The host is the constraint** — Pi signatures stay at owners; Effect code sees services.
+- `[PI-5]` **Divergence is visible or it is precedent** — every exception is listed and lint-disabled.
+- `[PI-6]` **Features fail independently** — no feature imports another or blocks a sibling;
+  eager activation may be awaited for compatibility, but external preparation never delays startup.
+- `[PI-7]` **Enablement is complete** — disabled code is neither imported into the base runtime nor
+  allowed to acquire process resources indirectly.
 
 ## 5. Non-Goals
 
-- `[NG-1]` Reducing Effect usage, or converting the promise-wrapper portions of features
-  back to `async`/`await`.
-- `[NG-2]` Migrating the existing divergences in §8.8; that is a plan, not this spec.
-- `[NG-3]` Retrofitting the §8.8 divergences so they pass `[KD-14]`. They ship with per-site
-  disable comments pointing at their conformance row until a plan migrates them.
-- `[NG-4]` Changing the Pi SDK, its callback signatures, or the TypeBox schemas its tool
-  registration requires.
-- `[NG-5]` Prescribing internal Effect style — combinator choice, `gen` versus `pipe`,
-  service granularity inside a feature.
+- `[NG-1]` Reducing Effect usage or converting Effect code to `async`/`await`.
+- `[NG-2]` Migrating the unrelated tool/command/ownership/error divergences in §8.8; lifecycle
+  migrations required by `[KD-2a]` are explicitly in scope.
+- `[NG-3]` Retrofitting those divergences to pass `[KD-14a]`; each retains a one-site disable
+  naming its conformance row until migration.
+- `[NG-4]` Changing Pi SDK signatures or its TypeBox registration requirements.
+- `[NG-5]` Prescribing internal combinator, `gen`, or service-granularity style.
+- `[NG-6]` A configuration UI/file for enablement; imports and registry entries are the mechanism.
 
 ## 6. Caveats
 
-- `[C-1]` `src/shared/effect/bun_services.ts:12` builds a second `ManagedRuntime` and
-  resolves `FileSystem`, `Path`, and `ChildProcessSpawner` eagerly, because that code runs
-  before the process runtime exists. It is a deliberate exception to `[KD-1]` and is
-  intended to remain the only one.
-- `[C-2]` Neither runtime is ever disposed. Process exit is the teardown, which is why
-  `[KD-7]` ties fibers to session and feature scopes rather than to runtime shutdown.
-- `[C-3]` `makeEventHandler` and the proposed `makeCommandHandler` pass raw
-  `ExtensionContext`/`ExtensionCommandContext` into their bodies as an argument. Only tool
-  bodies see context exclusively as `PiCtx`/`Ui`; `[KD-10]` forbids _storing_ the context,
-  not passing it down one call.
-- `[C-4]` The line numbers in §8.8 are accurate as of `16020a5` and will drift. The rule
-  each row cites, not the line, is the durable part.
-- `[C-5]` Pi's command signature is assumed stable: one `string` of remaining command text
-  plus an `ExtensionCommandContext`, awaited by the session. `[KD-5]`'s helper is typed to
-  it, so an SDK change to that signature changes the helper.
-- `[C-6]` `[KD-12]`'s abort test is stated as a per-tool obligation, but
-  `tests/registration.spec.ts` derives its expectations from disk and could enforce it for
-  every feature at once. Which of the two owns it is left to the implementer.
+- `[C-1]` `src/shared/effect/bun_services.ts:12` has its own eager Bun-only runtime for code
+  that executes before `AppRuntime`; it remains the sole sanctioned second runtime.
+- `[C-2]` Process runtimes are not disposed. Process exit tears them down; session resources and
+  fibers must therefore be structurally owned by session scopes.
+- `[C-3]` Event and command bodies may receive a raw context for the duration of that call.
+  `[KD-10a]` permits retention only by the current coordinator session record/scope and forbids
+  process-lifetime retention.
+- `[C-4]` §8.8 cites current symbols and checked locations; line numbers may drift, while the
+  symbol/rule is durable.
+- `[C-5]` Pi commands are assumed to receive remaining text and `ExtensionCommandContext`; an SDK
+  signature change updates `makeCommandHandler`.
+- `[C-6]` **Amended by `[C-6a]`.** The synthetic aborted-tool regression remains owned by fake Pi
+  and boundary enforcement; existing tool migration remains backlog.
+- `[C-6a]` It must additionally cover coordinator bootstrap: eager descriptors are registered before
+  the first emitted one-shot event, while failed background descriptors never appear in fake Pi's
+  registration maps. This tests `[KD-17]`, not every legacy callback.
+- `[C-7]` Pi loads the extension synchronously. Eager validation/registration completes during that
+  call; only the coordinator's lifecycle hooks are additionally installed there.
+- `[C-8]` Pi has no unregister transaction. `register` is synchronous and must not throw. A throw
+  is a poisoned invariant: report it, do not retry in-process, and require restart.
+- `[C-9]` Meridian uses Effect `HttpClient`, not `withAbortSignal`, for a non-redirecting `GET`
+  to the normalized `/health` URL. It accepts only 2xx, discards its scoped body, and uses a
+  TestClock-compatible three-second timeout; every other outcome retries next session.
+- `[C-10]` Eager registration order is exactly registry order. Background prepare completion and
+  late registration order are intentionally unspecified; descriptors must be independent.
+- `[C-11]` Pi 0.84.2 supports late registration (`node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js:206-230`). The coordinator is the only lifecycle listener so a late descriptor cannot miss coordinator-managed activation.
 
 ## 7. High-Level Components
 
 ```text
-┌─ Pi zone ───────────────────────────────────────────────────────────┐
-│  ExtensionAPI, ExtensionContext, AbortSignal, Promise, callbacks    │
-│  Allowed in: src/features/<name>/index.ts, TUI component callbacks  │
-└───────────────────────────┬─────────────────────────────────────────┘
-              inbound       │       outbound
-   makeToolExecutor         │         Pi / PiCtx / Ui
-   makeEventHandler         │         withAbortSignal
-   makeCommandHandler       │
-┌───────────────────────────▼─────────────────────────────────────────┐
-│  Effect zone                                                        │
-│  Effect values, tagged errors, Scope, Fiber, Context services       │
-│  Allowed in: every sibling module of a feature, all of src/shared/  │
-└───────────────────────────┬─────────────────────────────────────────┘
-                            │  ManagedRuntime
-┌───────────────────────────▼─────────────────────────────────────────┐
-│  Runtime zone: one process-wide ProcessRuntime, built lazily once   │
-└─────────────────────────────────────────────────────────────────────┘
+Pi callbacks ── feature index/coordinator ── shared bridges ── AppRuntime
+                    │                             │
+                    └── FeaturePlugin ── feature-owned prepare/resources
+                                      (no shared -> config or shared -> feature dependency)
 ```
 
-| Component            | Module type                                         | Responsibility                                                                              | Public API surface                                                                               |
-| -------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| Process runtime      | `src/config/runtime.ts`                             | Own the single `ManagedRuntime` and the layer set every feature shares                      | `ProcessRuntime`, `getOrCreateProcessRuntime`, `AppLayer`                                        |
-| Inbound bridges      | `src/shared/effect/runtime.ts`                      | Turn an `Effect` into the callback shape Pi expects, with cancellation and per-call context | `makeToolExecutor`, `makeEventHandler`, `makeCommandHandler`, `perInvocation`, `HandlerServices` |
-| Outbound bridges     | `src/shared/effect/pi_services.ts`                  | Expose Pi to Effect code as services instead of captured objects                            | `Pi`, `PiCtx`, `Ui`, `makeUi`, `withAbortSignal`                                                 |
-| Failure boundary     | `src/shared/effect/errors.ts`                       | The one error type Pi understands as a failed tool call                                     | `ToolFailure`                                                                                    |
-| Fiber ownership      | convention, no module                               | Bind every background fiber to a scope or a handle                                          | `Effect.forkIn`, `Effect.ensuring`, tracked `Fiber` refs                                         |
-| Feature registration | `src/features/*/index.ts`, `src/config/features.ts` | Wire Pi to Effect once per feature, in registry order                                       | `register(pi, runtime)`, `registerFeatures`                                                      |
-| Boundary lint rule   | `oxlint.config.ts`                                  | Fail the build when a crossing happens outside a bridge helper                              | `no-restricted-syntax` overrides keyed on `src/features/*/index.ts`                              |
-| Test boundary        | `tests/utils/{bun_effect,fake_pi,runtime}.ts`       | Exercise Effect logic under virtual time and registration through a fake host               | `it.effect`, `it.scoped`, `it.live`, `createFakePi`, `testRuntime`                               |
+| Component            | Module                                            | Responsibility / public surface                                                                                                                                       |
+| -------------------- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Shared runtime types | `src/shared/effect/app_services.ts`               | `AppServices`, `AppRuntime`, shared status/activity services (`AppServices` is currently defined at :81 and `AppRuntime` at :83).                                     |
+| Base runtime         | `src/config/runtime.ts`                           | Build the one `AppRuntime` from Bun FS/path, HTTP, status, and activity layers; after this amendment it imports no `#features/mcp/*`.                                 |
+| Inbound bridges      | `src/shared/effect/runtime.ts`                    | `makeToolExecutor`, `makeEventHandler`, proposed `makeCommandHandler`, `perInvocation`, `HandlerServices`.                                                            |
+| Outbound services    | `src/shared/effect/pi_services.ts` / `runtime.ts` | `Pi`, `PiCtx`, `Ui`, `makeUi`; generic `withAbortSignal` remains in `runtime.ts:46-51`. `Pi` is process-stable at `pi_services.ts:4`, `PiCtx` invocation-local at :6. |
+| Feature contract     | `src/shared/effect/feature.ts`                    | Generic descriptor types only. It imports shared types/Pi SDK types, never config types.                                                                              |
+| Coordinator          | `src/config/feature_coordinator.ts`               | Validate, register, maintain state, publish statuses, own session scopes/lifecycle.                                                                                   |
+| Registry             | `src/config/features.ts`                          | Explicit descriptor imports and ordered `features`; `registerFeatures` delegates to coordinator.                                                                      |
+| Feature index        | `src/features/*/index.ts`                         | Export `feature`; own callback registrations and feature-owned preparation/resources.                                                                                 |
 
 ## 8. Detailed Design
 
-### 8.1 Process runtime
+### 8.1 Base runtime and feature-owned resources
 
-`getOrCreateProcessRuntime()` (`src/config/runtime.ts:33`) memoizes one
-`ManagedRuntime<ProcessServices, never>` built from `AppLayer` — Bun filesystem and path,
-`FetchHttpClient`, `StatusBarLive`, `AgentActivityLive`, `McpGatewayLive`. `src/index.ts`
-calls it once and hands the result to `registerFeatures(pi, runtime)`.
+`AppServices` and `AppRuntime` are the public shared types in
+`src/shared/effect/app_services.ts:81-83`. `AppLayer` is **not** public: the current
+`src/config/runtime.ts:18` module constant is an implementation detail. The only config runtime
+public API after this change is `getOrCreateAppRuntime(): AppRuntime` (an old
+`getOrCreateProcessRuntime` name may be a compatibility alias, but must return `AppRuntime`).
 
-A feature never calls `ManagedRuntime.make`, and never runs a bare effect that needs
-application services. A service that must live for the whole process is added to `AppLayer`
-as a `Layer`, not constructed on first use — `McpGatewayLive` is the precedent, and
-`docs/project_structure.md` records why that one feature layer lives in `src/config/`.
+That private layer merges only Bun filesystem/path, `FetchHttpClient`, `StatusBarLive`, and
+`AgentActivityLive` (the current composition is `src/config/runtime.ts:18-24`). Remove the current
+`#features/mcp/gateway` import at :5, `ProcessServices`/`ProcessRuntime` widening at :8-9, and
+`McpGatewayLive` at :24. `src/index.ts:3-8` obtains the shared runtime once and delegates to
+`registerFeatures`; it imports no feature.
 
-### 8.2 Inbound bridge: tools
+An implementation owns non-shared values. Eager MCP constructs a plain `McpGatewayApi` value when
+`src/features/mcp/index.ts` is imported, captures it in its `FeatureImplementation`, and each MCP
+callback effect is explicitly provided that value with the `McpGateway` service tag. It does not use
+`McpGatewayLive` or add `McpGateway` to `AppServices`. A feature needing a session resource acquires
+and releases it in its activation effect/scope. Therefore commenting MCP's import and registry entry
+means neither its module nor gateway value/config/socket resources are evaluated or acquired.
 
-```ts
-// src/features/<name>/index.ts
-const executeTool = makeToolExecutor(runtime)
+### 8.2 Inbound bridges
 
-pi.registerTool({
-  name: 'my_tool',
-  parameters: MyToolParams,
-  execute: executeTool((params: Static<typeof MyToolParams>) => runMyTool(params)),
-})
-```
+Tools use `makeToolExecutor(runtime)` exactly as implemented at
+`src/shared/effect/runtime.ts:15-29`: it suspends construction, returns `Effect.interrupt` for an
+already-aborted signal, provides invocation services, and passes `{ signal }` to `runPromise`.
+Expected errors are `ToolFailure`; defects remain defects.
 
-`makeToolExecutor` (`src/shared/effect/runtime.ts:15`) is the only supported form. It:
-
-1. wraps the body in `Effect.suspend` and returns `Effect.interrupt` when the signal has
-   already fired, so a call cancelled before dispatch never runs the body's synchronous side
-   effects;
-2. passes `{ signal }` to `runPromise`, so an abort during execution interrupts the fiber;
-3. provides `perInvocation(ctx)` — `PiCtx` and `Ui` rebuilt for this call.
-
-The body's error channel is `ToolFailure`. Everything the user should see as a failed tool
-call is a `ToolFailure`; everything else is a defect and should crash rather than be
-formatted as a result.
-
-### 8.3 Inbound bridge: events and commands
-
-```ts
-const handleEvent = makeEventHandler(runtime)
-
-pi.on(
-  'session_start',
-  handleEvent((event, ctx) => onSessionStart(event, ctx))
-)
-pi.on(
-  'session_shutdown',
-  handleEvent(() => onSessionShutdown)
-)
-```
-
-`makeEventHandler` keeps its error channel generic; recovery is chosen inside the body with
-an explicit `catchAll`/`ignore`, never by widening the helper.
-
-`makeCommandHandler` does not exist yet and is the one piece of new code this spec asks for
-(authorized 2026-08-14). It belongs beside its two siblings, typed to Pi's command signature:
+Events use generic `makeEventHandler` (`src/shared/effect/runtime.ts:35-44`). Add the adjacent
+command helper, using actual Pi command types rather than the stale generic `ProcessRuntime` name:
 
 ```ts
 export const makeCommandHandler =
-  <AppServices>(runtime: ManagedRuntime.ManagedRuntime<AppServices, never>) =>
+  (runtime: AppRuntime) =>
   <Failure>(body: (args: string, ctx: ExtensionCommandContext) => Effect.Effect<void, Failure, AppServices | HandlerServices>) =>
   (args: string, ctx: ExtensionCommandContext): Promise<void> =>
     runtime.runPromise(Effect.suspend(() => body(args, ctx)).pipe(Effect.provide(perInvocation(ctx))))
 ```
 
-Pi parses the remaining command text into one `string` and awaits `handler(args, ctx)`, so
-the helper cannot be generic in its argument or result the way `makeEventHandler` is.
+The installed SDK defines `ExtensionCommandContext extends ExtensionContext`
+(`node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts:250-254`), so the
+existing `perInvocation(ctx: ExtensionContext)` at `src/shared/effect/runtime.ts:13` accepts command
+contexts directly.
 
-### 8.4 Outbound bridge: calling Pi from Effect
+### 8.3 Outbound bridge, sync work, and ownership
 
-| Need                            | Use                                                 | Not                                             |
-| ------------------------------- | --------------------------------------------------- | ----------------------------------------------- |
-| Process-stable `ExtensionAPI`   | `Pi` service (`src/shared/effect/pi_services.ts:4`) | a module-level captured `pi`                    |
-| Per-invocation context          | `PiCtx`, `Ui`                                       | a stored `ctx`                                  |
-| A promise-returning Pi/Node API | `withAbortSignal`, `Effect.tryPromise`              | `Effect.promise` unless rejection is impossible |
-| A synchronous Pi call           | `Effect.sync`                                       | direct call inside `gen`                        |
+Use `Pi` for process-stable API and `PiCtx`/`Ui` for invocation state. `withAbortSignal` belongs
+in `src/shared/effect/runtime.ts:46-51`, not `pi_services.ts`: it is a generic bridge helper around
+an arbitrary host promise and delegates to `Effect.tryPromise`, which supplies the executing fiber's
+signal. Callers use it only for host APIs that accept an `AbortSignal`; Effect `HttpClient` owns its
+own cancellation and must not be wrapped with it. `Effect.runSync` is limited to in-memory state in
+synchronous render/completion callbacks; suspended, failing, filesystem, HTTP, or `pi.exec` work is
+forbidden there.
 
-`withAbortSignal` (`src/shared/effect/runtime.ts:50`) keeps the rejection in the error
-channel so callers can `catchAll` it, and supplies the _fiber's_ signal — which is what
-makes `[G-2]` reach `fetch`, `pi.exec`, and `ctx.ui.confirm`. New Pi capabilities that
-feature logic needs become methods on `Ui` or a sibling service rather than a `ctx`
-parameter threaded down the call chain.
+Every fork is `forkIn(sessionScope)`, a tracked fiber with an interrupting teardown, or the rare
+documented `forkDetach`. Release resources through `Scope`/`ensuring`, never `finally` after
+`await`. Do not re-enter the runtime from an Effect already running on it.
 
-### 8.5 Synchronous callbacks
+### 8.4 Generic feature contract
 
-Status-bar renderers, completion providers, and `Component.render` must return a value
-synchronously and bridge through `Effect.runSync`. The constraint is on what may be run:
+`src/shared/effect/feature.ts` defines this generic, config-independent discriminated union. It
+imports `AppRuntime`/`AppServices` from shared and Pi SDK types, never a config type. The registry
+sees only the union; implementation artifacts remain feature-private.
 
-- **Allowed** — `Ref.get`/`set`/`update`, pure derivation, and one-off construction of
-  in-memory state at registration time.
-- **Forbidden** — filesystem, HTTP, `pi.exec`, anything that can fail, anything that can
-  suspend. `Effect.runSync` on a suspending effect throws a defect into a callback with no
-  way to handle it.
+```ts
+interface FeatureImplementation {
+  readonly register: (pi: ExtensionAPI, runtime: AppRuntime) => void
+  readonly activate?: (
+    event: SessionStartEvent,
+    ctx: ExtensionContext
+  ) => Effect.Effect<void, FeatureActivationError, AppServices | HandlerServices | Scope.Scope>
+  readonly deactivate?: (
+    ctx: ExtensionContext,
+    reason: 'shutdown' | 'replaced'
+  ) => Effect.Effect<void, FeatureActivationError, AppServices | HandlerServices>
+}
 
-When a synchronous callback needs data only an async effect can produce, a tracked fiber
-publishes into a `Ref` and the callback reads that `Ref`.
+interface FeatureIdentity {
+  readonly id: string
+  readonly status: FeatureStatusMetadata
+}
 
-### 8.6 Fiber and resource ownership
+interface EagerFeaturePlugin extends FeatureIdentity {
+  readonly bootstrap: 'eager'
+  readonly implementation: FeatureImplementation
+}
 
-Every fork resolves to one of three cases:
+interface BackgroundFeaturePlugin extends FeatureIdentity {
+  readonly bootstrap: 'background'
+  readonly prepare: Effect.Effect<FeatureImplementation, FeaturePreflightError, AppServices>
+}
 
-```text
-Effect.forkIn(scope)      preferred — closed by the owning lifetime, no bookkeeping
-Fiber stored in a Ref     acceptable — a teardown path must call Fiber.interrupt
-Effect.forkDetach         exceptional — fire-and-forget AND idempotent, with a comment
+type FeaturePlugin = EagerFeaturePlugin | BackgroundFeaturePlugin
 ```
 
-`src/features/background_poll/poll.ts:306` is the reference for the first case: polls fork
-into the session scope, so session shutdown interrupts them. `src/features/sub_agents/peek.ts:846`
-is the reference for the second. Resources acquired by a forked fiber are released with
-`Effect.ensuring` or a `Scope` finalizer, never in a `finally` after an `await`.
+Eager descriptors have no `prepare`: validation and `implementation.register` happen synchronously
+at extension load. Background descriptors have no direct implementation: successful `prepare`
+returns the exact implementation that is registered and retained for later sessions. Only
+`comment-checker` and `meridian-session-affinity` are background. `FeaturePreflightError` and
+`FeatureActivationError` are tagged, concise, safe-to-display contract errors; resource and artifact
+representations never enter `AppServices`. Session resources are acquired in `activate` with the
+provided session `Scope` or released explicitly by `deactivate`; the coordinator invokes
+`deactivate` in registry order before closing the scope.
 
-### 8.7 Failure handling
+Comment-checker is constructed with injected `which` (production passes `Bun.which`; tests pass a
+fake). Its preparation resolves `comment-checker` once, rejects a missing/non-absolute result, and
+returns an implementation that closes over that resolved absolute path. Its runtime checker runner
+uses that captured path, never repeats PATH lookup. This is why `prepare` returns an implementation
+rather than `void`.
 
-```text
-feature module          Data.TaggedError subclasses, discriminated by catchTag
-        │
-        │  map at the boundary only
-        ▼
-index.ts                ToolFailure  ──► Pi renders a failed tool call
-                        defect       ──► crash; this is a bug in the package
+The coordinator validates before any registration: nonempty unique ID, unique `feature:<id>` key,
+nonempty metadata, exactly the matching union fields, no duplicate descriptor object, and
+`bootstrap: 'background'` only for `comment-checker` or `meridian-session-affinity`. Invalid
+configuration is a load-time invariant defect with an explicit feature/config diagnostic; it is
+never silently skipped. Validation has no I/O and follows registry order.
+
+### 8.5 Registry, deterministic bootstrap, and one-shot lifecycle
+
+`src/config/features.ts` is the sole enabled-feature list. It imports descriptor exports, not old
+`register` functions, and contains one ordered entry for each import:
+
+```ts
+import { feature as commentChecker } from '#features/comment_checker/index'
+// import { feature as meridian } from '#features/meridian_session_affinity/index'
+
+export const features = [
+  commentChecker,
+  // meridian,
+] satisfies readonly FeaturePlugin[]
 ```
 
-`Effect.orDie` is for broken invariants — a state that indicates a bug here, not a hostile
-filesystem or an offline server. `Effect.ignore`, `ignoreCause`, and `orElseSucceed` each
-need a comment naming what is swallowed and why the caller cannot act on it; they should be
-outnumbered by `catchTag`s.
+Commenting both matching lines disables that feature. In particular, the MCP import and its array
+entry are both removed/commented, so no MCP initialization occurs (§8.1).
+
+At extension load the coordinator validates the complete list, creates process-level records, and
+registers every eager descriptor's direct implementation synchronously in list order. It then
+installs its single `session_start` and `session_shutdown` listeners. This order is mandatory: a tool
+or feature event registered by an eager descriptor exists before Pi can emit a one-shot lifecycle
+event. A descriptor may not register `session_start` or `session_shutdown` itself.
+
+Registration is exactly once per process. A `register` throw transitions only that descriptor to
+`poisoned`; it is never retried because Pi offers no rollback. An eager descriptor with no throw is
+registered even if a sibling is poisoned. Only comment-checker and Meridian are background
+descriptors; each registers only the implementation returned by its successful prepare, never after
+a failed preflight.
+
+### 8.6 Session state, concurrency, and failures
+
+The public coordinator factory and registration entry point are exact:
+
+```ts
+export const makeFeatureCoordinator = (input: {
+  readonly pi: ExtensionAPI
+  readonly runtime: AppRuntime
+  readonly features: readonly FeaturePlugin[]
+}): FeatureCoordinator
+
+export const registerFeatures = (pi: ExtensionAPI, runtime: AppRuntime): void =>
+  makeFeatureCoordinator({ pi, runtime, features }).install()
+```
+
+`FeatureCoordinator` alone installs `session_start` and `session_shutdown` through
+`makeEventHandler(runtime)`. Its start/shutdown state transitions run as Effects with
+`perInvocation(ctx)` supplied. Each activation is evaluated as `Effect.suspend(() =>
+implementation.activate(event, ctx))` in that session's scope with the same invocation services;
+background preparation needs only `AppServices`. It owns a serialized state cell `{ nextGeneration,
+session, records }`. A record is `{ plugin, implementation?, registration, health }`, where
+`registration` is `unregistered | registered | poisoned` and the only health enum is
+`FeatureHealth = { _tag: 'checking' } | { _tag: 'healthy' } | { _tag: 'error', reason: SafeReason
+}`. `poisoned` is registration state, mapped to `error` health with the fixed restart-required
+reason; it is not a fourth health value.
+
+A session is `{ key, generation, phase, scope, ctx, lifecycleFibers }`, with `phase` of `starting |
+active | stopping`. `key` is the nonempty `ctx.sessionManager.getSessionId()` captured at start;
+shutdown affects the current record only when its context yields the same key. This record and its scope-owned fibers are the **only** places an
+`ExtensionContext` may live under `[KD-10a]`; no record survives shutdown and no descriptor,
+implementation, process runtime/service, or callback closure retains it.
+
+At load, validation creates records. Each eager record takes its direct implementation, calls
+`register(pi, runtime)` synchronously in config order, and becomes `registered`; a throw makes only
+that record `poisoned/error`. A background record stays `unregistered` until a current-session
+prepare returns an implementation. Its successful fiber first verifies that its generation is current and phase is `starting` or
+`active`, atomically installs the implementation, calls `register` once, then activates it. After
+successful activation—or immediately after registration when no activation exists—it rechecks the
+same generation/phase guard, commits `healthy`, and publishes success. If any guard fails it discards
+the implementation or completion and makes no later Pi/status call.
+
+On `session_start`, the coordinator serializes lifecycle transitions. A second start first marks
+the old session `stopping` and invalidates its generation, interrupts and awaits its tracked prepare
+and activation fibers, runs every registered implementation's `deactivate(oldCtx, 'replaced')` in
+registry order, closes/awaits its remaining scope, clears its context/fibers, and only then creates
+the next generation; old lifecycle work cannot overlap deactivation. The new session enters `starting`, republishes fixed
+`error` for poisoned records, publishes `checking` for other enabled records, and awaits every
+already-registered implementation's `activate(event, ctx)` one at a time in registry order,
+regardless of eager/background origin. Each successful activation—or registered implementation with
+no activation—commits and publishes `healthy` before the next descriptor; failure commits `error`.
+It then forks prepare only for unregistered background records, marks the session `active`, and returns. Thus eager and previously prepared activation is
+ordered and awaited; external preparation is concurrent and nonblocking.
+
+On `session_shutdown`, the coordinator derives the session key from the callback context. A missing
+current session or unequal key is stale and does nothing. A match atomically marks the generation
+`stopping` and invalid, interrupts and awaits tracked prepare/activation fibers, runs every registered
+implementation's `deactivate(ctx, 'shutdown')` in registry order with per-feature failure isolation,
+then closes remaining scope resources and clears the session. Prepare completion, registration,
+activation, and their status writes require the current generation in `starting`/`active` immediately
+before each visible step. Coordinator-owned deactivation may publish an error while `stopping` only
+when both session key and generation still match; replacement completes that publication before
+installing the next generation. No stale completion can register, activate, or overwrite newer status.
+
+Prepare typed failure is reduced to a `SafeReason`, leaves the record `unregistered`, and transitions
+health to `error`; it retries only in a later session. A prepare defect is logged diagnostically,
+gets a fixed safe `error` reason, and has the same retry policy. Registration throw is
+`poisoned/error` and never retried. Activation or deactivation typed failure leaves registration
+intact and sets `error` for that session; deactivation may publish it during the guarded `stopping`
+phase, and the next session retries lifecycle work. Their defects are logged, converted to fixed
+`error`, and do not affect siblings or unregister callbacks. Interruption
+caused by replacement/stopping publishes nothing and performs no retry work in that session; the
+next session starts fresh. No feature failure cancels a sibling.
+
+### 8.7 Status semantics and security
+
+Every enabled descriptor has persistent key `feature:<id>`. The coordinator updates the in-memory
+record first, then attempts both status-store and stock-Pi publication through `StatusBar`/`Ui`.
+Publication failure is best-effort: catch/log a safe diagnostic, retain the state transition, do not
+block registration/activation or change health, and retry publication on the next transition and next
+session. Status is never cleared merely because checking ends. The sole health mapping is:
+
+```text
+checking  muted    <icon> <name>: checking
+healthy   success  <icon> <name>
+error     error    <icon> <name>: <concise reason>
+```
+
+Reasons are fixed/allowlisted summaries or normalized categories. Never include tokens,
+authorization headers, URLs with credentials/query strings, raw response bodies, executable command
+output, stack traces, or arbitrary exception text in status/notifications. Diagnostic logs may retain
+causes only under the package's existing local logging policy.
+
+Meridian preparation directly uses Effect `HttpClient` from `AppServices`, not `withAbortSignal`.
+It parses `MERIDIAN_BASE_URL` (default `http://127.0.0.1:3456`) with the URL API, permits only
+`http:`/`https:`, clears credentials, `search`, and `hash`, and replaces the path with exactly
+`/health`. The
+HttpClient request disables redirects and sends no credentials. Its response is acquired in a scope
+and its body is discarded before the scope exits, including non-2xx responses. The request is wrapped
+in TestClock-compatible `Effect.timeout`/`timeoutFail` of three seconds and only 200–299 succeeds.
+Invalid URL/protocol, DNS/connect/TLS/timeout, redirect, and non-2xx failures map to safe typed
+reasons; URL credentials/query/hash, response body, and raw exception text are never exposed.
 
 ### 8.8 Conformance
 
-The design above is the target. These are the known divergences, listed so they are not
-mistaken for precedent. Line numbers are as of `16020a5` (`[C-4]`).
+The first two rows are lifecycle/bootstrap migrations explicitly in scope for this amendment.
+The remaining rows are current unrelated divergences and remain non-goals under `[NG-2]`. Citations
+name current symbols/checked lines; the symbol is durable when a line drifts (`[C-4]`).
 
-| Rule     | Divergence                                                                                                                      | Sites                                                                                                                                                                                                                                                                                                                                                     |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `[KD-3]` | Tool callbacks bridge inline; each drops the pre-dispatch check, the `{ signal }` option, or both                               | `src/features/ask_user/index.ts:28`, `src/features/background_poll/index.ts:14`, `src/features/hashline/index.ts:25`, `src/features/safety_guard/index.ts`, `src/features/mcp/index.ts:21` (no pre-check), `src/features/webfetch/index.ts:12` (no `{ signal }`), `src/features/sub_agents/agents.ts:423`, `:571`, `:637`, `:683`, `:720`, `:774`, `:839` |
-| `[KD-5]` | Commands bridge inline, with no helper to use                                                                                   | `src/features/prompt_rewind/index.ts:30`, `src/features/mcp/index.ts:39`, `src/features/sub_agents/agents.ts:1077`, `:1098` (one handler, two command names)                                                                                                                                                                                              |
-| `[KD-7]` | Forked fibers with no interrupting owner; `core.ts:1454` is tracked and joined by `ready()` and shutdown, but never interrupted | `src/features/sub_agents/core.ts:1116`, `:1454`                                                                                                                                                                                                                                                                                                           |
-| `[KD-8]` | Runtime re-entered from inside a running effect                                                                                 | `src/features/hashline/tools.ts:403`, `src/features/safety_guard/remove.ts:371`                                                                                                                                                                                                                                                                           |
-| `[KD-9]` | Undocumented `orDie`                                                                                                            | `src/features/claude_code/discovery.ts:254`, `src/features/sub_agents/core.ts:480`, `:722`, `:877`                                                                                                                                                                                                                                                        |
-| `[KD-9]` | Undocumented `ignoreCause`                                                                                                      | `src/features/status_panel/provider.ts:50`, `src/features/sub_agents/peek.ts:287`, `src/features/sub_agents/core.ts:2181`                                                                                                                                                                                                                                 |
-| `[KD-1]` | A second `ManagedRuntime`, resolved eagerly — the sanctioned exception of `[C-1]`                                               | `src/shared/effect/bun_services.ts:12`                                                                                                                                                                                                                                                                                                                    |
+| Scope     | Rule       | Divergence                                                                                                                                                              | Current sites/symbols                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| --------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| In scope  | `[KD-2a]`  | Feature indexes register lifecycle callbacks instead of exposing lifecycle.                                                                                             | `src/features/mcp/index.ts:42-43`; `src/features/background_poll/index.ts:25-26`; `src/features/safety_guard/index.ts:38-40`; `src/features/auto_theme/index.ts:53,69`; `src/features/prompt_rewind/index.ts:25-26`; `src/features/claude_code/index.ts:12`; `src/features/rules/index.ts:12`; `src/features/status_panel/index.ts:17,24`; `src/features/sub_agents/index.ts:11,13`; `src/features/sub_agents/agents.ts:540-572`; `src/features/caffeinate/index.ts:16`. |
+| In scope  | `[KD-19]`  | Base config imports MCP and installs its live layer.                                                                                                                    | `src/config/runtime.ts:5`, `src/config/runtime.ts:8-9`, `src/config/runtime.ts:24`.                                                                                                                                                                                                                                                                                                                                                                                      |
+| Non-goal  | `[KD-3]`   | Inline tool bridges omit the standard executor behavior.                                                                                                                | `src/features/ask_user/index.ts:29`; `src/features/background_poll/index.ts:14`; `src/features/hashline/index.ts:25`; `src/features/safety_guard/index.ts:19`; `src/features/mcp/index.ts:21-22`; `src/features/webfetch/fetch.ts:389`; `src/features/sub_agents/agents.ts:440,588,654,700,737,791,856`.                                                                                                                                                                 |
+| Non-goal  | `[KD-5]`   | Inline command bridges.                                                                                                                                                 | `src/features/prompt_rewind/index.ts:30`; `src/features/mcp/index.ts:39`; `src/features/sub_agents/agents.ts:1096,1115`.                                                                                                                                                                                                                                                                                                                                                 |
+| Exception | `[KD-6]`   | Verified memory-only synchronous Effect execution.                                                                                                                      | `src/features/background_poll/poll.ts:351-359`; `src/features/claude_code/discovery.ts:283-290`; `src/features/mcp/gateway.ts:444,465,513`; `src/features/rules/rules.ts:644-651`; `src/features/status_panel/panel.ts:67-106`; `src/features/status_panel/sidebar.ts:410-411,472,486`; `src/features/sub_agents/core.ts:2457-2469`.                                                                                                                                     |
+| Non-goal  | `[KD-7]`   | Existing fork policies; `AgentManager.reconciliation` is specifically divergent because teardown only joins it, and removal requires explicit interruption before join. | `src/features/status_panel/panel.ts:126-129`; `src/features/status_panel/sidebar.ts:436,445`; `src/features/sub_agents/agents.ts:373-381`; `src/features/sub_agents/core.ts:1135-1140,1480,3113-3115`; `src/features/sub_agents/peek.ts:287,312,428,443,846,850`.                                                                                                                                                                                                        |
+| Non-goal  | `[KD-8]`   | Runtime re-entry from effectful code.                                                                                                                                   | `src/features/hashline/tools.ts:285`; `src/features/safety_guard/remove.ts:362`.                                                                                                                                                                                                                                                                                                                                                                                         |
+| Non-goal  | `[KD-9]`   | Undocumented swallowing.                                                                                                                                                | `src/features/status_panel/provider.ts:50`; `src/features/sub_agents/peek.ts:287`; `src/features/sub_agents/core.ts:2207,2211`.                                                                                                                                                                                                                                                                                                                                          |
+| Non-goal  | `[KD-14a]` | Direct runtime adapters outside approved owners.                                                                                                                        | `src/features/caffeinate/keep_awake.ts:41-47,114`; `src/features/comment_checker/checker.ts:145`; `src/features/mcp/oauth.ts:353`; `src/features/status_panel/panel.ts:54-56`; `src/features/sub_agents/agents.ts:303,1031`; `src/features/sub_agents/peek.ts:436-443`.                                                                                                                                                                                                  |
+| Exception | `[KD-1]`   | Sanctioned early Bun runtime.                                                                                                                                           | `src/shared/effect/bun_services.ts:12` (`[C-1]`).                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
 ### 8.9 Test boundary
 
-- Feature logic is tested as `Effect` values under `it.effect`/`it.scoped`, which supply
-  `TestClock` (`tests/utils/bun_effect.ts:14`). `it.live` exists for cases that genuinely
-  need a real clock and is the only place `Effect.sleep` may wait.
-- Registration is tested through `createFakePi` (`tests/utils/fake_pi.ts:27`): events are
-  dispatched with `emit()`, and registered tools and commands are captured in maps and
-  invoked by the spec with the argument shape Pi uses.
-- Each registered tool has a test that invokes its callback with an already-aborted signal
-  and asserts nothing executed — the assertion that catches a `[KD-3]` regression.
-- Feature tests use the process runtime via `tests/utils/runtime.ts`, or `testRuntime(layer)`
-  for a feature-specific layer. Constructing a `ManagedRuntime` directly is reserved for the
-  specs that test runtime and service wiring itself (`tests/config/runtime.spec.ts`,
-  `tests/shared/effect/runtime.spec.ts`).
+- Test Effect logic with `it.effect`/`it.scoped` and `TestClock` (`tests/utils/bun_effect.ts:14`);
+  use `it.live` only for real-clock behavior.
+- Test descriptors/coordinator through `createFakePi` (`tests/utils/fake_pi.ts:27`). Assert eager
+  validation/registration and eager activation in stable registry order; a one-shot event emitted
+  immediately after load reaches the eager registration.
+- With deferred/TestClock preparation, assert `session_start` awaits every registered activation but
+  returns before unregistered background preparation; no callback is registered before prepare
+  returns its implementation, none after failure, and later sessions activate retained background
+  implementations without preparing again.
+- Cover start/start replacement, matching/stale shutdown keys, interrupt-and-await before
+  deactivation, deactivation-before-final-scope-close, stale-generation completion guards, one fiber
+  per background record/generation, sibling independence, status-publication failure, and typed
+  failure/defect/interruption lifecycle policy.
+- Comment-checker tests inject `which`, assert the absolute resolved path is captured and used by the
+  runner, and cover missing/relative paths. Meridian tests use a TestClock timeout and assert URL
+  normalization, non-redirecting 2xx-only behavior, body discard, and redaction.
+- Build an isolated test entry that imports the base runtime and a registry with no MCP descriptor;
+  inspect Bun's build metafile and assert no `src/features/mcp/` input is reachable. With MCP enabled,
+  spy on its gateway factory to assert one construction and explicit callback-effect provision,
+  never a widened `AppServices` member.
+- Invoke a `makeToolExecutor` tool with an already-aborted signal and prove its body was not built.
 
 ### 8.10 Checklist for a new feature
 
-1. `index.ts` contains registration and bridge helpers, nothing else.
-2. Tools go through `makeToolExecutor`, events through `makeEventHandler`, commands through
-   `makeCommandHandler`.
-3. No `Effect.run*` outside `index.ts`, except `runSync` on memory-only state in a
-   synchronous callback (§8.5).
-4. Every fork names a scope or a tracked fiber (§8.6).
-5. Every resource is released by `ensuring`/`Scope`, not `finally`.
-6. Errors are tagged, and each `ignore`/`orDie` carries a reason.
-7. The feature is added to the registry in `src/config/features.ts`.
+1. Export one discriminated `feature: FeaturePlugin` from its index. Eager features expose an
+   implementation; only comment-checker/Meridian prepare and return one.
+2. Give it the unique §8.12 ID, icon, and display name; use safe tagged failures.
+3. Use bridge helpers; migrate lifecycle behavior into `implementation.activate`/`deactivate` and
+   do not register lifecycle events from the feature index.
+4. Make values/resources feature-owned; provide captured feature services to callback effects and
+   scope session resources to activation.
+5. Add one import and one ordered entry in `src/config/features.ts`; verify commenting both disables it.
+6. Test descriptor validation, bootstrap/implementation artifacts, status, failure, retry, and race
+   behavior independently.
 
 ### 8.11 Enforcement
 
-`[KD-14]` makes §8.10's first three items mechanical. `oxlint.config.ts` already carries the
-inverse exemption — `effecttsgo/async-function` relaxed for `src/features/*/index.ts` alone
-(`oxlint.config.ts:30`) — so the rule keys on the same path split:
+`[KD-14a]` is enforced with this binding-aware owner matrix:
 
 ```text
-src/features/*/index.ts   allow: pi.register*, pi.on, runtime.runPromise via a bridge helper
-src/features/*/!index.ts  deny:  Effect.run*, ManagedRuntime.make, pi.register*, pi.on
-src/shared/**             deny:  pi.register*, pi.on
+src/features/*/index.ts          allow: descriptor registration, non-lifecycle pi.on, bridge helpers
+src/config/feature_coordinator.ts allow: lifecycle pi.on and event bridge; deny direct runtime entry
+src/shared/effect/runtime.ts     allow: managed-runtime execution inside bridge implementations
+src/config/runtime.ts            allow: canonical ManagedRuntime.make for AppRuntime only
+all other src/**                 deny: pi.register*, pi.on, bridge helpers, runtime construction/entry
 ```
 
-Two carve-outs are unavoidable: `Effect.runSync` in synchronous TUI callbacks (§8.5) and the
-seven §8.8 rows. Both are expressed as per-site disable comments naming the rule and the
-conformance row, so the count of disables is the migration backlog — visible in `git grep`
-rather than in a document that drifts (`[PI-5]`, `[NG-3]`).
+`Effect.runSync` memory-only TUI sites, `[C-1]`, and every §8.8 site governed by
+`no-effect-pi-boundary` require a one-call disable comment naming the decision and
+removal/permanence rationale. `[KD-9]` remains documented backlog but is outside this rule. The lint rule also rejects
+`session_start`/`session_shutdown` registration from a feature index and rejects config runtime
+imports matching `#features/*`.
+
+### 8.12 Enabled feature status metadata
+
+Every enabled descriptor uses exactly this metadata and its `feature:<id>` key:
+
+| ID                          | Icon | Display name      |
+| --------------------------- | ---- | ----------------- |
+| `ask-user`                  | ❓   | `ask-user`        |
+| `auto-theme`                | 🎨   | `auto-theme`      |
+| `background-poll`           | ⏳   | `background-poll` |
+| `caffeinate`                | ☕   | `caffeinate`      |
+| `claude-code`               | 🤖   | `claude-code`     |
+| `comment-checker`           | 💬   | `comment-checker` |
+| `hashline`                  | #️⃣   | `hashline`        |
+| `mcp`                       | 🔌   | `mcp`             |
+| `meridian-session-affinity` | 🧭   | `meridian`        |
+| `prompt-rewind`             | ↩️   | `prompt-rewind`   |
+| `rules`                     | 📜   | `rules`           |
+| `safety-guard`              | 🛡️   | `cmd-guard`       |
+| `status-panel`              | 📊   | `status-panel`    |
+| `sub-agents`                | 👥   | `sub-agents`      |
+| `webfetch`                  | 🌐   | `webfetch`        |
 
 ## 9. Open Questions
 
-- `[OQ-2]` Does joining a tracked fiber satisfy `[KD-7]`, or must teardown interrupt it? The
-  answer decides whether `src/features/sub_agents/core.ts:1454` is a divergence or
-  conformant. — owner: @antoine
+N/A
+
+## Changelog
+
+| Date       | Amendment                                                                                                                                                          | Sections affected | Reason                                                                                                                                                                                                                                                                                              |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-08-14 | Initial boundary specification                                                                                                                                     | 2–9               | Define the Effect/Pi crossing and conformance target.                                                                                                                                                                                                                                               |
+| 2026-08-24 | Add independent feature plugins, background preflight, and generic persistent health                                                                               | 2–8               | Make features independently enabled, registered, checked, and observable without blocking session startup.                                                                                                                                                                                          |
+| 2026-08-24 | Amend boundary ownership, runtime composition, discriminated plugin contract, bootstrap, coordinator races/state, status/security behavior, conformance, and tests | 2–8               | Resolve all review blockers: implementation-returning preparation, synchronous eager registration/ordered activation, only comment-checker/Meridian background prepare, session-only context, resilient status policy, Meridian HTTP security, full MCP disablement, and lifecycle migration scope. |

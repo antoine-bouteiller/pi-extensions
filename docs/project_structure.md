@@ -13,8 +13,9 @@ extension. How those modules bridge Pi's callbacks onto Effect is specified in
 src/
 ├── index.ts                         # the only Pi extension entrypoint/default export
 ├── config/
-│   ├── features.ts                  # explicit ordered feature registry and registerFeatures
-│   └── runtime.ts                   # process-wide ProcessRuntime composition
+│   ├── feature_coordinator.ts       # session lifecycle, bootstrap, and feature health owner
+│   ├── features.ts                  # explicit ordered FeaturePlugin registry
+│   └── runtime.ts                   # process-wide shared AppRuntime composition
 ├── features/
 │   ├── ask_user/{index,tool,prompt}.ts
 │   ├── background_poll/{index,poll}.ts
@@ -32,7 +33,7 @@ src/
 │   ├── sub_agents/README.md
 │   └── webfetch/{index,fetch}.ts
 └── shared/
-    ├── effect/{app_services,bun_host_file_system,bun_services,errors,pi_services,runtime}.ts
+    ├── effect/{app_services,bun_host_file_system,bun_services,errors,feature,pi_services,runtime}.ts
     ├── state/{agent_activity,azure_quota,status_bar,store}.ts
     └── utils/{json,predicates,protected_paths,records,tool_output}.ts
 
@@ -53,28 +54,31 @@ tests/
 
 ```text
 src/index.ts
-  -> src/config/*
+  -> src/config/{features,feature_coordinator,runtime}.ts
        -> src/features/*
             -> src/shared/*
 ```
 
-- `src/config/` is composition only: `features.ts` holds the explicit ordered feature registry
-  and `runtime.ts` holds the process-wide `ProcessRuntime` composition. It is not a place to put
-  feature-specific configuration; MCP server parsing, for example, stays inside
-  `src/features/mcp/`. The one exception is a feature layer that must live for the whole process:
-  `runtime.ts` merges `McpGatewayLive` so every session shares one gateway, while the gateway's
-  behaviour still lives in `src/features/mcp/gateway.ts`.
-- `src/features/<snake_case_name>/index.ts` owns the feature's Pi registration: it exports a named
-  `register(pi, runtime, ...)` function and contains nothing but registration and the bridge onto
-  Effect (`pi.registerTool`, `pi.registerCommand`, `pi.on`, `runtime.runPromise`). Behaviour lives
-  in sibling modules named after what they do (`poll.ts`, `guard.ts`, `gateway.ts`, ...), which
-  `index.ts` wires together. Sibling modules still use Pi types, renderers, and helpers, and some
-  are still handed the `ExtensionAPI` itself; only the registration calls are confined to
-  `index.ts`. Because that is where Pi's own callback signatures land, the lint rule those
-  signatures conflict with (`effecttsgo/async-function`) is relaxed for `src/features/*/index.ts`
-  alone in `oxlint.config.ts`. `unicorn/no-null` is relaxed more narrowly still, for
-  `src/features/mcp/index.ts` only, because that is the single registration handing `null` back to
-  a Pi API that requires it.
+- `src/config/` is composition only. `runtime.ts` builds the process-wide shared `AppRuntime`; it
+  does not import a feature or initialize feature resources. `features.ts` holds the explicit,
+  ordered `FeaturePlugin` registry, and `feature_coordinator.ts` owns mixed eager/background
+  bootstrap, feature health, and the complete session lifecycle. In particular, it alone registers
+  `session_start` and `session_shutdown`.
+- Every `src/features/<snake_case_name>/index.ts` exports one `feature: FeaturePlugin` descriptor.
+  Its status identity has an `id` and `{ icon, name }`. An eager descriptor supplies
+  `implementation: { register(pi, runtime), activate?, deactivate? }`; a background descriptor
+  instead supplies `prepare: Effect<FeatureImplementation, FeaturePreflightError, AppServices>`.
+  Eager implementations register synchronously in registry order at extension load; background
+  preparation starts per session without delaying `session_start` and registers only after
+  successful preparation. Feature indexes own their descriptor's tool, command, and non-lifecycle
+  event registration;
+  behaviour lives in sibling modules named after what they do (`poll.ts`, `guard.ts`,
+  `gateway.ts`, ...).
+- Pi-to-Effect crossings use the supported bridges in `src/shared/effect/runtime.ts`:
+  `makeToolExecutor`, `makeCommandHandler`, and `makeEventHandler`. Existing inline
+  `runtime.runPromise` sites are tracked temporary divergences under spec §8.8.
+- Feature-specific values and resources remain feature-owned. The MCP feature creates its gateway
+  and provides it to its callback effects; `src/config/runtime.ts` does not create an MCP gateway.
 - No feature module has a default export, and no feature imports a sibling feature.
 - Reusable code that more than one feature needs is promoted to `src/shared/effect/`,
   `src/shared/state/`, or `src/shared/utils/`. Shared code never imports from `src/config/` or
@@ -113,16 +117,16 @@ mirroring rule.
 
 ## Adding a feature
 
-1. Create `src/features/<snake_case_name>/index.ts` exporting a named `register(pi, runtime)`
-   function that only wires Pi to Effect, plus the implementation modules it delegates to in the
-   same folder.
+1. Create `src/features/<snake_case_name>/index.ts` exporting one `feature: FeaturePlugin`
+   descriptor, plus the implementation modules it delegates to in the same folder. Choose eager
+   `implementation` or background `prepare` as the descriptor contract requires.
 2. Create the mirrored `tests/features/<snake_case_name>/` test folder.
-3. Add one ordered entry to the registry in `src/config/features.ts` so `registerFeatures` calls
-   the new feature's `register` once, in the position where it should run relative to the
-   existing features.
+3. In `src/config/features.ts`, add one descriptor import and one ordered array entry.
 
-No other file needs to change: `src/index.ts` always registers every feature in `src/config/features.ts` through one shared runtime.
+This is a two-line, config-only enablement surface: adding a feature means one descriptor plus one
+import and one array entry; disabling means commenting both those lines and no other production
+edit. `src/index.ts` delegates the complete registry to the coordinator through one shared runtime.
 
-Step 3 is the step the package-contract specs enforce. A feature folder that is never added to
-the registry, or a registry entry whose folder is gone, fails `tests/registration.spec.ts`; the
-tool, command, and hook coverage for the feature itself belongs in its mirrored spec folder.
+The package-contract specs validate enabled import/entry relationships, uniqueness, and descriptor
+validity; disabled feature directories may remain on disk. The tool, command, event, and lifecycle
+coverage for the feature itself belongs in its mirrored spec folder.
