@@ -1,3 +1,5 @@
+import { dlopen } from 'bun:ffi'
+
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -181,7 +183,10 @@ export class SubagentWorker {
     }
     this.#state = 'starting'
     this.#taskId = command_id
-    void this.#boot(command_id, message)
+    void this.#boot(command_id, message).catch((error: unknown) => {
+      this.#state = 'exiting'
+      this.#finished.reject(error instanceof Error ? error : new Error(errorMessage(error)))
+    })
     return Promise.resolve()
   }
 
@@ -262,9 +267,7 @@ export class SubagentWorker {
         }
         return this.#emit({ agent_id: config.agent_id, command_id, session_path: sessionPath, turn: config.turn, type: 'ready' })
       })
-      .catch((error: unknown) =>
-        this.#serialize(() => this.#settle(failed(config.agent_id, command_id, config.turn, 'agent_failed', errorMessage(error))))
-      )
+      .catch((error: unknown) => Promise.reject(error instanceof Error ? error : new Error(errorMessage(error))))
   }
 
   #openSession(config: ParentConfigFrame): Promise<SessionManager> {
@@ -483,17 +486,29 @@ export const runWorker = (input: AsyncIterable<Uint8Array>, output: Output, fact
   return next()
 }
 
-if (import.meta.main) {
-  const protocolStdout = Bun.stdout
-  Object.defineProperty(process.stdout, 'write', {
-    value: (chunk: string | Uint8Array): boolean => {
-      process.stderr.write(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk))
-      return true
-    },
+const isolatedProtocolOutput = (): Output => {
+  if (process.platform === 'win32') {
+    throw new Error('Windows sub-agent workers are unsupported')
+  }
+  const library = dlopen(process.platform === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6', {
+    dup2: { args: ['i32', 'i32'], returns: 'i32' },
+    open: { args: ['cstring', 'i32'], returns: 'i32' },
   })
-  void runWorker(Bun.stdin.stream(), {
-    write: (value) => Bun.write(protocolStdout, value).then(() => undefined),
-  }).then(
+  try {
+    const descriptor = library.symbols.open(process.platform === 'darwin' ? '/dev/fd/1' : '/proc/self/fd/1', 1)
+    if (descriptor < 0 || library.symbols.dup2(2, 1) < 0) {
+      throw new Error('Could not isolate worker stdout')
+    }
+    const protocol = Bun.file(descriptor)
+    return { write: (value) => Bun.write(protocol, value).then(() => undefined) }
+  } finally {
+    library.close()
+  }
+}
+
+if (import.meta.main) {
+  const output = isolatedProtocolOutput()
+  void runWorker(Bun.stdin.stream(), output).then(
     () => process.exit(0),
     (error: unknown) => {
       diagnostic(errorMessage(error))

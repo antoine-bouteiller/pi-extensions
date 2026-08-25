@@ -69,16 +69,18 @@ const frameType = (value: unknown): string | undefined => {
 interface ArtifactResult {
   readonly conclusion_artifact: string
   readonly conclusion_bytes: number
+  readonly conclusion_preview: string
 }
 
 const frames = (output: readonly string[]): readonly unknown[] => strictFrames(output.join(''))
 const artifactResult = (value: unknown): ArtifactResult => {
   const artifact = typeof value === 'object' && value !== null ? Reflect.get(value, 'conclusion_artifact') : undefined
   const count = typeof value === 'object' && value !== null ? Reflect.get(value, 'conclusion_bytes') : undefined
-  if (typeof artifact !== 'string' || typeof count !== 'number') {
+  const preview = typeof value === 'object' && value !== null ? Reflect.get(value, 'conclusion_preview') : undefined
+  if (typeof artifact !== 'string' || typeof count !== 'number' || typeof preview !== 'string') {
     throw new Error('Result did not include an artifact.')
   }
-  return { conclusion_artifact: artifact, conclusion_bytes: count }
+  return { conclusion_artifact: artifact, conclusion_bytes: count, conclusion_preview: preview }
 }
 const sessionPath = (value: unknown): string => {
   const path = typeof value === 'object' && value !== null ? Reflect.get(value, 'session_path') : undefined
@@ -272,6 +274,14 @@ describe('sub-agent worker protocol', () => {
             const artifact = artifactResult(result)
             expect(artifact.conclusion_artifact.includes('/')).toBe(false)
             expect(artifact.conclusion_bytes).toBe(bytes.encode(conclusion).byteLength)
+            expect(bytes.encode(artifact.conclusion_preview).byteLength).toBeLessThanOrEqual(MAX_INLINE_BYTES)
+            expect(artifact.conclusion_preview.split('\n').length).toBeLessThanOrEqual(MAX_INLINE_LINES)
+            if (conclusion === 'x'.repeat(MAX_INLINE_BYTES + 1)) {
+              expect(artifact.conclusion_preview).toBe('x'.repeat(MAX_INLINE_BYTES))
+            }
+            if (conclusion === `${'x\n'.repeat(MAX_INLINE_LINES)}x`) {
+              expect(artifact.conclusion_preview).toBe(`${'x\n'.repeat(MAX_INLINE_LINES - 1)}x`)
+            }
             expect(yield* bunFileSystem.readFileString(bunPath.join(runDir, artifact.conclusion_artifact))).toBe(conclusion)
           }
         }
@@ -293,7 +303,7 @@ describe('sub-agent worker protocol', () => {
     20_000
   )
 
-  it.effect('rejects clamped models and unexpected active tools before prompting', () =>
+  it.effect('exits without a terminal frame when boot cannot validate active tools', () =>
     Effect.gen(function* () {
       const output: string[] = []
       const harness = workerHarness({ activeTools: ['configured', 'extension'] })
@@ -308,9 +318,14 @@ describe('sub-agent worker protocol', () => {
       const frame = { ...config, worker: { ...config.worker, tools: ['configured'] } }
       yield* promise(() => worker.accept(frame))
       yield* promise(() => worker.accept(task('task body')))
-      yield* promise(() => worker.waitForSettlement())
+      yield* promise(() =>
+        worker.waitForSettlement().then(
+          () => expect.unreachable(),
+          (error: unknown) => expect(error).toBeInstanceOf(Error)
+        )
+      )
       expect(harness.prompt()).toBeUndefined()
-      expect(frames(output).at(-1)).toEqual(expect.objectContaining({ error: expect.objectContaining({ code: 'agent_failed' }) }))
+      expect(output).toEqual([])
     })
   )
 

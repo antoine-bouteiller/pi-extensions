@@ -301,6 +301,17 @@ describe('sub-agent model', () => {
     expect(Value.Check(ChildResultFrameSchema, { ...artifact, conclusion_bytes: -1 })).toBe(false)
     expect(Value.Check(ChildResultFrameSchema, { ...artifact, conclusion_bytes: 1.5 })).toBe(false)
     expect(Value.Check(ChildResultFrameSchema, { ...artifact, conclusion_bytes: 10 * 1024 * 1024 + 1 })).toBe(false)
+    expect(Value.Check(ChildResultFrameSchema, { ...artifact, conclusion_preview: 'x'.repeat(50 * 1024 + 1) })).toBe(false)
+    expect(
+      Value.Check(ChildResultFrameSchema, {
+        agent_id: 'a',
+        command_id: 'c',
+        conclusion: 'x'.repeat(50 * 1024 + 1),
+        status: 'completed',
+        turn: 1,
+        type: 'result',
+      })
+    ).toBe(false)
     expect(Value.Check(ChildResultFrameSchema, { ...artifact, conclusion: 'mixed' })).toBe(false)
     expect(
       Value.Check(ChildResultFrameSchema, {

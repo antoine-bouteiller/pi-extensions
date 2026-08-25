@@ -1,3 +1,5 @@
+import os from 'node:os'
+
 import { Context, Data, Effect, Layer } from 'effect'
 import { Type } from 'typebox'
 import { Value } from 'typebox/value'
@@ -71,8 +73,12 @@ export interface ProfileResolverApi {
 export class ProfileResolver extends Context.Service<ProfileResolver, ProfileResolverApi>()(
   'pi-extensions/features/sub_agents/store/ProfileResolver'
 ) {}
+export interface NotificationToken {
+  readonly generation: number
+  readonly session: string
+}
 export interface NotificationSinkApi {
-  readonly publish: (messages: readonly string[]) => Effect.Effect<void>
+  readonly publish: (messages: readonly string[], token: NotificationToken) => Effect.Effect<void>
 }
 export class NotificationSink extends Context.Service<NotificationSink, NotificationSinkApi>()(
   'pi-extensions/features/sub_agents/store/NotificationSink'
@@ -81,7 +87,7 @@ export class NotificationSink extends Context.Service<NotificationSink, Notifica
 export interface SubagentStoreApi {
   readonly artifactPath: (agentId: string, name: string) => Effect.Effect<string, StoreError>
   readonly createLease: (agentId: string, lease: LaunchLease) => Effect.Effect<void, StoreError>
-  readonly createLog: (agentId: string) => Effect.Effect<string, StoreError>
+  readonly createLog: (agentId: string, turn: number) => Effect.Effect<string, StoreError>
   readonly createSession: (agentId: string) => Effect.Effect<PrivateRunDescriptor, StoreError>
   readonly delete: (agentId: string) => Effect.Effect<void, StoreError>
   readonly initialize: Effect.Effect<void, StoreError>
@@ -165,7 +171,10 @@ const decodeRecord = (content: Uint8Array): SubagentRecord | undefined => {
 const encode = (value: unknown): string => JSON.stringify(value)
 
 const makeStore = (config: SubagentStoreConfig): SubagentStoreApi => {
-  const root = bunPath.join(config.tempDirectory ?? '/tmp', 'pi-codex-subagents', config.username ?? 'unknown', 'runs')
+  const temporaryDirectory = config.tempDirectory ?? Bun.env.PI_SUBAGENT_TEMP_DIR ?? os.tmpdir()
+  const username = config.username ?? os.userInfo().username
+  const privateRoot = bunPath.join(temporaryDirectory, 'pi-codex-subagents', username)
+  const root = bunPath.join(privateRoot, 'runs')
   const agentDirectory = (agentId: string): string => {
     if (!isSafeName(agentId)) {
       throw new Error('Unsafe agent identifier')
@@ -223,10 +232,15 @@ const makeStore = (config: SubagentStoreConfig): SubagentStoreApi => {
             yield* writePrivateFile(file(agentId, 'launch.lease'), encode(lease))
           }).pipe(Effect.mapError(fail))
         : Effect.fail(fail(new Error('Invalid lease'))),
-    createLog: (agentId) => create(agentId, 'stderr.log'),
+    createLog: (agentId, turn) =>
+      Number.isSafeInteger(turn) && turn > 0 ? create(agentId, `stderr-${turn}.log`) : Effect.fail(fail(new Error('Invalid turn'))),
     createSession,
     delete: removeAgent,
-    initialize: ensurePrivateDirectory(root).pipe(Effect.mapError(fail)),
+    initialize: Effect.gen(function* () {
+      yield* ensurePrivateDirectory(bunPath.join(temporaryDirectory, 'pi-codex-subagents'))
+      yield* ensurePrivateDirectory(privateRoot)
+      yield* ensurePrivateDirectory(root)
+    }).pipe(Effect.mapError(fail)),
     listLeases: Effect.gen(function* () {
       const result: { agentId: string; lease: LaunchLease }[] = []
       for (const agentId of yield* list()) {

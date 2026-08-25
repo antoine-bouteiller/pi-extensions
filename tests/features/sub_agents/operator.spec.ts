@@ -43,12 +43,13 @@ const store = (records: readonly { readonly agentId: string; readonly record: Su
 
 describe('sub-agent operator activity projection', () => {
   it.effect('publishes one ready agent, updates verified activity, and removes settled or closed agents', () =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
       const snapshots: string[][] = []
       const projection = createActivityProjection({
-        publish: (agents) => {
-          snapshots.push(agents.map((agent) => agent.agentId ?? ''))
-        },
+        publish: (agents) =>
+          Effect.sync(() => {
+            snapshots.push(agents.map((agent) => agent.agentId ?? ''))
+          }),
       })
       const scout = {
         agentId: 'scout',
@@ -59,11 +60,11 @@ describe('sub-agent operator activity projection', () => {
         state: 'running' as const,
       }
 
-      projection.publishReady(scout)
-      projection.publishReady(scout)
-      projection.updateActivity('scout', 2)
-      projection.closeSession('other')
-      projection.closeSession('one')
+      yield* projection.publishReady(scout)
+      yield* projection.publishReady(scout)
+      yield* projection.updateActivity('scout', 2)
+      yield* projection.closeSession('other')
+      yield* projection.closeSession('one')
 
       expect(snapshots).toEqual([['scout'], ['scout'], ['scout'], []])
       expect(projection.list()).toEqual([])

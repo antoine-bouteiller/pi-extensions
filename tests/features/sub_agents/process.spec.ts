@@ -186,7 +186,7 @@ describe('ChildProcess', () => {
     }).pipe(Effect.provide(makeChildProcessLive(platform)))
   })
 
-  it.effect('reaps and releases an unverifiable child before reporting spawn failure', () => {
+  it.effect('closes and releases an unverifiable child without signalling its PID', () => {
     const operations: string[] = []
     const platform: ProcessPlatform = {
       birthMarker: () => Effect.void.pipe(Effect.as(undefined)),
@@ -213,7 +213,7 @@ describe('ChildProcess', () => {
       const process = yield* ChildProcess
       const outcome = yield* Effect.result(process.spawn({ args: [], command: 'worker', cwd: '/', environment: {} }))
       expect(outcome._tag).toBe('Failure')
-      expect(operations).toEqual(['input', 'terminate', 'wait', 'release'])
+      expect(operations).toEqual(['input', 'wait', 'release'])
     }).pipe(Effect.provide(makeChildProcessLive(platform)))
   })
 })

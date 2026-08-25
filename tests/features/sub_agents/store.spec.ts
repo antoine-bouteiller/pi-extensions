@@ -31,7 +31,8 @@ describe('SubagentStore', () => {
           const store = yield* SubagentStore
           yield* store.initialize
           yield* store.createLease('agent', { identity: { birthMarker: 'birth', pid: 1 }, session: 'session', taskName: 'task' })
-          const log = yield* store.createLog('agent')
+          const log = yield* store.createLog('agent', 1)
+          const resumedLog = yield* store.createLog('agent', 2)
           const session = yield* store.createSession('agent')
           const result = yield* store.writeFullResult('agent', new TextEncoder().encode('result'))
           yield* store.replaceRecord('agent', record(1))
@@ -39,7 +40,9 @@ describe('SubagentStore', () => {
           const run = bunPath.join(root, 'pi-codex-subagents', 'owner', 'runs', 'agent')
           expect(session.runDirectory).toBe(yield* bunFileSystem.realPath(run))
           expect(session.sessionPath).toBe(yield* bunFileSystem.realPath(bunPath.join(run, 'session.json')))
-          for (const target of [run, log, result, session.sessionPath, bunPath.join(run, 'record.json')]) {
+          expect(log).toBe(bunPath.join(run, 'stderr-1.log'))
+          expect(resumedLog).toBe(bunPath.join(run, 'stderr-2.log'))
+          for (const target of [run, log, resumedLog, result, session.sessionPath, bunPath.join(run, 'record.json')]) {
             const stat = yield* hostFilePermissions(target)
             expect(stat.mode).toBe(target === run ? 0o700 : 0o600)
           }
