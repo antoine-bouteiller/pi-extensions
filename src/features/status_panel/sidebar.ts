@@ -407,7 +407,9 @@ interface SidebarControllerOptions {
   redrawMs?: number
 }
 
+// oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous Pi/TUI render callback cannot return an Effect
 const getRef = <Value>(ref: Ref.Ref<Value>): Value => Effect.runSync(Ref.get(ref))
+// oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous Pi/TUI render callback cannot return an Effect
 const setRef = <Value>(ref: Ref.Ref<Value>, value: Value): void => Effect.runSync(Ref.set(ref, value))
 
 const unrefSleep = (milliseconds: number): Effect.Effect<void> =>
@@ -433,6 +435,7 @@ export const createSidebarController = (options: SidebarControllerOptions): Side
       return
     }
     setRef(redrawScopeRef, undefined)
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-7] §8.8; remove when migrated
     Effect.runFork(Scope.close(scope, Exit.void))
   }
 
@@ -442,6 +445,7 @@ export const createSidebarController = (options: SidebarControllerOptions): Side
     }
     const scope = Scope.makeUnsafe()
     setRef(redrawScopeRef, scope)
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-7] §8.8; remove when migrated
     Effect.runFork(
       Effect.forkScoped(
         Effect.gen(function* () {
@@ -469,6 +473,7 @@ export const createSidebarController = (options: SidebarControllerOptions): Side
       return
     }
     setRef(enabledRef, false)
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous Pi/TUI controller callback cannot return an Effect
     Effect.runSync(Ref.update(generationRef, (value) => value + 1))
     stopRedraw()
     const handle = getRef(overlayHandleRef)
@@ -483,6 +488,7 @@ export const createSidebarController = (options: SidebarControllerOptions): Side
       return
     }
     setRef(enabledRef, true)
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous Pi/TUI controller callback cannot return an Effect
     const currentGeneration = Effect.runSync(Ref.updateAndGet(generationRef, (value) => value + 1))
     const isCurrent = () => getRef(generationRef) === currentGeneration
     split.show()

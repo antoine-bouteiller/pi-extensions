@@ -386,6 +386,7 @@ export type WebfetchRunner = (
 export const makeWebfetchRunner =
   (runtime: AppRuntime): WebfetchRunner =>
   (params, signal, onUpdate) =>
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-3] §8.8; remove when migrated
     runtime.runPromise(
       Effect.suspend(() =>
         isTrue(signal?.aborted) ? Effect.fail(ToolFailure.make({ message: 'webfetch was cancelled' })) : fetchResult({ onUpdate, params, signal })

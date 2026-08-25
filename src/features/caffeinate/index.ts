@@ -13,5 +13,6 @@ export const register = (pi: ExtensionAPI, _runtime: AppRuntime, dependencies: C
 
   pi.on('agent_start', keepAwake.start)
   pi.on('agent_settled', (_event, ctx) => (ctx.isIdle() ? keepAwake.stop() : undefined))
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
   pi.on('session_shutdown', keepAwake.stop)
 }

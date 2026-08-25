@@ -359,6 +359,7 @@ export const makeSafeRmRunner =
           catch: mutationQueueError,
           try: () =>
             withFileMutationQueue(target.absolute, () =>
+              // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-8] §8.8; remove when migrated
               runtime.runPromise(
                 Effect.gen(function* () {
                   /*

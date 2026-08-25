@@ -282,6 +282,7 @@ const writeHashlinePatch = ({
     // Pi's mutation queue is a promise API, so the revalidate-and-apply effect is run through the runtime it owns.
     return yield* Effect.tryPromise({
       catch: (cause) => (cause instanceof HashlineToolError ? cause : hashlineToolError(cause)),
+      // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-8] §8.8; remove when migrated
       try: () => withMutationQueues(lockPaths, () => runtime.runPromise(applyPatch)),
     })
   })

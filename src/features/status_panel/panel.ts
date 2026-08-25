@@ -51,8 +51,11 @@ export const recordSubagentQuota = (event: PiEvent<'after_provider_response'>, c
 }
 
 export const makePanelController = ({ dependencies, pi, runtime }: PanelControllerOptions): PanelHandlers => {
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; remove when migrated
   const agentActivity = runtime.runSync(AgentActivity)
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; remove when migrated
   const path = runtime.runSync(Path.Path)
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; remove when migrated
   const statusBar = runtime.runSync(StatusBar)
   const stateRef = Ref.makeUnsafe<PanelState>(emptyPanelState())
 
@@ -64,10 +67,12 @@ export const makePanelController = ({ dependencies, pi, runtime }: PanelControll
   let unsubscribeAgentActivity: (() => void) | undefined = agentActivity.subscribe(() => requestRender?.())
   let unsubscribeStatusBar: (() => void) | undefined = statusBar.subscribe(() => requestRender?.())
 
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: Pi status renderer reads memory-only state synchronously and cannot return an Effect
   const getState = (): PanelState => Effect.runSync(Ref.get(stateRef))
   const updateState = (updater: (state: PanelState) => PanelState): Effect.Effect<void> => Ref.update(stateRef, updater)
   const syncAzureQuota = (): void => {
     const percent = azureQuota.get()
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous Azure quota subscription callback cannot return an Effect
     Effect.runSync(
       updateState((state) => {
         const quotas = { ...state.quotas }
@@ -82,9 +87,11 @@ export const makePanelController = ({ dependencies, pi, runtime }: PanelControll
     requestRender?.()
   }
 
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous panel registration constructs the quota poller and cannot return an Effect
   const anthropicQuota: QuotaPoller = Effect.runSync(
     makeQuotaPoller(
       (quota) => {
+        // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous quota-poller callback cannot return an Effect
         Effect.runSync(
           updateState((state) => {
             const quotas = { ...state.quotas }
@@ -125,6 +132,7 @@ export const makePanelController = ({ dependencies, pi, runtime }: PanelControll
 
   /** Fire-and-forget by design, like the original `void refreshGit()`: forked detached so it keeps running after the triggering hook's effect completes, instead of being interrupted with it. */
   const scheduleGitRefresh = (): void => {
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-7] §8.8; remove when migrated
     Effect.runFork(Effect.forkDetach(refreshGit()))
   }
 

@@ -1,4 +1,4 @@
-import { type ExtensionContext } from '@earendil-works/pi-coding-agent'
+import { type ExtensionCommandContext, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { type Cause, Context, Effect, type ManagedRuntime } from 'effect'
 
 import { type ToolFailure } from './errors.js'
@@ -27,6 +27,17 @@ export const makeToolExecutor =
       Effect.suspend(() => (signal !== undefined && signal.aborted ? Effect.interrupt : body(params))).pipe(Effect.provide(perInvocation(ctx))),
       { signal }
     )
+
+export const makeCommandHandler =
+  <AppServices>(runtime: ManagedRuntime.ManagedRuntime<AppServices, never>) =>
+  <Failure>(body: (args: string, ctx: ExtensionCommandContext) => Effect.Effect<void, Failure, AppServices | HandlerServices>) =>
+  // Pi awaits command handlers, so this boundary hands back the runtime's promise directly.
+  (args: string, ctx: ExtensionCommandContext): Promise<void> =>
+    /*
+     * Suspended so that a handler throwing while its effect is still being built becomes a rejected
+     * promise like every other failure, rather than a synchronous throw into Pi's command dispatch.
+     */
+    runtime.runPromise(Effect.suspend(() => body(args, ctx)).pipe(Effect.provide(perInvocation(ctx))))
 
 /**
  * Deliberately generic in its error channel: some Pi events must keep rejecting (`rules` propagates

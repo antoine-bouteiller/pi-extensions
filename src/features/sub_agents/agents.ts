@@ -299,6 +299,7 @@ export const makeSubagentFeature = ({ managerOptions = {}, pi, runtime }: Subage
       })
     }
     const fallback = { text: truncateOutput(payload, { maxBytes: DEFAULT_MAX_BYTES - 1024, maxLines: DEFAULT_MAX_LINES - 4 }).content }
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; remove when migrated
     void runtime
       .runPromise(boundedText(payload, DEFAULT_MAX_BYTES - 1024, DEFAULT_MAX_LINES - 4).pipe(Effect.orElseSucceed(() => fallback)))
       .then((bounded) => {
@@ -370,6 +371,7 @@ export const makeSubagentFeature = ({ managerOptions = {}, pi, runtime }: Subage
         return undefined
       }
       const targets = [...activeAgents.keys()]
+      // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-7] §8.8; remove when migrated
       Effect.runFork(
         // One stale target must not cancel the interruption of its siblings.
         Effect.forEach(targets, (target) => Effect.result(manager.interruptAgent(currentParentId, target)), { concurrency: 'unbounded' }).pipe(
@@ -437,6 +439,7 @@ ${getAgentProfilesDescription()}`
       _onUpdate: AgentToolUpdateCallback<SpawnAgentResultDetails> | undefined,
       ctx: ExtensionContext
     ) {
+      // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-3] §8.8; remove when migrated
       const operation = runtime.runPromise(
         Effect.gen(function* () {
           const currentModel = ctx.model
@@ -538,6 +541,7 @@ ${getAgentProfilesDescription()}`
   }
 
   const onSessionStart = (_event: unknown, ctx: PiExtensionContext) =>
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
     runtime.runPromise(
       Effect.gen(function* () {
         unsubscribeTerminal()
@@ -561,6 +565,7 @@ ${getAgentProfilesDescription()}`
     process.env.PI_SUBAGENT_OWNER_TOKEN === undefined ? { systemPrompt: event.systemPrompt + DELEGATION_GUIDANCE } : undefined
 
   const onSessionShutdown = () =>
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
     runtime.runPromise(
       Effect.gen(function* () {
         activeContext = undefined
@@ -585,6 +590,7 @@ ${getAgentProfilesDescription()}`
     execute(_id: string, params: Static<typeof waitAgentParameters>, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
       const failure = (cause: unknown) => waitError('wait_agent', isTrue(signal?.aborted), cause)
       return preserveWaitCancellation(
+        // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-3] §8.8; remove when migrated
         runtime.runPromise(
           Effect.gen(function* () {
             const sessionId = yield* sessionIdOf(ctx, failure)
@@ -651,6 +657,7 @@ ${getAgentProfilesDescription()}`
     execute(_id: string, params: Static<typeof waitAllAgentsParameters>, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
       const failure = (cause: unknown) => waitError('wait_all_agents', isTrue(signal?.aborted), cause)
       return preserveWaitCancellation(
+        // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-3] §8.8; remove when migrated
         runtime.runPromise(
           Effect.gen(function* () {
             const sessionId = yield* sessionIdOf(ctx, failure)
@@ -697,6 +704,7 @@ ${getAgentProfilesDescription()}`
     description:
       'List agents owned by the current parent session. Set include_all only for an explicit read-only historical listing across parent sessions.',
     execute(_id: string, params: Static<typeof listAgentsParameters>, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+      // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-3] §8.8; remove when migrated
       return runtime.runPromise(
         Effect.gen(function* () {
           const agents = yield* manager.listAgentsFromDisk(params.path_prefix, parentSessionId(ctx), isTrue(params.include_all))
@@ -734,6 +742,7 @@ ${getAgentProfilesDescription()}`
       _onUpdate: unknown,
       ctx: ExtensionContext
     ) {
+      // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-3] §8.8; remove when migrated
       return runtime.runPromise(
         Effect.gen(function* () {
           const failure = (cause: unknown) => featureError(`read_agent_response failed: ${causeMessage(cause)}`, cause)
@@ -788,6 +797,7 @@ ${getAgentProfilesDescription()}`
       'Send the single allowed follow-up to a session-owned agent. Steers the current run when active; otherwise starts one final turn. Prefer spawning a fresh agent for a distinct task.',
     execute(_id: string, params: Static<typeof sendMessageParameters>, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
       const failure = (cause: unknown) => featureError(`send_message failed: ${causeMessage(cause)}`, cause)
+      // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-3] §8.8; remove when migrated
       return runtime.runPromise(
         Effect.gen(function* () {
           const sessionId = yield* sessionIdOf(ctx, failure)
@@ -853,6 +863,7 @@ ${getAgentProfilesDescription()}`
     ) {
       const sessionId = parentSessionId(ctx)
       const target = cleanTarget(params.target)
+      // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-3] §8.8; remove when migrated
       return runtime.runPromise(
         manager.interruptAgent(sessionId, target).pipe(
           Effect.mapError((error) => featureError(`interrupt_agent failed: ${error.message}`, error.cause ?? error)),
@@ -1028,6 +1039,7 @@ ${getAgentProfilesDescription()}`
                 return
               }
               if (data === 'r') {
+                // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; remove when migrated
                 void runtime.runPromise(manager.listAgentsFromDisk(undefined, currentSessionId, true)).then(refresh)
                 return
               }
@@ -1093,6 +1105,7 @@ ${getAgentProfilesDescription()}`
     description: 'Browse subagents, or open one directly. Usage: /subagent [task-name]',
     handler: (args: string, ctx: ExtensionCommandContext) => {
       const task = args?.trim().replace(/^\//, '')
+      // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-5] §8.8; remove when migrated
       return runtime.runPromise(isNotNullOrUndefined(task) && isNotEmptyString(task) ? openAgentOverlay({ ctx, task }) : browseAgents(ctx))
     },
   }
@@ -1112,6 +1125,7 @@ ${getAgentProfilesDescription()}`
 
   const browseAgentsCommand = {
     description: 'Browse subagents',
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-5] §8.8; remove when migrated
     handler: (_args: string, ctx: ExtensionCommandContext) => runtime.runPromise(browseAgents(ctx)),
   }
 

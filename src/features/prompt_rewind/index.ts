@@ -22,11 +22,14 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
   pi.on('message_update', controller.disarm)
   pi.on('tool_execution_start', controller.disarm)
   pi.on('agent_end', controller.disarm)
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
   pi.on('session_start', controller.start)
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
   pi.on('session_shutdown', controller.shutdown)
 
   pi.registerCommand(REWIND_COMMAND, {
     description: 'Internal: rewinds the just-cancelled prompt from the active branch and restores its raw text to the editor.',
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-5] §8.8; remove when migrated
     handler: (_args, ctx) => runtime.runPromise(controller.rewindCancelledPrompt(ctx)),
   })
 }

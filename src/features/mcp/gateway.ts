@@ -441,6 +441,7 @@ export interface GatewaySession {
 
 /** Owns one gateway lifecycle; its config and manager are supplied by the `McpGateway` service. */
 export const makeGatewaySession = (pi: ExtensionAPI): GatewaySession => {
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous feature registration constructs memory-only state and cannot return an Effect
   const state = Effect.runSync(makeState)
 
   const startSession = (ctx: ExtensionContext): Effect.Effect<void, McpOperationError, AppServices | McpGateway> =>
@@ -462,6 +463,7 @@ export const makeGatewaySession = (pi: ExtensionAPI): GatewaySession => {
             gateway.createManager(config, {
               callbacks: {
                 onStatusChange: (update) => {
+                  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: manager synchronous status callback cannot return an Effect
                   if (Effect.runSyncWith(context)(Ref.get(state.generation)) === generation) {
                     updateUiStatus(ctx, update)
                   }
@@ -510,6 +512,7 @@ export const makeGatewaySession = (pi: ExtensionAPI): GatewaySession => {
     })
 
   const oauthCompletions = (prefix: string): { label: string; value: string }[] => {
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: Pi synchronous command-completion callback cannot return an Effect
     const current = Effect.runSync(Ref.get(state.manager))
     if (Option.isNone(current)) {
       return []

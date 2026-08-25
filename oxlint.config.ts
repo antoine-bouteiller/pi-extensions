@@ -21,6 +21,12 @@ export default defineConfig({
   },
   overrides: [
     {
+      files: ['src/**'],
+      rules: {
+        'pi-extensions/no-effect-pi-boundary': 'error',
+      },
+    },
+    {
       /*
        * Each feature's `index.ts` owns that feature's Pi registration: it registers tools, commands,
        * and hooks and bridges them onto Effect. Pi awaits those callbacks, so this rule is relaxed

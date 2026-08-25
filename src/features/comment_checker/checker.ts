@@ -142,6 +142,7 @@ const runCommentChecker = (input: HookInput, executable = 'comment-checker'): Ef
 export const makeCommentCheckerRunner =
   (executable: string): CheckerRunner =>
   (input) =>
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; remove when migrated
     Effect.runPromise(runCommentChecker(input, executable))
 
 const productionRunner: CommandRunnerApi = { run: runCommentChecker }

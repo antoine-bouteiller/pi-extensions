@@ -10,10 +10,14 @@ import { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner
  * ponytail: process-wide singleton, so these services cannot be substituted per test; require
  * `FileSystem`/`Path` from context instead once every consumer is reachable from an Effect.
  */
+// oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-1]/[C-1] §§6,8.8; permanent: Bun-only pre-AppRuntime host services require the secondary runtime
 const runtime = ManagedRuntime.make(BunServices.layer)
 
 export type BunChildProcessSpawner = typeof ChildProcessSpawner.Service
 
+// oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-1]/[C-1] §§6,8.8; permanent: Bun-only pre-AppRuntime host services require the secondary runtime
 export const bunFileSystem = runtime.runSync(FileSystem.FileSystem)
+// oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-1]/[C-1] §§6,8.8; permanent: Bun-only pre-AppRuntime host services require the secondary runtime
 export const bunPath = runtime.runSync(Path.Path)
+// oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-1]/[C-1] §§6,8.8; permanent: Bun-only pre-AppRuntime host services require the secondary runtime
 export const bunChildProcessSpawner: BunChildProcessSpawner = runtime.runSync(ChildProcessSpawner)

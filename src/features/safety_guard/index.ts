@@ -16,6 +16,7 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
   pi.registerTool({
     description:
       'Safely remove literal paths without shell rm. Every target is validated before deletion: targets must be below the working directory or /tmp, parent symlinks cannot escape those roots, credentials are protected even inside recursive targets, and directories require recursive=true.',
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-3] §8.8; remove when migrated
     execute: async (_toolCallId, params, signal, _onUpdate, ctx) => runtime.runPromise(run(params, signal ?? undefined, ctx)),
     label: 'Safe Remove',
     name: 'safe_rm',
@@ -35,6 +36,7 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
     makeEventHandler(runtime)((event, ctx) => handleToolCall(event, ctx).pipe(Effect.provide(providedPi)))
   )
 
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
   pi.on(
     'session_start',
     makeEventHandler(runtime)(() => announceGuardStatus)

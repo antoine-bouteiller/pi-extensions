@@ -50,7 +50,9 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, dependencies: Au
 
   let sessionScope: Scope.Closeable | undefined
 
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
   pi.on('session_start', (_event, ctx) =>
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
     runtime.runPromise(
       ctx.mode === 'tui'
         ? Effect.gen(function* () {
@@ -66,7 +68,9 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, dependencies: Au
     )
   )
 
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
   pi.on('session_shutdown', () =>
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
     runtime.runPromise(
       Effect.gen(function* () {
         const current = sessionScope

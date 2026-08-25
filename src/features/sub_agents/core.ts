@@ -1132,11 +1132,14 @@ class EventBroadcaster {
       connection.on('close', remove)
       connection.on('error', remove)
     })
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-7] §8.8; remove when migrated
     this.server.on('listening', () => Effect.runFork(this.publishPeekMarker()))
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-7] §8.8; remove when migrated
     this.server.on('error', () => Effect.runFork(this.stopSocket()))
     try {
       this.server.listen(socketPath)
     } catch {
+      // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-7] §8.8; remove when migrated
       Effect.runFork(this.stopSocket())
     }
   }
@@ -1477,6 +1480,7 @@ export class AgentManager {
     this.platform = options.platform ?? process.platform
     this.processSpawner = options.processSpawner ?? bunChildProcessSpawner
     this.exitWaitScale = options.exitWaitScale ?? 1
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-7] §8.8; remove when migrated
     this.reconciliation = Effect.runFork(this.initialize())
   }
 
@@ -2454,6 +2458,7 @@ export class AgentManager {
     if (isNullOrUndefined(id) || isEmptyString(id)) {
       return
     }
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous subagent RPC event callback cannot return an Effect
     Effect.runSync(
       Effect.gen(function* () {
         const pending = yield* Ref.get(live.pending)

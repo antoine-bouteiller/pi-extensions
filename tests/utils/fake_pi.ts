@@ -1,15 +1,11 @@
-import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { type ExtensionAPI, type ToolDefinition as PiToolDefinition } from '@earendil-works/pi-coding-agent'
 import { Effect } from 'effect'
 
 import { promiseFromEffect, tryPromiseEffect } from './bun_effect.js'
 import { asExtensionApi } from './casts.js'
 
 type EventHandler = (...args: unknown[]) => unknown
-export interface ToolDefinition {
-  label?: string
-  name: string
-  promptSnippet?: string
-}
+export type ToolDefinition = PiToolDefinition
 declare const commandDefinitionBrand: unique symbol
 export interface CommandDefinition {
   readonly [commandDefinitionBrand]?: never

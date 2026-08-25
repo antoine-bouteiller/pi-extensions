@@ -8,8 +8,10 @@ import { type AgentManagerOptions } from './core.js'
 export const register = (pi: ExtensionAPI, runtime: AppRuntime, managerOptions: AgentManagerOptions = {}): void => {
   const feature = makeSubagentFeature({ managerOptions, pi, runtime })
 
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
   pi.on('session_start', feature.onSessionStart)
   pi.on('before_agent_start', feature.onBeforeAgentStart)
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
   pi.on('session_shutdown', feature.onSessionShutdown)
 
   pi.registerTool(feature.spawnAgentTool)

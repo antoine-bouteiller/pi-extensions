@@ -348,6 +348,7 @@ export interface PollHandlers {
 }
 
 export const makePollHandlers = (pi: ExtensionAPI, exec: PollExec = makePollExec(pi)): PollHandlers => {
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous feature registration constructs memory-only state and cannot return an Effect
   const pollState: PollStateFields = Effect.runSync(
     Effect.gen(function* () {
       return {

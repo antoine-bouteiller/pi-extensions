@@ -38,12 +38,17 @@ const spawnCaffeinate = (command: string, args: readonly string[]): Promise<Caff
       })
     )
     .pipe(Effect.provideService(Scope.Scope, scope))
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; remove when migrated
   return Effect.runPromise(spawn).then(
     (child) => ({
+      // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; remove when migrated
       exited: Effect.runPromise(child.exitCode.pipe(Effect.ignore, Effect.ensuring(Scope.close(scope, Exit.void)))),
+      // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; remove when migrated
       kill: () => Effect.runPromise(child.kill().pipe(Effect.ignore)),
+      // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; remove when migrated
       unref: () => Effect.runPromise(child.unref.pipe(Effect.asVoid, Effect.ignore)),
     }),
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; remove when migrated
     (error) => Effect.runPromise(Scope.close(scope, Exit.void)).then(() => Promise.reject(error))
   )
 }
@@ -111,6 +116,7 @@ export const makeKeepAwake = (dependencies: CaffeinateDependencies): KeepAwake =
      * Bounded so `agent_settled` and `session_shutdown` always return: an unresolved spawn or a
      * child that never reports exit would otherwise block the handler forever.
      */
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; remove when migrated
     return Effect.runPromise(
       Effect.raceFirst(
         Effect.promise(() => current.completion.promise),

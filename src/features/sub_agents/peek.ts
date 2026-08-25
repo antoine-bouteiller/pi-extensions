@@ -284,6 +284,7 @@ export class SubagentPeekOverlay {
     this.cwd = options.info.cwd
     this.modelName = options.info.modelId || options.info.model
     this.requestReload()
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-7] §8.8; remove when migrated
     this.pollFiber = Effect.runFork(Effect.forever(Effect.delay(this.poll().pipe(Effect.ignoreCause), 200)))
   }
 
@@ -309,6 +310,7 @@ export class SubagentPeekOverlay {
   private requestReload(afterLoad?: () => void): void {
     const generation = ++this.loadGeneration
     const superseded = this.reloadFiber
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-7] §8.8; remove when migrated
     this.reloadFiber = Effect.runFork(
       Effect.gen({ self: this }, function* () {
         if (superseded !== undefined) {
@@ -425,6 +427,7 @@ export class SubagentPeekOverlay {
     }
     this.socketScope = undefined
     this.socket = undefined
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-7] §8.8; remove when migrated
     Effect.runFork(Scope.close(scope, Exit.void))
   }
 
@@ -433,6 +436,7 @@ export class SubagentPeekOverlay {
     const scope = Scope.makeUnsafe()
     let socket: Socket
     try {
+      // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; remove when migrated
       socket = Effect.runSync(
         Effect.acquireRelease(
           Effect.sync(() => connect(getSocketPath(this.info.id))),
@@ -440,6 +444,7 @@ export class SubagentPeekOverlay {
         ).pipe(Effect.provideService(Scope.Scope, scope))
       )
     } catch {
+      // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-7] §8.8; remove when migrated
       Effect.runFork(Scope.close(scope, Exit.void))
       return
     }
@@ -843,10 +848,12 @@ export class SubagentPeekOverlay {
   dispose(): void {
     this.disposed = true
     if (this.pollFiber !== undefined) {
+      // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-7] §8.8; remove when migrated
       Effect.runFork(Fiber.interrupt(this.pollFiber))
       this.pollFiber = undefined
     }
     if (this.reloadFiber !== undefined) {
+      // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-7] §8.8; remove when migrated
       Effect.runFork(Fiber.interrupt(this.reloadFiber))
       this.reloadFiber = undefined
     }

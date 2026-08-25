@@ -1,11 +1,14 @@
+import { type ExtensionCommandContext, type ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { makeAbortController } from '@tests/utils/abort_controller.js'
 import { promiseFromEffect, tryEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asError, asExtensionContext } from '@tests/utils/casts.js'
+import { asError, asExtensionContext, asNarrowed, asTool } from '@tests/utils/casts.js'
+import { createFakePi } from '@tests/utils/fake_pi.js'
 import { Context, Effect, Fiber, Layer, ManagedRuntime } from 'effect'
+import { Type } from 'typebox'
 
 import { ToolFailure } from '@/shared/effect/errors.js'
 import { PiCtx, Ui } from '@/shared/effect/pi_services.js'
-import { makeEventHandler, makeToolExecutor, perInvocation, withAbortSignal } from '@/shared/effect/runtime.js'
+import { makeCommandHandler, makeEventHandler, makeToolExecutor, perInvocation, withAbortSignal } from '@/shared/effect/runtime.js'
 
 interface UiCalls {
   confirms: { title: string; message: string; aborted: boolean }[]
@@ -51,6 +54,8 @@ const fakeContext = (overrides: { cwd?: string; hasUI?: boolean; confirm?: boole
 
 const emptyRuntime = () => ManagedRuntime.make(Layer.empty)
 const scopedEmptyRuntime = Effect.acquireRelease(Effect.sync(emptyRuntime), (runtime) => Effect.promise(() => runtime.dispose()))
+const fakeCommandContext = (overrides: Parameters<typeof fakeContext>[0] = {}) =>
+  asNarrowed<ExtensionCommandContext, ReturnType<typeof fakeContext>['ctx']>(fakeContext(overrides).ctx)
 
 describe('tool executor boundary', () => {
   it.scoped('rejects with the tagged ToolFailure and its exact message', () =>
@@ -136,6 +141,41 @@ describe('tool executor boundary', () => {
     })
   )
 
+  it.scoped('does not construct a registered tool body when Pi dispatches an aborted signal', () =>
+    Effect.gen(function* () {
+      const runtime = yield* scopedEmptyRuntime
+      const { pi, state } = createFakePi()
+      const parameters = Type.Object({})
+      let constructions = 0
+
+      pi.registerTool({
+        description: 'Test fixture',
+        execute: makeToolExecutor(runtime)(() => {
+          constructions++
+          return Effect.succeed({ content: [{ text: 'ok', type: 'text' }], details: {} })
+        }),
+        label: 'Boundary probe',
+        name: 'boundary_probe',
+        parameters,
+      })
+
+      const controller = makeAbortController()
+      controller.abort()
+      const tool = asTool<ToolDefinition<typeof parameters>>(state.tools.get('boundary_probe'))
+
+      const rejection = yield* Effect.promise(() =>
+        tool.execute('call-pre-abort', {}, controller.signal, undefined, fakeContext().ctx).then(
+          () => undefined,
+          (error: unknown) => error
+        )
+      )
+
+      expect(rejection).toBeDefined()
+      expect(constructions).toBe(0)
+      yield* Effect.promise(() => runtime.dispose())
+    })
+  )
+
   it.scoped('interrupts the fiber when the inbound AbortSignal fires', () =>
     Effect.gen(function* () {
       const runtime = yield* scopedEmptyRuntime
@@ -172,6 +212,84 @@ describe('tool executor boundary', () => {
       )
 
       expect([first, second]).toEqual(['/one', '/two'])
+      yield* Effect.promise(() => runtime.dispose())
+    })
+  )
+})
+
+describe('command handler boundary', () => {
+  it.scoped('passes the live arguments and context through', () =>
+    Effect.gen(function* () {
+      const runtime = yield* scopedEmptyRuntime
+      let received: string | undefined
+      const handler = makeCommandHandler(runtime)((args, ctx) =>
+        Effect.sync(() => {
+          received = `${args}@${ctx.cwd}`
+        })
+      )
+
+      yield* Effect.promise(() => handler('deploy --dry-run', fakeCommandContext({ cwd: '/here' })))
+      expect(received).toBe('deploy --dry-run@/here')
+      yield* Effect.promise(() => runtime.dispose())
+    })
+  )
+
+  it.scoped('gives concurrent invocations their own PiCtx and Ui services', () =>
+    Effect.gen(function* () {
+      const runtime = yield* scopedEmptyRuntime
+      const observed: { cwd: string; hasUI: boolean }[] = []
+      const handler = makeCommandHandler(runtime)(() =>
+        Effect.gen(function* () {
+          const ctx = yield* PiCtx
+          const ui = yield* Ui
+          yield* Effect.sleep('5 millis')
+          observed.push({ cwd: ctx.cwd, hasUI: yield* ui.hasUI })
+        })
+      )
+
+      yield* Effect.promise(() =>
+        Promise.all([
+          handler('first', fakeCommandContext({ cwd: '/one', hasUI: true })),
+          handler('second', fakeCommandContext({ cwd: '/two', hasUI: false })),
+        ])
+      )
+
+      expect(observed).toEqual([
+        { cwd: '/one', hasUI: true },
+        { cwd: '/two', hasUI: false },
+      ])
+      yield* Effect.promise(() => runtime.dispose())
+    })
+  )
+
+  it.scoped('does not throw synchronously for construction throws, and rejects generic failures', () =>
+    Effect.gen(function* () {
+      const runtime = yield* scopedEmptyRuntime
+      const constructionThrow = makeCommandHandler(runtime)(() => {
+        throw new Error('command construction exploded')
+      })
+      const effectFailure = makeCommandHandler(runtime)(() => Effect.fail('command effect exploded'))
+      let constructionPromise: Promise<void> = Promise.resolve()
+
+      expect(() => {
+        constructionPromise = constructionThrow('broken', fakeCommandContext())
+      }).not.toThrow()
+
+      const [constructionRejection, effectRejection] = yield* Effect.promise(() =>
+        Promise.all([
+          constructionPromise.then(
+            () => undefined,
+            (error: unknown) => error
+          ),
+          effectFailure('broken', fakeCommandContext()).then(
+            () => undefined,
+            (error: unknown) => error
+          ),
+        ])
+      )
+
+      expect(asError(constructionRejection).message).toBe('command construction exploded')
+      expect(effectRejection).toBe('command effect exploded')
       yield* Effect.promise(() => runtime.dispose())
     })
   )

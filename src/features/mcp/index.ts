@@ -19,6 +19,7 @@ export const register = (pi: ExtensionAPI, runtime: McpRuntime): void => {
      * for gateway initialization or spilling oversized output.
      */
     execute: async (_toolCallId, params, signal) =>
+      // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-3] §8.8; remove when migrated
       runtime.runPromise(session.dispatch(params, signal ?? undefined), signal === null ? undefined : { signal }),
     label: 'MCP Gateway',
     name: 'mcp',
@@ -36,9 +37,12 @@ export const register = (pi: ExtensionAPI, runtime: McpRuntime): void => {
       const items = session.oauthCompletions(prefix)
       return items.length > 0 ? items : null
     },
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-5] §8.8; remove when migrated
     handler: async (args, ctx) => runtime.runPromise(session.authenticate(args, ctx)),
   })
 
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; lifecycle registration and nested runtime entry remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
   pi.on('session_start', (_event, ctx) => runtime.runPromise(session.start(ctx)))
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; lifecycle registration and nested runtime entry remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
   pi.on('session_shutdown', (_event, ctx) => runtime.runPromise(session.stop(ctx)))
 }

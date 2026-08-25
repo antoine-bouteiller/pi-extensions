@@ -11,6 +11,7 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, exec?: PollExec)
     description:
       'Register a shell command that is polled in the background until it exits successfully. The current agent run can end completely; completion, timeout, or failure automatically wakes the agent with the final output. Output is truncated to 50KB or 2000 lines.',
     execute: async (toolCallId, params, signal, _onUpdate, ctx) =>
+      // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-3] §8.8; remove when migrated
       runtime.runPromise(handlers.registerTask(toolCallId, params, signal ?? undefined, ctx)),
     label: 'Background Poll',
     name: 'background_poll',
@@ -22,6 +23,8 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, exec?: PollExec)
     promptSnippet: 'Wait for an asynchronous condition without repeatedly polling or keeping the agent running',
   })
 
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; lifecycle registration and nested runtime entry remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
   pi.on('session_start', () => runtime.runPromise(handlers.startSession))
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; lifecycle registration and nested runtime entry remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
   pi.on('session_shutdown', (_event, ctx) => runtime.runPromise(handlers.stopSession(ctx)))
 }

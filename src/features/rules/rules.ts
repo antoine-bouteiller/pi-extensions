@@ -641,6 +641,7 @@ export interface RulesHandlers {
 }
 
 export const makeRulesHandlers = (environment: RulesEnvironment): RulesHandlers => {
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous feature registration constructs memory-only state and cannot return an Effect
   const rulesState = Effect.runSync(
     Effect.gen(function* () {
       return {

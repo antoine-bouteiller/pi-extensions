@@ -1,6 +1,7 @@
 import { eslintCompatPlugin } from '@oxlint/plugins'
 
 import { noConditionalEmptyObjectSpreadRule } from './rules/no_conditional_empty_object_spread.ts'
+import { noEffectPiBoundaryRule } from './rules/no_effect_pi_boundary.ts'
 import { noKnownValueWideningRule } from './rules/no_known_value_widening.ts'
 import { noModuleMockingRule } from './rules/no_module_mocking.ts'
 import { noObjectParametersRule } from './rules/no_object_parameters.ts'
@@ -13,6 +14,7 @@ const piExtensionsPlugin = eslintCompatPlugin({
   meta: { name: 'pi-extensions' },
   rules: {
     'no-conditional-empty-object-spread': noConditionalEmptyObjectSpreadRule,
+    'no-effect-pi-boundary': noEffectPiBoundaryRule,
     'no-known-value-widening': noKnownValueWideningRule,
     'no-module-mocking': noModuleMockingRule,
     'no-object-parameters': noObjectParametersRule,

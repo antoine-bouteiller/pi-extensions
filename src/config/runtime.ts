@@ -2,6 +2,7 @@ import { BunFileSystem, BunPath } from '@effect/platform-bun'
 import { Layer, ManagedRuntime } from 'effect'
 import { FetchHttpClient } from 'effect/unstable/http'
 
+// oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-19] §8.8; remove when the later planned MCP runtime-import migration lands
 import { McpGatewayLive, type McpGateway } from '#features/mcp/gateway'
 import { AgentActivityLive, type AppServices, StatusBarLive } from '#shared/effect/app_services'
 

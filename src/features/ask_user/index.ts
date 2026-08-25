@@ -26,6 +26,7 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
      * would instead reject the tool call, which is exactly what "neither path may fail" rules out.
      */
     execute: async (_toolCallId, params, signal, _onUpdate, ctx) =>
+      // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-3] §8.8; remove when migrated
       runtime.runPromise(askUserEffect(params, signal ?? undefined).pipe(Effect.provide(perInvocation(ctx)))),
     label: 'Ask User',
     name: 'ask_user',

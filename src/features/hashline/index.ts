@@ -22,6 +22,7 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
       body: (params: Params, signal: AbortSignal | undefined) => Effect.Effect<Result, HashlineToolError, HandlerServices | AppServices>
     ) =>
     async (_toolCallId: string, params: Params, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext): Promise<Result> =>
+      // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-3] §8.8; remove when migrated
       runtime.runPromise(body(params, signal).pipe(Effect.provide(perInvocation(ctx))))
 
   pi.registerTool({

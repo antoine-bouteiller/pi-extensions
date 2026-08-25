@@ -9,6 +9,7 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, environment: Rul
   const handlers = makeRulesHandlers(environment)
   const onEvent = makeEventHandler(runtime)
 
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
   pi.on('session_start', onEvent(handlers.clearInjections))
   pi.on('session_compact', onEvent(handlers.clearInjections))
   pi.on('session_tree', onEvent(handlers.clearInjections))

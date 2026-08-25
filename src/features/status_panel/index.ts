@@ -14,6 +14,7 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, dependencies: St
 
   const handlers = makePanelController({ dependencies, pi, runtime })
 
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
   pi.on('session_start', onEvent(handlers.sessionStart))
   pi.on('model_select', onEvent(handlers.modelSelect))
   pi.on('thinking_level_select', onEvent(handlers.thinkingLevelSelect))
@@ -21,5 +22,6 @@ export const register = (pi: ExtensionAPI, runtime: AppRuntime, dependencies: St
   pi.on('turn_end', onEvent(handlers.turnEnd))
   pi.on('agent_settled', onEvent(handlers.agentSettled))
   pi.on('after_provider_response', onEvent(handlers.afterProviderResponse))
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
   pi.on('session_shutdown', onEvent(handlers.sessionShutdown))
 }
