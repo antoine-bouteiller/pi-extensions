@@ -62,6 +62,10 @@ Goals are owned by the umbrella.
   cloud, deployment, proxy, and toolchain variables are visible to the child. Tool policy remains explicitly
   non-sandboxed under `[C-2]`; callers requiring secret isolation must run Pi in a suitably filtered parent
   environment.
+- `[C-7]` The worker enforces child resource isolation for skills, prompt templates, context files,
+  including extension-contributed ones, byte-for-byte prompt append, and no separately forwarded
+  credential or runtime-key values, but no test asserts those properties byte-for-byte. SDK loader
+  configuration drift would therefore not be detected automatically.
 
 ## 7. High-Level Components
 
@@ -332,3 +336,4 @@ N/A.
 | 2026-08-24 | Load configured extensions normally, keep model-visible tools allowlisted, and suppress package-owned parent-only features under `PI_SUBAGENT=1`.                                                                      | 3, 6, 8           | Preserve lifecycle-dependent tool initialization without building a generic tool-only extension loader.                                 |
 | 2026-08-24 | Exclude the async-process class, currently `background_poll`, from one-turn child profiles.                                                                                                                            | 3, 8              | A delayed poll wake-up cannot complete after the worker exits on its first settled turn.                                                |
 | 2026-08-25 | Name the actual parent-only features suppressed in children and gate them through the feature descriptor policy.                                                                                                       | 8                 | The suppression list referenced a feature that does not exist and omitted `auto_theme`.                                                 |
+| 2026-08-25 | Record unproven byte-for-byte child loader isolation and private setup forwarding.                                                                                                                                     | 6                 | Keep the loader-verification gap beside the child-environment contract.                                                                 |
