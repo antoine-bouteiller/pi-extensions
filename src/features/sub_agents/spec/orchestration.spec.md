@@ -49,6 +49,9 @@ Goals are owned by the umbrella.
   conclusion is durable, the live process is not.
 - `[NG-3.1]` Queuing excess children, configurable limits, or per-profile limits beyond the single
   `implementer` bound — refines umbrella `[KD-11.2]`; admission either succeeds immediately or refuses.
+- `[NG-4]` Windows support — spawning, termination, worker startup, and descriptor-based path
+  validation refuse on Windows; its process-tree and PowerShell creation-time mechanisms remain for a
+  future port.
 
 ## 6. Caveats
 
@@ -67,6 +70,17 @@ Goals are owned by the umbrella.
   if the OS refuses termination, the stable service retains the process and durable lease for retry and
   startup reaping rather than claiming it stopped. Cancelling an admitted caller releases only that
   caller's delivery claim.
+- `[C-8]` The injected write/chmod/rename/lease-removal failure matrix and temporary-file cleanup,
+  descriptor replacement and file mutation between open and validation, real-child resource-ownership
+  paths (marker-capture failure, write failure, reader failure, and normal and forced exit), concurrent
+  steer-versus-settlement arbitration, create-versus-resume session-file collisions and header timing,
+  duplicate-task and command-ID echo permutations, `closeSession` aggregation of several independent
+  cleanup failures, and a pinned settlement winner for every racing pair rather than either outcome
+  lack automated evidence. Descriptor isolation guards extension stdout, but no fixture proves the
+  protocol channel remains clean.
+- `[C-9]` Windows is outside the supported contract: sub-agent process spawning, termination, worker
+  startup, and descriptor-based path validation refuse there rather than advertise unverified support.
+  Windows process-tree and PowerShell creation-time mechanisms remain specified for a future port.
 
 ## 7. High-Level Components
 
@@ -681,3 +695,4 @@ N/A.
 | 2026-08-24 | Pass immutable invocation admission snapshots into spawn/send and remove `wait_conflict` because explicit targeted waits are non-claiming repeatable reads.                                                                              | 3, 8              | Give profile resolution a concrete current-host data path and delete an unreachable refusal branch.                |
 | 2026-08-24 | Tag inactivity warnings as injection-only and exclude them from omitted wait snapshots.                                                                                                                                                  | 3, 8              | Preserve the `AgentResult`-only wait contract while sharing notification FIFO ordering.                            |
 | 2026-08-25 | Enter session lifecycle through the feature descriptor's `activate`/`deactivate` rather than a self-registered session-start hook.                                                                                                       | 8                 | The feature coordinator now owns host session start, replacement, and shutdown.                                    |
+| 2026-08-25 | Record deferred implementation verification and the Windows platform exclusion.                                                                                                                                                          | 5, 6              | Keep verification coverage and supported-platform limits beside the orchestration contract.                        |
