@@ -21,6 +21,7 @@ export interface FeatureStatusMetadata {
 
 export interface FeatureIdentity {
   readonly id: string
+  readonly suppressInChild?: boolean
   readonly status: FeatureStatusMetadata
 }
 

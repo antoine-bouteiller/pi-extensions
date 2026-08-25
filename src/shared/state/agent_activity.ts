@@ -3,9 +3,13 @@ import { type ThemeColor } from '@earendil-works/pi-coding-agent'
 import { createObservableStore } from './store.js'
 
 export interface RunningAgent {
-  name: string
-  profile?: string
-  color: ThemeColor
+  readonly agentId?: string
+  readonly color: ThemeColor
+  readonly lastActivityAt?: number
+  readonly name: string
+  readonly profile?: string
+  readonly sessionId?: string
+  readonly state?: 'running'
 }
 
 export interface AgentActivityStore {

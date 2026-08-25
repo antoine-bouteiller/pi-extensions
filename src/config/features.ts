@@ -15,23 +15,25 @@ import { feature as promptRewind } from '#features/prompt_rewind/index'
 import { feature as rules } from '#features/rules/index'
 import { feature as safetyGuard } from '#features/safety_guard/index'
 import { feature as statusPanel } from '#features/status_panel/index'
+import { feature as subAgents } from '#features/sub_agents/index'
 import { feature as webfetch } from '#features/webfetch/index'
 import { type FeaturePlugin } from '#shared/effect/feature'
 
 const features = [
-  askUser,
+  { ...askUser, suppressInChild: true },
   autoTheme,
-  backgroundPoll,
-  caffeinate,
-  claudeCode,
+  { ...backgroundPoll, suppressInChild: true },
+  { ...caffeinate, suppressInChild: true },
+  { ...claudeCode, suppressInChild: true },
   commentChecker,
   hashline,
   mcp,
   meridianSessionAffinity,
-  promptRewind,
-  rules,
+  { ...promptRewind, suppressInChild: true },
+  { ...rules, suppressInChild: true },
   safetyGuard,
   statusPanel,
+  { ...subAgents, suppressInChild: true },
   webfetch,
 ] satisfies readonly FeaturePlugin[]
 

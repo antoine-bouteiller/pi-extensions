@@ -10,7 +10,13 @@ import { FetchHttpClient } from 'effect/unstable/http'
 
 import { getOrCreateProcessRuntime } from '@/config/runtime.js'
 import { feature as statusPanel } from '@/features/status_panel/index.js'
-import { AgentActivity, type AgentActivityApi, type AppRuntime, StatusBarLive } from '@/shared/effect/app_services.js'
+import {
+  AgentActivity,
+  type AgentActivityApi,
+  type AppRuntime,
+  StatusBarLive,
+  SubagentOrchestratorProductionLive,
+} from '@/shared/effect/app_services.js'
 import { parseJsonText } from '@/shared/utils/json.js'
 
 const sharedActivityScript = (paths: { aggregate: string; activity: string; runtime: string; statusPanel: string }): string => `
@@ -103,7 +109,14 @@ describe('process-wide runtime', () => {
         },
       }
       const runtime: AppRuntime = ManagedRuntime.make(
-        Layer.mergeAll(BunFileSystem.layer, BunPath.layer, FetchHttpClient.layer, StatusBarLive, Layer.succeed(AgentActivity)(sentinelActivity))
+        Layer.mergeAll(
+          BunFileSystem.layer,
+          BunPath.layer,
+          FetchHttpClient.layer,
+          StatusBarLive,
+          Layer.succeed(AgentActivity)(sentinelActivity),
+          SubagentOrchestratorProductionLive
+        )
       )
       yield* withProcessEnv('PI_SUBAGENT_OWNER_TOKEN', undefined, () =>
         Effect.sync(() => {

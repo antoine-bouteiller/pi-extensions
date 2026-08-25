@@ -1,5 +1,5 @@
 import { type AgentToolUpdateCallback, type ExtensionCommandContext, type ExtensionContext } from '@earendil-works/pi-coding-agent'
-import { type Cause, Context, Effect, type ManagedRuntime } from 'effect'
+import { type Cause, Context, type Duration, Effect, Fiber, type ManagedRuntime, Schedule } from 'effect'
 
 import { makeUi, PiCtx, Ui } from './pi_services.js'
 
@@ -54,6 +54,22 @@ export const makeToolExecutor =
       interruptOnAbort ? { signal } : undefined
     )
   }
+
+export const runManagedEffect = <Value, Failure, Services>(
+  runtime: ManagedRuntime.ManagedRuntime<Services, never>,
+  effect: Effect.Effect<Value, Failure, Services>
+): Promise<Value> => runtime.runPromise(effect)
+
+export const runManagedRepeatingEffect = <Failure, Services>(
+  runtime: ManagedRuntime.ManagedRuntime<Services, never>,
+  effect: Effect.Effect<void, Failure, Services>,
+  interval: Duration.Input
+): (() => void) => {
+  const fiber = runtime.runFork(Effect.repeat(effect, Schedule.spaced(interval)))
+  return () => {
+    runtime.runFork(Fiber.interrupt(fiber))
+  }
+}
 
 export const makeCommandHandler =
   <AppServices>(runtime: ManagedRuntime.ManagedRuntime<AppServices, never>) =>

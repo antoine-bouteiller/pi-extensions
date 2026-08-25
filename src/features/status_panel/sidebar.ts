@@ -22,8 +22,9 @@ export interface SidebarState {
   model: ModelInfoState
   git: GitInfoState
   quotas: ProviderQuotas
-  agents: readonly RunningAgent[]
+  agents?: readonly RunningAgent[]
   extensionStatuses: readonly StatusEntry[]
+  sessionId?: string
 }
 
 const MAX_AGENT_ROWS = 5
@@ -144,19 +145,44 @@ const contextRows = (state: SidebarState, width: number, theme: SidebarTheme) =>
   return [spaced(paint(theme, color, usage), paint(theme, color, percent), width), meter]
 }
 
-const subagentRow = (agent: RunningAgent, width: number, theme: SidebarTheme) => {
-  const marker = '▸ '
-  const profile = truncateToWidth(sanitize(agent.profile ?? ''), Math.floor(width * 0.4), '…')
-  const nameWidth = width - visibleWidth(marker) - (isEmptyString(profile) ? 0 : visibleWidth(profile) + 1)
-  const name = truncateToWidth(sanitize(agent.name), Math.max(0, nameWidth), '…')
-  const gap = ' '.repeat(Math.max(isEmptyString(profile) ? 0 : 1, width - visibleWidth(marker) - visibleWidth(name) - visibleWidth(profile)))
-  const coloredName = process.env.NO_COLOR === undefined ? theme.fg(agent.color, name) : name
-  return truncateToWidth(`${paint(theme, 'gray', marker)}${coloredName}${gap}${paint(theme, 'gray', profile)}`, width, '')
+const profileColor = (profile: string | undefined): PaletteColor => {
+  switch (profile) {
+    case 'scout': {
+      return 'blue'
+    }
+    case 'librarian': {
+      return 'purple'
+    }
+    case 'reviewer': {
+      return 'orange'
+    }
+    case 'implementer': {
+      return 'green'
+    }
+    default: {
+      return 'gray'
+    }
+  }
 }
 
-const subagentRows = (agents: readonly RunningAgent[], width: number, theme: SidebarTheme) => {
+const inactivity = (lastActivityAt: number | undefined, now: number): string => {
+  const elapsed = Math.max(0, now - (lastActivityAt ?? now))
+  return `${Math.floor(elapsed / 60_000)}m idle`
+}
+
+const subagentRow = (agent: RunningAgent, width: number, theme: SidebarTheme, now: number) => {
+  const marker = '▸ '
+  const idle = inactivity(agent.lastActivityAt, now)
+  const nameWidth = width - visibleWidth(marker) - visibleWidth(idle) - 1
+  const name = truncateToWidth(sanitize(agent.name), Math.max(0, nameWidth), '…')
+  const gap = ' '.repeat(Math.max(1, width - visibleWidth(marker) - visibleWidth(name) - visibleWidth(idle)))
+  const coloredName = paint(theme, profileColor(agent.profile), name)
+  return truncateToWidth(`${paint(theme, 'gray', marker)}${coloredName}${gap}${idle}`, width, '')
+}
+
+const subagentRows = (agents: readonly RunningAgent[], width: number, theme: SidebarTheme, now: number) => {
   const shown = agents.slice(0, MAX_AGENT_ROWS)
-  const rows = shown.map((agent) => subagentRow(agent, width, theme))
+  const rows = shown.map((agent) => subagentRow(agent, width, theme, now))
   if (agents.length > shown.length) {
     rows.push(paint(theme, 'gray', `+${agents.length - shown.length} more`))
   }
@@ -275,6 +301,7 @@ export const renderSidebarLines = ({
   }
   const panelWidth = Math.max(0, safeWidth - 2)
   const rowWidth = Math.max(0, panelWidth - 4)
+  const currentAgents = state.agents?.filter((agent) => state.sessionId === undefined || agent.sessionId === state.sessionId) ?? []
   const groups: PanelGroup[] = [
     {
       dropRank: Number.POSITIVE_INFINITY,
@@ -301,7 +328,7 @@ export const renderSidebarLines = ({
         width: panelWidth,
       }),
     },
-    ...(state.agents.length > 0
+    ...(currentAgents.length > 0
       ? [
           {
             dropRank: 40,
@@ -309,7 +336,7 @@ export const renderSidebarLines = ({
             required: false,
             rows: panel({
               color: 'purple',
-              rows: subagentRows(state.agents, rowWidth, theme),
+              rows: subagentRows(currentAgents, rowWidth, theme, now),
               theme,
               title: 'SUBAGENTS',
               width: panelWidth,

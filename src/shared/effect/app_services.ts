@@ -3,6 +3,11 @@ import { type FileSystem } from 'effect/FileSystem'
 import { type Path } from 'effect/Path'
 import { type HttpClient } from 'effect/unstable/http'
 
+import { resolveProfile } from '#features/sub_agents/model'
+import { type SubagentOrchestrator, SubagentOrchestratorLive } from '#features/sub_agents/orchestrator'
+import { ChildProcessLive } from '#features/sub_agents/process'
+import { ProfileResolver, SubagentStoreLive } from '#features/sub_agents/store'
+import { ProductionNotificationSinkLive } from '#features/sub_agents/tools'
 import { type AgentActivityStore, type RunningAgent, runningAgents } from '#shared/state/agent_activity'
 import { formatStatusText, publishStatus, type StatusEntry, type StatusItem, statusBar } from '#shared/state/status_bar'
 
@@ -78,6 +83,16 @@ export const StatusBarLive: Layer.Layer<StatusBar> = Layer.succeed(StatusBar)({
 
 export const AgentActivityLive: Layer.Layer<AgentActivity> = Layer.succeed(AgentActivity)(agentActivityApi(runningAgents))
 
-export type AppServices = FileSystem | Path | HttpClient.HttpClient | StatusBar | AgentActivity
+const SubagentPortsLive = Layer.mergeAll(
+  AgentActivityLive,
+  ChildProcessLive,
+  ProductionNotificationSinkLive,
+  Layer.succeed(ProfileResolver)({ resolve: (key, snapshot) => Effect.succeed(resolveProfile(key, snapshot)) }),
+  SubagentStoreLive
+)
+
+export const SubagentOrchestratorProductionLive = SubagentOrchestratorLive.pipe(Layer.provide(SubagentPortsLive))
+
+export type AppServices = FileSystem | Path | HttpClient.HttpClient | StatusBar | AgentActivity | SubagentOrchestrator
 
 export type AppRuntime = ManagedRuntime.ManagedRuntime<AppServices, never>
