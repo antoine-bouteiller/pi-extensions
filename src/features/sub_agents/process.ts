@@ -71,7 +71,7 @@ const windowsMarker = (pid: number): Effect.Effect<string | undefined, ProcessEr
     },
   })
 
-const macosMarker = (pid: number): string | undefined => {
+export const macosProcessBirthMarker = (pid: number): string | undefined => {
   const info = new Uint8Array(136)
   const library = dlopen('/usr/lib/libproc.dylib', {
     proc_pidinfo: { args: ['i32', 'u32', 'u64', 'ptr', 'i32'], returns: 'i32' },
@@ -82,6 +82,7 @@ const macosMarker = (pid: number): string | undefined => {
       return undefined
     }
     const view = new DataView(info.buffer)
+    // Proc_bsdinfo has pbi_start_tvsec at byte 120 and pbi_start_tvusec at byte 128.
     return `${view.getBigUint64(120, true)}:${view.getBigUint64(128, true)}`
   } catch {
     return undefined
@@ -98,7 +99,7 @@ const productionMarker = (pid: number): Effect.Effect<string | undefined, Proces
     return windowsMarker(pid)
   }
   if (process.platform === 'darwin') {
-    return Effect.succeed(macosMarker(pid))
+    return Effect.succeed(macosProcessBirthMarker(pid))
   }
   return Effect.void.pipe(Effect.as(undefined))
 }
@@ -241,9 +242,16 @@ export const makeChildProcessLive = (platform: ProcessPlatform = productionPlatf
         const child = yield* platform.spawn(request)
         const captured = yield* Effect.result(platform.birthMarker(child.pid))
         if (captured._tag === 'Failure' || captured.success === undefined) {
-          yield* child.closeInput.pipe(Effect.ignore)
-          yield* child.wait
-          yield* child.release.pipe(Effect.ignore)
+          // The child is ours, but cannot be handed to callers without an identity.
+          // Waiting indefinitely would leak it; close, force, reap, and release ownership.
+          yield* Effect.ensuring(
+            Effect.gen(function* () {
+              yield* child.closeInput.pipe(Effect.ignore)
+              yield* platform.forceTerminate(child.pid).pipe(Effect.ignore)
+              yield* child.wait.pipe(Effect.ignore)
+            }),
+            child.release.pipe(Effect.ignore)
+          )
           return yield* failure(SpawnError, new Error('Process identity is unverifiable'))
         }
         return {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { Effect, Result } from 'effect'
+import { Effect, Fiber, Result } from 'effect'
 
 import { ArtifactTooLargeError, makeSubagentStoreLive, SubagentStore, type SubagentRecord } from '@/features/sub_agents/store.js'
 import { hostFilePermissions } from '@/shared/effect/bun_host_file_system.js'
@@ -50,6 +50,42 @@ describe('SubagentStore', () => {
           yield* store.prune(2 + 7 * 24 * 60 * 60 * 1000)
           expect(yield* store.readRecord('agent')).toBeUndefined()
           expect((yield* store.readRecord('live'))?.status).toBe('running')
+        }),
+        makeSubagentStoreLive({ tempDirectory: root, username: 'owner' })
+      )
+    })
+  )
+
+  it.live('lets concurrent readers observe only complete record replacements', () =>
+    Effect.gen(function* () {
+      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'subagent-atomic-' })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const store = yield* SubagentStore
+          yield* store.initialize
+          yield* store.replaceRecord('agent', record(0))
+          const replacements = Array.from({ length: 40 }, (value, index) => {
+            void value
+            return record(index + 1)
+          })
+          const writer = Effect.gen(function* () {
+            for (const replacement of replacements) {
+              yield* store.replaceRecord('agent', replacement)
+              yield* Effect.yieldNow
+            }
+          })
+          const reader = Effect.gen(function* () {
+            for (const replacement of replacements) {
+              void replacement
+              const value = yield* store.readRecord('agent')
+              expect(value?.status).toBe('completed')
+              expect(value?.turns).toEqual([])
+              yield* Effect.yieldNow
+            }
+          })
+          const writing = yield* Effect.forkDetach(writer)
+          yield* reader
+          yield* Fiber.join(writing)
         }),
         makeSubagentStoreLive({ tempDirectory: root, username: 'owner' })
       )

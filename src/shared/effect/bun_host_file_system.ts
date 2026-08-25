@@ -146,7 +146,11 @@ const readOwnerOnlyFileSync = ({ maxBytes, path, root }: ReadOwnerOnlyFileOption
   }
   // Opening is deliberately first: every later pathname lookup is derived from this descriptor.
   noSymlinkComponent(root, path)
-  const descriptor = fs.openSync(path, fs.constants.O_RDONLY | noFollow)
+  const nonBlocking = fs.constants.O_NONBLOCK
+  if (typeof nonBlocking !== 'number') {
+    throw new Error('O_NONBLOCK is unavailable on this platform')
+  }
+  const descriptor = fs.openSync(path, fs.constants.O_RDONLY | noFollow | nonBlocking)
   try {
     const stat = fs.fstatSync(descriptor)
     const pathStat = fs.lstatSync(path)
