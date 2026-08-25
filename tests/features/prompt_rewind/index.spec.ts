@@ -4,7 +4,7 @@ import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect } from 'effect'
 
-import { register as registerPromptRewind } from '@/features/prompt_rewind/index.js'
+import { feature } from '@/features/prompt_rewind/index.js'
 
 const REWIND_COMMAND = 'prompt-rewind-cancel'
 
@@ -31,7 +31,7 @@ interface InputSubmission {
 
 const createHarness = (dispatchSubmittedCommands = false) => {
   const fixture = createFakePi()
-  registerPromptRewind(fixture.pi, runtime)
+  feature.implementation.register(fixture.pi, runtime)
 
   let terminalHandler: TerminalHandler | undefined
   let terminalUnsubscribed = false
@@ -126,7 +126,7 @@ const createHarness = (dispatchSubmittedCommands = false) => {
   })
 
   const startSession = (mode: 'tui' | 'rpc' = 'tui'): Promise<void> =>
-    Effect.runPromise(Effect.promise(() => fixture.emit('session_start', {}, { ...ctx, mode })).pipe(Effect.asVoid))
+    runtime.runPromise(feature.implementation.activate?.({ reason: 'startup', type: 'session_start' }, { ...ctx, mode }) ?? Effect.void)
 
   const submit = (input: InputSubmission): Promise<void> =>
     Effect.runPromise(
@@ -193,16 +193,7 @@ describe('prompt rewind', () => {
       const harness = createHarness()
 
       expect([...harness.fixture.state.handlers.keys()].toSorted()).toEqual(
-        [
-          'agent_end',
-          'agent_start',
-          'before_agent_start',
-          'input',
-          'message_update',
-          'session_shutdown',
-          'session_start',
-          'tool_execution_start',
-        ].toSorted()
+        ['agent_end', 'agent_start', 'before_agent_start', 'input', 'message_update', 'tool_execution_start'].toSorted()
       )
       expect([...harness.fixture.state.commands.keys()]).toEqual([REWIND_COMMAND])
       expect(harness.fixture.state.tools.size).toBe(0)
@@ -497,7 +488,7 @@ describe('prompt rewind', () => {
       yield* Effect.promise(() => harness.submitAndArm())
       harness.escape()
 
-      yield* Effect.promise(() => harness.fixture.emit('session_shutdown', {}))
+      yield* Effect.promise(() => runtime.runPromise(feature.implementation.deactivate?.(harness.ctx, 'shutdown') ?? Effect.void))
 
       expect(harness.terminalUnsubscribed()).toBeTrue()
       yield* Effect.promise(() => harness.command().handler('', harness.ctx))

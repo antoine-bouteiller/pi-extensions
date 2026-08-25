@@ -41,6 +41,18 @@ tester.run('pi-extensions/no-effect-pi-boundary', noEffectPiBoundaryRule, {
     },
     { ...at('src/config/runtime.ts', 'import gateway from "#features/mcp/gateway";'), errors: [{ messageId: 'featureRuntimeImport' }] },
     { ...at('src/another/place.ts', 'pi.registerCommand({});'), errors: [{ messageId: 'piRegistration' }] },
+    {
+      ...at('src/config/other.ts', 'input!.pi.registerTool({}); (input as Input).pi["registerCommand"]({});'),
+      errors: [{ messageId: 'piRegistration' }, { messageId: 'piRegistration' }],
+    },
+    {
+      ...at('src/config/other.ts', 'this!.pi.on("session_start", () => {}); (this as { pi: Pi }).pi["on"]("session_shutdown", () => {});'),
+      errors: [{ messageId: 'lifecycleRegistration' }, { messageId: 'lifecycleRegistration' }],
+    },
+    {
+      ...at('src/features/example/tool.ts', 'input.pi.registerTool({}); input.pi["on"]("session_start", () => {});'),
+      errors: [{ messageId: 'piRegistration' }, { messageId: 'lifecycleRegistration' }],
+    },
     { ...at('src/features/example/tool.ts', 'pi!.registerTool({});'), errors: [{ messageId: 'piRegistration' }] },
     { ...at('src/config/other.ts', 'runtime!.runPromise(effect);'), errors: [{ messageId: 'runtimeEntry' }] },
     {
@@ -89,6 +101,10 @@ tester.run('pi-extensions/no-effect-pi-boundary', noEffectPiBoundaryRule, {
     at('src/features/example/index.ts', 'pi.registerTool({}); pi.on("message", () => {});'),
     at('src/features/example/index.ts', 'import { makeToolExecutor } from "#shared/effect/runtime"; makeToolExecutor(runtime);'),
     at('src/config/feature_coordinator.ts', 'pi.on("session_start", () => {});'),
+    at('src/config/feature_coordinator.ts', 'input!.pi.on("session_start", () => {}); (input as Input).pi["on"]("session_shutdown", () => {});'),
+    at('src/config/feature_coordinator.ts', 'this!.pi.on("session_start", () => {}); (this as { pi: Pi }).pi["on"]("session_shutdown", () => {});'),
+    at('src/features/example/index.ts', 'input.pi.registerTool({}); input.pi["registerCommand"]({});'),
+    at('src/other.ts', 'client.pi.registerTool({}); api.registerTool({});'),
     at('src/config/feature_coordinator.ts', 'import { makeEventHandler } from "#shared/effect/runtime"; makeEventHandler(runtime);'),
     at('src/config/feature_coordinator.ts', 'import { makeEventHandler as handler } from "#shared/effect/runtime"; handler(runtime);'),
     at('src/config/runtime.ts', 'import { ManagedRuntime } from "effect"; ManagedRuntime.make(layer);'),

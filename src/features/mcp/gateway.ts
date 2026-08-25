@@ -1,7 +1,7 @@
 import { homedir } from 'node:os'
 
 import { type AgentToolResult, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from '@earendil-works/pi-coding-agent'
-import { Context, Data, Deferred, Effect, Layer, Match, Option, Ref, Schema } from 'effect'
+import { Context, Data, Deferred, Effect, Match, Option, Ref, Schema } from 'effect'
 import { type FileSystem } from 'effect/FileSystem'
 import { type Path } from 'effect/Path'
 import { Type, type Static } from 'typebox'
@@ -458,22 +458,34 @@ export const makeGatewaySession = (pi: ExtensionAPI): GatewaySession => {
           yield* previousManager.value.close
         }
         const config = yield* fromManager(gateway.loadConfig)
-        const candidate = yield* callManager(() =>
-          Promise.resolve(
-            gateway.createManager(config, {
-              callbacks: {
-                onStatusChange: (update) => {
-                  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: manager synchronous status callback cannot return an Effect
-                  if (Effect.runSyncWith(context)(Ref.get(state.generation)) === generation) {
-                    updateUiStatus(ctx, update)
-                  }
-                },
+        const managerCreation = Promise.resolve().then(() =>
+          gateway.createManager(config, {
+            callbacks: {
+              onStatusChange: (update) => {
+                // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: manager synchronous status callback cannot return an Effect
+                if (Effect.runSyncWith(context)(Ref.get(state.generation)) === generation) {
+                  updateUiStatus(ctx, update)
+                }
               },
-              pi,
-              policy: gateway.policy,
-            })
-          )
+            },
+            pi,
+            policy: gateway.policy,
+          })
         )
+        const candidate = yield* Effect.callback<McpGatewayManager, McpOperationError>((resume) => {
+          void managerCreation.then(
+            (manager) => resume(Effect.succeed(manager)),
+            (error: unknown) => resume(Effect.fail(mcpOperationError(error)))
+          )
+          // An uncancellable factory promise can settle after activation is interrupted. Its
+          // Cancellation finalizer owns that late manager instead of leaking its transports.
+          return Effect.promise(() =>
+            managerCreation.then(
+              (manager) => manager.close,
+              () => Effect.void
+            )
+          ).pipe(Effect.flatten)
+        })
 
         if ((yield* Ref.get(state.generation)) !== generation) {
           yield* candidate.close
@@ -570,7 +582,11 @@ export const makeGatewaySession = (pi: ExtensionAPI): GatewaySession => {
 
 const globalConfigPath = join(homedir(), '.config', 'mcp', 'mcp.json')
 
-export const McpGatewayLive: Layer.Layer<McpGateway> = Layer.succeed(McpGateway)({
+/**
+ * Creates the process-local MCP gateway. Manager and transport initialization remains deferred
+ * until the feature's session activation.
+ */
+export const makeMcpGateway = (): McpGatewayApi => ({
   configPath: globalConfigPath,
   /*
    * Keep the manager behind the session lifecycle boundary: importing this entrypoint and

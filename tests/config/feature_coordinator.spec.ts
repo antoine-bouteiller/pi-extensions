@@ -67,6 +67,8 @@ describe('feature coordinator', () => {
       'typed-stop',
       'defect-stop',
       'sibling',
+      'subset-included',
+      'subset-omitted',
     ]) {
       publishStatus(`feature:${id}`, undefined)
     }
@@ -170,6 +172,31 @@ describe('feature coordinator', () => {
     })
   )
 
+  it.effect('registers and publishes only descriptors included in a subset registry', () =>
+    Effect.gen(function* () {
+      const fixture = createFakePi()
+      const registrations: string[] = []
+      const included = eager('subset-included', {
+        register: (pi) => {
+          registrations.push('included')
+          pi.on('agent_start', () => undefined)
+        },
+      })
+      const omitted = eager('subset-omitted', {
+        register: () => registrations.push('omitted'),
+      })
+
+      makeFeatureCoordinator({ features: [included], pi: fixture.pi, runtime }).install()
+      const fixtureContext = context('subset')
+      yield* emit(fixture, 'session_start', fixtureContext.ctx)
+
+      expect(registrations).toEqual(['included'])
+      expect([...fixture.state.handlers.keys()]).toEqual(['agent_start', 'session_start', 'session_shutdown'])
+      expect(fixtureContext.statuses.map(({ text }) => text)).toEqual(['✓ subset-included: checking', '✓ subset-included'])
+      expect(omitted.id).toBe('subset-omitted')
+    })
+  )
+
   it.effect('awaits registered activation in registry order and makes no-activation features healthy', () =>
     Effect.gen(function* () {
       const fixture = createFakePi()
@@ -210,6 +237,53 @@ describe('feature coordinator', () => {
       yield* Effect.yieldNow
       expect(calls).toEqual(['register', 'activate'])
       expect(fixtureContext.statuses.at(-1)?.text).toBe('✓ comment-checker')
+    })
+  )
+
+  it.scoped('produces the same observable background capabilities and health regardless of reverse completion order', () =>
+    Effect.gen(function* () {
+      const firstGate = yield* Deferred.make<void>()
+      const secondGate = yield* Deferred.make<void>()
+      const reverseFixture = createFakePi()
+      const forwardFixture = createFakePi()
+      const install = (fixture: ReturnType<typeof createFakePi>, first: Deferred.Deferred<void>, second: Deferred.Deferred<void>) =>
+        makeFeatureCoordinator({
+          features: [
+            background(Deferred.await(first).pipe(Effect.as({ register: (pi) => pi.on('agent_start', () => undefined) })), 'comment-checker'),
+            background(
+              Deferred.await(second).pipe(Effect.as({ register: (pi) => pi.on('agent_end', () => undefined) })),
+              'meridian-session-affinity'
+            ),
+          ],
+          pi: fixture.pi,
+          runtime,
+        }).install()
+
+      install(reverseFixture, firstGate, secondGate)
+      const reverseContext = context('background-reverse')
+      yield* emit(reverseFixture, 'session_start', reverseContext.ctx)
+      yield* Deferred.succeed(secondGate, undefined)
+      yield* Effect.yieldNow
+      expect([...reverseFixture.state.handlers.keys()]).toContain('agent_end')
+      yield* Deferred.succeed(firstGate, undefined)
+      yield* Effect.yieldNow
+
+      const forwardFirstGate = yield* Deferred.make<void>()
+      const forwardSecondGate = yield* Deferred.make<void>()
+      install(forwardFixture, forwardFirstGate, forwardSecondGate)
+      const forwardContext = context('background-forward')
+      yield* emit(forwardFixture, 'session_start', forwardContext.ctx)
+      yield* Deferred.succeed(forwardFirstGate, undefined)
+      yield* Effect.yieldNow
+      yield* Deferred.succeed(forwardSecondGate, undefined)
+      yield* Effect.yieldNow
+
+      expect([...reverseFixture.state.handlers.keys()].toSorted((left, right) => left.localeCompare(right))).toEqual(
+        [...forwardFixture.state.handlers.keys()].toSorted((left, right) => left.localeCompare(right))
+      )
+      expect(reverseContext.statuses.map(({ text }) => text).toSorted((left, right) => (left ?? '').localeCompare(right ?? ''))).toEqual(
+        forwardContext.statuses.map(({ text }) => text).toSorted((left, right) => (left ?? '').localeCompare(right ?? ''))
+      )
     })
   )
 

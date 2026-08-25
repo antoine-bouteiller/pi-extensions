@@ -1,11 +1,11 @@
 import { promiseFromEffect, tryEffect, tryPromiseEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asExtensionApi } from '@tests/utils/casts.js'
+import { asExtensionApi, asExtensionContext } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect, Fiber } from 'effect'
 import { TestClock } from 'effect/testing'
 
-import { register as backgroundPoll } from '@/features/background_poll/index.js'
+import { makeFeature } from '@/features/background_poll/index.js'
 import { formatPollOutput, runPollLoop, type PollExec } from '@/features/background_poll/poll.js'
 import { ToolFailure } from '@/shared/effect/errors.js'
 import { type JsonObject } from '@/shared/utils/json.js'
@@ -53,7 +53,8 @@ const setup = (exec: Exec) => {
   const statuses: unknown[] = []
   const messageSent = deferred<void>()
 
-  backgroundPoll(
+  const feature = makeFeature(asPollExec(exec))
+  feature.implementation.register(
     asExtensionApi({
       on: (event: string, handler: Handler) => handlers.set(event, handler),
       registerTool: (definition: Tool) => {
@@ -64,8 +65,7 @@ const setup = (exec: Exec) => {
         messageSent.resolve(undefined)
       },
     }),
-    runtime,
-    asPollExec(exec)
+    runtime
   )
 
   const ctx = {
@@ -81,11 +81,13 @@ const setup = (exec: Exec) => {
     throw new Error('background-poll did not register a tool')
   }
 
-  return { ctx, handlers, messages, notifications, sent: messageSent.promise, statuses, tool }
+  const activate = () =>
+    runtime.runPromise(feature.implementation.activate?.({ reason: 'startup', type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void)
+  const deactivate = () => runtime.runPromise(feature.implementation.deactivate?.(asExtensionContext(ctx), 'shutdown') ?? Effect.void)
+  return { activate, ctx, deactivate, handlers, messages, notifications, sent: messageSent.promise, statuses, tool }
 }
 
-const startSession = (fixture: ReturnType<typeof setup>): Promise<void> =>
-  promiseFromEffect(Effect.promise(() => Promise.resolve(fixture.handlers.get('session_start')?.({}, fixture.ctx))).pipe(Effect.asVoid))
+const startSession = (fixture: ReturnType<typeof setup>): Promise<void> => fixture.activate()
 
 const rejectionMessage = (promise: Promise<unknown>): Promise<string> =>
   promiseFromEffect(
@@ -216,7 +218,7 @@ describe('background poll', () => {
       yield* Effect.promise(() =>
         fixture.tool.execute('call-2', { command: 'check-status', interval_seconds: 60, timeout_seconds: 120 }, undefined, undefined, fixture.ctx)
       )
-      yield* Effect.promise(() => Promise.resolve(fixture.handlers.get('session_shutdown')?.({}, fixture.ctx)))
+      yield* Effect.promise(fixture.deactivate)
 
       expect(fixture.messages).toHaveLength(0)
       expect(fixture.statuses.at(-1)).toBeUndefined()

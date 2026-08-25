@@ -10,7 +10,7 @@ import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect, FileSystem, Path } from 'effect'
 
-import { register as safetyGuard } from '@/features/safety_guard/index.js'
+import { feature } from '@/features/safety_guard/index.js'
 
 const pathService = runtime.runSync(Path.Path)
 const { join } = pathService
@@ -47,7 +47,7 @@ afterEach(() =>
 
 const setup = (): Tool => {
   const { pi, state } = createFakePi()
-  safetyGuard(pi, runtime)
+  feature.implementation.register(pi, runtime)
   return asTool<Tool>(state.tools.get('safe_rm'))
 }
 

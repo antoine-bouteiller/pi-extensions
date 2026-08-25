@@ -540,41 +540,37 @@ ${getAgentProfilesDescription()}`
     },
   }
 
-  const onSessionStart = (_event: unknown, ctx: PiExtensionContext) =>
-    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
-    runtime.runPromise(
-      Effect.gen(function* () {
-        unsubscribeTerminal()
-        activeContext = ctx
-        activeAgents.clear()
-        yield* manager.ready()
-        if (activeContext !== ctx) {
-          return
+  const activate = (_event: unknown, ctx: PiExtensionContext) =>
+    Effect.gen(function* () {
+      unsubscribeTerminal()
+      activeContext = ctx
+      activeAgents.clear()
+      yield* manager.ready()
+      if (activeContext !== ctx) {
+        return
+      }
+      for (const entry of manager.listAgents(undefined, parentSessionId(ctx))) {
+        if (entry.agent_status === 'starting' || entry.agent_status === 'running') {
+          activeAgents.set(entry.agent_name, { color: entry.color, profile: entry.profile })
         }
-        for (const entry of manager.listAgents(undefined, parentSessionId(ctx))) {
-          if (entry.agent_status === 'starting' || entry.agent_status === 'running') {
-            activeAgents.set(entry.agent_name, { color: entry.color, profile: entry.profile })
-          }
-        }
-        publishAgentActivity()
-        registerEscapeInterrupt(ctx)
-      })
-    )
+      }
+      publishAgentActivity()
+      registerEscapeInterrupt(ctx)
+    })
 
   const onBeforeAgentStart = (event: { readonly systemPrompt: string }) =>
     process.env.PI_SUBAGENT_OWNER_TOKEN === undefined ? { systemPrompt: event.systemPrompt + DELEGATION_GUIDANCE } : undefined
 
-  const onSessionShutdown = () =>
-    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
-    runtime.runPromise(
-      Effect.gen(function* () {
-        activeContext = undefined
-        activeAgents.clear()
-        publishAgentActivity()
-        unsubscribeTerminal()
+  const deactivate = (reason: 'shutdown' | 'replaced') =>
+    Effect.gen(function* () {
+      activeContext = undefined
+      activeAgents.clear()
+      publishAgentActivity()
+      unsubscribeTerminal()
+      if (reason === 'shutdown') {
         yield* manager.shutdown()
-      })
-    )
+      }
+    })
 
   const waitAgentParameters = Type.Object({
     targets: Type.Optional(
@@ -1130,13 +1126,13 @@ ${getAgentProfilesDescription()}`
   }
 
   return {
+    activate,
     browseAgentsCommand,
     completionMessageType,
+    deactivate,
     interruptAgentTool,
     listAgentsTool,
     onBeforeAgentStart,
-    onSessionShutdown,
-    onSessionStart,
     readAgentResponseTool,
     renderCompletionMessage,
     sendMessageTool,

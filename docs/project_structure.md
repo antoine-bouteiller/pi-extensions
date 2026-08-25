@@ -17,7 +17,8 @@ src/
 │   ├── features.ts                  # explicit ordered FeaturePlugin registry
 │   └── runtime.ts                   # process-wide shared AppRuntime composition
 ├── features/
-│   ├── ask_user/{index,tool,prompt}.ts
+│   ├── ask_user/{index,prompt,tool}.ts
+│   ├── auto_theme/{index,theme}.ts
 │   ├── background_poll/{index,poll}.ts
 │   ├── caffeinate/{index,keep_awake}.ts
 │   ├── claude_code/{index,discovery}.ts
@@ -41,7 +42,7 @@ tests/
 ├── bun_effect.spec.ts
 ├── project_structure.spec.ts
 ├── registration.spec.ts
-├── config/runtime.spec.ts
+├── config/{feature_coordinator,runtime}.spec.ts
 ├── features/<feature>/...*.spec.ts   # mirrors src/features
 ├── shared/effect/{app_services,bun_host_file_system,runtime}.spec.ts
 ├── shared/state/{agent_activity,status_bar}.spec.ts
@@ -76,7 +77,8 @@ src/index.ts
   `gateway.ts`, ...).
 - Pi-to-Effect crossings use the supported bridges in `src/shared/effect/runtime.ts`:
   `makeToolExecutor`, `makeCommandHandler`, and `makeEventHandler`. Existing inline
-  `runtime.runPromise` sites are tracked temporary divergences under spec §8.8.
+  `runtime.runPromise` sites are tracked temporary divergences under the boundary spec's
+  conformance table.
 - Feature-specific values and resources remain feature-owned. The MCP feature creates its gateway
   and provides it to its callback effects; `src/config/runtime.ts` does not create an MCP gateway.
 - No feature module has a default export, and no feature imports a sibling feature.

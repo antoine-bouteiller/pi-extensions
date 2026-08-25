@@ -2,6 +2,7 @@ import { type ExtensionAPI, type ExtensionContext, SettingsManager } from '@eare
 import { Effect, Exit, Option, Scope } from 'effect'
 
 import { type AppRuntime } from '#shared/effect/app_services'
+import { type FeaturePlugin } from '#shared/effect/feature'
 
 import { detectSystemTheme, type SystemTheme } from './theme.js'
 
@@ -18,6 +19,8 @@ const productionDependencies = (pi: ExtensionAPI): AutoThemeDependencies => ({
   sleep: Effect.sleep('5 seconds'),
   themeSetting: SettingsManager.create(process.cwd()).getThemeSetting(),
 })
+
+type EagerFeaturePlugin = Extract<FeaturePlugin, { readonly bootstrap: 'eager' }>
 
 const themeLoop = (ctx: ExtensionContext, dependencies: AutoThemeDependencies): Effect.Effect<never> => {
   const themes = dependencies.themeSetting?.split('/').map((theme) => theme.trim())
@@ -43,42 +46,43 @@ const themeLoop = (ctx: ExtensionContext, dependencies: AutoThemeDependencies): 
   return check.pipe(Effect.andThen(dependencies.sleep), Effect.forever)
 }
 
-export const register = (pi: ExtensionAPI, runtime: AppRuntime, dependencies: AutoThemeDependencies = productionDependencies(pi)): void => {
-  if (dependencies.isSubagent) {
-    return
-  }
-
+export const makeFeature = (dependencies?: AutoThemeDependencies) => {
   let sessionScope: Scope.Closeable | undefined
-
-  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
-  pi.on('session_start', (_event, ctx) =>
-    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
-    runtime.runPromise(
-      ctx.mode === 'tui'
-        ? Effect.gen(function* () {
-            const next = yield* Scope.make()
-            const previous = sessionScope
-            sessionScope = next
-            if (previous !== undefined) {
-              yield* Scope.close(previous, Exit.void)
-            }
-            yield* Effect.forkIn(themeLoop(ctx, dependencies), next)
-          })
-        : Effect.void
-    )
-  )
-
-  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
-  pi.on('session_shutdown', () =>
-    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
-    runtime.runPromise(
-      Effect.gen(function* () {
-        const current = sessionScope
-        sessionScope = undefined
-        if (current !== undefined) {
-          yield* Scope.close(current, Exit.void)
+  return {
+    bootstrap: 'eager',
+    id: 'auto-theme',
+    implementation: {
+      activate: (_event, ctx) => {
+        const resolved = dependencies
+        if (resolved === undefined || resolved.isSubagent || ctx.mode !== 'tui') {
+          return Effect.void
         }
-      })
-    )
-  )
+        return Effect.gen(function* () {
+          const next = yield* Scope.make()
+          const previous = sessionScope
+          sessionScope = next
+          if (previous !== undefined) {
+            yield* Scope.close(previous, Exit.void)
+          }
+          yield* Effect.forkIn(themeLoop(ctx, resolved), next)
+        })
+      },
+      deactivate: (_ctx, _reason) =>
+        Effect.gen(function* () {
+          const current = sessionScope
+          sessionScope = undefined
+          if (current !== undefined) {
+            yield* Scope.close(current, Exit.void)
+          }
+        }),
+      register: (pi: ExtensionAPI, _runtime: AppRuntime): void => {
+        if (dependencies === undefined) {
+          dependencies = productionDependencies(pi)
+        }
+      },
+    },
+    status: { icon: '🎨', name: 'auto-theme' },
+  } satisfies EagerFeaturePlugin
 }
+
+export const feature = makeFeature()

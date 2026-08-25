@@ -5,7 +5,7 @@ import { type Theme } from '@earendil-works/pi-coding-agent'
 import { visibleWidth } from '@earendil-works/pi-tui'
 import { makeAbortController } from '@tests/utils/abort_controller.js'
 import { promiseFromEffect, tryPromiseEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asError, asExtensionApi, asNarrowed, asResult, asTheme, asTui } from '@tests/utils/casts.js'
+import { asError, asExtensionApi, asExtensionContext, asNarrowed, asResult, asTheme, asTui } from '@tests/utils/casts.js'
 import { withProcessEnv } from '@tests/utils/process_env.js'
 import { Cause, Data, DateTime, Deferred, Effect, Fiber } from 'effect'
 
@@ -2074,18 +2074,21 @@ describe('extension completion delivery and status activity', () => {
       }
       const scope = join(getRunsDir(), parentScopeKey(parentSessionId))
       yield* removeFile(scope, { force: true, recursive: true })
-      const { register: subagentExtension } = yield* Effect.promise(() => import('@/features/sub_agents/index.js'))
-      subagentExtension(asExtensionApi(pi), runtime, { inactivityTimeoutMs: 5000, piCommand: { command: FAKE_RPC_CHILD } })
-      const emit = (name: string, event: unknown = {}): Promise<void> =>
-        promiseFromEffect(
-          Effect.forEach(handlers.get(name) ?? [], (handler) => Effect.promise(() => Promise.resolve(handler(event, ctx))), {
-            concurrency: 1,
-            discard: true,
-          })
-        )
-
+      const { makeFeature } = yield* Effect.promise(() => import('@/features/sub_agents/index.js'))
+      const feature = makeFeature({ inactivityTimeoutMs: 5000, piCommand: { command: FAKE_RPC_CHILD } })
+      feature.implementation.register(asExtensionApi(pi), runtime)
       try {
-        yield* Effect.promise(() => emit('session_start', { reason: 'startup' }))
+        yield* Effect.promise(() =>
+          runtime.runPromise(feature.implementation.activate?.({ reason: 'startup', type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void)
+        )
+        expect(terminalInputHandler).toBeDefined()
+        yield* Effect.promise(() => runtime.runPromise(feature.implementation.deactivate?.(asExtensionContext(ctx), 'replaced') ?? Effect.void))
+        expect(terminalInputHandler).toBeUndefined()
+        expect(runningAgents.list()).toEqual([])
+        yield* Effect.promise(() =>
+          runtime.runPromise(feature.implementation.activate?.({ reason: 'resume', type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void)
+        )
+        expect(terminalInputHandler).toBeDefined()
         expect(commands.has('agents')).toBe(true)
         expect(commands.has('subagent')).toBe(true)
         expect(commands.has('subagents')).toBe(true)
@@ -2099,6 +2102,10 @@ describe('extension completion delivery and status activity', () => {
         expect(spawnTool.description).toContain('Foreground is the default')
         expect(requireTool('wait_agent').description).toContain('background')
         expect(requireTool('wait_all_agents').description).toContain('background')
+        const listedAfterReplacement = asResult<FakeToolResult>(
+          yield* Effect.promise(() => requireTool('list_agents').execute('list-after-replacement', {}, undefined, undefined, ctx))
+        )
+        expect(listedAfterReplacement.details.agents).toEqual([])
 
         const beforeAgentStart = handlers.get('before_agent_start')?.[0]
         if (beforeAgentStart === undefined) {
@@ -2314,7 +2321,7 @@ describe('extension completion delivery and status activity', () => {
         expect(terminalInputHandler?.('\x1b')).toEqual({ consume: true })
         yield* Effect.promise(() => waitUntil(() => runningAgents.list().length === 0))
       } finally {
-        yield* Effect.promise(() => emit('session_shutdown', { reason: 'quit' }))
+        yield* Effect.promise(() => runtime.runPromise(feature.implementation.deactivate?.(asExtensionContext(ctx), 'shutdown') ?? Effect.void))
         yield* removeFile(scope, { force: true, recursive: true })
       }
     })

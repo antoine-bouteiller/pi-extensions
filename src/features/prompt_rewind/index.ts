@@ -1,35 +1,36 @@
-/**
- * Prompt_rewind - Escape between submitting a text-only prompt and the first assistant
- * output rewinds the just-submitted message and restores its raw, pre-expansion text
- * to the editor instead of leaving an orphaned user turn on the active branch.
- *
- * Image prompts are left to Pi's built-in Escape handling: there is no public API to
- * restore attachments into the editor, so rewinding them would silently drop images.
- */
-
+/** Prompt_rewind restores the raw text of a just-cancelled text-only prompt. */
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { Effect } from 'effect'
 
 import { type AppRuntime } from '#shared/effect/app_services'
+import { type FeaturePlugin } from '#shared/effect/feature'
 
 import { makeRewindController, REWIND_COMMAND } from './rewind.js'
 
-export const register = (pi: ExtensionAPI, runtime: AppRuntime): void => {
+type EagerFeaturePlugin = Extract<FeaturePlugin, { readonly bootstrap: 'eager' }>
+
+export const feature = (() => {
   const controller = makeRewindController()
-
-  pi.on('input', controller.captureInput)
-  pi.on('before_agent_start', controller.capturePrompt)
-  pi.on('agent_start', controller.arm)
-  pi.on('message_update', controller.disarm)
-  pi.on('tool_execution_start', controller.disarm)
-  pi.on('agent_end', controller.disarm)
-  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
-  pi.on('session_start', controller.start)
-  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
-  pi.on('session_shutdown', controller.shutdown)
-
-  pi.registerCommand(REWIND_COMMAND, {
-    description: 'Internal: rewinds the just-cancelled prompt from the active branch and restores its raw text to the editor.',
-    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-5] §8.8; remove when migrated
-    handler: (_args, ctx) => runtime.runPromise(controller.rewindCancelledPrompt(ctx)),
-  })
-}
+  return {
+    bootstrap: 'eager',
+    id: 'prompt-rewind',
+    implementation: {
+      activate: (event, ctx) => Effect.sync(() => controller.start(event, ctx)),
+      deactivate: (_ctx, _reason) => Effect.sync(controller.shutdown),
+      register: (pi: ExtensionAPI, runtime: AppRuntime): void => {
+        pi.on('input', controller.captureInput)
+        pi.on('before_agent_start', controller.capturePrompt)
+        pi.on('agent_start', controller.arm)
+        pi.on('message_update', controller.disarm)
+        pi.on('tool_execution_start', controller.disarm)
+        pi.on('agent_end', controller.disarm)
+        pi.registerCommand(REWIND_COMMAND, {
+          description: 'Internal: rewinds the just-cancelled prompt from the active branch and restores its raw text to the editor.',
+          // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-5] §8.8; remove when migrated
+          handler: (_args, ctx) => runtime.runPromise(controller.rewindCancelledPrompt(ctx)),
+        })
+      },
+    },
+    status: { icon: '↩️', name: 'prompt-rewind' },
+  } satisfies EagerFeaturePlugin
+})()

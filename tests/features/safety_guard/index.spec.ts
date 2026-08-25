@@ -6,9 +6,7 @@ import { asExtensionApi, asResult } from '@tests/utils/casts.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect, FileSystem, Path } from 'effect'
 
-import { SAFETY_STATUS_KEY } from '@/features/safety_guard/constants.js'
-import { register as safetyGuard } from '@/features/safety_guard/index.js'
-import { publishStatus, statusBar } from '@/shared/state/status_bar.js'
+import { feature } from '@/features/safety_guard/index.js'
 import { isTrue } from '@/shared/utils/predicates.js'
 
 const pathService = runtime.runSync(Path.Path)
@@ -70,12 +68,9 @@ interface RoutedResult {
 
 type Handler = (event: FakeToolCallEvent, ctx: FakeContext) => Promise<GuardResult | undefined>
 type ResultHandler = (event: FakeToolResultEvent, ctx: FakeContext) => Promise<RoutedResult | undefined>
-type SessionStartHandler = (event: Record<string, never>, ctx: FakeContext) => Promise<void>
-
 const setup = (activeTools: string[] = ['safe_rm']) => {
   const toolCallHandlers: Handler[] = []
   const resultHandlers: ResultHandler[] = []
-  let sessionStart: SessionStartHandler | undefined
   const emitted: [string, unknown][] = []
   const pi = asExtensionApi({
     events: { emit: (event: string, data: unknown) => emitted.push([event, data]) },
@@ -85,13 +80,14 @@ const setup = (activeTools: string[] = ['safe_rm']) => {
         toolCallHandlers.push(asResult<Handler>(callback))
       } else if (event === 'tool_result') {
         resultHandlers.push(asResult<ResultHandler>(callback))
-      } else if (event === 'session_start') {
-        sessionStart = asResult<SessionStartHandler>(callback)
+      } else {
+        void event
+        void callback
       }
     },
     registerTool: () => undefined,
   })
-  safetyGuard(pi, runtime)
+  feature.implementation.register(pi, runtime)
 
   if (toolCallHandlers.length !== 2) {
     throw new Error('tool_call handlers were not registered')
@@ -99,9 +95,6 @@ const setup = (activeTools: string[] = ['safe_rm']) => {
   const [resultHandler] = resultHandlers
   if (resultHandler === undefined) {
     throw new Error('tool_result handler was not registered')
-  }
-  if (sessionStart === undefined) {
-    throw new Error('session_start handler was not registered')
   }
   const handler: Handler = (event, ctx) =>
     promiseFromEffect(
@@ -115,7 +108,7 @@ const setup = (activeTools: string[] = ['safe_rm']) => {
         return undefined
       })
     )
-  return { emitted, handler, resultHandler, sessionStart }
+  return { emitted, handler, resultHandler }
 }
 
 const event = (command: string, toolCallId = 'call') => ({ input: { command }, toolCallId, toolName: 'bash' })
@@ -137,6 +130,11 @@ const workspace = Effect.gen(function* () {
 })
 
 describe('safety guard', () => {
+  it('exposes its normative descriptor identity and status metadata', () => {
+    expect(feature.id).toBe('safety-guard')
+    expect(feature.status).toEqual({ icon: '🛡️', name: 'cmd-guard' })
+  })
+
   it.effect('routes simple literal rm commands through safe_rm', () =>
     Effect.gen(function* () {
       const cwd = yield* workspace
@@ -512,24 +510,6 @@ ce origin main`,
         ['herdr:blocked', { active: true, label: 'Elevated privileges (sudo)' }],
         ['herdr:blocked', { active: false }],
       ])
-    })
-  )
-
-  it.effect('publishes a status-bar entry on session_start', () =>
-    Effect.gen(function* () {
-      const { sessionStart } = setup()
-      try {
-        yield* Effect.promise(() => sessionStart({}, { cwd: '/work/project', hasUI: false }))
-        expect(statusBar.list().find((entry) => entry.key === SAFETY_STATUS_KEY)).toEqual({
-          icon: '🛡️',
-          key: SAFETY_STATUS_KEY,
-          priority: 10,
-          text: 'cmd-guard',
-          tone: 'success',
-        })
-      } finally {
-        publishStatus(SAFETY_STATUS_KEY, undefined)
-      }
     })
   )
 })

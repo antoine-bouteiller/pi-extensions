@@ -3,12 +3,12 @@ import { tmpdir } from 'node:os'
 
 import { type ToolResultEvent } from '@earendil-works/pi-coding-agent'
 import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asResult } from '@tests/utils/casts.js'
+import { asExtensionContext, asResult } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect, FileSystem, Path } from 'effect'
 
-import { register as registerRules } from '@/features/rules/index.js'
+import { makeFeature } from '@/features/rules/index.js'
 import { extractToolPaths, parseRuleFrontmatter } from '@/features/rules/rules.js'
 
 const pathService = runtime.runSync(Path.Path)
@@ -53,17 +53,22 @@ const createFixture = Effect.gen(function* () {
   yield* Effect.all([mkdir(homeDirectory, { recursive: true }), mkdir(projectDirectory, { recursive: true })], { concurrency: 'unbounded' })
 
   const fakePi = createFakePi()
-  registerRules(fakePi.pi, runtime, { homeDirectory })
+  const feature = makeFeature({ homeDirectory })
+  feature.implementation.register(fakePi.pi, runtime)
   const context = (trusted: boolean) => ({
     cwd: projectDirectory,
     isProjectTrusted: () => trusted,
   })
+  const activate = (trusted = true) =>
+    runtime.runPromise(
+      feature.implementation.activate?.({ reason: 'startup', type: 'session_start' }, asExtensionContext(context(trusted))) ?? Effect.void
+    )
   const invoke = <Result>(name: string, event: unknown, trusted = true): Promise<Result | undefined> =>
     promiseFromEffect(
       Effect.promise(() => fakePi.emit(name, event, context(trusted))).pipe(Effect.map((results) => asResult<Result | undefined>(results[0])))
     )
 
-  return { fakePi, homeDirectory, invoke, projectDirectory }
+  return { activate, fakePi, homeDirectory, invoke, projectDirectory }
 })
 
 const readEvent = (path: string): ToolResultEvent => ({
@@ -208,7 +213,7 @@ describe('path-scoped injection', () => {
       expect(matched?.content.at(-1)?.text).toContain('matched for src/lib/main.ts')
 
       expect(yield* Effect.promise(() => fixture.invoke<ToolResult>('tool_result', readEvent('src/lib/main.ts')))).toBeUndefined()
-      yield* Effect.promise(() => fixture.invoke('session_tree', {}))
+      yield* Effect.promise(() => fixture.activate())
       const afterTreeNavigation = yield* Effect.promise(() => fixture.invoke<ToolResult>('tool_result', readEvent('src/lib/main.ts')))
       expect(afterTreeNavigation?.content.at(-1)?.text).toContain('Use strict TypeScript.')
       expect(yield* Effect.promise(() => fixture.invoke<ToolResult>('tool_result', readEvent('src/generated/types.ts')))).toBeUndefined()

@@ -101,6 +101,18 @@ const isRuntimeModule = (filename: string): boolean => filename.endsWith('/src/c
 const isBridgeModule = (filename: string): boolean =>
   filename.endsWith('/src/shared/effect/runtime.ts') || filename === 'src/shared/effect/runtime.ts'
 
+const isPiReceiver = (receiver: ESTree.Expression): boolean => {
+  const unwrapped = unwrapExpression(receiver)
+  if (unwrapped.type === 'Identifier') {
+    return unwrapped.name === 'pi'
+  }
+  if (unwrapped.type !== 'MemberExpression' || memberPropertyName(unwrapped) !== 'pi') {
+    return false
+  }
+  const object = unwrapExpression(unwrapped.object)
+  return object.type === 'ThisExpression' || (object.type === 'Identifier' && object.name === 'input')
+}
+
 const piReport = (node: ESTree.CallExpression, method: string, filename: string): 'lifecycleRegistration' | 'piRegistration' | undefined => {
   if (method.startsWith('register')) {
     return isFeatureIndex(filename) ? undefined : 'piRegistration'
@@ -167,10 +179,9 @@ export const noEffectPiBoundaryRule = defineRule({
           return
         }
         const unwrappedReceiver = unwrapExpression(receiver)
-        const messageId =
-          unwrappedReceiver.type === 'Identifier' && unwrappedReceiver.name === 'pi'
-            ? piReport(node, method, filename)
-            : runtimeReport(context.sourceCode, unwrappedReceiver, method, filename)
+        const messageId = isPiReceiver(unwrappedReceiver)
+          ? piReport(node, method, filename)
+          : runtimeReport(context.sourceCode, unwrappedReceiver, method, filename)
         if (messageId !== undefined) {
           context.report({ messageId, node })
         }

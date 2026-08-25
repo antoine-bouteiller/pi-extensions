@@ -11,7 +11,7 @@ import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect, FileSystem, Path } from 'effect'
 
-import { register as hashline } from '@/features/hashline/index.js'
+import { feature } from '@/features/hashline/index.js'
 import { type JsonObject } from '@/shared/utils/json.js'
 
 const pathService = runtime.runSync(Path.Path)
@@ -53,7 +53,7 @@ interface HashlineTools {
 
 const setup = (): HashlineTools => {
   const { pi, state } = createFakePi()
-  hashline(pi, runtime)
+  feature.implementation.register(pi, runtime)
   return {
     read: asTool<Tool>(state.tools.get('read')),
     write: asTool<Tool>(state.tools.get('write')),
@@ -74,6 +74,18 @@ const header = (tool: Tool, cwd: string, path: string): Promise<string> =>
   )
 
 const put = (headerLine: string, line: number, replacement: string): string => `${headerLine}\nPUT ${line}.=${line}:\n+${replacement}`
+
+describe('hashline feature', () => {
+  it.effect('exposes an eager descriptor and registers synchronously', () =>
+    Effect.sync(() => {
+      const fixture = createFakePi()
+
+      expect(feature).toMatchObject({ bootstrap: 'eager', id: 'hashline', status: { icon: '#️⃣', name: 'hashline' } })
+      feature.implementation.register(fixture.pi, runtime)
+      expect([...fixture.state.tools.keys()]).toEqual(['read', 'write'])
+    })
+  )
+})
 
 describe('hashline extension', () => {
   it.effect('replaces read and write with anchored tools', () =>
@@ -98,7 +110,7 @@ describe('hashline extension', () => {
   it.effect('keeps image reads and does not install a context-history rewriter', () =>
     Effect.gen(function* () {
       const { pi, state } = createFakePi()
-      hashline(pi, runtime)
+      feature.implementation.register(pi, runtime)
       expect([...state.tools.keys()]).toEqual(['read', 'write'])
       expect(state.handlers.has('context')).toBe(false)
 

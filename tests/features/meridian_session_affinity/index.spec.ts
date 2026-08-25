@@ -2,9 +2,11 @@ import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { withProcessEnv } from '@tests/utils/process_env.js'
 import { runtime } from '@tests/utils/runtime.js'
-import { Effect } from 'effect'
+import { Cause, Effect, Exit, Fiber } from 'effect'
+import { TestClock } from 'effect/testing'
+import { HttpClient, HttpClientResponse } from 'effect/unstable/http'
 
-import { register as registerMeridianSessionAffinity } from '@/features/meridian_session_affinity/index.js'
+import { implementation, makeFeature } from '@/features/meridian_session_affinity/index.js'
 
 interface ProviderHeaderEvent {
   headers: Record<string, string>
@@ -12,7 +14,7 @@ interface ProviderHeaderEvent {
 
 const createHarness = () => {
   const fixture = createFakePi()
-  registerMeridianSessionAffinity(fixture.pi, runtime)
+  implementation.register(fixture.pi, runtime)
   return fixture
 }
 
@@ -23,13 +25,107 @@ const context = (sessionId: string, baseUrl = 'https://api.anthropic.com', heade
   },
 })
 
+const healthClient = (status: number, observe: (request: { method: string; url: string }) => void = () => undefined) =>
+  HttpClient.make((request) => {
+    observe({ method: request.method, url: request.url })
+    return Effect.succeed(HttpClientResponse.fromWeb(request, new Response('health', { status })))
+  })
+
+const preparedWith = (baseUrl: string, client: HttpClient.HttpClient) =>
+  makeFeature({ baseUrl, httpClient: client }).prepare.pipe(Effect.provideService(HttpClient.HttpClient, client))
+
 describe('meridian session affinity', () => {
-  it.effect('registers only request-scoped lifecycle behavior', () =>
+  it.effect('preserves request-scoped lifecycle behavior after background preparation', () =>
     Effect.sync(() => {
       const fixture = createHarness()
+      const feature = makeFeature()
 
+      expect(feature).toMatchObject({
+        bootstrap: 'background',
+        id: 'meridian-session-affinity',
+        status: { icon: '🧭', name: 'meridian' },
+      })
       expect([...fixture.state.handlers.keys()]).toEqual(['before_agent_start', 'before_provider_headers'])
       expect(fixture.state.commands.size).toBe(0)
+    })
+  )
+
+  it.effect('normalizes health checks to an exact credential-free GET endpoint', () =>
+    Effect.gen(function* () {
+      const requests: { method: string; url: string }[] = []
+      const client = healthClient(204, (request) => requests.push(request))
+      const prepared = yield* preparedWith('https://user:secret@meridian.example.test/proxy/?query=private#fragment', client)
+
+      expect(prepared).toBe(implementation)
+      expect(requests).toEqual([{ method: 'GET', url: 'https://meridian.example.test/health' }])
+    })
+  )
+
+  it.effect('rejects non-2xx health responses with a redacted preflight failure', () =>
+    Effect.gen(function* () {
+      const client = healthClient(503)
+      const failure = yield* Effect.flip(preparedWith('https://meridian.example.test', client))
+
+      expect(failure).toEqual({ _tag: 'MeridianHealthUnavailable' })
+    })
+  )
+
+  it.effect('rejects redirects rather than following them', () =>
+    Effect.gen(function* () {
+      const failure = yield* Effect.flip(preparedWith('https://meridian.example.test', healthClient(302)))
+
+      expect(failure).toEqual({ _tag: 'MeridianHealthUnavailable' })
+    })
+  )
+
+  it.effect('rejects malformed and non-HTTP health URLs before dispatching a request', () =>
+    Effect.gen(function* () {
+      let requests = 0
+      const client = healthClient(204, () => {
+        requests += 1
+      })
+
+      const malformed = yield* Effect.flip(preparedWith('not a URL', client))
+      const protocol = yield* Effect.flip(preparedWith('file:///private/health', client))
+
+      expect(malformed).toEqual({ _tag: 'MeridianHealthInvalidUrl' })
+      expect(protocol).toEqual({ _tag: 'MeridianHealthInvalidUrl' })
+      expect(requests).toBe(0)
+    })
+  )
+
+  it.effect('redacts defects and permits the same descriptor to retry', () =>
+    Effect.gen(function* () {
+      const defect = HttpClient.make(() => Effect.die('private defect detail'))
+      const retryClient = healthClient(204)
+      const descriptor = makeFeature({ baseUrl: 'https://meridian.example.test', httpClient: retryClient })
+
+      const defectFailure = yield* Effect.flip(preparedWith('https://meridian.example.test', defect))
+      const first = yield* descriptor.prepare.pipe(Effect.provideService(HttpClient.HttpClient, retryClient))
+      const second = yield* descriptor.prepare.pipe(Effect.provideService(HttpClient.HttpClient, retryClient))
+
+      expect(defectFailure).toEqual({ _tag: 'MeridianHealthDefect' })
+      expect(first).toBe(implementation)
+      expect(second).toBe(implementation)
+    })
+  )
+
+  it.effect('uses the virtual TestClock timeout and preserves direct interruption', () =>
+    Effect.gen(function* () {
+      const blocked = HttpClient.make(() => Effect.never)
+      const timeout = yield* Effect.forkChild(Effect.flip(preparedWith('https://meridian.example.test', blocked)))
+      yield* TestClock.adjust('3 seconds')
+      const timeoutFailure = yield* Fiber.join(timeout)
+
+      const interrupted = yield* Effect.forkChild(preparedWith('https://meridian.example.test', blocked))
+      yield* Fiber.interrupt(interrupted)
+      const interruptedExit = yield* Fiber.await(interrupted)
+
+      expect(timeoutFailure).toEqual({ _tag: 'MeridianHealthTimeout' })
+      expect(Exit.isFailure(interruptedExit)).toBeTrue()
+      if (Exit.isFailure(interruptedExit)) {
+        expect(Cause.hasInterruptsOnly(interruptedExit.cause)).toBeTrue()
+      }
     })
   )
 

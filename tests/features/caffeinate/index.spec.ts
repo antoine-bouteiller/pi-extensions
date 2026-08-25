@@ -1,9 +1,10 @@
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { asExtensionContext } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect } from 'effect'
 
-import { register as caffeinate } from '@/features/caffeinate/index.js'
+import { makeFeature } from '@/features/caffeinate/index.js'
 
 interface FakeChild {
   readonly exit: PromiseWithResolvers<void>
@@ -18,7 +19,7 @@ const createHarness = (platform: NodeJS.Platform = 'darwin', exitOnKill = true, 
   const spawnGate = deferSpawn ? Promise.withResolvers<void>() : undefined
   let remainingFailures = failSpawns
 
-  caffeinate(fixture.pi, runtime, {
+  const feature = makeFeature({
     isSubagent,
     pid: 1234,
     platform,
@@ -46,10 +47,24 @@ const createHarness = (platform: NodeJS.Platform = 'darwin', exitOnKill = true, 
       }))
     },
   })
+  feature.implementation.register(fixture.pi, runtime)
 
   const settle = (isIdle = true) => fixture.emit('agent_settled', {}, { isIdle: () => isIdle })
-  return { children, fixture, settle, spawnGate, spawns }
+  return { children, feature, fixture, settle, spawnGate, spawns }
 }
+
+describe('caffeinate feature', () => {
+  it.effect('exposes an eager descriptor and registers independently', () =>
+    Effect.sync(() => {
+      const harness = createHarness()
+
+      expect(harness.feature).toMatchObject({ bootstrap: 'eager', id: 'caffeinate', status: { icon: '☕', name: 'caffeinate' } })
+      expect(harness.fixture.state.handlers.has('agent_start')).toBe(true)
+      expect(harness.fixture.state.handlers.has('agent_settled')).toBe(true)
+      expect(harness.fixture.state.handlers.has('session_shutdown')).toBe(false)
+    })
+  )
+})
 
 describe('caffeinate', () => {
   it.effect('runs caffeinate only while the agent is active', () =>
@@ -199,12 +214,13 @@ describe('caffeinate', () => {
     })
   )
 
-  it.effect('stops caffeinate on session shutdown as a fallback', () =>
+  it.effect('stops caffeinate through coordinator deactivation instead of a session_shutdown listener', () =>
     Effect.gen(function* () {
       const harness = createHarness()
 
       yield* Effect.promise(() => harness.fixture.emit('agent_start'))
-      yield* Effect.promise(() => harness.fixture.emit('session_shutdown'))
+      expect(harness.fixture.state.handlers.has('session_shutdown')).toBe(false)
+      yield* harness.feature.implementation.deactivate(asExtensionContext({}), 'shutdown')
 
       expect(harness.children[0]?.killCalls).toBe(1)
     })

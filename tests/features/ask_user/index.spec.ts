@@ -6,7 +6,7 @@ import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect } from 'effect'
 
-import { register as askUser } from '@/features/ask_user/index.js'
+import { feature } from '@/features/ask_user/index.js'
 import { ASK_USER_MALFORMED_CALL_MESSAGE } from '@/features/ask_user/prompt.js'
 
 interface AskUserResult {
@@ -66,7 +66,7 @@ const setup = (customError?: Error) => {
   }
 
   const fakePi = createFakePi()
-  askUser(fakePi.pi, runtime)
+  feature.implementation.register(fakePi.pi, runtime)
   const tool = asTool<AskUserTool>(fakePi.state.tools.get('ask_user'))
 
   return {
@@ -90,6 +90,18 @@ const type = (component: PromptComponent, text: string) => {
     component.handleInput?.(character)
   }
 }
+
+describe('ask_user feature', () => {
+  it.effect('exposes an eager descriptor and registers synchronously', () =>
+    Effect.sync(() => {
+      const fixture = createFakePi()
+
+      expect(feature).toMatchObject({ bootstrap: 'eager', id: 'ask-user', status: { icon: '❓', name: 'ask-user' } })
+      feature.implementation.register(fixture.pi, runtime)
+      expect(fixture.state.tools.has('ask_user')).toBe(true)
+    })
+  )
+})
 
 describe('ask_user tool behavior', () => {
   it.effect('returns the selected answer and option number', () =>

@@ -31,7 +31,7 @@ const isMeridianModel = (ctx: ExtensionContext): boolean => {
     return true
   }
 
-  const configuredBaseUrl = process.env.MERIDIAN_BASE_URL ?? DEFAULT_MERIDIAN_BASE_URL
+  const configuredBaseUrl = Bun.env.MERIDIAN_BASE_URL ?? DEFAULT_MERIDIAN_BASE_URL
   return normalizedUrl(ctx.model?.baseUrl) === normalizedUrl(configuredBaseUrl)
 }
 

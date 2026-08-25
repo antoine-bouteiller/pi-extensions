@@ -10,7 +10,7 @@ import { TestClock } from 'effect/testing'
 import { FetchHttpClient, type HttpClient } from 'effect/unstable/http'
 
 import { type WebfetchDetails, type WebfetchInput } from '@/features/webfetch/fetch.js'
-import { register } from '@/features/webfetch/index.js'
+import { feature } from '@/features/webfetch/index.js'
 import { isTrue } from '@/shared/utils/predicates.js'
 
 /** The shape `HttpClientRequest.get`'s injected `Fetch` accepts. */
@@ -32,7 +32,7 @@ const pendingFetch = (signal: AbortSignal | null | undefined, onStart?: () => vo
 const createHarness = (fetchImpl: WebfetchFetch, clock?: Clock.Clock) => {
   const fixture = createFakePi()
   const stubs = clock === undefined ? stubHttpClient(fetchImpl) : Layer.mergeAll(stubHttpClient(fetchImpl), Layer.succeed(Clock.Clock)(clock))
-  register(fixture.pi, testRuntime(stubs))
+  feature.implementation.register(fixture.pi, testRuntime(stubs))
   const tool = fixture.state.tools.get('webfetch')
 
   const execute = (
@@ -85,6 +85,18 @@ const streamedResponse = (chunkBytes: number, chunkCount: number, init: Response
   })
   return new Response(stream, init)
 }
+
+describe('webfetch feature', () => {
+  it.effect('exposes an eager descriptor and registers synchronously', () =>
+    Effect.sync(() => {
+      const fixture = createFakePi()
+
+      expect(feature).toMatchObject({ bootstrap: 'eager', id: 'webfetch', status: { icon: '🌐', name: 'webfetch' } })
+      feature.implementation.register(fixture.pi, testRuntime(stubHttpClient(() => Promise.resolve(new Response('ok')))))
+      expect(fixture.state.tools.has('webfetch')).toBe(true)
+    })
+  )
+})
 
 describe('webfetch', () => {
   it.effect('registers the tool with static-web guidance', () =>

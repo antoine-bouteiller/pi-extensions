@@ -113,7 +113,7 @@ const collectOutput = (stream: Stream.Stream<Uint8Array, PlatformError>): Effect
     }
   ).pipe(Effect.map(({ chunks }) => Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString()))
 
-const runCommentChecker = (input: HookInput, executable = 'comment-checker'): Effect.Effect<CheckerResult> =>
+const runCommentChecker = (input: HookInput, executable: string): Effect.Effect<CheckerResult> =>
   Effect.scoped(
     Effect.gen(function* () {
       const command = ChildProcess.make(executable, ['check'], {
@@ -145,8 +145,6 @@ export const makeCommentCheckerRunner =
     // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; remove when migrated
     Effect.runPromise(runCommentChecker(input, executable))
 
-const productionRunner: CommandRunnerApi = { run: runCommentChecker }
-
 const checkerResult = (
   event: ToolResultEvent,
   ctx: ExtensionContext
@@ -174,9 +172,9 @@ const checkerResult = (
   })
 
 export const makeCheckerHandler = (
-  runner?: CheckerRunner
+  runner: CheckerRunner
 ): ((event: ToolResultEvent, ctx: ExtensionContext) => Effect.Effect<{ content: ToolResultEvent['content'] } | undefined, Cause.UnknownError>) => {
-  const commandRunner: CommandRunnerApi = runner === undefined ? productionRunner : { run: (input) => Effect.tryPromise(() => runner(input)) }
+  const commandRunner: CommandRunnerApi = { run: (input) => Effect.tryPromise(() => runner(input)) }
 
   return (event, ctx) => checkerResult(event, ctx).pipe(Effect.provideService(CommandRunner, commandRunner))
 }

@@ -148,4 +148,3 @@ export const ALL_PATTERNS = [...CRITICAL_PATTERNS, ...HIGH_PATTERNS] as const sa
 
 export const COMMAND_EXCERPT_CONTEXT_LINES = 2
 export const COMMAND_EXCERPT_MAX_LENGTH = 240
-export const SAFETY_STATUS_KEY = 'safety-cmds'

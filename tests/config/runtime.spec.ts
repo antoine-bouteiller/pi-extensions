@@ -2,20 +2,20 @@ import { fileURLToPath } from 'node:url'
 
 import { BunFileSystem, BunPath } from '@effect/platform-bun'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { asResult } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { withProcessEnv } from '@tests/utils/process_env.js'
 import { Effect, Layer, ManagedRuntime } from 'effect'
 import { FetchHttpClient } from 'effect/unstable/http'
 
 import { getOrCreateProcessRuntime } from '@/config/runtime.js'
-import { register as registerStatusPanel } from '@/features/status_panel/index.js'
+import { feature as statusPanel } from '@/features/status_panel/index.js'
 import { AgentActivity, type AgentActivityApi, type AppRuntime, StatusBarLive } from '@/shared/effect/app_services.js'
 import { parseJsonText } from '@/shared/utils/json.js'
 
 const sharedActivityScript = (paths: { aggregate: string; activity: string; runtime: string; statusPanel: string }): string => `
   const { Effect } = await import('effect');
-  const { default: piExtensions } = await import(${JSON.stringify(paths.aggregate)});
-  const { register: registerStatusPanel } = await import(${JSON.stringify(paths.statusPanel)});
+  const { feature: statusPanel } = await import(${JSON.stringify(paths.statusPanel)});
   const { AgentActivity } = await import(${JSON.stringify(paths.activity)});
   const { getOrCreateProcessRuntime } = await import(${JSON.stringify(paths.runtime)});
 
@@ -47,26 +47,44 @@ const sharedActivityScript = (paths: { aggregate: string; activity: string; runt
     return { ctx, render: () => renderSidebar(44).join('\\n') };
   };
 
-  const aggregate = createPi();
-  piExtensions(aggregate.pi);
-  const aggregateStarts = aggregate.handlers.get('session_start') || [];
-  if (aggregateStarts.length !== 8 || !aggregateStarts[6]) throw new Error('aggregate status-panel handler missing');
-  const aggregatePanel = panelContext();
-  await aggregateStarts[6]({}, aggregatePanel.ctx);
-
   const explicit = createPi();
-  registerStatusPanel(explicit.pi, getOrCreateProcessRuntime());
-  const explicitStart = explicit.handlers.get('session_start')?.[0];
-  if (!explicitStart) throw new Error('explicit feature registration status-panel handler missing');
+  statusPanel.implementation.register(explicit.pi, getOrCreateProcessRuntime());
   const explicitPanel = panelContext();
-  await explicitStart({}, explicitPanel.ctx);
+  await getOrCreateProcessRuntime().runPromise(statusPanel.implementation.activate({ reason: 'startup', type: 'session_start' }, explicitPanel.ctx));
 
   const runtime = getOrCreateProcessRuntime();
   await runtime.runPromise(AgentActivity.pipe(Effect.flatMap(activity => activity.publish([{ color: 'accent', name: 'shared-agent', profile: 'scout' }]))));
-  console.log(JSON.stringify({ aggregate: aggregatePanel.render(), explicit: explicitPanel.render() }));
+  console.log(JSON.stringify({ explicit: explicitPanel.render() }));
 `
 
 describe('process-wide runtime', () => {
+  it.effect('does not include MCP when an isolated child builds without the MCP entrypoint', () =>
+    Effect.gen(function* () {
+      const entrypoint = fileURLToPath(new URL('fixtures/without_mcp_entry.ts', import.meta.url))
+      const script = `
+        const result = await Bun.build({ entrypoints: ['${entrypoint}'], metafile: true, target: 'bun' });
+        if (!result.success) process.exit(1);
+        console.log(JSON.stringify(Object.keys(result.metafile.inputs)));
+      `
+      const child = Bun.spawn([process.execPath, '--eval', script], { stderr: 'pipe', stdout: 'pipe' })
+      const [stdout, stderr, exitCode] = yield* Effect.promise(() =>
+        Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+      )
+
+      expect(exitCode, stderr).toBe(0)
+      const inputs = asResult<readonly string[]>(parseJsonText(stdout.trim()))
+      const normalizedInputs = inputs.map((input) => input.replaceAll('\\', '/'))
+      expect(normalizedInputs).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('src/config/runtime.ts'),
+          expect.stringContaining('src/features/ask_user/index.ts'),
+          expect.stringContaining('src/features/status_panel/index.ts'),
+        ])
+      )
+      expect(normalizedInputs.some((input) => input.includes('src/features/mcp/'))).toBeFalse()
+    })
+  )
+
   it.effect('memoises to one instance across repeated lookups', () =>
     Effect.sync(() => {
       expect(getOrCreateProcessRuntime()).toBe(getOrCreateProcessRuntime())
@@ -89,7 +107,7 @@ describe('process-wide runtime', () => {
       )
       yield* withProcessEnv('PI_SUBAGENT_OWNER_TOKEN', undefined, () =>
         Effect.sync(() => {
-          registerStatusPanel(createFakePi().pi, runtime)
+          statusPanel.implementation.register(createFakePi().pi, runtime)
           expect(subscriptions).toBe(1)
         })
       ).pipe(Effect.ensuring(Effect.promise(() => runtime.dispose())))
@@ -113,7 +131,6 @@ describe('process-wide runtime', () => {
       expect(exitCode, stderr).toBe(0)
       const result = parseJsonText(stdout.trim())
       expect(result).toEqual({
-        aggregate: expect.stringContaining('shared-agent'),
         explicit: expect.stringContaining('shared-agent'),
       })
     })

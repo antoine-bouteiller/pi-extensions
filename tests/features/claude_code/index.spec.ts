@@ -2,13 +2,13 @@ import { afterEach } from 'bun:test'
 import { tmpdir } from 'node:os'
 
 import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asResult } from '@tests/utils/casts.js'
+import { asExtensionContext, asResult } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect, FileSystem, Path } from 'effect'
 
 import { parseCommandFrontmatter } from '@/features/claude_code/discovery.js'
-import { register as registerClaudeCode } from '@/features/claude_code/index.js'
+import { makeFeature } from '@/features/claude_code/index.js'
 
 const pathService = runtime.runSync(Path.Path)
 const { dirname, join } = pathService
@@ -56,7 +56,8 @@ const createFixture = Effect.gen(function* () {
   )
 
   const fakePi = createFakePi()
-  registerClaudeCode(fakePi.pi, runtime, { homeDirectory, temporaryDirectory })
+  const feature = makeFeature({ homeDirectory, temporaryDirectory })
+  feature.implementation.register(fakePi.pi, runtime)
 
   const context = (trusted: boolean) => ({
     cwd: projectDirectory,
@@ -65,7 +66,9 @@ const createFixture = Effect.gen(function* () {
   const invoke = <Result>(name: string, event: unknown, eventContext: unknown): Promise<Result> =>
     promiseFromEffect(Effect.promise(() => fakePi.emit(name, event, eventContext)).pipe(Effect.map((results) => asResult<Result>(results[0]))))
 
-  return { context, homeDirectory, invoke, projectDirectory, temporaryDirectory }
+  const deactivate = (ctx: ReturnType<typeof context>, reason: 'replaced' | 'shutdown' = 'shutdown') =>
+    runtime.runPromise(feature.implementation.deactivate?.(asExtensionContext(ctx), reason) ?? Effect.void)
+  return { context, deactivate, homeDirectory, invoke, projectDirectory, temporaryDirectory }
 })
 
 const generatedSkills = (skillDirectory: string) =>
@@ -192,7 +195,7 @@ describe('Claude Code compatibility', () => {
     })
   )
 
-  it.effect('cleans replaced generated skills and removes the active directory on shutdown', () =>
+  it.effect('retains generated skills on replacement and removes the active directory on shutdown', () =>
     Effect.gen(function* () {
       const fixture = yield* createFixture
       yield* writeFixture(join(fixture.homeDirectory, '.claude/commands/clean.md'), 'Clean me')
@@ -212,7 +215,10 @@ describe('Claude Code compatibility', () => {
       expect(yield* pathExists(firstDirectory)).toBeFalse()
       expect(yield* pathExists(secondDirectory)).toBeTrue()
 
-      yield* Effect.promise(() => fixture.invoke('session_shutdown', {}, context))
+      yield* Effect.promise(() => fixture.deactivate(context, 'replaced'))
+      expect(yield* pathExists(secondDirectory)).toBeTrue()
+
+      yield* Effect.promise(() => fixture.deactivate(context, 'shutdown'))
       expect(yield* pathExists(secondDirectory)).toBeFalse()
     })
   )
@@ -236,7 +242,7 @@ describe('Claude Code compatibility', () => {
       expect(yield* pathExists(firstDirectory)).toBeFalse()
       expect(yield* pathExists(secondDirectory)).toBeTrue()
 
-      yield* Effect.promise(() => fixture.invoke('session_shutdown', {}, context))
+      yield* Effect.promise(() => fixture.deactivate(context))
       expect(yield* pathExists(secondDirectory)).toBeFalse()
     })
   )

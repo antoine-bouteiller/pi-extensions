@@ -2,15 +2,14 @@ import { afterEach } from 'bun:test'
 
 import { type AgentToolResult } from '@earendil-works/pi-coding-agent'
 import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asCommand, asTool } from '@tests/utils/casts.js'
+import { asCommand, asExtensionContext, asTool } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { testRuntime } from '@tests/utils/runtime.js'
-import { Effect, Layer } from 'effect'
+import { Effect, Fiber } from 'effect'
 import { FetchHttpClient } from 'effect/unstable/http'
 
 import {
-  McpGateway,
   mcpPolicyFromEnvironment,
   readonlyMcpPolicy,
   unrestrictedMcpPolicy,
@@ -21,7 +20,7 @@ import {
   type McpSearchOptions,
   type McpToolDescription,
 } from '@/features/mcp/gateway.js'
-import { register } from '@/features/mcp/index.js'
+import { makeFeature } from '@/features/mcp/index.js'
 import { type McpServerMap } from '@/features/mcp/types.js'
 import { publishStatus } from '@/shared/state/status_bar.js'
 import { type JsonObject, parseJsonText } from '@/shared/utils/json.js'
@@ -127,7 +126,8 @@ const createHarness = (overrides: Partial<McpGatewayManager> = {}, gateway: (man
     ...overrides,
   }
 
-  const gatewayLayer = Layer.succeed(McpGateway)({
+  let gatewayFactoryCalls = 0
+  const gatewayValue: McpGatewayApi = {
     configPath: '/test-home/.config/mcp/mcp.json',
     createManager(config, { callbacks: managerCallbacks }) {
       expect(config).toBe(testConfig)
@@ -140,11 +140,18 @@ const createHarness = (overrides: Partial<McpGatewayManager> = {}, gateway: (man
     }),
     policy: unrestrictedMcpPolicy,
     ...gateway(manager),
-  })
+  }
   const fixture = createFakePi()
-  register(fixture.pi, testRuntime(Layer.mergeAll(FetchHttpClient.layer, gatewayLayer)))
+  const { implementation } = makeFeature(() => {
+    gatewayFactoryCalls += 1
+    return gatewayValue
+  })
+  const runtime = testRuntime(FetchHttpClient.layer)
+  implementation.register(fixture.pi, runtime)
 
-  const start = (): Promise<void> => promiseFromEffect(Effect.promise(() => fixture.emit('session_start', {}, context())).pipe(Effect.asVoid))
+  const start = (ctx = context()): Promise<void> =>
+    runtime.runPromise(implementation.activate?.({ reason: 'startup', type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void)
+  const stop = (ctx = context()): Promise<void> => runtime.runPromise(implementation.deactivate?.(asExtensionContext(ctx), 'shutdown') ?? Effect.void)
 
   const execute = (params: ExecuteInput, signal?: AbortSignal): Promise<AgentToolResult<unknown>> => {
     const tool = fixture.state.tools.get('mcp')
@@ -163,15 +170,19 @@ const createHarness = (overrides: Partial<McpGatewayManager> = {}, gateway: (man
   }
 
   return {
+    activate: (ctx = context()) => implementation.activate?.({ reason: 'startup', type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void,
     callResult,
     callbacks: () => callbacks,
     calls,
     execute,
     fixture,
+    gatewayFactoryCalls: () => gatewayFactoryCalls,
     invokeCommand,
     loadCount: () => loadCount,
     manager,
+    runtime,
     start,
+    stop,
   }
 }
 
@@ -269,9 +280,10 @@ describe('MCP gateway registration and lifecycle', () => {
 
       expect([...harness.fixture.state.tools.keys()]).toEqual(['mcp'])
       expect([...harness.fixture.state.commands.keys()]).toEqual(['mcp-auth'])
-      expect(harness.fixture.state.handlers.has('session_start')).toBeTrue()
-      expect(harness.fixture.state.handlers.has('session_shutdown')).toBeTrue()
+      expect(harness.fixture.state.handlers.has('session_start')).toBeFalse()
+      expect(harness.fixture.state.handlers.has('session_shutdown')).toBeFalse()
       expect(harness.loadCount()).toBe(0)
+      expect(harness.gatewayFactoryCalls()).toBe(1)
       expect(harness.calls).toEqual([])
     })
   )
@@ -280,7 +292,7 @@ describe('MCP gateway registration and lifecycle', () => {
     Effect.gen(function* () {
       const statuses: { key: string; value: JsonObject[string] }[] = []
       const harness = createHarness()
-      yield* Effect.promise(() => harness.fixture.emit('session_start', {}, context(statuses)))
+      yield* Effect.promise(() => harness.start(context(statuses)))
 
       expect(harness.loadCount()).toBe(1)
       expect(harness.callbacks()).toBeDefined()
@@ -310,7 +322,7 @@ describe('MCP gateway registration and lifecycle', () => {
     Effect.gen(function* () {
       const statuses: { key: string; value: JsonObject[string] }[] = []
       const harness = createHarness()
-      yield* Effect.promise(() => harness.fixture.emit('session_start', {}, context(statuses)))
+      yield* Effect.promise(() => harness.start(context(statuses)))
 
       harness.callbacks()?.onStatusChange([
         { name: 'broken', status: 'invalid-config' },
@@ -528,6 +540,33 @@ describe('MCP gateway registration and lifecycle', () => {
     })
   )
 
+  it.effect('closes a manager that resolves after interrupted activation', () =>
+    Effect.gen(function* () {
+      const creation = deferred<McpGatewayManager>()
+      const closed = deferred<void>()
+      let closeCount = 0
+      const harness = createHarness(
+        {
+          close: Effect.sync(() => {
+            closeCount += 1
+            closed.resolve()
+          }),
+        },
+        () => ({ createManager: () => promiseFromEffect(Effect.promise(() => creation.promise)) })
+      )
+      const fiber = harness.runtime.runFork(harness.activate())
+
+      yield* Effect.yieldNow
+      const interrupting = yield* Fiber.interrupt(fiber).pipe(Effect.forkChild)
+      yield* Effect.yieldNow
+      creation.resolve(harness.manager)
+      yield* Effect.promise(() => closed.promise)
+      yield* Fiber.await(interrupting)
+
+      expect(closeCount).toBe(1)
+    })
+  )
+
   it.effect('session_shutdown awaits in-flight initialization cleanup and clears UI', () =>
     Effect.gen(function* () {
       const creation = deferred<McpGatewayManager>()
@@ -542,12 +581,11 @@ describe('MCP gateway registration and lifecycle', () => {
         },
         () => ({ createManager: () => promiseFromEffect(Effect.promise(() => creation.promise)) })
       )
-      const { fixture } = harness
       const statuses: { key: string; value: JsonObject[string] }[] = []
 
-      const starting = fixture.emit('session_start', {}, context(statuses))
+      const starting = harness.start()
       yield* Effect.promise(() => Promise.resolve())
-      const shuttingDown = fixture.emit('session_shutdown', {}, context(statuses))
+      const shuttingDown = harness.stop(context(statuses))
       creation.resolve(harness.manager)
       yield* Effect.promise(() => closeStarted.promise)
 

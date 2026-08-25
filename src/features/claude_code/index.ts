@@ -1,14 +1,27 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { Effect } from 'effect'
 
 import { type AppRuntime } from '#shared/effect/app_services'
+import { type FeaturePlugin } from '#shared/effect/feature'
 import { makeEventHandler } from '#shared/effect/runtime'
 
 import { defaultEnvironment, makeDiscoveryHandlers, type ClaudeCodeEnvironment } from './discovery.js'
 
-export const register = (pi: ExtensionAPI, runtime: AppRuntime, environment: ClaudeCodeEnvironment = defaultEnvironment()): void => {
-  const handlers = makeDiscoveryHandlers(environment)
+type EagerFeaturePlugin = Extract<FeaturePlugin, { readonly bootstrap: 'eager' }>
 
-  pi.on('resources_discover', makeEventHandler(runtime)(handlers.discover))
-  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-2a] §8.8; remove when lifecycle ownership migrates to src/config/feature_coordinator.ts
-  pi.on('session_shutdown', makeEventHandler(runtime)(handlers.shutdown))
+export const makeFeature = (environment: ClaudeCodeEnvironment = defaultEnvironment()) => {
+  const handlers = makeDiscoveryHandlers(environment)
+  return {
+    bootstrap: 'eager',
+    id: 'claude-code',
+    implementation: {
+      deactivate: (ctx, reason) => (reason === 'shutdown' ? handlers.shutdown({ reason: 'quit', type: 'session_shutdown' }, ctx) : Effect.void),
+      register: (pi: ExtensionAPI, runtime: AppRuntime): void => {
+        pi.on('resources_discover', makeEventHandler(runtime)(handlers.discover))
+      },
+    },
+    status: { icon: '🤖', name: 'claude-code' },
+  } satisfies EagerFeaturePlugin
 }
+
+export const feature = makeFeature()

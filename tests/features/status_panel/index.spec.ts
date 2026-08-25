@@ -3,12 +3,13 @@ import { randomUUID } from 'node:crypto'
 import { tmpdir, userInfo } from 'node:os'
 
 import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
+import { asExtensionContext } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { withProcessEnv } from '@tests/utils/process_env.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect } from 'effect'
 
-import { register as statusPanel } from '@/features/status_panel/index.js'
+import { feature, makeFeature } from '@/features/status_panel/index.js'
 import { columns, formatTokens, progressBar } from '@/features/status_panel/render.js'
 import { emptyGitInfoState, emptyModelInfoState } from '@/features/status_panel/state.js'
 import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
@@ -40,7 +41,7 @@ describe('status panel registration', () => {
           },
         }
 
-        statusPanel(pi, runtime, dependencies)
+        makeFeature(dependencies).implementation.register(pi, runtime)
         yield* Effect.promise(() =>
           emit(
             'after_provider_response',
@@ -94,17 +95,15 @@ describe('status panel registration', () => {
       Effect.sync(() => {
         const { pi, state } = createFakePi()
 
-        statusPanel(pi, runtime)
+        feature.implementation.register(pi, runtime)
 
         expect([...state.handlers.keys()]).toEqual([
-          'session_start',
           'model_select',
           'thinking_level_select',
           'agent_start',
           'turn_end',
           'agent_settled',
           'after_provider_response',
-          'session_shutdown',
         ])
       })
     )
@@ -139,7 +138,7 @@ describe('status panel formatting', () => {
   it.effect('moves footer information into a bounded right sidebar', () =>
     inMainSession(() =>
       Effect.gen(function* () {
-        const { pi, emit } = createFakePi()
+        const { pi } = createFakePi()
         let renderFooter: ((width: number) => string[]) | undefined
         let renderSidebar: ((width: number) => string[]) | undefined
         let hiddenOverlays = 0
@@ -194,8 +193,10 @@ describe('status panel formatting', () => {
           model: { contextWindow: 200_000, id: 'a-very-long-model-name', provider: 'openai' },
           ui,
         }
-        statusPanel(pi, runtime)
-        yield* Effect.promise(() => emit('session_start', {}, ctx))
+        feature.implementation.register(pi, runtime)
+        yield* Effect.promise(() =>
+          runtime.runPromise(feature.implementation.activate?.({ reason: 'startup', type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void)
+        )
 
         expect(renderFooter?.(80)).toEqual([])
         tui.terminal.columns = 80
@@ -211,7 +212,7 @@ describe('status panel formatting', () => {
         }
         expect(renderSidebar(44).join('\n')).toContain('AGENT')
         expect(renderSidebar(44).join('\n')).toContain('CONTEXT')
-        yield* Effect.promise(() => emit('session_shutdown', {}, ctx))
+        yield* Effect.promise(() => runtime.runPromise(feature.implementation.deactivate?.(asExtensionContext(ctx), 'shutdown') ?? Effect.void))
         expect(hiddenOverlays).toBe(1)
       })
     )
@@ -257,19 +258,22 @@ describe('status panel quota lifecycle', () => {
       Effect.gen(function* () {
         const { pi, emit } = createFakePi()
         const signals: AbortSignal[] = []
-        statusPanel(pi, runtime, {
+        const panel = makeFeature({
           fetchAnthropicQuota: () =>
             Effect.promise((signal) => {
               signals.push(signal)
               return promiseFromEffect(Effect.never)
             }),
         })
+        panel.implementation.register(pi, runtime)
         const ctx = quotaLifecycleContext('rpc')
 
-        yield* Effect.promise(() => emit('session_start', {}, ctx))
+        yield* Effect.promise(() =>
+          runtime.runPromise(panel.implementation.activate?.({ reason: 'startup', type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void)
+        )
         yield* Effect.promise(() => emit('model_select', { model: ctx.model }, ctx))
         expect(signals).toHaveLength(0)
-        yield* Effect.promise(() => emit('session_shutdown', {}, ctx))
+        yield* Effect.promise(() => runtime.runPromise(panel.implementation.deactivate?.(asExtensionContext(ctx), 'shutdown') ?? Effect.void))
       })
     )
   )
@@ -280,7 +284,7 @@ describe('status panel quota lifecycle', () => {
         const { pi, emit } = createFakePi()
         const baseUrls: string[] = []
         const signals: AbortSignal[] = []
-        statusPanel(pi, runtime, {
+        const panel = makeFeature({
           fetchAnthropicQuota: (baseUrl) =>
             Effect.promise((signal) => {
               baseUrls.push(baseUrl)
@@ -288,9 +292,12 @@ describe('status panel quota lifecycle', () => {
               return promiseFromEffect(Effect.never)
             }),
         })
+        panel.implementation.register(pi, runtime)
         const ctx = quotaLifecycleContext('tui', 'azure-openai-responses')
 
-        yield* Effect.promise(() => emit('session_start', {}, ctx))
+        yield* Effect.promise(() =>
+          runtime.runPromise(panel.implementation.activate?.({ reason: 'startup', type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void)
+        )
         expect(signals).toHaveLength(1)
         expect(baseUrls).toEqual(['http://127.0.0.1:3456'])
 
@@ -303,7 +310,7 @@ describe('status panel quota lifecycle', () => {
         expect(signal.aborted).toBeFalse()
         expect(signals).toHaveLength(1)
 
-        yield* Effect.promise(() => emit('session_shutdown', {}, ctx))
+        yield* Effect.promise(() => runtime.runPromise(panel.implementation.deactivate?.(asExtensionContext(ctx), 'shutdown') ?? Effect.void))
         expect(signal.aborted).toBeTrue()
       })
     )
@@ -316,7 +323,7 @@ describe('status panel cross-feature sharing', () => {
       Effect.gen(function* () {
         runningAgents.publish([{ color: 'accent', name: '/scout-shared', profile: 'scout' }])
 
-        const { pi, emit } = createFakePi()
+        const { pi } = createFakePi()
         let renderSidebar: ((width: number) => string[]) | undefined
         const tui = {
           render: (_width: number) => [],
@@ -361,15 +368,17 @@ describe('status panel cross-feature sharing', () => {
           ui,
         }
 
-        statusPanel(pi, runtime)
-        yield* Effect.promise(() => emit('session_start', {}, ctx))
+        feature.implementation.register(pi, runtime)
+        yield* Effect.promise(() =>
+          runtime.runPromise(feature.implementation.activate?.({ reason: 'startup', type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void)
+        )
 
         if (renderSidebar === undefined) {
           throw new Error('expected a sidebar renderer')
         }
         expect(renderSidebar(44).join('\n')).toContain('/scout-shared')
 
-        yield* Effect.promise(() => emit('session_shutdown', {}, ctx))
+        yield* Effect.promise(() => runtime.runPromise(feature.implementation.deactivate?.(asExtensionContext(ctx), 'shutdown') ?? Effect.void))
       })
     )
   )
@@ -377,7 +386,7 @@ describe('status panel cross-feature sharing', () => {
   it.effect('keeps re-rendering on agent activity after a session restart', () =>
     inMainSession(() =>
       Effect.gen(function* () {
-        const { pi, emit } = createFakePi()
+        const { pi } = createFakePi()
         let renders = 0
         const tui = {
           render: (_width: number) => [],
@@ -421,19 +430,27 @@ describe('status panel cross-feature sharing', () => {
           ui,
         }
 
-        statusPanel(pi, runtime)
-        yield* Effect.promise(() => emit('session_start', {}, ctx))
+        feature.implementation.register(pi, runtime)
+        yield* Effect.promise(() =>
+          runtime.runPromise(feature.implementation.activate?.({ reason: 'startup', type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void)
+        )
         renders = 0
         runningAgents.publish([{ color: 'accent', name: '/first', profile: 'scout' }])
         expect(renders).toBeGreaterThan(0)
 
-        yield* Effect.promise(() => emit('session_shutdown', {}, ctx))
-        yield* Effect.promise(() => emit('session_start', {}, ctx))
+        yield* Effect.promise(() => runtime.runPromise(feature.implementation.deactivate?.(asExtensionContext(ctx), 'replaced') ?? Effect.void))
+        renders = 0
+        runningAgents.publish([{ color: 'accent', name: '/stale', profile: 'scout' }])
+        expect(renders).toBe(0)
+
+        yield* Effect.promise(() =>
+          runtime.runPromise(feature.implementation.activate?.({ reason: 'resume', type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void)
+        )
         renders = 0
         runningAgents.publish([{ color: 'accent', name: '/second', profile: 'scout' }])
         expect(renders).toBeGreaterThan(0)
 
-        yield* Effect.promise(() => emit('session_shutdown', {}, ctx))
+        yield* Effect.promise(() => runtime.runPromise(feature.implementation.deactivate?.(asExtensionContext(ctx), 'shutdown') ?? Effect.void))
       })
     )
   )

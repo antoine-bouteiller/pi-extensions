@@ -1,47 +1,40 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
+import { registerFeatures as registerWithCoordinator } from '#config/feature_coordinator'
 import { type ProcessRuntime } from '#config/runtime'
-import { register as askUser } from '#features/ask_user/index'
-import { register as autoTheme } from '#features/auto_theme/index'
-import { register as backgroundPoll } from '#features/background_poll/index'
-import { register as caffeinate } from '#features/caffeinate/index'
-import { register as claudeCode } from '#features/claude_code/index'
-import { register as commentChecker } from '#features/comment_checker/index'
-import { register as hashline } from '#features/hashline/index'
-import { register as mcp } from '#features/mcp/index'
-import { register as meridianSessionAffinity } from '#features/meridian_session_affinity/index'
-import { register as promptRewind } from '#features/prompt_rewind/index'
-import { register as rules } from '#features/rules/index'
-import { register as safetyGuard } from '#features/safety_guard/index'
-import { register as statusPanel } from '#features/status_panel/index'
-import { register as subAgents } from '#features/sub_agents/index'
-import { register as webfetch } from '#features/webfetch/index'
+import { feature as askUser } from '#features/ask_user/index'
+import { feature as autoTheme } from '#features/auto_theme/index'
+import { feature as backgroundPoll } from '#features/background_poll/index'
+import { feature as caffeinate } from '#features/caffeinate/index'
+import { feature as claudeCode } from '#features/claude_code/index'
+import { feature as commentChecker } from '#features/comment_checker/index'
+import { feature as hashline } from '#features/hashline/index'
+import { feature as mcp } from '#features/mcp/index'
+import { feature as meridianSessionAffinity } from '#features/meridian_session_affinity/index'
+import { feature as promptRewind } from '#features/prompt_rewind/index'
+import { feature as rules } from '#features/rules/index'
+import { feature as safetyGuard } from '#features/safety_guard/index'
+import { feature as statusPanel } from '#features/status_panel/index'
+import { feature as subAgents } from '#features/sub_agents/index'
+import { feature as webfetch } from '#features/webfetch/index'
+import { type FeaturePlugin } from '#shared/effect/feature'
 
-export interface FeatureRegistration {
-  readonly name: string
-  readonly register: (pi: ExtensionAPI, runtime: ProcessRuntime) => void
-}
+export const features = [
+  askUser,
+  autoTheme,
+  backgroundPoll,
+  caffeinate,
+  claudeCode,
+  commentChecker,
+  hashline,
+  mcp,
+  meridianSessionAffinity,
+  promptRewind,
+  rules,
+  safetyGuard,
+  statusPanel,
+  subAgents,
+  webfetch,
+] satisfies readonly FeaturePlugin[]
 
-export const features: readonly FeatureRegistration[] = [
-  { name: 'ask-user', register: askUser },
-  { name: 'auto-theme', register: autoTheme },
-  { name: 'background-poll', register: backgroundPoll },
-  { name: 'caffeinate', register: caffeinate },
-  { name: 'claude-code', register: claudeCode },
-  { name: 'comment-checker', register: commentChecker },
-  { name: 'hashline', register: hashline },
-  { name: 'mcp', register: mcp },
-  { name: 'meridian-session-affinity', register: meridianSessionAffinity },
-  { name: 'prompt-rewind', register: promptRewind },
-  { name: 'rules', register: rules },
-  { name: 'safety-guard', register: safetyGuard },
-  { name: 'status-panel', register: statusPanel },
-  { name: 'sub-agents', register: subAgents },
-  { name: 'webfetch', register: webfetch },
-]
-
-export const registerFeatures = (pi: ExtensionAPI, runtime: ProcessRuntime): void => {
-  for (const feature of features) {
-    feature.register(pi, runtime)
-  }
-}
+export const registerFeatures = (pi: ExtensionAPI, runtime: ProcessRuntime): void => registerWithCoordinator(pi, runtime, features)
