@@ -142,21 +142,21 @@ const validate = (features: readonly unknown[]): void => {
   }
 }
 
+/** Only unhealthy features earn a status slot; healthy and in-flight ones stay silent. */
 const statusItem = (record: FeatureRecord) => {
+  if (record.health._tag !== 'error') {
+    return undefined
+  }
   const { icon, name } = record.plugin.status
-  if (record.health._tag === 'checking') {
-    return { icon, text: `${name}: checking`, tone: 'muted' as const }
-  }
-  if (record.health._tag === 'healthy') {
-    return { icon, text: name, tone: 'success' as const }
-  }
   return { icon, text: `${name}: ${record.health.reason}`, tone: 'error' as const }
 }
 
 const publish = (record: FeatureRecord): Effect.Effect<void, never, AppServices | HandlerServices> =>
   Effect.gen(function* () {
     const status = yield* StatusBar
-    yield* status.channel(`feature:${record.plugin.id}`).set(statusItem(record))
+    const channel = status.channel(`feature:${record.plugin.id}`)
+    const item = statusItem(record)
+    yield* item === undefined ? channel.clear : channel.set(item)
   }).pipe(Effect.ignoreCause)
 
 export const makeFeatureCoordinator = (input: {

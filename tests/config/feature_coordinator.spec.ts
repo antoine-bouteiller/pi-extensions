@@ -192,7 +192,10 @@ describe('feature coordinator', () => {
 
       expect(registrations).toEqual(['included'])
       expect([...fixture.state.handlers.keys()]).toEqual(['agent_start', 'session_start', 'session_shutdown'])
-      expect(fixtureContext.statuses.map(({ text }) => text)).toEqual(['✓ subset-included: checking', '✓ subset-included'])
+      expect(fixtureContext.statuses.map(({ key, text }) => [key, text])).toEqual([
+        ['feature:subset-included', undefined],
+        ['feature:subset-included', undefined],
+      ])
       expect(omitted.id).toBe('subset-omitted')
     })
   )
@@ -213,8 +216,8 @@ describe('feature coordinator', () => {
       const fixtureContext = context('ordered')
       yield* emit(fixture, 'session_start', fixtureContext.ctx)
       expect(calls).toEqual(['one', 'two'])
-      expect(fixtureContext.statuses.filter(({ text }) => text?.endsWith(': checking')).length).toBe(3)
-      expect(fixtureContext.statuses.filter(({ text }) => text === '✓ three').length).toBe(1)
+      expect(fixtureContext.statuses.filter(({ text }) => text !== undefined)).toEqual([])
+      expect(statusBar.has('feature:three')).toBeFalse()
     })
   )
 
@@ -236,7 +239,7 @@ describe('feature coordinator', () => {
       yield* Deferred.await(completed)
       yield* Effect.yieldNow
       expect(calls).toEqual(['register', 'activate'])
-      expect(fixtureContext.statuses.at(-1)?.text).toBe('✓ comment-checker')
+      expect([fixtureContext.statuses.at(-1)?.text, statusBar.has('feature:comment-checker')]).toEqual([undefined, false])
     })
   )
 
@@ -411,7 +414,7 @@ describe('feature coordinator', () => {
       yield* emit(fixture, 'session_start', second.ctx)
       yield* Deferred.await(secondPrepared)
       yield* Effect.yieldNow
-      expect([attempts, second.statuses.at(-1)?.text]).toEqual([2, '✓ comment-checker'])
+      expect([attempts, second.statuses.at(-1)?.text]).toEqual([2, undefined])
     })
   )
 
@@ -448,7 +451,7 @@ describe('feature coordinator', () => {
       yield* emit(fixture, 'session_start', second.ctx)
       yield* Deferred.await(secondPrepared)
       yield* Effect.yieldNow
-      expect([attempts, registrations, second.statuses.at(-1)?.text]).toEqual([2, 1, '✓ comment-checker'])
+      expect([attempts, registrations, second.statuses.at(-1)?.text]).toEqual([2, 1, undefined])
     })
   )
 
@@ -512,19 +515,19 @@ describe('feature coordinator', () => {
         pi: fixture.pi,
         runtime,
       }).install()
-      let rejectHealthy = true
-      const first = context('publisher-one', true, (_key, text) => {
-        if (text === '✓ eager' && rejectHealthy) {
-          rejectHealthy = false
+      let rejectFirst = true
+      const first = context('publisher-one', true, () => {
+        if (rejectFirst) {
+          rejectFirst = false
           throw new Error('status unavailable')
         }
       })
       const starting = yield* Effect.forkChild(emit(fixture, 'session_start', first.ctx))
       yield* Deferred.await(entered)
-      expect(statusBar.list().find(({ key }) => key === 'feature:eager')).toMatchObject({ icon: '✓', text: 'eager: checking', tone: 'muted' })
+      expect(statusBar.has('feature:eager')).toBeFalse()
       yield* Deferred.succeed(release, undefined)
       yield* Fiber.join(starting)
-      expect(statusBar.list().find(({ key }) => key === 'feature:eager')).toMatchObject({ icon: '✓', text: 'eager', tone: 'success' })
+      expect(statusBar.has('feature:eager')).toBeFalse()
       yield* emit(fixture, 'session_shutdown', first.ctx)
       const second = context('publisher-two')
       yield* emit(fixture, 'session_start', second.ctx)
@@ -533,7 +536,7 @@ describe('feature coordinator', () => {
         text: 'eager: activation failed',
         tone: 'error',
       })
-      expect(second.statuses.map(({ text }) => text)).toEqual(['✓ eager: checking', '✓ eager: activation failed'])
+      expect(second.statuses.map(({ text }) => text)).toEqual([undefined, '✓ eager: activation failed'])
     })
   )
 
@@ -567,7 +570,7 @@ describe('feature coordinator', () => {
       yield* emit(fixture, 'session_start', second.ctx)
       yield* Deferred.await(secondPrepared)
       yield* Effect.yieldNow
-      expect([attempts, second.statuses.at(-1)?.text]).toEqual([2, '✓ comment-checker'])
+      expect([attempts, second.statuses.at(-1)?.text]).toEqual([2, undefined])
     })
   )
 
@@ -606,7 +609,7 @@ describe('feature coordinator', () => {
       yield* emit(fixture, 'session_start', second.ctx)
       yield* Deferred.await(retried)
       yield* Effect.yieldNow
-      expect([attempts, second.statuses.at(-1)?.text]).toEqual([2, '✓ comment-checker'])
+      expect([attempts, second.statuses.at(-1)?.text]).toEqual([2, undefined])
     })
   )
 
@@ -638,7 +641,7 @@ describe('feature coordinator', () => {
       yield* Deferred.succeed(gate, undefined)
       yield* Fiber.join(shutdown)
       expect(calls).toEqual([])
-      expect(current.statuses.map(({ text }) => text)).toContain('✓ comment-checker: checking')
+      expect([current.statuses.filter(({ text }) => text !== undefined), statusBar.has('feature:comment-checker')]).toEqual([[], false])
     })
   )
 
@@ -681,7 +684,7 @@ describe('feature coordinator', () => {
       yield* Deferred.await(replacementReady)
       yield* Effect.yieldNow
       expect(calls).toEqual(['new-register', 'new-activate'])
-      expect(second.statuses.map(({ text }) => text)).toContain('✓ comment-checker')
+      expect(second.statuses.filter(({ text }) => text !== undefined)).toEqual([])
     })
   )
 
@@ -769,7 +772,7 @@ describe('feature coordinator', () => {
       let startedB = false
       const bContext = context('B')
       const aContext = context('A', true, (_statusKey, text) => {
-        if (text === '✓ eager: checking' && !startedB) {
+        if (text === undefined && !startedB) {
           startedB = true
           void fixture.emit('session_start', {}, bContext.ctx)
         }
