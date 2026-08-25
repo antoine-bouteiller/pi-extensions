@@ -435,7 +435,7 @@ export const createSidebarController = (options: SidebarControllerOptions): Side
       return
     }
     setRef(redrawScopeRef, undefined)
-    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-7] §8.8; remove when migrated
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous Pi/TUI controller callback cannot return an Effect; the fiber is owned by the scope being closed
     Effect.runFork(Scope.close(scope, Exit.void))
   }
 
@@ -445,7 +445,7 @@ export const createSidebarController = (options: SidebarControllerOptions): Side
     }
     const scope = Scope.makeUnsafe()
     setRef(redrawScopeRef, scope)
-    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-7] §8.8; remove when migrated
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous Pi/TUI controller callback cannot return an Effect; the redraw fiber is owned by `redrawScopeRef`
     Effect.runFork(
       Effect.forkScoped(
         Effect.gen(function* () {

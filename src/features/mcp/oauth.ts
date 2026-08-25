@@ -350,7 +350,7 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
   }
 
   private update(updater: (current: OAuthCredentialPayload | undefined) => OAuthCredentialPayload | undefined): Promise<void> {
-    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; remove when migrated
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; permanent: only the promise-returning `OAuthClientProvider` members above call this, so this is the SDK boundary itself
     return Effect.runPromise(
       this.mutation.withPermits(1)(
         Effect.gen({ self: this }, function* () {

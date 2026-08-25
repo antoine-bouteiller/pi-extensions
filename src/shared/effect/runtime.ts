@@ -1,10 +1,19 @@
-import { type ExtensionCommandContext, type ExtensionContext } from '@earendil-works/pi-coding-agent'
+import { type AgentToolUpdateCallback, type ExtensionCommandContext, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { type Cause, Context, Effect, type ManagedRuntime } from 'effect'
 
-import { type ToolFailure } from './errors.js'
 import { makeUi, PiCtx, Ui } from './pi_services.js'
 
 export type HandlerServices = PiCtx | Ui
+
+/** One record rather than positional arguments because every body needs a different subset of it. */
+export interface ToolInvocation<Params> {
+  readonly ctx: ExtensionContext
+  /** Left at the SDK's own default detail type: `execute` is contravariant here, so any narrower choice rejects tools whose details are concrete. */
+  readonly onUpdate: AgentToolUpdateCallback | undefined
+  readonly params: Params
+  readonly signal: AbortSignal | undefined
+  readonly toolCallId: string
+}
 
 /**
  * Per-invocation services. Rebuilt for every call because `ctx` differs per invocation; hoisting
@@ -14,19 +23,37 @@ export const perInvocation = (ctx: ExtensionContext): Context.Context<HandlerSer
 
 export const makeToolExecutor =
   <AppServices>(runtime: ManagedRuntime.ManagedRuntime<AppServices, never>) =>
-  <Params, Result>(body: (params: Params) => Effect.Effect<Result, ToolFailure, AppServices | HandlerServices>) =>
+  <Params, Result, Failure>(
+    body: (invocation: ToolInvocation<Params>) => Effect.Effect<Result, Failure, AppServices | HandlerServices>,
+    /*
+     * `interruptOnAbort: false` hands cancellation entirely to the body: interrupting the fiber
+     * would discard a cooperative "Cancelled" result or a tagged cancellation failure and reject
+     * the tool call with a generic interrupted fiber instead. Such a body must observe `signal`.
+     */
+    options: { readonly interruptOnAbort?: boolean } = {}
+  ) =>
   // Pi awaits the value returned by `execute`, so this boundary hands back the runtime's promise directly.
-  (_toolCallId: string, params: Params, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext): Promise<Result> =>
-    runtime.runPromise(
+  (
+    toolCallId: string,
+    params: Params,
+    signal: AbortSignal | undefined,
+    onUpdate: AgentToolUpdateCallback | undefined,
+    ctx: ExtensionContext
+  ): Promise<Result> => {
+    const interruptOnAbort = options.interruptOnAbort ?? true
+    return runtime.runPromise(
       /*
        * RunPromise inspects the signal only after it begins evaluating, and returns immediately for
        * an effect that completes synchronously -- so a call cancelled before dispatch would still
        * run the body's synchronous side effects. Suspending means the body is never constructed
        * when the signal has already fired.
        */
-      Effect.suspend(() => (signal !== undefined && signal.aborted ? Effect.interrupt : body(params))).pipe(Effect.provide(perInvocation(ctx))),
-      { signal }
+      Effect.suspend(() =>
+        interruptOnAbort && signal !== undefined && signal.aborted ? Effect.interrupt : body({ ctx, onUpdate, params, signal, toolCallId })
+      ).pipe(Effect.provide(perInvocation(ctx))),
+      interruptOnAbort ? { signal } : undefined
     )
+  }
 
 export const makeCommandHandler =
   <AppServices>(runtime: ManagedRuntime.ManagedRuntime<AppServices, never>) =>

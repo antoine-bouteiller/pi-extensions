@@ -1,9 +1,9 @@
-import { type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
-import { Effect } from 'effect'
+import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { type Effect } from 'effect'
 
 import { type AppServices, type AppRuntime } from '#shared/effect/app_services'
 import { type FeaturePlugin } from '#shared/effect/feature'
-import { perInvocation, type HandlerServices } from '#shared/effect/runtime'
+import { makeToolExecutor, type HandlerServices, type ToolInvocation } from '#shared/effect/runtime'
 
 import { makeHashlineTools, readSchema, renderHashlineRead, writeSchema, type HashlineToolError } from './tools.js'
 
@@ -14,23 +14,16 @@ export const feature = {
   id: 'hashline',
   implementation: {
     register: (pi: ExtensionAPI, runtime: AppRuntime): void => {
-      const tools = makeHashlineTools(runtime)
+      const tools = makeHashlineTools()
 
       /*
-       * `makeToolExecutor` doesn't hand the raw AbortSignal to the body, but hashline needs it for
-       * CwdFilesystem and the post-lock TOCTOU re-check, so this bridge threads the signal instead.
-       *
-       * `{ signal }` is deliberately not passed to runPromise: that makes Effect interrupt the fiber the
-       * instant the signal fires, discarding the in-flight mutation-queue wait and replacing hashline's
-       * cooperative `throwIfAborted` message with Effect's generic interrupted-fiber one.
+       * Interruption is deliberately left to the body: hashline needs the raw signal for CwdFilesystem
+       * and the post-lock TOCTOU re-check, and an interrupted fiber would discard the in-flight
+       * mutation-queue wait and replace its cooperative `throwIfAborted` message with a generic one.
        */
-      const runTool =
-        <Params, Result>(
-          body: (params: Params, signal: AbortSignal | undefined) => Effect.Effect<Result, HashlineToolError, HandlerServices | AppServices>
-        ) =>
-        async (_toolCallId: string, params: Params, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext): Promise<Result> =>
-          // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-3] §8.8; remove when migrated
-          runtime.runPromise(body(params, signal).pipe(Effect.provide(perInvocation(ctx))))
+      const runTool = <Params, Result>(
+        body: (params: Params, signal: AbortSignal | undefined) => Effect.Effect<Result, HashlineToolError, HandlerServices | AppServices>
+      ) => makeToolExecutor(runtime)(({ params, signal }: ToolInvocation<Params>) => body(params, signal), { interruptOnAbort: false })
 
       pi.registerTool({
         description: `Read a file with stable line anchors and a content hash for write. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. Text output is bounded; use offset and limit for large files. Protected credential paths are refused by this tool itself.`,

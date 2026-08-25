@@ -51,11 +51,11 @@ export const recordSubagentQuota = (event: PiEvent<'after_provider_response'>, c
 }
 
 export const makePanelController = ({ dependencies, pi, runtime }: PanelControllerOptions): PanelHandlers => {
-  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; remove when migrated
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; permanent: synchronous feature registration cannot yield, so its services are extracted like `[KD-1]`/`[C-1]`
   const agentActivity = runtime.runSync(AgentActivity)
-  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; remove when migrated
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; permanent: synchronous feature registration cannot yield, so its services are extracted like `[KD-1]`/`[C-1]`
   const path = runtime.runSync(Path.Path)
-  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; remove when migrated
+  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; permanent: synchronous feature registration cannot yield, so its services are extracted like `[KD-1]`/`[C-1]`
   const statusBar = runtime.runSync(StatusBar)
   const stateRef = Ref.makeUnsafe<PanelState>(emptyPanelState())
 
@@ -132,7 +132,7 @@ export const makePanelController = ({ dependencies, pi, runtime }: PanelControll
 
   /** Fire-and-forget by design, like the original `void refreshGit()`: forked detached so it keeps running after the triggering hook's effect completes, instead of being interrupted with it. */
   const scheduleGitRefresh = (): void => {
-    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-7] §8.8; remove when migrated
+    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-7] §8.8; permanent: detached by design with the justification [KD-7] requires, from a synchronous callback
     Effect.runFork(Effect.forkDetach(refreshGit()))
   }
 

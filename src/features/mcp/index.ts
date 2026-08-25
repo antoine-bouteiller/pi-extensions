@@ -3,6 +3,7 @@ import { Effect } from 'effect'
 
 import { type AppRuntime } from '#shared/effect/app_services'
 import { type FeaturePlugin } from '#shared/effect/feature'
+import { makeCommandHandler, makeToolExecutor } from '#shared/effect/runtime'
 
 import { makeGatewaySession, makeMcpGateway, McpGateway, McpGatewayParameters, type McpGatewayApi } from './gateway.js'
 
@@ -37,13 +38,11 @@ export const makeFeature = (makeGateway: McpGatewayFactory = makeMcpGateway) => 
           description:
             "Access configured remote MCP capabilities through one lazy gateway. Use Pi's native tools directly whenever possible. Search or describe unfamiliar MCP tools before calling them.",
           /*
-           * The signal reaches `runPromise` as well as the manager: without it a cancelled call can
-           * still block indefinitely on paths that never touch a manager operation, such as waiting
+           * Interruption stays enabled -- unlike the cooperative tools -- because a cancelled call can
+           * otherwise block indefinitely on paths that never touch a manager operation, such as waiting
            * for gateway initialization or spilling oversized output.
            */
-          execute: async (_toolCallId, params, signal) =>
-            // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-3] §8.8; remove when migrated
-            runtime.runPromise(provideGateway(currentSession.dispatch(params, signal ?? undefined)), signal === null ? undefined : { signal }),
+          execute: makeToolExecutor(runtime)(({ params, signal }) => provideGateway(currentSession.dispatch(params, signal))),
           label: 'MCP Gateway',
           name: 'mcp',
           parameters: McpGatewayParameters,
@@ -60,8 +59,7 @@ export const makeFeature = (makeGateway: McpGatewayFactory = makeMcpGateway) => 
             const items = currentSession.oauthCompletions(prefix)
             return items.length > 0 ? items : null
           },
-          // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-5] §8.8; remove when migrated
-          handler: async (args, ctx) => runtime.runPromise(provideGateway(currentSession.authenticate(args, ctx))),
+          handler: makeCommandHandler(runtime)((args, ctx) => provideGateway(currentSession.authenticate(args, ctx))),
         })
       },
     },

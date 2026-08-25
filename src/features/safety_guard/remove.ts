@@ -1,7 +1,6 @@
 import {
   isBashToolResult,
   isToolCallEventType,
-  withFileMutationQueue,
   type ExtensionAPI,
   type ExtensionContext,
   type ToolCallEvent,
@@ -12,10 +11,10 @@ import { type FileSystem } from 'effect/FileSystem'
 import { type PlatformError } from 'effect/PlatformError'
 import { Type } from 'typebox'
 
-import { type AppRuntime } from '#shared/effect/app_services'
 import { lstatHostFile, readHostDirectoryEntries } from '#shared/effect/bun_host_file_system'
 import { bunFileSystem, bunPath } from '#shared/effect/bun_services'
 import { unknownError } from '#shared/effect/errors'
+import { mutationQueueSlot } from '#shared/effect/mutation_queue'
 import { type JsonObject } from '#shared/utils/json'
 import { isEmptyString, isNotEmptyString } from '#shared/utils/predicates'
 import { assertUnprotectedPathEffect, ProtectedPathError } from '#shared/utils/protected_paths'
@@ -340,55 +339,47 @@ export type SafeRmRun = (
 ) => Effect.Effect<ToolOutput, SafeRmToolError, FileSystem>
 
 // Cancellation stays cooperative so an interrupted fiber cannot replace the tagged validation failure.
-export const makeSafeRmRunner =
-  (runtime: AppRuntime): SafeRmRun =>
-  (params, signal, ctx) =>
-    Effect.gen(function* () {
-      const cwd = resolve(ctx.cwd)
-      const { roots, targets } = yield* validateSafeRmTargets({ cwd, params, signal })
+export const makeSafeRmRunner = (): SafeRmRun => (params, signal, ctx) =>
+  Effect.gen(function* () {
+    const cwd = resolve(ctx.cwd)
+    const { roots, targets } = yield* validateSafeRmTargets({ cwd, params, signal })
 
-      const details: SafeRmDetails = { missing: [], removed: [] }
-      for (const target of targets) {
-        if (target.missing) {
-          details.missing.push(target.input)
-          continue
-        }
-        yield* checkCancelled(signal)
+    const details: SafeRmDetails = { missing: [], removed: [] }
+    for (const target of targets) {
+      if (target.missing) {
+        details.missing.push(target.input)
+        continue
+      }
+      yield* checkCancelled(signal)
 
-        yield* Effect.tryPromise({
-          catch: mutationQueueError,
-          try: () =>
-            withFileMutationQueue(target.absolute, () =>
-              // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-8] §8.8; remove when migrated
-              runtime.runPromise(
-                Effect.gen(function* () {
-                  /*
-                   * Deliberately a genuine second pass, not a reuse of validateTargetEffect: a parent may
-                   * have been replaced by a symlink while this target waited in queue.
-                   *
-                   * ponytail: revalidate-then-unlink by pathname, so an ancestor swapped in the window
-                   * between these two lines is not fenced; the queue only serializes this process. Move to
-                   * openat/unlinkat against a verified parent descriptor if a hostile local process is in
-                   * scope.
-                   */
-                  yield* revalidateTargetEffect({ cwd, roots, signal, target })
-                  yield* removeEffect(target.absolute, { force: false, recursive: target.directory })
-                })
-              )
-            ),
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* mutationQueueSlot(target.absolute).pipe(Effect.mapError((error) => mutationQueueError(error.cause)))
+          /*
+           * Deliberately a genuine second pass, not a reuse of validateTargetEffect: a parent may
+           * have been replaced by a symlink while this target waited in queue.
+           *
+           * ponytail: revalidate-then-unlink by pathname, so an ancestor swapped in the window
+           * between these two lines is not fenced; the queue only serializes this process. Move to
+           * openat/unlinkat against a verified parent descriptor if a hostile local process is in
+           * scope.
+           */
+          yield* revalidateTargetEffect({ cwd, roots, signal, target })
+          yield* removeEffect(target.absolute, { force: false, recursive: target.directory })
         })
-        details.removed.push(target.input)
-      }
+      )
+      details.removed.push(target.input)
+    }
 
-      const lines = [
-        details.removed.length > 0 ? `Removed: ${details.removed.join(', ')}` : 'Removed: none',
-        details.missing.length > 0 ? `Already missing: ${details.missing.join(', ')}` : 'Already missing: none',
-      ]
-      return {
-        content: [{ text: lines.join('\n'), type: 'text' as const }],
-        details,
-      }
-    })
+    const lines = [
+      details.removed.length > 0 ? `Removed: ${details.removed.join(', ')}` : 'Removed: none',
+      details.missing.length > 0 ? `Already missing: ${details.missing.join(', ')}` : 'Already missing: none',
+    ]
+    return {
+      content: [{ text: lines.join('\n'), type: 'text' as const }],
+      details,
+    }
+  })
 
 interface RoutedRmResult {
   content: { text: string; type: 'text' }[]

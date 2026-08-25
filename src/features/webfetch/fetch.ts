@@ -13,7 +13,6 @@ import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest, type H
 import TurndownService from 'turndown'
 import { Type, type Static } from 'typebox'
 
-import { type AppRuntime } from '#shared/effect/app_services'
 import { ToolFailure } from '#shared/effect/errors'
 import { isEmptyString, isNotEmptyString, isNullOrUndefined, isTrue } from '#shared/utils/predicates'
 import { boundToolTextEffect, writePrivateTempFileEffect } from '#shared/utils/tool_output'
@@ -377,21 +376,15 @@ const fetchResult = ({
     return yield* signal === undefined ? withTimeout : Effect.raceFirst(withTimeout, cancellationEffect(signal))
   })
 
-export type WebfetchRunner = (
+// Cancellation is reported as a tagged failure rather than an interrupt, so the message survives.
+export const webfetchEffect = (
   params: WebfetchInput,
   signal: AbortSignal | undefined,
   onUpdate: AgentToolUpdateCallback<unknown> | undefined
-) => Promise<AgentToolResult<WebfetchDetails>>
-
-export const makeWebfetchRunner =
-  (runtime: AppRuntime): WebfetchRunner =>
-  (params, signal, onUpdate) =>
-    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-3] §8.8; remove when migrated
-    runtime.runPromise(
-      Effect.suspend(() =>
-        isTrue(signal?.aborted) ? Effect.fail(ToolFailure.make({ message: 'webfetch was cancelled' })) : fetchResult({ onUpdate, params, signal })
-      )
-    )
+): Effect.Effect<AgentToolResult<WebfetchDetails>, ToolFailure, HttpClient.HttpClient> =>
+  Effect.suspend(() =>
+    isTrue(signal?.aborted) ? Effect.fail(ToolFailure.make({ message: 'webfetch was cancelled' })) : fetchResult({ onUpdate, params, signal })
+  )
 
 export const renderWebfetchResult = (result: AgentToolResult<unknown>, { expanded }: ToolRenderResultOptions, theme: Theme): Component => {
   const content = result.content.find((item) => item.type === 'text')

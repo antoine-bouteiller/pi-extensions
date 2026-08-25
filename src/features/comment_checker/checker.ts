@@ -36,7 +36,7 @@ interface CheckerResult {
   stderr: string
 }
 
-export type CheckerRunner = (input: HookInput) => Promise<CheckerResult>
+export type CheckerRunner = (input: HookInput) => Effect.Effect<CheckerResult>
 
 interface CommandRunnerApi {
   readonly run: (input: HookInput) => Effect.Effect<CheckerResult, Cause.UnknownError>
@@ -142,8 +142,7 @@ const runCommentChecker = (input: HookInput, executable: string): Effect.Effect<
 export const makeCommentCheckerRunner =
   (executable: string): CheckerRunner =>
   (input) =>
-    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; remove when migrated
-    Effect.runPromise(runCommentChecker(input, executable))
+    runCommentChecker(input, executable)
 
 const checkerResult = (
   event: ToolResultEvent,
@@ -174,7 +173,7 @@ const checkerResult = (
 export const makeCheckerHandler = (
   runner: CheckerRunner
 ): ((event: ToolResultEvent, ctx: ExtensionContext) => Effect.Effect<{ content: ToolResultEvent['content'] } | undefined, Cause.UnknownError>) => {
-  const commandRunner: CommandRunnerApi = { run: (input) => Effect.tryPromise(() => runner(input)) }
+  const commandRunner: CommandRunnerApi = { run: runner }
 
   return (event, ctx) => checkerResult(event, ctx).pipe(Effect.provideService(CommandRunner, commandRunner))
 }

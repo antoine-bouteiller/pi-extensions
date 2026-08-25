@@ -1,13 +1,6 @@
 import { createHash } from 'node:crypto'
 
-import {
-  createReadToolDefinition,
-  DEFAULT_MAX_BYTES,
-  DEFAULT_MAX_LINES,
-  withFileMutationQueue,
-  type AgentToolResult,
-  type Theme,
-} from '@earendil-works/pi-coding-agent'
+import { createReadToolDefinition, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type AgentToolResult, type Theme } from '@earendil-works/pi-coding-agent'
 import { Text, type Component } from '@earendil-works/pi-tui'
 import {
   computeFileHash,
@@ -19,11 +12,11 @@ import {
   Patch,
   Patcher,
 } from '@oh-my-pi/hashline'
-import { Context, Data, Effect, Path } from 'effect'
+import { Context, Data, Effect, Path, type Scope } from 'effect'
 import { type FileSystem } from 'effect/FileSystem'
 import { Type, type Static } from 'typebox'
 
-import { type AppRuntime } from '#shared/effect/app_services'
+import { mutationQueueSlot } from '#shared/effect/mutation_queue'
 import { PiCtx } from '#shared/effect/pi_services'
 import { type HandlerServices } from '#shared/effect/runtime'
 import { type JsonObject } from '#shared/utils/json'
@@ -126,14 +119,13 @@ class CwdFilesystem extends NodeFilesystem {
 }
 /* oxlint-enable effecttsgo/async-function */
 
-const withMutationQueues = <Result>(paths: readonly string[], callback: () => Promise<Result>): Promise<Result> => {
-  const ordered = [...new Set(paths)].toSorted((left, right) => left.localeCompare(right))
-  const acquire = (index: number): Promise<Result> => {
-    const path = ordered[index]
-    return path === undefined ? callback() : withFileMutationQueue(path, () => acquire(index + 1))
-  }
-  return acquire(0)
-}
+// Deduplicated and ordered so two concurrent patches over an overlapping path set cannot deadlock.
+const mutationQueueSlots = (paths: readonly string[]): Effect.Effect<void, HashlineToolError, Scope.Scope> =>
+  Effect.forEach(
+    [...new Set(paths)].toSorted((left, right) => left.localeCompare(right)),
+    (path) => mutationQueueSlot(path).pipe(Effect.mapError((error) => hashlineToolError(error.cause))),
+    { discard: true }
+  )
 
 const fingerprint = (text: string): string => createHash('sha256').update(text).digest('hex')
 
@@ -202,7 +194,6 @@ const readHashlineFile = ({
 interface WriteHashlinePatchOptions {
   cwd: string
   patchText: string
-  runtime: AppRuntime
   signal: AbortSignal | undefined
   snapshots: InMemorySnapshotStore
 }
@@ -210,7 +201,6 @@ interface WriteHashlinePatchOptions {
 const writeHashlinePatch = ({
   cwd,
   patchText,
-  runtime,
   signal,
   snapshots,
 }: WriteHashlinePatchOptions): Effect.Effect<ToolOutput, HashlineToolError, FileSystem | Path.Path> =>
@@ -279,12 +269,12 @@ const writeHashlinePatch = ({
       return result(summary.join('\n'), { sections })
     })
 
-    // Pi's mutation queue is a promise API, so the revalidate-and-apply effect is run through the runtime it owns.
-    return yield* Effect.tryPromise({
-      catch: (cause) => (cause instanceof HashlineToolError ? cause : hashlineToolError(cause)),
-      // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-8] §8.8; remove when migrated
-      try: () => withMutationQueues(lockPaths, () => runtime.runPromise(applyPatch)),
-    })
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        yield* mutationQueueSlots(lockPaths)
+        return yield* applyPatch
+      })
+    )
   })
 
 class Snapshots extends Context.Service<Snapshots, InMemorySnapshotStore>()('pi-extensions/features/hashline/tools/Snapshots') {}
@@ -319,7 +309,7 @@ export interface HashlineTools {
   readonly write: (params: Static<typeof writeSchema>, signal: AbortSignal | undefined) => HashlineToolEffect
 }
 
-export const makeHashlineTools = (runtime: AppRuntime): HashlineTools => {
+export const makeHashlineTools = (): HashlineTools => {
   const snapshotsStore = new InMemorySnapshotStore()
   const withSnapshots = <Success, Failure, Services>(
     effect: Effect.Effect<Success, Failure, Services | Snapshots>
@@ -353,7 +343,7 @@ export const makeHashlineTools = (runtime: AppRuntime): HashlineTools => {
         Effect.gen(function* () {
           const ctx = yield* PiCtx
           const snapshots = yield* Snapshots
-          return yield* writeHashlinePatch({ cwd: ctx.cwd, patchText: patch, runtime, signal, snapshots })
+          return yield* writeHashlinePatch({ cwd: ctx.cwd, patchText: patch, signal, snapshots })
         })
       ),
   }

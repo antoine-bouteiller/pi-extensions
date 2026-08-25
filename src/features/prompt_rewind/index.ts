@@ -4,6 +4,7 @@ import { Effect } from 'effect'
 
 import { type AppRuntime } from '#shared/effect/app_services'
 import { type FeaturePlugin } from '#shared/effect/feature'
+import { makeCommandHandler } from '#shared/effect/runtime'
 
 import { makeRewindController, REWIND_COMMAND } from './rewind.js'
 
@@ -26,8 +27,7 @@ export const feature = (() => {
         pi.on('agent_end', controller.disarm)
         pi.registerCommand(REWIND_COMMAND, {
           description: 'Internal: rewinds the just-cancelled prompt from the active branch and restores its raw text to the editor.',
-          // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-5] §8.8; remove when migrated
-          handler: (_args, ctx) => runtime.runPromise(controller.rewindCancelledPrompt(ctx)),
+          handler: makeCommandHandler(runtime)((_args, ctx) => controller.rewindCancelledPrompt(ctx)),
         })
       },
     },

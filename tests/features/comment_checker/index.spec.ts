@@ -1,4 +1,4 @@
-import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect, FileSystem, Path } from 'effect'
@@ -27,10 +27,7 @@ describe('comment checker', () => {
   it.effect('prepares an implementation using the resolved absolute executable', () =>
     Effect.gen(function* () {
       const fixture = createFakePi()
-      const implementation = yield* preparedFeature(
-        () => promiseFromEffect(Effect.succeed({ exitCode: 0, stderr: '', stdout: '' })),
-        '/opt/bin/comment-checker'
-      )
+      const implementation = yield* preparedFeature(() => Effect.succeed({ exitCode: 0, stderr: '', stdout: '' }), '/opt/bin/comment-checker')
 
       implementation.register(fixture.pi, runtime)
 
@@ -47,7 +44,7 @@ describe('comment checker', () => {
           makeFeature({
             makeRunner: () => {
               runnerCreated += 1
-              return () => promiseFromEffect(Effect.succeed({ exitCode: 0, stderr: '', stdout: '' }))
+              return () => Effect.succeed({ exitCode: 0, stderr: '', stdout: '' })
             },
             which: () => resolved,
           }).prepare
@@ -67,7 +64,7 @@ describe('comment checker', () => {
         makeFeature({
           makeRunner: () => () => {
             processCalls += 1
-            return promiseFromEffect(Effect.succeed({ exitCode: 0, stderr: '', stdout: '' }))
+            return Effect.succeed({ exitCode: 0, stderr: '', stdout: '' })
           },
           which: () => undefined,
         }).prepare
@@ -83,12 +80,10 @@ describe('comment checker', () => {
       const inputs: Parameters<CheckerRunner>[0][] = []
       const fixture = createFakePi()
       const implementation = yield* preparedFeature((input) =>
-        promiseFromEffect(
-          Effect.sync(() => {
-            inputs.push(input)
-            return { exitCode: 2, stderr: 'remove this comment', stdout: '' }
-          })
-        )
+        Effect.sync(() => {
+          inputs.push(input)
+          return { exitCode: 2, stderr: 'remove this comment', stdout: '' }
+        })
       )
       implementation.register(fixture.pi, runtime)
 
@@ -129,12 +124,10 @@ describe('comment checker', () => {
       const inputs: Parameters<CheckerRunner>[0][] = []
       const fixture = createFakePi()
       const implementation = yield* preparedFeature((input) =>
-        promiseFromEffect(
-          Effect.sync(() => {
-            inputs.push(input)
-            return { exitCode: 0, stderr: '', stdout: '' }
-          })
-        )
+        Effect.sync(() => {
+          inputs.push(input)
+          return { exitCode: 0, stderr: '', stdout: '' }
+        })
       )
       implementation.register(fixture.pi, runtime)
 
@@ -198,10 +191,12 @@ process.exit(2)
       )
 
       const runner = makeCommentCheckerRunner(executable)
-      expect(yield* Effect.promise(() => runner(checkerInput))).toEqual({ exitCode: 2, stderr: '', stdout: jsonText(checkerInput) })
-      expect(
-        yield* Effect.promise(() => runner({ ...checkerInput, tool_input: { content: 'overflow', file_path: checkerInput.tool_input.file_path } }))
-      ).toEqual({ exitCode: undefined, stderr: '', stdout: '' })
+      expect(yield* runner(checkerInput)).toEqual({ exitCode: 2, stderr: '', stdout: jsonText(checkerInput) })
+      expect(yield* runner({ ...checkerInput, tool_input: { content: 'overflow', file_path: checkerInput.tool_input.file_path } })).toEqual({
+        exitCode: undefined,
+        stderr: '',
+        stdout: '',
+      })
     })
   )
 })

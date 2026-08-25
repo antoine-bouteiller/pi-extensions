@@ -3,6 +3,7 @@ import { Effect } from 'effect'
 
 import { type AppRuntime } from '#shared/effect/app_services'
 import { type FeaturePlugin } from '#shared/effect/feature'
+import { makeToolExecutor } from '#shared/effect/runtime'
 
 import { BackgroundPollParams, makePollHandlers, type PollExec } from './poll.js'
 
@@ -22,9 +23,9 @@ export const makeFeature = (exec?: PollExec) => {
         pi.registerTool({
           description:
             'Register a shell command that is polled in the background until it exits successfully. The current agent run can end completely; completion, timeout, or failure automatically wakes the agent with the final output. Output is truncated to 50KB or 2000 lines.',
-          execute: async (toolCallId, params, signal, _onUpdate, ctx) =>
-            // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-3] §8.8; remove when migrated
-            runtime.runPromise(pollHandlers.registerTask(toolCallId, params, signal ?? undefined, ctx)),
+          execute: makeToolExecutor(runtime)(({ ctx, params, signal, toolCallId }) => pollHandlers.registerTask(toolCallId, params, signal, ctx), {
+            interruptOnAbort: false,
+          }),
           label: 'Background Poll',
           name: 'background_poll',
           parameters: BackgroundPollParams,

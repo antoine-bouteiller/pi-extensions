@@ -5,6 +5,7 @@ import { runtime } from '@tests/utils/runtime.js'
 import { Effect } from 'effect'
 
 import { makeFeature } from '@/features/caffeinate/index.js'
+import { CaffeinateError } from '@/features/caffeinate/keep_awake.js'
 
 interface FakeChild {
   readonly exit: PromiseWithResolvers<void>
@@ -27,24 +28,24 @@ const createHarness = (platform: NodeJS.Platform = 'darwin', exitOnKill = true, 
       spawns.push({ args, command })
       if (remainingFailures > 0) {
         remainingFailures -= 1
-        return Promise.reject(new Error('spawn failed'))
+        return Effect.fail(new CaffeinateError({ cause: new Error('spawn failed') }))
       }
       const child: FakeChild = { exit: Promise.withResolvers<void>(), killCalls: 0, unrefCalls: 0 }
       children.push(child)
-      return (spawnGate?.promise ?? Promise.resolve()).then(() => ({
-        exited: child.exit.promise,
-        kill: () => {
-          child.killCalls += 1
-          if (exitOnKill) {
-            child.exit.resolve()
-          }
-          return Promise.resolve()
-        },
-        unref: () => {
-          child.unrefCalls += 1
-          return Promise.resolve()
-        },
-      }))
+      return Effect.promise(() => spawnGate?.promise ?? Promise.resolve()).pipe(
+        Effect.as({
+          exited: Effect.promise(() => child.exit.promise),
+          kill: Effect.sync(() => {
+            child.killCalls += 1
+            if (exitOnKill) {
+              child.exit.resolve()
+            }
+          }),
+          unref: Effect.sync(() => {
+            child.unrefCalls += 1
+          }),
+        })
+      )
     },
   })
   feature.implementation.register(fixture.pi, runtime)
