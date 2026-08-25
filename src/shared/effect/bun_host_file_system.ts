@@ -114,6 +114,9 @@ const openedPath = (descriptor: number): string => {
   if (process.platform === 'darwin') {
     return fs.realpathSync(`/dev/fd/${descriptor}`)
   }
+  if (process.platform === 'win32') {
+    throw new Error('Windows sub-agent artifact handling is unsupported')
+  }
   throw new Error('Descriptor path resolution is unavailable on this platform')
 }
 

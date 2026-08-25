@@ -86,6 +86,7 @@ const sendResult = (target: string): AgentResult | CommandError | SteeringAck =>
 
 const orchestrator = (snapshots: AdmissionSnapshot[]): SubagentOrchestratorApi => ({
   closeSession: () => Effect.void,
+  hasLiveChildren: () => false,
   initialize: Effect.void,
   interrupt: (session, target) =>
     session === 'refusal'
@@ -303,6 +304,32 @@ describe('delegation tool boundary', () => {
       })
     ))
 
+  it('derives admission from the child-equivalent model view and captured environment', () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const fixture = createFakePi()
+        const snapshots: AdmissionSnapshot[] = []
+        const tools = makeDelegationTools(
+          {
+            ...dependencies(fixture.pi, snapshots),
+            childModelViewFor: (_ctx, environment) =>
+              Promise.resolve({
+                authenticated_providers: environment.CHILD_AUTH === 'present' ? ['persisted-provider', 'environment-provider'] : [],
+                models: [{ contextWindow: 42, model: 'child-model', provider: 'persisted-provider' }],
+              }),
+            environment: () => ({ CHILD_AUTH: 'present', PARENT_MEMORY_KEY: undefined }),
+          },
+          executeWith(Layer.succeed(SubagentOrchestrator)(orchestrator(snapshots)))
+        )
+        yield* Effect.promise(() => call(tools, 0, { agent_type: 'scout', message: 'go', task_name: 'child-view' }))
+        expect(snapshots[0]?.child_model_view).toEqual({
+          authenticated_providers: ['persisted-provider', 'environment-provider'],
+          models: [{ contextWindow: 42, model: 'child-model', provider: 'persisted-provider' }],
+        })
+        expect(snapshots[0]?.environment).toEqual({ CHILD_AUTH: 'present' })
+      })
+    ))
+
   it('maps unknown host failures to ToolFailure', () =>
     Effect.runPromise(
       Effect.gen(function* () {
@@ -333,7 +360,7 @@ describe('delegation tool boundary', () => {
         const sink = makePiNotificationSink(idle.pi)
         sink.bind('session', 1, context())
         yield* Effect.service(NotificationSink).pipe(
-          Effect.flatMap((service) => service.publish(['one', 'two'])),
+          Effect.flatMap((service) => service.publish(['one', 'two'], { generation: 1, session: 'session' })),
           Effect.provide(sink.layer)
         )
         expect(idle.state.messages).toEqual([{ message: 'one\ntwo', options: undefined }])
@@ -342,19 +369,24 @@ describe('delegation tool boundary', () => {
         const runningSink = makePiNotificationSink(running.pi)
         runningSink.bind('session', 1, context('session', { isIdle: () => false }))
         yield* Effect.service(NotificationSink).pipe(
-          Effect.flatMap((service) => service.publish(['one'])),
+          Effect.flatMap((service) => service.publish(['one'], { generation: 1, session: 'session' })),
           Effect.provide(runningSink.layer)
         )
         expect(running.state.messages).toEqual([{ message: 'one', options: { deliverAs: 'steer' } }])
 
         const stale = createFakePi()
         const staleSink = makePiNotificationSink(stale.pi)
-        staleSink.bind('session', 1, context('session', { isIdle: () => (staleSink.bind('session', 2, context('session')), true) }))
+        staleSink.bind('session', 1, context('session', { isIdle: () => (staleSink.bind('replacement', 2, context('replacement')), true) }))
         yield* Effect.service(NotificationSink).pipe(
-          Effect.flatMap((service) => service.publish(['lost'])),
+          Effect.flatMap((service) => service.publish(['lost'], { generation: 1, session: 'session' })),
           Effect.provide(staleSink.layer)
         )
         expect(stale.state.messages).toHaveLength(0)
+        yield* Effect.service(NotificationSink).pipe(
+          Effect.flatMap((service) => service.publish(['replacement'], { generation: 2, session: 'replacement' })),
+          Effect.provide(staleSink.layer)
+        )
+        expect(stale.state.messages).toEqual([{ message: 'replacement', options: undefined }])
       })
     ))
 })

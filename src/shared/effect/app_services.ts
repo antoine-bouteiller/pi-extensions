@@ -91,7 +91,7 @@ const SubagentPortsLive = Layer.mergeAll(
   SubagentStoreLive
 )
 
-export const SubagentOrchestratorProductionLive = SubagentOrchestratorLive.pipe(Layer.provide(SubagentPortsLive))
+export const SubagentOrchestratorProductionLive = Layer.suspend(() => SubagentOrchestratorLive.pipe(Layer.provide(SubagentPortsLive)))
 
 export type AppServices = FileSystem | Path | HttpClient.HttpClient | StatusBar | AgentActivity | SubagentOrchestrator
 

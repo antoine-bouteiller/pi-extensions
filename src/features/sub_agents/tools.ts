@@ -23,7 +23,7 @@ import {
   type WaitAllInput,
 } from './model.js'
 import { type OrchestrationError, type PublicRefusalError, SubagentOrchestrator, type SubagentOrchestratorApi } from './orchestrator.js'
-import { NotificationSink } from './store.js'
+import { NotificationSink, type NotificationToken } from './store.js'
 
 const json = <Value>(value: Value) => ({
   content: [{ text: JSON.stringify(value), type: 'text' as const }],
@@ -37,21 +37,27 @@ const environmentCopy = (environment: Readonly<Record<string, string | undefined
 export interface DelegationToolDependencies {
   readonly agentDir: string
   readonly childModelView: ChildModelView
-  readonly childModelViewFor?: (ctx: ExtensionContext) => ChildModelView
+  readonly childModelViewFor?: (
+    ctx: ExtensionContext,
+    environment: Readonly<Record<string, string | undefined>>
+  ) => ChildModelView | Promise<ChildModelView>
   readonly environment: () => Readonly<Record<string, string | undefined>>
   readonly pi: ExtensionAPI
   readonly runtime: ManagedRuntime.ManagedRuntime<SubagentOrchestrator, never>
 }
 
-const admission = (ctx: ExtensionContext, dependencies: DelegationToolDependencies): AdmissionSnapshot => ({
-  agent_dir: dependencies.agentDir,
-  child_model_view: dependencies.childModelViewFor?.(ctx) ?? dependencies.childModelView,
-  cwd: ctx.cwd,
-  environment: environmentCopy(dependencies.environment()),
-  parent_model: ctx.model === undefined ? undefined : { model: ctx.model.id, provider: ctx.model.provider },
-  project_trusted: ctx.isProjectTrusted(),
-  registered_tools: dependencies.pi.getAllTools().map((tool) => tool.name),
-})
+const admission = (ctx: ExtensionContext, dependencies: DelegationToolDependencies): Promise<AdmissionSnapshot> => {
+  const environment = dependencies.environment()
+  return Promise.resolve(dependencies.childModelViewFor?.(ctx, environment)).then((childModelView) => ({
+    agent_dir: dependencies.agentDir,
+    child_model_view: childModelView ?? dependencies.childModelView,
+    cwd: ctx.cwd,
+    environment: environmentCopy(environment),
+    parent_model: ctx.model === undefined ? undefined : { model: ctx.model.id, provider: ctx.model.provider },
+    project_trusted: ctx.isProjectTrusted(),
+    registered_tools: dependencies.pi.getAllTools().map((tool) => tool.name),
+  }))
+}
 const withOrchestrator = <Value>(body: (orchestrator: SubagentOrchestratorApi) => Effect.Effect<Value, OrchestrationError>) =>
   Effect.gen(function* () {
     const orchestrator = yield* SubagentOrchestrator
@@ -80,7 +86,10 @@ export const makeDelegationTools = (dependencies: DelegationToolDependencies, ex
     execute: execute<SpawnAgentInput, ReturnType<typeof json>>(({ params: input }) =>
       Effect.service(PiCtx).pipe(
         Effect.flatMap((ctx) =>
-          withOrchestrator((orchestrator) => orchestrator.spawn(session(ctx), admission(ctx, dependencies), input)).pipe(Effect.map(json))
+          Effect.promise(() => admission(ctx, dependencies)).pipe(
+            Effect.flatMap((snapshot) => withOrchestrator((orchestrator) => orchestrator.spawn(session(ctx), snapshot, input))),
+            Effect.map(json)
+          )
         )
       )
     ),
@@ -143,7 +152,8 @@ export const makeDelegationTools = (dependencies: DelegationToolDependencies, ex
     execute: execute<SendMessageInput, ReturnType<typeof json>>(({ params: input }) =>
       Effect.service(PiCtx).pipe(
         Effect.flatMap((ctx) =>
-          withOrchestrator((orchestrator) => orchestrator.send(session(ctx), admission(ctx, dependencies), input.target, input.message)).pipe(
+          Effect.promise(() => admission(ctx, dependencies)).pipe(
+            Effect.flatMap((snapshot) => withOrchestrator((orchestrator) => orchestrator.send(session(ctx), snapshot, input.target, input.message))),
             Effect.map(json)
           )
         )
@@ -184,15 +194,21 @@ type NotificationPi = Pick<ExtensionAPI, 'sendUserMessage'>
 /** The mutable binding is deliberately only a delivery target; it contains no orchestration state. */
 export const makePiNotificationSink = (pi: NotificationPi): PiNotificationSink => {
   let binding: { readonly ctx: ExtensionContext; readonly generation: number; readonly session: string } | undefined
-  const publish = (messages: readonly string[]) =>
+  const publish = (messages: readonly string[], token: NotificationToken) =>
     Effect.sync(() => {
       const current = binding
-      if (current === undefined || current.session !== current.ctx.sessionManager.getSessionId()) {
+      if (
+        current === undefined ||
+        current.generation !== token.generation ||
+        current.session !== token.session ||
+        current.session !== current.ctx.sessionManager.getSessionId()
+      ) {
         return
       }
       const options = current.ctx.isIdle() ? undefined : { deliverAs: 'steer' as const }
-      // Reading the binding immediately before this call is the delivery commit point.
-      if (binding !== current) {
+      // This is the delivery commit point: a replaced session binding cannot send stale output.
+      const active = binding
+      if (active === undefined || active.generation !== token.generation || active.session !== token.session) {
         return
       }
       pi.sendUserMessage(messages.join('\n'), options)

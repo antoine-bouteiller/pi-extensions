@@ -58,19 +58,6 @@ const failure = <Failure extends SpawnError | ProcessError>(
   cause: unknown
 ): Failure => new Type({ cause, message: cause instanceof Error ? cause.message : String(cause) })
 
-const windowsMarker = (pid: number): Effect.Effect<string | undefined, ProcessError> =>
-  Effect.try({
-    catch: (cause) => failure(ProcessError, cause),
-    try: () => {
-      const result = Bun.spawnSync(['powershell', '-NoProfile', '-Command', `(Get-Process -Id ${pid}).StartTime.ToUniversalTime().Ticks`])
-      if (result.exitCode !== 0) {
-        return undefined
-      }
-      const marker = new TextDecoder().decode(result.stdout).trim()
-      return marker.length === 0 ? undefined : marker
-    },
-  })
-
 export const macosProcessBirthMarker = (pid: number): string | undefined => {
   const info = new Uint8Array(136)
   const library = dlopen('/usr/lib/libproc.dylib', {
@@ -95,9 +82,6 @@ const productionMarker = (pid: number): Effect.Effect<string | undefined, Proces
   if (process.platform === 'linux') {
     return Effect.succeed(linuxProcessBirthMarker(pid))
   }
-  if (process.platform === 'win32') {
-    return windowsMarker(pid)
-  }
   if (process.platform === 'darwin') {
     return Effect.succeed(macosProcessBirthMarker(pid))
   }
@@ -111,26 +95,25 @@ const productionPlatform: ProcessPlatform = {
       catch: (cause) => failure(ProcessError, cause),
       try: () => {
         if (process.platform === 'win32') {
-          const result = Bun.spawnSync(['taskkill', '/PID', String(pid), '/T', '/F'])
-          if (result.exitCode !== 0) {
-            throw new Error('taskkill failed')
-          }
-        } else {
-          process.kill(-pid, 'SIGKILL')
+          throw new Error('Windows sub-agent process handling is unsupported')
         }
+        process.kill(-pid, 'SIGKILL')
       },
     }),
   spawn: (request) =>
     Effect.try({
       catch: (cause) => failure(SpawnError, cause),
       try: () => {
+        if (process.platform === 'win32') {
+          throw new Error('Windows sub-agent process handling is unsupported')
+        }
         const stderr = request.stderrPath === undefined ? undefined : openHostAppendFileSync(request.stderrPath)
         const subprocess = (() => {
           try {
             return Bun.spawn({
               cmd: [request.command, ...request.args],
               cwd: request.cwd,
-              detached: process.platform !== 'win32',
+              detached: true,
               env: request.environment,
               stderr: stderr === undefined ? 'ignore' : stderr.descriptor,
               stdin: 'pipe',
@@ -242,13 +225,10 @@ export const makeChildProcessLive = (platform: ProcessPlatform = productionPlatf
         const child = yield* platform.spawn(request)
         const captured = yield* Effect.result(platform.birthMarker(child.pid))
         if (captured._tag === 'Failure' || captured.success === undefined) {
-          // The child is ours, but cannot be handed to callers without an identity.
-          // Waiting indefinitely would leak it; close, force, reap, and release ownership.
           yield* Effect.ensuring(
             Effect.gen(function* () {
               yield* child.closeInput.pipe(Effect.ignore)
-              yield* platform.forceTerminate(child.pid).pipe(Effect.ignore)
-              yield* child.wait.pipe(Effect.ignore)
+              yield* Effect.race(child.wait.pipe(Effect.ignore), Effect.sleep('5 seconds'))
             }),
             child.release.pipe(Effect.ignore)
           )

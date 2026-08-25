@@ -1,4 +1,4 @@
-import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { getAgentDir, ModelRuntime, type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { matchesKey, ScrollView, Text, type Component } from '@earendil-works/pi-tui'
 import { Context, Effect, Layer } from 'effect'
 
@@ -42,14 +42,14 @@ export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
         return Effect.gen(function* () {
           const orchestrator = yield* SubagentOrchestrator
           yield* orchestrator.initialize
+          yield* orchestrator.openSession(sessionId)
+          session = sessionId
           if (pi !== undefined) {
             bindProductionNotificationSink(pi, sessionId, ++generation, ctx)
           }
-          yield* orchestrator.openSession(sessionId)
-          session = sessionId
           panic = createPanicEditor({
             ctx,
-            hasLiveCurrentSession: () => session === ctx.sessionManager.getSessionId(),
+            hasLiveCurrentSession: () => orchestrator.hasLiveChildren(sessionId),
             interruptAll: () =>
               runtime === undefined ? Promise.resolve() : runManagedEffect(runtime, orchestrator.interruptAll(sessionId).pipe(Effect.ignore)),
           })
@@ -65,7 +65,6 @@ export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
           ? Effect.void
           : Effect.service(SubagentOrchestrator).pipe(
               Effect.flatMap((orchestrator) => orchestrator.closeSession(sessionId)),
-              Effect.ignore,
               Effect.mapError(activationError)
             )
       },
@@ -122,12 +121,7 @@ export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
                                 const body = new Text()
                                 const scroll = new ScrollView(body, { follow: 'end', scrollbar: 'auto' })
                                 const render = (): void => {
-                                  const content = transcript.content()
-                                  body.setText(
-                                    content.unavailable
-                                      ? `${title}\nConversation unavailable: session file could not be read.\n[Back]`
-                                      : `${title}\n${content.entries.map((entry) => JSON.stringify(entry)).join('\n')}`
-                                  )
+                                  body.setText(renderTranscriptContent(title, transcript.content()))
                                   tui.requestRender()
                                 }
                                 const stopRefreshing = runManagedRepeatingEffect(
@@ -179,12 +173,35 @@ export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
   } satisfies EagerFeaturePlugin
 }
 
+export const renderTranscriptContent = (
+  title: string,
+  content: { readonly entries: readonly unknown[]; readonly turns: readonly { readonly result: unknown }[]; readonly unavailable: boolean }
+): string => {
+  if (content.unavailable) {
+    return `${title}\nConversation unavailable: session file could not be read.\n[Back]`
+  }
+  const transcript = content.entries.map((entry) => JSON.stringify(entry))
+  const turns = content.turns.map(({ result }) => JSON.stringify(result))
+  return [title, ...transcript, ...(turns.length === 0 ? [] : ['Durable turn outcomes:', ...turns])].join('\n')
+}
+
 const defaultDependencies: SubagentFeatureDependencies = {
-  agentDir: `${Bun.env.HOME ?? '/tmp'}/.pi/agent`,
+  agentDir: getAgentDir(),
   childModelView: { authenticated_providers: [], models: [] },
-  childModelViewFor: (ctx) => {
-    const models = ctx.scopedModels.map(({ model }) => ({ contextWindow: model.contextWindow, model: model.id, provider: model.provider }))
-    return { authenticated_providers: [...new Set(models.map((model) => model.provider))], models }
+  childModelViewFor: (_ctx, environment) => {
+    const agentDir = getAgentDir()
+    const childEnvironment = Object.fromEntries(Object.entries(environment).flatMap(([key, value]) => (value === undefined ? [] : [[key, value]])))
+    return ModelRuntime.create({ authPath: `${agentDir}/auth.json`, modelsPath: `${agentDir}/models.json` }).then((runtime) => {
+      const models = runtime.getAvailableSnapshot()
+      return Promise.all(
+        [...new Set(models.map((model) => model.provider))].map((provider) =>
+          runtime.getAuth(provider, { env: childEnvironment }).then((auth) => ({ authenticated: auth !== undefined, provider }))
+        )
+      ).then((authenticated) => ({
+        authenticated_providers: authenticated.flatMap(({ authenticated: configured, provider }) => (configured ? [provider] : [])),
+        models: models.map((model) => ({ contextWindow: model.contextWindow, model: model.id, provider: model.provider })),
+      }))
+    })
   },
   environment: () => process.env,
 }

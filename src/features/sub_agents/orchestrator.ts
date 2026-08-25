@@ -26,6 +26,7 @@ import {
   deriveChildEnvironment,
   deriveWorkerConfig,
 } from './model.js'
+import { createActivityProjection } from './operator.js'
 import { ChildProcess, type ChildProcessApi, type ProcessError, type ProcessIdentity, type RunningChild, type TerminationResult } from './process.js'
 import { MAX_ARTIFACT_BYTES, MAX_FRAME_BYTES, ProtocolError, encodeFrame } from './protocol.js'
 import {
@@ -36,6 +37,7 @@ import {
   type AgentTurnRecord,
   type LaunchLease,
   type NotificationSinkApi,
+  type NotificationToken,
   type ProfileResolverApi,
   type StoreError,
   type SubagentRecord,
@@ -102,6 +104,7 @@ export interface SubagentOrchestratorApi {
   ) => Effect.Effect<SteeringAck | CommandError | AgentResult, OrchestrationError>
   readonly interrupt: (session: SessionKey, target: string) => Effect.Effect<AgentResult | SettledInterruptNoop, OrchestrationError>
   readonly interruptAll: (session: SessionKey) => Effect.Effect<void, OrchestrationError>
+  readonly hasLiveChildren: (session: SessionKey) => boolean
 }
 export class SubagentOrchestrator extends Context.Service<SubagentOrchestrator, SubagentOrchestratorApi>()(
   'pi-extensions/features/sub_agents/orchestrator/SubagentOrchestrator'
@@ -112,8 +115,10 @@ type TurnState = 'running' | 'settling' | 'settled'
 interface Reservation {
   readonly agentId: string
   readonly profile: PersistedResolvedProfile
+  readonly slotId: string
   readonly taskName: string
 }
+type Delivery = 'unclaimed' | 'wait' | 'notice'
 interface Turn extends Reservation {
   readonly activity: Ref.Ref<number>
   readonly child: RunningChild
@@ -121,6 +126,7 @@ interface Turn extends Reservation {
   readonly deferred: Deferred.Deferred<AgentResult, PublicRefusalError>
   readonly deadlineMonotonic: bigint
   readonly deadlineWall: number
+  readonly delivery: Delivery
   readonly followUp: Ref.Ref<'available' | 'pending' | 'used'>
   readonly generation: number
   readonly logPath: string
@@ -143,19 +149,28 @@ interface Notice {
   readonly settledAt: number
   readonly taskName: string
 }
+interface Provisional extends Reservation {
+  readonly child: RunningChild
+  readonly deleteArtifacts: boolean
+  readonly generation: number
+  readonly session: SessionKey
+}
 interface Snapshot {
   readonly agents: ReadonlyMap<string, Turn>
   readonly notices: readonly Notice[]
   readonly phase: Phase
+  readonly provisional: ReadonlyMap<string, Provisional>
   readonly slots: ReadonlyMap<string, Reservation>
-  readonly starting: ReadonlySet<string>
+  readonly starting: ReadonlyMap<string, Reservation>
 }
 interface Session {
   readonly generation: number
+  readonly key: SessionKey
   readonly mutex: Semaphore.Semaphore
   readonly scope: Scope.Closeable
   readonly state: Ref.Ref<Snapshot>
 }
+const notificationToken = (session: Session): NotificationToken => ({ generation: session.generation, session: session.key })
 interface Cleanup {
   readonly child?: RunningChild
   readonly identity: ProcessIdentity
@@ -216,6 +231,15 @@ const resultMessage = (result: AgentResult): string =>
       ? `Sub-agent ${result.task_name} completed: ${result.conclusion}`
       : `Sub-agent ${result.task_name} ${result.status}: ${result.error.message}`
   )
+const boundedInlineResult = (value: string): boolean =>
+  notificationBytes.encode(value).byteLength <= MAX_NOTIFICATION_BYTES && value.split('\n').length <= MAX_NOTIFICATION_LINES
+interface InlineResultFrame {
+  readonly conclusion?: string
+  readonly conclusion_preview?: string
+}
+const oversizedInlineResult = (frame: InlineResultFrame): boolean =>
+  (frame.conclusion !== undefined && !boundedInlineResult(frame.conclusion)) ||
+  (frame.conclusion_preview !== undefined && !boundedInlineResult(frame.conclusion_preview))
 const knownTurns = (state: Snapshot, targets: readonly string[]): readonly Turn[] | string => {
   const unknown = targets.find((target) => !state.agents.has(target))
   if (unknown !== undefined) {
@@ -226,20 +250,21 @@ const knownTurns = (state: Snapshot, targets: readonly string[]): readonly Turn[
     return turn === undefined ? [] : [turn]
   })
 }
-const correlatedInitial = (frame: DecodedChild, agentId: string): boolean =>
-  frame.agent_id === agentId && frame.turn === 1 && frame.command_id === 'initial'
+const correlatedInitial = (frame: DecodedChild, agentId: string, turn: number): boolean =>
+  frame.agent_id === agentId && frame.turn === turn && frame.command_id === 'initial'
 const childLifecycleFrame = (frame: unknown): frame is DecodedChild =>
   Value.Check(ChildProgressFrameSchema, frame) ||
   Value.Check(ChildResultFrameSchema, frame) ||
   Value.Check(ChildSteerAckFrameSchema, frame) ||
   Value.Check(ChildCommandErrorFrameSchema, frame)
-const outcome = (taskName: string, status: 'failed' | 'interrupted', code: ToolErrorCode, message: string): AgentResult => ({
+const outcome = (taskName: string, status: 'failed' | 'interrupted', code: ToolErrorCode, message: string, turn = 1): AgentResult => ({
   error: { code, message },
   status,
   task_name: taskName,
-  turn: 1,
+  turn,
 })
 const copy = <Key, Value>(map: ReadonlyMap<Key, Value>): Map<Key, Value> => new Map(map)
+const cleanupKey = (agentId: string, identity: ProcessIdentity): string => `${agentId}:${identity.pid}:${identity.birthMarker}`
 const attempt = <Value, Error>(effect: Effect.Effect<Value, Error>) =>
   effect.pipe(
     Effect.map((value) => ({ ok: true as const, value })),
@@ -347,31 +372,16 @@ const activityColor = (profile: string): RunningAgent['color'] => {
 
 const make = ({ activity, cleanup, notifications, process, resolver, store }: OrchestratorDependencies): MadeOrchestrator => {
   const sessions = new Map<string, Session>()
+  const activityProjection = createActivityProjection({ publish: activity.publish })
   let initialized: Deferred.Deferred<void, OrchestrationError> | undefined
   let identifiers = 0
+  let slotIdentifiers = 0
   let generations = 0
   let noticeIdentifiers = 0
-  const publishReady = (turn: Turn, lastActivityAt: number): Effect.Effect<void> =>
-    activity.publish([
-      ...activity.list().filter((agent) => agent.agentId !== turn.agentId),
-      {
-        agentId: turn.agentId,
-        color: activityColor(turn.profile.key),
-        lastActivityAt,
-        name: turn.taskName,
-        profile: turn.profile.key,
-        sessionId: turn.sessionKey,
-        state: 'running',
-      },
-    ])
-  const removeActivity = (agentId: string): Effect.Effect<void> => activity.publish(activity.list().filter((agent) => agent.agentId !== agentId))
-  const closeActivity = (sessionId: string): Effect.Effect<void> => activity.publish(activity.list().filter((agent) => agent.sessionId !== sessionId))
   const touch = (turn: Turn): Effect.Effect<void> =>
     Clock.currentTimeMillis.pipe(
       Effect.flatMap((lastActivityAt) =>
-        Ref.update(turn.activity, (value) => value + 1).pipe(
-          Effect.andThen(activity.publish(activity.list().map((agent) => (agent.agentId === turn.agentId ? { ...agent, lastActivityAt } : agent))))
-        )
+        Ref.update(turn.activity, (value) => value + 1).pipe(Effect.andThen(activityProjection.updateActivity(turn.agentId, lastActivityAt)))
       )
     )
   const active = (key: string): Effect.Effect<Session, PublicRefusalError> =>
@@ -383,16 +393,32 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
       )
     )
   const retainCleanup = (agentId: string, item: Cleanup) =>
-    store
-      .createLease(agentId, { identity: item.identity, session: item.session, taskName: item.taskName })
-      .pipe(Effect.andThen(Ref.update(cleanup, (items) => new Map(items).set(agentId, item))), Effect.asVoid)
+    store.listLeases.pipe(
+      Effect.flatMap((leases) => {
+        const lease = leases.find((candidate) => candidate.agentId === agentId)?.lease
+        const owned = lease === undefined || (lease.identity.pid === item.identity.pid && lease.identity.birthMarker === item.identity.birthMarker)
+        return owned ? store.createLease(agentId, { identity: item.identity, session: item.session, taskName: item.taskName }) : Effect.void
+      }),
+      Effect.andThen(Ref.update(cleanup, (items) => new Map(items).set(cleanupKey(agentId, item.identity), item))),
+      Effect.asVoid
+    )
   const releaseCleanup = (agentId: string, item: Cleanup, removeArtifacts = false) =>
     (item.child === undefined ? Effect.void : item.child.release).pipe(
-      Effect.andThen(removeArtifacts ? store.delete(agentId) : store.removeLease(agentId)),
+      Effect.andThen(
+        store.listLeases.pipe(
+          Effect.flatMap((leases) => {
+            const lease = leases.find((candidate) => candidate.agentId === agentId)?.lease
+            if (lease !== undefined && (lease.identity.pid !== item.identity.pid || lease.identity.birthMarker !== item.identity.birthMarker)) {
+              return Effect.void
+            }
+            return removeArtifacts ? store.delete(agentId) : store.removeLease(agentId)
+          })
+        )
+      ),
       Effect.andThen(
         Ref.update(cleanup, (items) => {
           const next = new Map(items)
-          next.delete(agentId)
+          next.delete(cleanupKey(agentId, item.identity))
           return next
         })
       ),
@@ -471,7 +497,11 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
               Effect.flatMap((invoked) =>
                 restore(Effect.yieldNow).pipe(
                   Effect.andThen(Ref.set(invoked, true)),
-                  Effect.andThen(notifications.publish([...claimed.map((notice) => notice.message), notificationDirections]).pipe(Effect.ignore)),
+                  Effect.andThen(
+                    notifications
+                      .publish([...claimed.map((notice) => notice.message), notificationDirections], notificationToken(session))
+                      .pipe(Effect.ignore)
+                  ),
                   Effect.ensuring(
                     Ref.get(invoked).pipe(
                       Effect.flatMap((didInvoke) =>
@@ -530,14 +560,50 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
           : Effect.void
       )
     )
-  const clearStarting = (session: Session, taskName: string): Effect.Effect<void> =>
+  const registerProvisional = (session: Session, provisional: Provisional): Effect.Effect<void, PublicRefusalError> =>
+    locked(
+      session,
+      snapshot(session).pipe(
+        Effect.flatMap((state) =>
+          state.phase === 'open'
+            ? Ref.set(session.state, { ...state, provisional: new Map(state.provisional).set(provisional.slotId, provisional) })
+            : Effect.fail(unavailable())
+        )
+      )
+    )
+  const removeProvisional = (session: Session, slotId: string): Effect.Effect<void> =>
     locked(
       session,
       snapshot(session).pipe(
         Effect.flatMap((state) => {
-          const starting = new Set(state.starting)
-          starting.delete(taskName)
-          const slots = new Map([...state.slots].filter(([, reservation]) => reservation.taskName !== taskName))
+          const provisional = copy(state.provisional)
+          provisional.delete(slotId)
+          return Ref.set(session.state, { ...state, provisional })
+        })
+      )
+    )
+  const clearStarting = (session: Session, reservationId: string): Effect.Effect<void> =>
+    locked(
+      session,
+      snapshot(session).pipe(
+        Effect.flatMap((state) => {
+          const starting = copy(state.starting)
+          starting.delete(reservationId)
+          const slots = copy(state.slots)
+          slots.delete(reservationId)
+          return Ref.set(session.state, { ...state, slots, starting })
+        })
+      )
+    )
+  const clearProvisionalStarting = (session: Session, slotId: string): Effect.Effect<void> =>
+    locked(
+      session,
+      snapshot(session).pipe(
+        Effect.flatMap((state) => {
+          const starting = copy(state.starting)
+          starting.delete(slotId)
+          const slots = copy(state.slots)
+          slots.delete(slotId)
           return Ref.set(session.state, { ...state, slots, starting })
         })
       )
@@ -554,7 +620,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
         const agents = copy(state.agents)
         agents.set(turn.taskName, { ...latest, released: true })
         const slots = copy(state.slots)
-        slots.delete(turn.agentId)
+        slots.delete(turn.slotId)
         yield* Ref.set(session.state, { ...state, agents, slots })
       })
     )
@@ -618,9 +684,16 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
           return
         }
         const settledAgents = copy(after.agents)
-        const settled = { ...latest, result: value, state: 'settled' as const, turns: [...latest.turns, { profile: latest.profile, result: value }] }
+        const notify = latest.background && latest.delivery === 'unclaimed'
+        const settled = {
+          ...latest,
+          delivery: notify ? ('notice' as const) : latest.delivery,
+          result: value,
+          state: 'settled' as const,
+          turns: [...latest.turns, { profile: latest.profile, result: value }],
+        }
         settledAgents.set(token.taskName, settled)
-        const notices = latest.background
+        const notices = notify
           ? [
               ...after.notices,
               {
@@ -634,9 +707,9 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
             ]
           : after.notices
         yield* Ref.set(session.state, { ...after, agents: settledAgents, notices })
-        yield* removeActivity(latest.agentId)
+        yield* activityProjection.remove(latest.agentId)
         yield* Deferred.succeed(settled.deferred, value)
-        if (latest.background) {
+        if (notify) {
           yield* Effect.forkIn(flushNotifications(session), session.scope)
         }
       })
@@ -681,7 +754,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
           ? settle(
               session,
               turn,
-              outcome(turn.taskName, 'failed', 'protocol_error', 'Worker sent an unexpected steering acknowledgement.'),
+              outcome(turn.taskName, 'failed', 'protocol_error', 'Worker sent an unexpected steering acknowledgement.', turn.turn),
               'protocol_error'
             )
           : Ref.set(turn.followUp, response.accepted ? 'used' : 'available').pipe(Effect.andThen(Deferred.succeed(waiting, response)))
@@ -690,7 +763,12 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
     )
   const settleFrame = (session: Session, turn: Turn, frame: unknown): Effect.Effect<void> => {
     if (!valid(turn, frame)) {
-      return settle(session, turn, outcome(turn.taskName, 'failed', 'protocol_error', 'Worker sent an invalid lifecycle frame.'), 'protocol_error')
+      return settle(
+        session,
+        turn,
+        outcome(turn.taskName, 'failed', 'protocol_error', 'Worker sent an invalid lifecycle frame.', turn.turn),
+        'protocol_error'
+      )
     }
     if (Value.Check(ChildProgressFrameSchema, frame)) {
       return touch(turn)
@@ -721,6 +799,14 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
     }
     if (!Value.Check(ChildResultFrameSchema, frame)) {
       return Effect.void
+    }
+    if (frame.status === 'completed' && oversizedInlineResult(frame)) {
+      return settle(
+        session,
+        turn,
+        outcome(turn.taskName, 'failed', 'result_too_large', 'Worker result exceeds the inline limit.', turn.turn),
+        'result'
+      )
     }
     if (frame.status !== 'completed') {
       return touch(turn).pipe(
@@ -760,7 +846,9 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
     }
     if (frame.conclusion_bytes > MAX_ARTIFACT_BYTES) {
       return touch(turn).pipe(
-        Effect.andThen(settle(session, turn, outcome(turn.taskName, 'failed', 'result_too_large', 'The full result exceeds 10 MiB.'), 'result'))
+        Effect.andThen(
+          settle(session, turn, outcome(turn.taskName, 'failed', 'result_too_large', 'The full result exceeds 10 MiB.', turn.turn), 'result')
+        )
       )
     }
     return touch(turn).pipe(
@@ -780,10 +868,15 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
           ),
         onSuccess: (content) => {
           if (content.byteLength > MAX_ARTIFACT_BYTES) {
-            return settle(session, turn, outcome(turn.taskName, 'failed', 'result_too_large', 'The full result exceeds 10 MiB.'), 'result')
+            return settle(session, turn, outcome(turn.taskName, 'failed', 'result_too_large', 'The full result exceeds 10 MiB.', turn.turn), 'result')
           }
           if (content.byteLength !== frame.conclusion_bytes) {
-            return settle(session, turn, outcome(turn.taskName, 'failed', 'agent_failed', 'Worker artifact byte count did not match.'), 'result')
+            return settle(
+              session,
+              turn,
+              outcome(turn.taskName, 'failed', 'agent_failed', 'Worker artifact byte count did not match.', turn.turn),
+              'result'
+            )
           }
           return store.writeFullResult(turn.agentId, content).pipe(
             Effect.matchEffect({
@@ -812,7 +905,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
     const next = (): Effect.Effect<void> =>
       turn.child.readStdout.pipe(
         Effect.matchEffect({
-          onFailure: () => settle(session, turn, outcome(turn.taskName, 'failed', 'agent_failed', 'Worker stdout failed.'), 'stdout'),
+          onFailure: () => settle(session, turn, outcome(turn.taskName, 'failed', 'agent_failed', 'Worker stdout failed.', turn.turn), 'stdout'),
           onSuccess: (bytes) => {
             if (bytes === undefined) {
               try {
@@ -821,16 +914,26 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                 return settle(
                   session,
                   turn,
-                  outcome(turn.taskName, 'failed', 'protocol_error', 'Worker stdout ended with an incomplete frame.'),
+                  outcome(turn.taskName, 'failed', 'protocol_error', 'Worker stdout ended with an incomplete frame.', turn.turn),
                   'eof'
                 )
               }
-              return settle(session, turn, outcome(turn.taskName, 'failed', 'agent_failed', 'Worker stdout ended without a result.'), 'eof')
+              return settle(
+                session,
+                turn,
+                outcome(turn.taskName, 'failed', 'agent_failed', 'Worker stdout ended without a result.', turn.turn),
+                'eof'
+              )
             }
             try {
               return Effect.forEach(frames.push(bytes), (frame) => settleFrame(session, turn, frame), { discard: true }).pipe(Effect.andThen(next))
             } catch {
-              return settle(session, turn, outcome(turn.taskName, 'failed', 'protocol_error', 'Worker sent malformed JSONL.'), 'protocol_error')
+              return settle(
+                session,
+                turn,
+                outcome(turn.taskName, 'failed', 'protocol_error', 'Worker sent malformed JSONL.', turn.turn),
+                'protocol_error'
+              )
             }
           },
         })
@@ -842,7 +945,12 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
       Effect.all([Clock.currentTimeMillis, Clock.monotonicTimeNanos]).pipe(
         Effect.flatMap(([wall, monotonic]) => {
           if (wall >= turn.deadlineWall || monotonic >= turn.deadlineMonotonic) {
-            return settle(session, turn, outcome(turn.taskName, 'failed', 'turn_timeout', 'The sub-agent exceeded its deadline.'), 'deadline')
+            return settle(
+              session,
+              turn,
+              outcome(turn.taskName, 'failed', 'turn_timeout', 'The sub-agent exceeded its deadline.', turn.turn),
+              'deadline'
+            )
           }
           const remaining = Number((turn.deadlineMonotonic - monotonic) / 1_000_000n)
           return Effect.sleep(`${Math.max(1, remaining)} millis`).pipe(Effect.andThen(wait))
@@ -852,11 +960,19 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
   }
   const supervise = (session: Session, turn: Turn): Effect.Effect<void> =>
     turn.child.wait.pipe(
-      Effect.andThen(settle(session, turn, outcome(turn.taskName, 'failed', 'agent_failed', 'The worker exited without a result.'), 'exit')),
+      Effect.andThen(
+        settle(session, turn, outcome(turn.taskName, 'failed', 'agent_failed', 'The worker exited without a result.', turn.turn), 'exit')
+      ),
       Effect.andThen(releaseProcess(turn).pipe(Effect.ignore)),
       Effect.andThen(releaseSlot(session, turn))
     )
-  const readReady = (child: RunningChild, agentId: string, frames: ChildDecoder, pending: unknown[]): Effect.Effect<string, PublicRefusalError> => {
+  const readReady = (
+    child: RunningChild,
+    agentId: string,
+    turn: number,
+    frames: ChildDecoder,
+    pending: unknown[]
+  ): Effect.Effect<string, PublicRefusalError> => {
     const next = (): Effect.Effect<string, PublicRefusalError> =>
       child.readStdout.pipe(
         Effect.mapError((error) => refusal('startup_failed', error.message, error)),
@@ -868,26 +984,26 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
             let sessionPath: string | undefined
             for (const frame of frames.push(bytes)) {
               if (sessionPath === undefined && Value.Check(ChildReadyFrameSchema, frame)) {
-                if (!correlatedInitial(frame, agentId)) {
-                  return Effect.fail(refusal('protocol_error', 'Worker sent an invalid readiness frame.'))
+                if (!correlatedInitial(frame, agentId, turn)) {
+                  return Effect.fail(refusal('startup_failed', 'Worker sent an invalid readiness frame.'))
                 }
                 sessionPath = frame.session_path
                 continue
               }
               if (!childLifecycleFrame(frame)) {
-                return Effect.fail(refusal('protocol_error', 'Worker sent an invalid readiness frame.'))
+                return Effect.fail(refusal('startup_failed', 'Worker sent an invalid readiness frame.'))
               }
-              if (!correlatedInitial(frame, agentId)) {
-                return Effect.fail(refusal('protocol_error', 'Worker sent an invalid readiness frame.'))
+              if (!correlatedInitial(frame, agentId, turn)) {
+                return Effect.fail(refusal('startup_failed', 'Worker sent an invalid readiness frame.'))
               }
               if (sessionPath === undefined && !Value.Check(ChildProgressFrameSchema, frame)) {
-                return Effect.fail(refusal('protocol_error', 'Worker sent an invalid readiness frame.'))
+                return Effect.fail(refusal('startup_failed', 'Worker sent an invalid readiness frame.'))
               }
               pending.push(frame)
             }
             return sessionPath === undefined ? next() : Effect.succeed(sessionPath)
           } catch {
-            return Effect.fail(refusal('protocol_error', 'Worker sent an invalid readiness frame.'))
+            return Effect.fail(refusal('startup_failed', 'Worker sent an invalid readiness frame.'))
           }
         })
       )
@@ -907,7 +1023,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
       for (const identity of identities) {
         stopped.push(yield* process.terminateVerified(identity))
       }
-      if (mismatch || run.record?.status !== 'running' || stopped.some((result) => result === 'exited' || result === 'mismatch')) {
+      if (mismatch || stopped.some((result) => result === 'exited' || result === 'mismatch' || result === 'signalled')) {
         yield* store.delete(agentId)
         return
       }
@@ -959,10 +1075,13 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
     const { reservation, resume } = options
     return Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
+        const expectedTurn = resume === undefined ? 1 : resume.turns.length + 1
         const [dispatchWall, dispatchMonotonic] = yield* Effect.all([Clock.currentTimeMillis, Clock.monotonicTimeNanos])
         const deadlineWall = dispatchWall + TURN_DEADLINE_MILLIS
         const deadlineMonotonic = dispatchMonotonic + BigInt(TURN_DEADLINE_MILLIS) * 1_000_000n
-        const logPath = yield* store.createLog(reservation.agentId).pipe(Effect.mapError((error) => refusal('startup_failed', error.message)))
+        const logPath = yield* store
+          .createLog(reservation.agentId, expectedTurn)
+          .pipe(Effect.mapError((error) => refusal('startup_failed', error.message)))
         const descriptor =
           resume === undefined
             ? yield* store.createSession(reservation.agentId).pipe(Effect.mapError((error) => refusal('startup_failed', error.message)))
@@ -977,7 +1096,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                 resume === undefined
                   ? { expected_dir: descriptor.runDirectory, mode: 'create' as const }
                   : { canonical_path: resume.sessionPath, mode: 'open' as const },
-              turn: resume === undefined ? 1 : resume.turns.length + 1,
+              turn: expectedTurn,
               type: 'config' as const,
               version: 1 as const,
               worker: deriveWorkerConfig(reservation.profile, admission),
@@ -986,7 +1105,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
               agent_id: reservation.agentId,
               command_id: 'initial',
               message: request.message,
-              turn: resume === undefined ? 1 : resume.turns.length + 1,
+              turn: expectedTurn,
               type: 'task' as const,
             }),
           }),
@@ -1000,8 +1119,16 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
             stderrPath: logPath,
           })
           .pipe(Effect.mapError((error) => refusal('startup_failed', error.message)))
-        const cleanupLaunch = (): Effect.Effect<void> =>
-          process.terminateVerified(child.identity).pipe(
+        yield* registerProvisional(session, {
+          ...reservation,
+          child,
+          deleteArtifacts: resume === undefined,
+          generation: session.generation,
+          session: key,
+        })
+        const cleanupLaunch = (): Effect.Effect<boolean> =>
+          removeProvisional(session, reservation.slotId).pipe(
+            Effect.andThen(process.terminateVerified(child.identity)),
             Effect.ignore,
             Effect.andThen(child.isAlive.pipe(Effect.orElseSucceed(() => true))),
             Effect.flatMap((alive) =>
@@ -1012,9 +1139,11 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                     profile: reservation.profile,
                     session: key,
                     taskName: reservation.taskName,
-                  })
+                  }).pipe(Effect.as(true))
                 : child.release.pipe(
                     Effect.ignore,
+                    Effect.andThen(store.delete(reservation.agentId).pipe(Effect.ignore)),
+                    Effect.andThen(store.removeLease(reservation.agentId).pipe(Effect.ignore)),
                     Effect.andThen(
                       releaseSlot(session, {
                         ...reservation,
@@ -1024,6 +1153,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                         deadlineMonotonic,
                         deadlineWall,
                         deferred: Deferred.makeUnsafe(),
+                        delivery: 'unclaimed',
                         followUp: Ref.makeUnsafe<'available' | 'pending' | 'used'>('available'),
                         generation: session.generation,
                         logPath,
@@ -1037,7 +1167,8 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                         turns: [],
                         warningEnqueued: false,
                       })
-                    )
+                    ),
+                    Effect.as(false)
                   )
             )
           )
@@ -1047,7 +1178,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
           yield* child.write(frames.task)
           const childFrames = decoder()
           const pendingFrames: unknown[] = []
-          const path = yield* Effect.timeout(readReady(child, reservation.agentId, childFrames, pendingFrames), '30 seconds').pipe(
+          const path = yield* Effect.timeout(readReady(child, reservation.agentId, expectedTurn, childFrames, pendingFrames), '30 seconds').pipe(
             Effect.flatMap((value) =>
               value === undefined ? Effect.fail(refusal('startup_timeout', 'Worker did not become ready in time.')) : Effect.succeed(value)
             )
@@ -1065,6 +1196,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
             deadlineMonotonic,
             deadlineWall,
             deferred: Deferred.makeUnsafe<AgentResult, PublicRefusalError>(),
+            delivery: 'unclaimed',
             followUp: Ref.makeUnsafe<'available' | 'pending' | 'used'>(resume === undefined ? 'available' : 'used'),
             generation: session.generation,
             logPath,
@@ -1074,7 +1206,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
             sessionPath: checked.canonicalPath,
             state: 'running',
             steerResponse: Ref.makeUnsafe<Deferred.Deferred<SteeringAck | CommandError> | undefined>(undefined),
-            turn: resume === undefined ? 1 : resume.turns.length + 1,
+            turn: expectedTurn,
             turns: resume?.turns ?? [],
             warningEnqueued: false,
           }
@@ -1099,10 +1231,24 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                 yield* store.replaceRecord(reservation.agentId, running).pipe(Effect.mapError((error) => refusal('startup_failed', error.message)))
                 const agents = copy(state.agents)
                 agents.set(request.task_name, turn)
-                const starting = new Set(state.starting)
-                starting.delete(request.task_name)
-                yield* Ref.set(session.state, { ...state, agents, starting })
-                yield* Clock.currentTimeMillis.pipe(Effect.flatMap((now) => publishReady(turn, now)))
+                const provisional = copy(state.provisional)
+                provisional.delete(reservation.slotId)
+                const starting = copy(state.starting)
+                starting.delete(reservation.slotId)
+                yield* Ref.set(session.state, { ...state, agents, provisional, starting })
+                yield* Clock.currentTimeMillis.pipe(
+                  Effect.flatMap((now) =>
+                    activityProjection.publishReady({
+                      agentId: turn.agentId,
+                      color: activityColor(turn.profile.key),
+                      lastActivityAt: now,
+                      name: turn.taskName,
+                      profile: turn.profile.key,
+                      sessionId: turn.sessionKey,
+                      state: 'running',
+                    })
+                  )
+                )
                 yield* Effect.forkIn(supervise(session, turn), session.scope)
                 yield* Effect.forkIn(stream(session, turn, childFrames, pendingFrames), session.scope)
                 yield* Effect.forkIn(
@@ -1119,7 +1265,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
               profile: reservation.profile.key,
               status: 'running' as const,
               task_name: request.task_name,
-              turn: resume === undefined ? 1 : resume.turns.length + 1,
+              turn: expectedTurn,
             },
             turn,
           }
@@ -1128,7 +1274,9 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
             Schema.is(PublicRefusalError)(error) ? error : refusal('startup_failed', error instanceof Error ? error.message : String(error), error)
           )
         )
-        const accepted = yield* Effect.onError(restore(launched), () => cleanupLaunch().pipe(Effect.ignore))
+        const accepted = yield* Effect.onError(restore(launched), () =>
+          cleanupLaunch().pipe(Effect.andThen(clearProvisionalStarting(session, reservation.slotId)))
+        )
         return request.run_in_background === true ? accepted.acceptance : yield* restore(Deferred.await(accepted.turn.deferred))
       })
     )
@@ -1144,51 +1292,89 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
               if (state.phase !== 'open') {
                 return yield* unavailable()
               }
-              yield* Ref.set(session.state, { ...state, phase: 'closing' as const })
-              return [...state.agents.values()]
+              yield* Ref.set(session.state, { ...state, phase: 'closing' as const, provisional: new Map() })
+              return { provisional: [...state.provisional.values()], turns: [...state.agents.values()] }
             })
           ).pipe(
-            Effect.flatMap((turns) =>
+            Effect.flatMap(({ provisional, turns }) =>
               Effect.forEach(
-                turns,
-                (turn) =>
-                  settle(session, turn, outcome(turn.taskName, 'interrupted', 'interrupted', 'The sub-agent was interrupted.'), 'close').pipe(
-                    Effect.andThen(stop(turn, 'close')),
-                    Effect.flatMap(({ errors, stopped }) => {
-                      if (stopped === 'stillAlive' || stopped === 'unverifiable') {
-                        return handoff(turn.agentId, {
-                          child: turn.child,
-                          identity: turn.child.identity,
-                          profile: turn.profile,
-                          session: key,
-                          taskName: turn.taskName,
-                        }).pipe(
-                          Effect.flatMap(() =>
-                            errors.length === 0
-                              ? Effect.void
-                              : Effect.fail(failure('close_session', 'cleanup_incomplete', errors.map(String).join('; ')))
-                          )
-                        )
-                      }
-                      return Effect.all([
-                        stopped === 'mismatch' ? store.delete(turn.agentId) : Effect.void,
-                        releaseProcess(turn),
-                        releaseSlot(session, turn),
-                      ]).pipe(
-                        Effect.flatMap(() =>
-                          errors.length === 0
-                            ? Effect.void
-                            : Effect.fail(failure('close_session', 'cleanup_incomplete', errors.map(String).join('; ')))
+                [...provisional, ...turns],
+                (item) =>
+                  'deleteArtifacts' in item
+                    ? process.terminateVerified(item.child.identity).pipe(
+                        Effect.ignore,
+                        Effect.andThen(item.child.isAlive.pipe(Effect.orElseSucceed(() => true))),
+                        Effect.flatMap((alive) =>
+                          alive
+                            ? handoff(item.agentId, {
+                                child: item.child,
+                                identity: item.child.identity,
+                                profile: item.profile,
+                                session: key,
+                                taskName: item.taskName,
+                              })
+                            : item.child.release.pipe(
+                                Effect.ignore,
+                                Effect.andThen(
+                                  item.deleteArtifacts
+                                    ? store.delete(item.agentId).pipe(Effect.ignore)
+                                    : store.removeLease(item.agentId).pipe(Effect.ignore)
+                                ),
+                                Effect.andThen(clearProvisionalStarting(session, item.slotId))
+                              )
                         )
                       )
-                    }),
-                    Effect.exit
-                  ),
+                    : Effect.succeed(item),
                 { concurrency: 'unbounded' }
+              ).pipe(
+                Effect.andThen(
+                  Effect.forEach(
+                    turns,
+                    (turn) =>
+                      settle(
+                        session,
+                        turn,
+                        outcome(turn.taskName, 'interrupted', 'interrupted', 'The sub-agent was interrupted.', turn.turn),
+                        'close'
+                      ).pipe(
+                        Effect.andThen(stop(turn, 'close')),
+                        Effect.flatMap(({ errors, stopped }) => {
+                          if (stopped === 'stillAlive' || stopped === 'unverifiable') {
+                            return handoff(turn.agentId, {
+                              child: turn.child,
+                              identity: turn.child.identity,
+                              profile: turn.profile,
+                              session: key,
+                              taskName: turn.taskName,
+                            }).pipe(
+                              Effect.flatMap(() =>
+                                errors.length === 0
+                                  ? Effect.void
+                                  : Effect.fail(failure('close_session', 'cleanup_incomplete', errors.map(String).join('; ')))
+                              )
+                            )
+                          }
+                          return Effect.all([
+                            stopped === 'mismatch' ? store.delete(turn.agentId) : Effect.void,
+                            releaseProcess(turn),
+                            releaseSlot(session, turn),
+                          ]).pipe(
+                            Effect.flatMap(() =>
+                              errors.length === 0
+                                ? Effect.void
+                                : Effect.fail(failure('close_session', 'cleanup_incomplete', errors.map(String).join('; ')))
+                            )
+                          )
+                        }),
+                        Effect.exit
+                      ),
+                    { concurrency: 'unbounded' }
+                  )
+                )
               )
             ),
             Effect.flatMap((attempts) =>
-              closeActivity(key).pipe(
+              activityProjection.closeSession(key).pipe(
                 Effect.andThen(Scope.close(session.scope, Exit.void)),
                 Effect.exit,
                 Effect.andThen((scope) =>
@@ -1213,6 +1399,14 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
         ),
         Effect.mapError((error) => (Schema.is(LifecycleError)(error) ? error : failure('close_session', 'session_not_open', error)))
       ),
+    hasLiveChildren: (key) => {
+      const session = sessions.get(key)
+      if (session === undefined || Ref.getUnsafe(session.state).phase !== 'open') {
+        return false
+      }
+      const state = Ref.getUnsafe(session.state)
+      return state.starting.size > 0 || [...state.agents.values()].some((turn) => turn.state === 'running' || turn.state === 'settling')
+    },
     initialize: initialize(),
     interrupt: (key, target): Effect.Effect<AgentResult | SettledInterruptNoop, OrchestrationError> =>
       active(key).pipe(
@@ -1223,17 +1417,23 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
               Effect.flatMap((state) => {
                 const turn = state.agents.get(target)
                 if (turn === undefined) {
-                  return state.starting.has(target)
+                  return [...state.starting.values()].some((reservation) => reservation.taskName === target)
                     ? Effect.fail(refusal('not_ready', `Agent "${target}" is still starting.`))
                     : Effect.fail(refusal('unknown_agent', `Unknown agent "${target}".`))
                 }
+                const notices = state.notices.filter((notice) => !(notice.kind === 'settlement' && notice.taskName === target))
+                const agents = copy(state.agents)
+                const claimed = { ...turn, delivery: 'wait' as const }
+                agents.set(target, claimed)
                 if (turn.result !== undefined) {
-                  return Effect.succeed<InterruptPlan>({
-                    turn,
-                    value: { interrupted: false, status: turn.result.status, task_name: target, turn: turn.turn },
-                  })
+                  return Ref.set(session.state, { ...state, agents, notices }).pipe(
+                    Effect.as<InterruptPlan>({
+                      turn: claimed,
+                      value: { interrupted: false, status: turn.result.status, task_name: target, turn: turn.turn },
+                    })
+                  )
                 }
-                return Effect.succeed<InterruptPlan>({ turn })
+                return Ref.set(session.state, { ...state, agents, notices }).pipe(Effect.as<InterruptPlan>({ turn: claimed }))
               })
             )
           ).pipe(
@@ -1241,7 +1441,13 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
               if (value !== undefined) {
                 return Effect.succeed<AgentResult | SettledInterruptNoop>(value)
               }
-              return settle(session, turn, outcome(target, 'interrupted', 'interrupted', 'The sub-agent was interrupted.'), 'interrupt', false).pipe(
+              return settle(
+                session,
+                turn,
+                outcome(target, 'interrupted', 'interrupted', 'The sub-agent was interrupted.', turn.turn),
+                'interrupt',
+                false
+              ).pipe(
                 Effect.andThen(stop(turn, 'interrupt')),
                 Effect.tap(({ stopped }) => completeStop(session, key, turn, stopped)),
                 Effect.andThen(Deferred.await(turn.deferred)),
@@ -1257,31 +1463,65 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
           snapshot(session).pipe(
             Effect.flatMap((state) =>
               Effect.forEach(
-                [...state.agents.values()],
-                (turn) =>
-                  turn.result === undefined
-                    ? settle(
-                        session,
-                        turn,
-                        outcome(turn.taskName, 'interrupted', 'interrupted', 'The sub-agent was interrupted.'),
-                        'interrupt_all'
-                      ).pipe(
-                        Effect.andThen(
-                          locked(
+                [...state.provisional.values()],
+                (provisional) =>
+                  removeProvisional(session, provisional.slotId).pipe(
+                    Effect.andThen(process.terminateVerified(provisional.child.identity)),
+                    Effect.ignore,
+                    Effect.andThen(provisional.child.isAlive.pipe(Effect.orElseSucceed(() => true))),
+                    Effect.flatMap((alive) =>
+                      alive
+                        ? handoff(provisional.agentId, {
+                            child: provisional.child,
+                            identity: provisional.child.identity,
+                            profile: provisional.profile,
+                            session: key,
+                            taskName: provisional.taskName,
+                          })
+                        : provisional.child.release.pipe(
+                            Effect.ignore,
+                            Effect.andThen(
+                              provisional.deleteArtifacts
+                                ? store.delete(provisional.agentId).pipe(Effect.ignore)
+                                : store.removeLease(provisional.agentId).pipe(Effect.ignore)
+                            ),
+                            Effect.andThen(clearProvisionalStarting(session, provisional.slotId))
+                          )
+                    )
+                  ),
+                { concurrency: 'unbounded', discard: true }
+              ).pipe(
+                Effect.andThen(
+                  Effect.forEach(
+                    [...state.agents.values()],
+                    (turn) =>
+                      turn.result === undefined
+                        ? settle(
                             session,
-                            snapshot(session).pipe(
-                              Effect.flatMap((latest) =>
-                                Ref.set(session.state, {
-                                  ...latest,
-                                  notices: latest.notices.filter((notice) => !(notice.kind === 'settlement' && notice.taskName === turn.taskName)),
-                                })
+                            turn,
+                            outcome(turn.taskName, 'interrupted', 'interrupted', 'The sub-agent was interrupted.', turn.turn),
+                            'interrupt_all'
+                          ).pipe(
+                            Effect.andThen(
+                              locked(
+                                session,
+                                snapshot(session).pipe(
+                                  Effect.flatMap((latest) =>
+                                    Ref.set(session.state, {
+                                      ...latest,
+                                      notices: latest.notices.filter(
+                                        (notice) => !(notice.kind === 'settlement' && notice.taskName === turn.taskName)
+                                      ),
+                                    })
+                                  )
+                                )
                               )
                             )
                           )
-                        )
-                      )
-                    : Effect.void,
-                { discard: true }
+                        : Effect.void,
+                    { discard: true }
+                  )
+                )
               )
             )
           )
@@ -1298,13 +1538,15 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                   Effect.flatMap((record) =>
                     record === undefined || record.session !== key
                       ? Effect.fail(refusal('unknown_agent', `Unknown agent "${turn.taskName}".`))
-                      : Effect.succeed({
-                          current_turn: record.turns.at(-1)?.result.turn ?? turn.turn,
-                          follow_up_available: false,
-                          profile: record.profile.key,
-                          status: record.status,
-                          task_name: record.taskName,
-                        })
+                      : Ref.get(turn.followUp).pipe(
+                          Effect.map((allowance) => ({
+                            current_turn: record.turns.at(-1)?.result.turn ?? turn.turn,
+                            follow_up_available: turn.generation === session.generation && record.status === 'completed' && allowance === 'available',
+                            profile: record.profile.key,
+                            status: record.status,
+                            task_name: record.taskName,
+                          }))
+                        )
                   )
                 )
               )
@@ -1320,12 +1562,83 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
             if (old === undefined || Ref.getUnsafe(old.state).phase === 'closed') {
               sessions.set(key, {
                 generation: ++generations,
+                key,
                 mutex: Semaphore.makeUnsafe(1),
                 scope: Scope.makeUnsafe(),
-                state: Ref.makeUnsafe<Snapshot>({ agents: new Map(), notices: [], phase: 'open', slots: new Map(), starting: new Set() }),
+                state: Ref.makeUnsafe<Snapshot>({
+                  agents: new Map(),
+                  notices: [],
+                  phase: 'open',
+                  provisional: new Map(),
+                  slots: new Map(),
+                  starting: new Map(),
+                }),
               })
             }
-          })
+            return sessions.get(key)
+          }).pipe(
+            Effect.flatMap((session) =>
+              session === undefined
+                ? Effect.die('Session creation failed.')
+                : store.listRecords.pipe(
+                    Effect.mapError((error) => failure('open_session', 'host_failure', error)),
+                    Effect.flatMap((records) =>
+                      locked(
+                        session,
+                        Effect.gen(function* () {
+                          const state = yield* snapshot(session)
+                          const agents = copy(state.agents)
+                          for (const { agentId, record } of records) {
+                            if (record.session !== key || record.status === 'running' || agents.has(record.taskName)) {
+                              continue
+                            }
+                            const result = record.turns.at(-1)?.result
+                            if (result === undefined) {
+                              continue
+                            }
+                            const deferred = Deferred.makeUnsafe<AgentResult, PublicRefusalError>()
+                            yield* Deferred.succeed(deferred, result)
+                            agents.set(record.taskName, {
+                              activity: Ref.makeUnsafe(0),
+                              agentId,
+                              background: false,
+                              child: {
+                                closeInput: Effect.void,
+                                identity: { birthMarker: 'hydrated', pid: 1 },
+                                isAlive: Effect.succeed(false),
+                                readStdout: Effect.never,
+                                release: Effect.void,
+                                wait: Effect.never,
+                                write: () => Effect.void,
+                              },
+                              deadlineMonotonic: 0n,
+                              deadlineWall: 0,
+                              deferred,
+                              delivery: 'wait',
+                              followUp: Ref.makeUnsafe<'available' | 'pending' | 'used'>('used'),
+                              generation: session.generation,
+                              logPath: record.logPath,
+                              profile: record.profile,
+                              released: true,
+                              resourceReleased: Ref.makeUnsafe(true),
+                              sessionKey: key,
+                              sessionPath: record.sessionPath,
+                              slotId: `hydrated-${agentId}`,
+                              state: 'settled',
+                              steerResponse: Ref.makeUnsafe<Deferred.Deferred<SteeringAck | CommandError> | undefined>(undefined),
+                              taskName: record.taskName,
+                              turn: result.turn,
+                              turns: record.turns,
+                              warningEnqueued: false,
+                            })
+                          }
+                          yield* Ref.set(session.state, { ...state, agents })
+                        })
+                      )
+                    )
+                  )
+            )
+          )
         ),
         Effect.mapError((error) => (Schema.is(LifecycleError)(error) ? error : failure('open_session', 'host_failure', error)))
       ),
@@ -1370,7 +1683,11 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                     if (!resolved.ok) {
                       return Effect.fail(refusal(resolved.error.code, resolved.error.message))
                     }
-                    const projected = Math.ceil(new TextEncoder().encode(message).byteLength / 4) + 8192
+                    const persistedTokens = turn.turns.reduce((total, entry) => {
+                      const text = entry.result.status === 'completed' ? entry.result.conclusion : entry.result.error.message
+                      return total + Math.ceil(new TextEncoder().encode(text).byteLength / 4)
+                    }, 0)
+                    const projected = persistedTokens + Math.ceil(new TextEncoder().encode(message).byteLength / 4) + 8192
                     if (projected >= resolved.profile.contextCeiling) {
                       return Effect.fail(refusal('context_limit', 'The follow-up would reach the context limit.'))
                     }
@@ -1381,12 +1698,22 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                           return yield* refusal('follow_up_used', 'The follow-up allowance has already been used.')
                         }
                         const state = yield* snapshot(session)
-                        if (state.agents.get(target)?.generation !== turn.generation || state.slots.size >= 3) {
+                        const reservations = [...state.slots.values()]
+                        if (
+                          state.agents.get(target)?.generation !== turn.generation ||
+                          state.slots.size >= 3 ||
+                          (resolved.profile.key === 'implementer' && reservations.some((item) => item.profile.key === 'implementer'))
+                        ) {
                           return yield* refusal('capacity_exceeded', 'Worker capacity is exhausted.')
                         }
-                        const reservation: Reservation = { agentId: turn.agentId, profile: resolved.profile, taskName: target }
+                        const reservation: Reservation = {
+                          agentId: turn.agentId,
+                          profile: resolved.profile,
+                          slotId: `slot-${++slotIdentifiers}`,
+                          taskName: target,
+                        }
                         yield* Ref.set(turn.followUp, 'pending')
-                        yield* Ref.set(session.state, { ...state, slots: new Map(state.slots).set(turn.agentId, reservation) })
+                        yield* Ref.set(session.state, { ...state, slots: new Map(state.slots).set(reservation.slotId, reservation) })
                         return reservation
                       })
                     ).pipe(
@@ -1485,7 +1812,10 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                     return yield* unavailable()
                   }
                   const retained = [...(yield* Ref.get(cleanup)).values()].filter((item) => item.session === key)
-                  if (state.agents.has(request.task_name)) {
+                  if (
+                    state.agents.has(request.task_name) ||
+                    [...state.starting.values()].some((reservation) => reservation.taskName === request.task_name)
+                  ) {
                     return yield* refusal('duplicate_task_name', `Task name "${request.task_name}" is already in use.`)
                   }
                   const reservations = [
@@ -1498,17 +1828,24 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                   ) {
                     return yield* refusal('capacity_exceeded', 'Worker capacity is exhausted.')
                   }
-                  const reservation: Reservation = { agentId: `agent-${++identifiers}`, profile: resolved.profile, taskName: request.task_name }
+                  const agentId = `agent-${++identifiers}`
+                  const reservation: Reservation = {
+                    agentId,
+                    profile: resolved.profile,
+                    slotId: `slot-${++slotIdentifiers}`,
+                    taskName: request.task_name,
+                  }
                   const slots = copy(state.slots)
-                  slots.set(reservation.agentId, reservation)
-                  const starting = new Set(state.starting)
-                  starting.add(request.task_name)
+                  slots.set(reservation.slotId, reservation)
+                  const starting = copy(state.starting)
+                  starting.set(reservation.slotId, reservation)
                   yield* Ref.set(session.state, { ...state, slots, starting })
                   return reservation
                 })
               ).pipe(
-                Effect.flatMap((reservation) => start(session, key, admission, request, { reservation })),
-                Effect.onError(() => clearStarting(session, request.task_name))
+                Effect.flatMap((reservation) =>
+                  start(session, key, admission, request, { reservation }).pipe(Effect.onError(() => clearStarting(session, reservation.slotId)))
+                )
               )
             })
           )
@@ -1534,12 +1871,18 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                     : Effect.succeed({ notices: [] as readonly Notice[], sort: false, turns })
                 }
                 const notices = state.notices.filter((notice) => notice.kind === 'settlement')
-                const turns = [...state.agents.values()].filter((turn) => turn.background && turn.state === 'running')
+                const turns = [...state.agents.values()].filter(
+                  (turn) => turn.background && turn.state === 'running' && turn.delivery === 'unclaimed'
+                )
                 if (notices.length === 0 && turns.length === 0) {
                   return Effect.fail(refusal('empty_targets', 'There are no eligible agents to wait for.'))
                 }
                 const ids = new Set(notices.map((notice) => notice.id))
-                return Ref.set(session.state, { ...state, notices: state.notices.filter((notice) => !ids.has(notice.id)) }).pipe(
+                const agents = copy(state.agents)
+                for (const turn of turns) {
+                  agents.set(turn.taskName, { ...turn, delivery: 'wait' })
+                }
+                return Ref.set(session.state, { ...state, agents, notices: state.notices.filter((notice) => !ids.has(notice.id)) }).pipe(
                   Effect.as({ notices, sort: true, turns })
                 )
               })
@@ -1582,10 +1925,19 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                     })
                   )
                 }
-                const turns = [...state.agents.values()].filter((turn) => turn.background && turn.state === 'running')
-                return turns.length === 0
-                  ? Effect.fail(refusal('empty_targets', 'There are no eligible agents to wait for.'))
-                  : Effect.succeed<{ readonly notice: Notice | undefined; readonly turns: readonly Turn[] }>({ notice: undefined, turns })
+                const turns = [...state.agents.values()].filter(
+                  (turn) => turn.background && turn.state === 'running' && turn.delivery === 'unclaimed'
+                )
+                if (turns.length === 0) {
+                  return Effect.fail(refusal('empty_targets', 'There are no eligible agents to wait for.'))
+                }
+                const agents = copy(state.agents)
+                for (const turn of turns) {
+                  agents.set(turn.taskName, { ...turn, delivery: 'wait' })
+                }
+                return Ref.set(session.state, { ...state, agents }).pipe(
+                  Effect.as<{ readonly notice: Notice | undefined; readonly turns: readonly Turn[] }>({ notice: undefined, turns })
+                )
               })
             )
           ).pipe(

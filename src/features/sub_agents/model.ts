@@ -435,11 +435,14 @@ export const ChildCommandErrorFrameSchema = Type.Union([
     type: Type.Literal('command_error'),
   }),
 ])
+const MAX_INLINE_RESULT_CHARS = 50 * 1024
+const InlineResultSchema = Type.String({ maxLength: MAX_INLINE_RESULT_CHARS })
+
 export const ChildResultFrameSchema = Type.Union([
   closed({
     agent_id: Type.String(),
     command_id: Type.String(),
-    conclusion: Type.String(),
+    conclusion: InlineResultSchema,
     status: Type.Literal('completed'),
     turn: Type.Integer(),
     type: Type.Literal('result'),
@@ -449,7 +452,7 @@ export const ChildResultFrameSchema = Type.Union([
     command_id: Type.String(),
     conclusion_artifact: Type.String(),
     conclusion_bytes: Type.Integer({ maximum: 10 * 1024 * 1024, minimum: 1 }),
-    conclusion_preview: Type.String(),
+    conclusion_preview: InlineResultSchema,
     status: Type.Literal('completed'),
     turn: Type.Integer(),
     type: Type.Literal('result'),

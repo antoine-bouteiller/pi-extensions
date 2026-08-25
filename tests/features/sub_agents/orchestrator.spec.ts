@@ -34,8 +34,8 @@ const request = (task_name: string, agent_type: ProfileKey = 'scout', run_in_bac
   run_in_background,
   task_name,
 })
-const ready = (child: ChildControl, agentId: string, sessionPath: string): Effect.Effect<void> =>
-  child.emit(bytes({ agent_id: agentId, command_id: 'initial', session_path: sessionPath, turn: 1, type: 'ready' }))
+const ready = (child: ChildControl, agentId: string, sessionPath: string, turn = 1): Effect.Effect<void> =>
+  child.emit(bytes({ agent_id: agentId, command_id: 'initial', session_path: sessionPath, turn, type: 'ready' }))
 const completed = (child: ChildControl, agentId: string, conclusion = 'done', turn = 1): Effect.Effect<void> =>
   child.emit(bytes({ agent_id: agentId, command_id: 'initial', conclusion, status: 'completed', turn, type: 'result' }))
 const steerAck = (child: ChildControl, agentId: string, commandId = 'steer'): Effect.Effect<void> =>
@@ -869,7 +869,7 @@ describe('SubagentOrchestrator', () => {
           const orchestrator = yield* SubagentOrchestrator
           yield* orchestrator.initialize
           expect(fake.forceCalls()).toBe(5)
-          expect(fake.deletes()).toBe(3)
+          expect(fake.deletes()).toBe(4)
           expect(fake.pruneCalls()).toBe(1)
         }),
         fake.layer
@@ -1180,7 +1180,7 @@ describe('SubagentOrchestrator', () => {
           yield* fake.children[3].exit
           const resumed = yield* Effect.forkChild(orchestrator.send('steer', admission, 'result-first', 'second'))
           yield* TestClock.adjust('1 millis')
-          yield* ready(fake.children[4], 'agent-4', bunPath.join(root, 'session.json'))
+          yield* ready(fake.children[4], 'agent-4', bunPath.join(root, 'session.json'), 2)
           yield* completed(fake.children[4], 'agent-4', 'again', 2)
           expect((yield* Fiber.join(resumed)).turn).toBe(2)
         }),
@@ -1245,11 +1245,11 @@ describe('SubagentOrchestrator', () => {
           const config = fake.children[1].writes()[0] ?? ''
           expect(config).toContain(`"canonical_path":"${bunPath.join(root, 'session.json')}"`)
           expect(config).toContain('"mode":"open"')
-          yield* ready(fake.children[1], 'agent-1', alternate)
+          yield* ready(fake.children[1], 'agent-1', alternate, 2)
           expect((yield* Effect.exit(Fiber.join(mismatch)))._tag).toBe('Failure')
           const resumed = yield* Effect.forkChild(orchestrator.send('open', admission, 'source', 'next'))
           yield* TestClock.adjust('1 millis')
-          yield* ready(fake.children[2], 'agent-1', bunPath.join(root, 'session.json'))
+          yield* ready(fake.children[2], 'agent-1', bunPath.join(root, 'session.json'), 2)
           yield* completed(fake.children[2], 'agent-1', 'again', 2)
           expect((yield* Fiber.join(resumed)).turn).toBe(2)
 

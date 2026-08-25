@@ -14,57 +14,59 @@ import { type AgentTurnRecord, type SubagentRecord, type SubagentStoreApi } from
  * that ready turn settles or its session closes.
  */
 export interface ActivityProjection {
-  readonly closeSession: (sessionId: string) => void
+  readonly closeSession: (sessionId: string) => Effect.Effect<void>
   readonly list: () => readonly RunningAgent[]
-  readonly publishReady: (agent: RunningAgent) => void
-  readonly remove: (agentId: string) => void
-  readonly updateActivity: (agentId: string, lastActivityAt: number) => void
+  readonly publishReady: (agent: RunningAgent) => Effect.Effect<void>
+  readonly remove: (agentId: string) => Effect.Effect<void>
+  readonly updateActivity: (agentId: string, lastActivityAt: number) => Effect.Effect<void>
 }
 
 export interface ActivityProjectionOptions {
-  readonly publish: (agents: readonly RunningAgent[]) => void
+  readonly publish: (agents: readonly RunningAgent[]) => Effect.Effect<void>
 }
 
 export const createActivityProjection = ({ publish }: ActivityProjectionOptions): ActivityProjection => {
   let agents: readonly RunningAgent[] = []
-  const flush = (): void => publish(agents)
+  const flush = (): Effect.Effect<void> => publish(agents)
   return {
-    closeSession(sessionId) {
-      agents = agents.filter((agent) => agent.sessionId !== sessionId)
-      flush()
-    },
+    closeSession: (sessionId) =>
+      Effect.sync(() => {
+        agents = agents.filter((agent) => agent.sessionId !== sessionId)
+      }).pipe(Effect.andThen(flush)),
     list: () => agents,
-    publishReady(agent) {
+    publishReady: (agent) => {
       if (agent.state !== 'running' || agent.agentId === undefined || agent.sessionId === undefined || agent.lastActivityAt === undefined) {
-        return
+        return Effect.void
       }
-      if (agents.some((current) => current.agentId === agent.agentId)) {
-        return
-      }
-      agents = [...agents, agent]
-      flush()
-    },
-    remove(agentId) {
-      const next = agents.filter((agent) => agent.agentId !== agentId)
-      if (next.length === agents.length) {
-        return
-      }
-      agents = next
-      flush()
-    },
-    updateActivity(agentId, lastActivityAt) {
-      let changed = false
-      agents = agents.map((agent) => {
-        if (agent.agentId !== agentId) {
-          return agent
+      return Effect.sync(() => {
+        if (agents.some((current) => current.agentId === agent.agentId)) {
+          return false
         }
-        changed = true
-        return { ...agent, lastActivityAt }
-      })
-      if (changed) {
-        flush()
-      }
+        agents = [...agents, agent]
+        return true
+      }).pipe(Effect.flatMap((added) => (added ? flush() : Effect.void)))
     },
+    remove: (agentId) =>
+      Effect.sync(() => {
+        const next = agents.filter((agent) => agent.agentId !== agentId)
+        if (next.length === agents.length) {
+          return false
+        }
+        agents = next
+        return true
+      }).pipe(Effect.flatMap((removed) => (removed ? flush() : Effect.void))),
+    updateActivity: (agentId, lastActivityAt) =>
+      Effect.sync(() => {
+        let changed = false
+        agents = agents.map((agent) => {
+          if (agent.agentId !== agentId) {
+            return agent
+          }
+          changed = true
+          return { ...agent, lastActivityAt }
+        })
+        return changed
+      }).pipe(Effect.flatMap((changed) => (changed ? flush() : Effect.void))),
   }
 }
 
