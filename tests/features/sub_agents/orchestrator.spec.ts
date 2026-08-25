@@ -501,6 +501,45 @@ describe('SubagentOrchestrator', () => {
     })
   )
 
+  it.scoped('serializes concurrent capacity and implementer admission races at one claim', () =>
+    Effect.gen(function* () {
+      const root = yield* bunFileSystem
+        .makeTempDirectory({ prefix: 'orchestrator-concurrent-admission-' })
+        .pipe(Effect.flatMap(bunFileSystem.realPath))
+      const fake = yield* harness(root, { profiles: ['implementer', 'scout'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('capacity-race')
+          const capacity = yield* Effect.forEach(['one', 'two', 'three', 'four'], (name) =>
+            Effect.forkChild(orchestrator.spawn('capacity-race', admission, request(name)))
+          )
+          yield* TestClock.adjust('1 millis')
+          expect(fake.children).toHaveLength(3)
+          for (const [index, fiber] of capacity.entries()) {
+            if (index < 3) {
+              yield* ready(fake.children[index], `agent-${index + 1}`, bunPath.join(root, 'session.json'))
+              yield* Fiber.join(fiber)
+            } else {
+              expect((yield* Fiber.join(fiber).pipe(Effect.exit))._tag).toBe('Failure')
+            }
+          }
+          yield* orchestrator.openSession('implementer-race')
+          const implementers = yield* Effect.forEach(['first', 'second'], (name) =>
+            Effect.forkChild(orchestrator.spawn('implementer-race', admission, request(name, 'implementer')))
+          )
+          yield* TestClock.adjust('1 millis')
+          expect(fake.children).toHaveLength(4)
+          yield* ready(fake.children[3], 'agent-4', bunPath.join(root, 'session.json'))
+          const outcomes = yield* Effect.all(implementers.map((fiber) => Fiber.join(fiber).pipe(Effect.exit)))
+          expect(outcomes.filter((outcome) => outcome._tag === 'Success')).toHaveLength(1)
+          expect(outcomes.filter((outcome) => outcome._tag === 'Failure')).toHaveLength(1)
+        }),
+        fake.layer
+      )
+    })
+  )
+
   it.scoped('keeps inactive agents running and expires the dispatch deadline through the virtual clock', () =>
     Effect.gen(function* () {
       const root = yield* bunFileSystem
@@ -1261,6 +1300,135 @@ describe('SubagentOrchestrator', () => {
           yield* fake.releaseNotifications
           yield* Effect.yieldNow
           expect(fake.notifications().flat().join('\n')).toContain('Sub-agent two completed: survives')
+        }),
+        fake.layer
+      )
+    })
+  )
+
+  it.scoped('ignores late old-generation frames and exit after replacement', () =>
+    Effect.gen(function* () {
+      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'orchestrator-late-generation-' }).pipe(Effect.flatMap(bunFileSystem.realPath))
+      const fake = yield* harness(root, { profiles: ['scout'], termination: ['stillAlive'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('generation')
+          const oldSpawning = yield* Effect.forkChild(orchestrator.spawn('generation', admission, request('old')))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[0], 'agent-1', bunPath.join(root, 'session.json'))
+          yield* Fiber.join(oldSpawning)
+          const closing = yield* Effect.forkChild(orchestrator.closeSession('generation'))
+          yield* TestClock.adjust('5 seconds')
+          yield* Fiber.join(closing)
+          yield* orchestrator.openSession('generation')
+          const newSpawning = yield* Effect.forkChild(orchestrator.spawn('generation', admission, request('new')))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[1], 'agent-2', bunPath.join(root, 'session.json'))
+          yield* Fiber.join(newSpawning)
+          const before = fake.records().filter((record) => record.status !== 'running').length
+          yield* completed(fake.children[0], 'agent-1', 'late')
+          yield* fake.children[0].exit
+          yield* Effect.yieldNow
+          expect((yield* orchestrator.list('generation')).map((entry) => entry.task_name)).toEqual(['new'])
+          expect(fake.activity().map((agent) => agent.agentId)).toEqual(['agent-2'])
+          expect(fake.records().filter((record) => record.status !== 'running')).toHaveLength(before)
+          for (const [index, name] of ['two', 'three'].entries()) {
+            const spawning = yield* Effect.forkChild(orchestrator.spawn('generation', admission, request(name)))
+            yield* TestClock.adjust('1 millis')
+            yield* ready(fake.children[index + 2], `agent-${index + 3}`, bunPath.join(root, 'session.json'))
+            yield* Fiber.join(spawning)
+          }
+          expect((yield* Effect.exit(orchestrator.spawn('generation', admission, request('four'))))._tag).toBe('Failure')
+        }),
+        fake.layer
+      )
+    })
+  )
+
+  it.scoped('refuses failed and interrupted source turns independently before resume admission', () =>
+    Effect.gen(function* () {
+      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'orchestrator-not-resumable-' }).pipe(Effect.flatMap(bunFileSystem.realPath))
+      for (const status of ['failed', 'interrupted'] as const) {
+        const fake = yield* harness(root, { profiles: ['scout'] })
+        yield* Effect.provide(
+          Effect.gen(function* () {
+            const orchestrator = yield* SubagentOrchestrator
+            yield* orchestrator.openSession(status)
+            const spawning = yield* Effect.forkChild(orchestrator.spawn(status, admission, request('source')))
+            yield* TestClock.adjust('1 millis')
+            yield* ready(fake.children[0], 'agent-1', bunPath.join(root, 'session.json'))
+            yield* Fiber.join(spawning)
+            const frame =
+              status === 'failed'
+                ? '{"agent_id":"agent-1","command_id":"initial","error":{"code":"agent_failed","message":"failed"},"status":"failed","turn":1,"type":"result"}\n'
+                : '{"agent_id":"agent-1","command_id":"initial","error":{"code":"interrupted","message":"interrupted"},"status":"interrupted","turn":1,"type":"result"}\n'
+            yield* fake.children[0].emit(new TextEncoder().encode(frame))
+            yield* Effect.yieldNow
+            const code = yield* orchestrator
+              .send(status, admission, 'source', 'again')
+              .pipe(
+                Effect.match({ onFailure: (error) => (error._tag === 'PublicRefusalError' ? error.code : 'lifecycle'), onSuccess: () => 'accepted' })
+              )
+            expect(code).toBe('not_resumable')
+          }),
+          fake.layer
+        )
+      }
+    })
+  )
+
+  it.scoped('returns unknown_agent for a stale-generation resume target after replacement', () =>
+    Effect.gen(function* () {
+      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'orchestrator-stale-resume-' }).pipe(Effect.flatMap(bunFileSystem.realPath))
+      const fake = yield* harness(root, { closeExits: true, profiles: ['scout'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('replacement')
+          const spawning = yield* Effect.forkChild(orchestrator.spawn('replacement', admission, request('source', 'scout', false)))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[0], 'agent-1', bunPath.join(root, 'session.json'))
+          yield* completed(fake.children[0], 'agent-1')
+          yield* Fiber.join(spawning)
+          yield* orchestrator.closeSession('replacement')
+          yield* orchestrator.openSession('replacement')
+          const code = yield* orchestrator
+            .send('replacement', admission, 'source', 'again')
+            .pipe(
+              Effect.match({ onFailure: (error) => (error._tag === 'PublicRefusalError' ? error.code : 'lifecycle'), onSuccess: () => 'accepted' })
+            )
+          expect(code).toBe('unknown_agent')
+        }),
+        fake.layer
+      )
+    })
+  )
+
+  it.scoped('hands an explicitly cancelled admitted caller to cleanup without releasing its live slot twice', () =>
+    Effect.gen(function* () {
+      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'orchestrator-cancelled-' }).pipe(Effect.flatMap(bunFileSystem.realPath))
+      const fake = yield* harness(root, { profiles: ['scout'], termination: ['stillAlive'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('cancelled')
+          const spawning = yield* Effect.forkChild(orchestrator.spawn('cancelled', admission, request('foreground', 'scout', false)))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[0], 'agent-1', bunPath.join(root, 'session.json'))
+          yield* Effect.yieldNow
+          yield* Fiber.interrupt(spawning)
+          expect((yield* orchestrator.list('cancelled'))[0]?.status).toBe('running')
+          const closing = yield* Effect.forkChild(orchestrator.closeSession('cancelled'))
+          yield* TestClock.adjust('5 seconds')
+          const closed = yield* Fiber.join(closing).pipe(Effect.exit)
+          expect(closed._tag).toBe('Success')
+          expect(fake.leaseCreates()).toBe(2)
+          expect(fake.releases()).toBe(0)
+          yield* fake.children[0].exit
+          yield* Effect.yieldNow
+          expect(fake.leaseRemovals()).toBe(1)
+          expect(fake.releases()).toBe(1)
         }),
         fake.layer
       )

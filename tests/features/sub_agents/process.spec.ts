@@ -1,8 +1,15 @@
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { Effect, Fiber } from 'effect'
+import { DateTime, Effect, Fiber } from 'effect'
 import { TestClock } from 'effect/testing'
 
-import { ChildProcess, makeChildProcessLive, type PlatformChild, type ProcessPlatform } from '@/features/sub_agents/process.js'
+import {
+  ChildProcess,
+  macosProcessBirthMarker,
+  makeChildProcessLive,
+  type PlatformChild,
+  type ProcessPlatform,
+} from '@/features/sub_agents/process.js'
+import { linuxProcessBirthMarker } from '@/shared/effect/bun_host_file_system.js'
 
 const child: PlatformChild = {
   closeInput: Effect.void,
@@ -14,7 +21,76 @@ const child: PlatformChild = {
   write: () => Effect.void,
 }
 
+const expectPlausibleCurrentProcessStart = (seconds: number, now: number, thisYearStarted: number): void => {
+  expect(seconds).toBeGreaterThanOrEqual(thisYearStarted)
+  expect(seconds).toBeGreaterThanOrEqual(now - 5 * 60)
+  expect(seconds).toBeLessThanOrEqual(now + 1)
+}
+
+const systemFileText = (path: string): string => {
+  const result = Bun.spawnSync(['cat', path])
+  expect(result.exitCode).toBe(0)
+  return new TextDecoder().decode(result.stdout)
+}
+
 describe('ChildProcess', () => {
+  it.live('reads a stable, plausible native birth marker for the current process', () =>
+    Effect.gen(function* () {
+      const now = (yield* Effect.clockWith((clock) => clock.currentTimeMillis)) / 1000
+      const currentYear = DateTime.getPartUtc(DateTime.makeUnsafe(now * 1000), 'year')
+      const thisYearStarted = DateTime.toEpochSeconds(DateTime.makeUnsafe({ year: currentYear }))
+
+      if (process.platform === 'linux') {
+        const first = linuxProcessBirthMarker(process.pid)
+        const second = linuxProcessBirthMarker(process.pid)
+        expect(first?.length).toBeGreaterThan(0)
+        expect(first).toBe(second)
+        if (first === undefined) {
+          throw new Error('Current process birth marker is unavailable')
+        }
+
+        const separator = first.lastIndexOf(':')
+        const bootIdentifier = first.slice(0, separator)
+        const startTicks = Number(first.slice(separator + 1))
+        const processStat = systemFileText(`/proc/${process.pid}/stat`)
+        const statStartTicks = Number(
+          processStat
+            .slice(processStat.lastIndexOf(')') + 2)
+            .split(' ')
+            .at(19)
+        )
+        const currentBootIdentifier = systemFileText('/proc/sys/kernel/random/boot_id').trim()
+        const bootTime = /^btime (?<seconds>\d+)$/m.exec(systemFileText('/proc/stat'))
+        const clockTickResult = Bun.spawnSync(['getconf', 'CLK_TCK'])
+        const clockTicks = Number(new TextDecoder().decode(clockTickResult.stdout).trim())
+
+        expect(bootIdentifier).toBe(currentBootIdentifier)
+        expect(startTicks).toBe(statStartTicks)
+        expect(bootTime).not.toBeNull()
+        expect(clockTickResult.exitCode).toBe(0)
+        expect(clockTicks).toBeGreaterThan(0)
+        if (bootTime === null) {
+          throw new Error('Linux boot time is unavailable')
+        }
+        expectPlausibleCurrentProcessStart(Number(bootTime.groups?.seconds) + startTicks / clockTicks, now, thisYearStarted)
+        return
+      }
+      if (process.platform === 'darwin') {
+        const first = macosProcessBirthMarker(process.pid)
+        const second = macosProcessBirthMarker(process.pid)
+        expect(first?.length).toBeGreaterThan(0)
+        expect(first).toBe(second)
+        if (first === undefined) {
+          throw new Error('Current process birth marker is unavailable')
+        }
+
+        expectPlausibleCurrentProcessStart(Number(first.split(':', 1)[0]), now, thisYearStarted)
+        return
+      }
+      expect(process.platform).toBe('win32')
+    })
+  )
+
   it.effect('captures a birth marker at spawn and sends cooperative interrupt before force signalling', () => {
     const writes: string[] = []
     let forced = false
@@ -110,16 +186,34 @@ describe('ChildProcess', () => {
     }).pipe(Effect.provide(makeChildProcessLive(platform)))
   })
 
-  it.effect('refuses an unverifiable process identity', () => {
+  it.effect('reaps and releases an unverifiable child before reporting spawn failure', () => {
+    const operations: string[] = []
     const platform: ProcessPlatform = {
       birthMarker: () => Effect.void.pipe(Effect.as(undefined)),
-      forceTerminate: () => Effect.void,
-      spawn: () => Effect.succeed(child),
+      forceTerminate: () =>
+        Effect.sync(() => {
+          operations.push('terminate')
+        }),
+      spawn: () =>
+        Effect.succeed({
+          ...child,
+          closeInput: Effect.sync(() => {
+            operations.push('input')
+          }),
+          release: Effect.sync(() => {
+            operations.push('release')
+          }),
+          wait: Effect.sync(() => {
+            operations.push('wait')
+            return 0
+          }),
+        }),
     }
     return Effect.gen(function* () {
       const process = yield* ChildProcess
       const outcome = yield* Effect.result(process.spawn({ args: [], command: 'worker', cwd: '/', environment: {} }))
       expect(outcome._tag).toBe('Failure')
+      expect(operations).toEqual(['input', 'terminate', 'wait', 'release'])
     }).pipe(Effect.provide(makeChildProcessLive(platform)))
   })
 })

@@ -238,6 +238,18 @@ describe('sub-agent worker protocol', () => {
     })
   )
 
+  it.effect('maps provider errors and aborted model settlements to agent_failed', () =>
+    Effect.gen(function* () {
+      for (const stopReason of ['error', 'aborted'] as const) {
+        const started = yield* startHarnessedWorker()
+        yield* promise(() => started.harness.settle('unavailable', stopReason))
+        expect(frames(started.output).at(-1)).toEqual(
+          expect.objectContaining({ error: expect.objectContaining({ code: 'agent_failed' }), status: 'failed' })
+        )
+      }
+    })
+  )
+
   it.effect(
     'enforces output boundaries and writes relative artifacts at exact byte counts',
     () =>
@@ -263,6 +275,15 @@ describe('sub-agent worker protocol', () => {
             expect(yield* bunFileSystem.readFileString(bunPath.join(runDir, artifact.conclusion_artifact))).toBe(conclusion)
           }
         }
+        const exactLimit = yield* startHarnessedWorker({ frame: artifactFrame })
+        yield* promise(() => exactLimit.harness.settle('x'.repeat(MAX_ARTIFACT_BYTES)))
+        expect(frames(exactLimit.output).at(-1)).toEqual(expect.objectContaining({ conclusion_bytes: MAX_ARTIFACT_BYTES, status: 'completed' }))
+
+        const multibyte = yield* startHarnessedWorker({ frame: artifactFrame })
+        const multibyteConclusion = '€'.repeat(Math.ceil(MAX_INLINE_BYTES / 3))
+        yield* promise(() => multibyte.harness.settle(multibyteConclusion))
+        expect(artifactResult(frames(multibyte.output).at(-1)).conclusion_bytes).toBe(bytes.encode(multibyteConclusion).byteLength)
+
         const tooLarge = yield* startHarnessedWorker({ frame: artifactFrame })
         yield* promise(() => tooLarge.harness.settle('x'.repeat(MAX_ARTIFACT_BYTES + 1)))
         expect(frames(tooLarge.output).at(-1)).toEqual(
