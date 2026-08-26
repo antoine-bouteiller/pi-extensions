@@ -2,6 +2,7 @@ import { Context, Effect, Layer, type ManagedRuntime } from 'effect'
 import { type FileSystem } from 'effect/FileSystem'
 import { type Path } from 'effect/Path'
 import { type HttpClient } from 'effect/unstable/http'
+import { type ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner'
 
 import { type AgentActivityStore, type RunningAgent, runningAgents } from '#shared/state/agent_activity'
 import { formatStatusText, publishStatus, type StatusEntry, type StatusItem, statusBar } from '#shared/state/status_bar'
@@ -78,6 +79,6 @@ export const StatusBarLive: Layer.Layer<StatusBar> = Layer.succeed(StatusBar)({
 
 export const AgentActivityLive: Layer.Layer<AgentActivity> = Layer.succeed(AgentActivity)(agentActivityApi(runningAgents))
 
-export type AppServices = FileSystem | Path | HttpClient.HttpClient | StatusBar | AgentActivity
+export type AppServices = FileSystem | Path | HttpClient.HttpClient | StatusBar | AgentActivity | ChildProcessSpawner
 
 export type AppRuntime = ManagedRuntime.ManagedRuntime<AppServices, never>

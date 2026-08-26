@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url'
 
-import { BunFileSystem, BunPath } from '@effect/platform-bun'
+import { BunChildProcessSpawner, BunFileSystem, BunPath } from '@effect/platform-bun'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asResult } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
@@ -12,6 +12,8 @@ import { getOrCreateProcessRuntime } from '@/config/runtime.js'
 import { feature as statusPanel } from '@/features/status_panel/index.js'
 import { AgentActivity, type AgentActivityApi, type AppRuntime, StatusBarLive } from '@/shared/effect/app_services.js'
 import { parseJsonText } from '@/shared/utils/json.js'
+
+const BunPlatformLayer = BunChildProcessSpawner.layer.pipe(Layer.provideMerge(Layer.mergeAll(BunFileSystem.layer, BunPath.layer)))
 
 const sharedActivityScript = (paths: { aggregate: string; activity: string; runtime: string; statusPanel: string }): string => `
   const { Effect } = await import('effect');
@@ -104,7 +106,7 @@ describe('process-wide runtime', () => {
         },
       }
       const runtime: AppRuntime = ManagedRuntime.make(
-        Layer.mergeAll(BunFileSystem.layer, BunPath.layer, FetchHttpClient.layer, StatusBarLive, Layer.succeed(AgentActivity)(sentinelActivity))
+        Layer.mergeAll(BunPlatformLayer, FetchHttpClient.layer, StatusBarLive, Layer.succeed(AgentActivity)(sentinelActivity))
       )
       yield* withProcessEnv('PI_SUBAGENT_OWNER_TOKEN', undefined, () =>
         Effect.sync(() => {

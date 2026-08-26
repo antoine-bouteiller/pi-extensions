@@ -1,3 +1,4 @@
+import { BunFileSystem, BunPath } from '@effect/platform-bun'
 import { Effect, Layer, ManagedRuntime } from 'effect'
 
 import { AgentActivityLive } from '#shared/effect/app_services'
@@ -9,6 +10,8 @@ import { ProfileResolver, SubagentStoreLive } from './store.js'
 import { ProductionNotificationSinkLive } from './tools.js'
 
 const SubagentPortsLive = Layer.mergeAll(
+  BunFileSystem.layer,
+  BunPath.layer,
   AgentActivityLive,
   ChildProcessLive,
   ProductionNotificationSinkLive,
