@@ -546,11 +546,12 @@ const isolatedProtocolOutput = (): Output => {
     throw new Error('Windows sub-agent workers are unsupported')
   }
   const library = dlopen(process.platform === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6', {
+    dup: { args: ['i32'], returns: 'i32' },
     dup2: { args: ['i32', 'i32'], returns: 'i32' },
-    open: { args: ['cstring', 'i32'], returns: 'i32' },
   })
   try {
-    const descriptor = library.symbols.open(process.platform === 'darwin' ? '/dev/fd/1' : '/proc/self/fd/1', 1)
+    // Duplicating the descriptor keeps the original stdout reachable without depending on /dev/fd or /proc.
+    const descriptor = library.symbols.dup(1)
     if (descriptor < 0 || library.symbols.dup2(2, 1) < 0) {
       throw new Error('Could not isolate worker stdout')
     }
