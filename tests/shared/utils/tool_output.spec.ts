@@ -1,6 +1,9 @@
-import { BunFileSystem } from '@effect/platform-bun'
+import { tmpdir } from 'node:os'
+
+import { BunFileSystem, BunPath } from '@effect/platform-bun'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { DateTime, Effect, FileSystem } from 'effect'
+import { asNarrowed } from '@tests/utils/casts.js'
+import { DateTime, Effect, FileSystem, Layer, Random } from 'effect'
 
 import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
 import { boundToolTextEffect, SPILL_TTL_MS, truncateOutput, truncationNotice, writePrivateTempFileEffect } from '@/shared/utils/tool_output.js'
@@ -66,6 +69,40 @@ describe('bounded tool output', () => {
       expect((yield* fs.stat(bunPath.dirname(path))).mode & 0o777).toBe(0o700)
       expect((yield* fs.stat(path)).mode & 0o777).toBe(0o600)
     }).pipe(Effect.provide(BunFileSystem.layer))
+  )
+
+  it.effect('writePrivateTempFileEffect uses an injected FileSystem', () =>
+    Effect.gen(function* () {
+      const suffix = yield* Random.nextInt
+      const fakeDirectory = bunPath.join(tmpdir(), `tool-output-injected-${process.pid}-${suffix}`)
+      const makeTempDirectoryCalls: { readonly prefix?: string }[] = []
+      const writeFileStringCalls: {
+        readonly content: string
+        readonly options?: { readonly mode?: number }
+        readonly path: string
+      }[] = []
+      // The narrowed minimal stub omits every unneeded member, which fails loudly if the code path expands.
+      const fileSystem = asNarrowed<FileSystem.FileSystem, object>({
+        makeTempDirectory: (options?: { readonly prefix?: string }) =>
+          Effect.sync(() => {
+            makeTempDirectoryCalls.push(options ?? {})
+            return fakeDirectory
+          }),
+        readDirectory: () => Effect.succeed([]),
+        writeFileString: (path: string, content: string, options?: { readonly mode?: number }) =>
+          Effect.sync(() => {
+            writeFileStringCalls.push({ content, options, path })
+          }),
+      })
+
+      const path = yield* writePrivateTempFileEffect('secret', { prefix: 'tool-output-injected-' }).pipe(
+        Effect.provide(Layer.merge(Layer.succeed(FileSystem.FileSystem)(fileSystem), BunPath.layer))
+      )
+
+      expect(makeTempDirectoryCalls).toEqual([{ prefix: 'tool-output-injected-' }])
+      expect(writeFileStringCalls).toEqual([{ content: 'secret', options: { mode: 0o600 }, path }])
+      expect(yield* Effect.promise(() => Bun.file(path).exists())).toBeFalse()
+    })
   )
 
   it.effect('writePrivateTempFileEffect leaves no directory behind when the write fails', () =>
@@ -155,6 +192,6 @@ describe('bounded tool output', () => {
       expect(yield* bunFileSystem.exists(freshDirectory)).toBeTrue()
 
       yield* bunFileSystem.remove(freshDirectory, { force: true, recursive: true })
-    })
+    }).pipe(Effect.provide(Layer.merge(BunFileSystem.layer, BunPath.layer)))
   )
 })

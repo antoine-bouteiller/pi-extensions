@@ -10,14 +10,12 @@ import { ProfileResolver, SubagentStoreLive } from './store.js'
 import { ProductionNotificationSinkLive } from './tools.js'
 
 const SubagentPortsLive = Layer.mergeAll(
-  BunFileSystem.layer,
-  BunPath.layer,
   AgentActivityLive,
   ChildProcessLive,
   ProductionNotificationSinkLive,
   Layer.succeed(ProfileResolver)({ resolve: (key, snapshot) => Effect.succeed(resolveProfile(key, snapshot)) }),
   SubagentStoreLive
-)
+).pipe(Layer.provideMerge(Layer.mergeAll(BunFileSystem.layer, BunPath.layer)))
 
 const SubagentOrchestratorProductionLive = Layer.suspend(() => SubagentOrchestratorLive.pipe(Layer.provide(SubagentPortsLive)))
 

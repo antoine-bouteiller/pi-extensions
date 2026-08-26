@@ -100,7 +100,7 @@ export interface McpGatewayManager {
   list: (server: string, options?: McpOperationOptions) => Effect.Effect<readonly McpToolSummary[], Error>
   search: (query: string, options?: McpSearchOptions) => Effect.Effect<readonly McpToolSummary[], Error>
   describe: (tool: string, options?: McpOperationOptions) => Effect.Effect<McpToolDescription, Error>
-  call: (tool: string, args: JsonObject, options?: McpOperationOptions) => Effect.Effect<AgentToolResult<unknown>, Error>
+  call: (tool: string, args: JsonObject, options?: McpOperationOptions) => Effect.Effect<AgentToolResult<unknown>, Error, FileSystem | Path>
   authenticate: (server: string, options?: McpOperationOptions) => Effect.Effect<unknown, Error>
   close: Effect.Effect<void>
 }
@@ -126,7 +126,7 @@ export interface McpGatewayApi {
 
 export class McpGateway extends Context.Service<McpGateway, McpGatewayApi>()('pi-extensions/features/mcp/gateway/McpGateway') {}
 
-const textResult = (text: string, details?: unknown): Effect.Effect<AgentToolResult<unknown>, McpOperationError> =>
+const textResult = (text: string, details?: unknown): Effect.Effect<AgentToolResult<unknown>, McpOperationError, FileSystem | Path> =>
   boundGatewayOutput([{ text, type: 'text' }]).pipe(
     Effect.mapError(mcpOperationError),
     Effect.map((bounded) => {
@@ -340,7 +340,7 @@ const dispatchGateway = (
   state: McpGatewayStateFields,
   params: McpGatewayInput,
   signal: AbortSignal | undefined
-): Effect.Effect<AgentToolResult<unknown>, McpOperationError | ToolFailure> =>
+): Effect.Effect<AgentToolResult<unknown>, McpOperationError | ToolFailure, FileSystem | Path> =>
   Effect.gen(function* () {
     const selector = yield* classifySelector(params)
     const manager = yield* requireManager(state)
@@ -433,7 +433,7 @@ export interface GatewaySession {
   readonly dispatch: (
     params: McpGatewayInput,
     signal: AbortSignal | undefined
-  ) => Effect.Effect<AgentToolResult<unknown>, McpOperationError | ToolFailure, McpGateway>
+  ) => Effect.Effect<AgentToolResult<unknown>, McpOperationError | ToolFailure, FileSystem | Path | McpGateway>
   readonly oauthCompletions: (prefix: string) => { label: string; value: string }[]
   readonly start: (ctx: ExtensionContext) => Effect.Effect<void, McpOperationError, AppServices | McpGateway>
   readonly stop: (ctx: ExtensionContext) => Effect.Effect<void, McpOperationError>

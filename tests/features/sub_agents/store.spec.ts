@@ -23,7 +23,7 @@ const record = (settledAt?: number): SubagentRecord => {
 }
 
 describe('SubagentStore', () => {
-  it.live('creates owner-only directories and artifacts, atomically replaces records, and retains live records', () =>
+  it.effect('creates owner-only directories and artifacts, atomically replaces records, and retains live records', () =>
     Effect.gen(function* () {
       const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'subagent-store-' })
       yield* Effect.provide(
@@ -61,7 +61,7 @@ describe('SubagentStore', () => {
     })
   )
 
-  it.live('lets concurrent readers observe only complete record replacements', () =>
+  it.effect('lets concurrent readers observe only complete record replacements', () =>
     Effect.gen(function* () {
       const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'subagent-atomic-' })
       yield* Effect.provide(
@@ -97,7 +97,7 @@ describe('SubagentStore', () => {
     })
   )
 
-  it.live('cleans malformed settled artifacts but never prunes a live record', () =>
+  it.effect('cleans malformed settled artifacts but never prunes a live record', () =>
     Effect.gen(function* () {
       const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'subagent-retention-' })
       yield* Effect.provide(
@@ -120,7 +120,7 @@ describe('SubagentStore', () => {
     })
   )
 
-  it.live('enumerates artifacts without deleting counterparts and preserves provisional leases while pruning', () =>
+  it.effect('enumerates artifacts without deleting counterparts and preserves provisional leases while pruning', () =>
     Effect.gen(function* () {
       const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'subagent-enumeration-' })
       yield* Effect.provide(
@@ -150,7 +150,7 @@ describe('SubagentStore', () => {
     })
   )
 
-  it.live('reports physically oversized artifacts without returning an oversized copy', () =>
+  it.effect('reports physically oversized artifacts without returning an oversized copy', () =>
     Effect.gen(function* () {
       const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'subagent-oversize-' })
       yield* Effect.provide(
@@ -174,7 +174,7 @@ describe('SubagentStore', () => {
     })
   )
 
-  it.live('rejects insecure records and bounded full results', () =>
+  it.effect('rejects insecure records and bounded full results', () =>
     Effect.gen(function* () {
       const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'subagent-security-' })
       yield* Effect.provide(

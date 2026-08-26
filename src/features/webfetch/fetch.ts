@@ -9,6 +9,8 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import { Text, type Component } from '@earendil-works/pi-tui'
 import { Duration, Effect, Schema, Stream } from 'effect'
+import { type FileSystem } from 'effect/FileSystem'
+import { type Path } from 'effect/Path'
 import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest, type HttpClientResponse } from 'effect/unstable/http'
 import TurndownService from 'turndown'
 import { Type, type Static } from 'typebox'
@@ -267,7 +269,7 @@ const webfetchFailure = (failure: ToolFailure | HttpClientError.HttpClientError)
   })
 }
 
-const saveFullOutput = (content: string): Effect.Effect<string, ToolFailure> =>
+const saveFullOutput = (content: string): Effect.Effect<string, ToolFailure, FileSystem | Path> =>
   writePrivateTempFileEffect(content, { prefix: 'pi-webfetch-' }).pipe(
     Effect.mapError((cause) => ToolFailure.make({ cause, message: cause.message }))
   )
@@ -290,7 +292,7 @@ const buildFetchResult = ({
   statusText,
   timeoutSeconds,
   url,
-}: BuildFetchResultOptions): Effect.Effect<AgentToolResult<WebfetchDetails>, ToolFailure> =>
+}: BuildFetchResultOptions): Effect.Effect<AgentToolResult<WebfetchDetails>, ToolFailure, FileSystem | Path> =>
   Effect.gen(function* () {
     const decoded = new TextDecoder().decode(body)
     const contentType = response.headers['content-type'] ?? ''
@@ -343,7 +345,7 @@ const fetchResult = ({
   onUpdate,
   params,
   signal,
-}: FetchResultOptions): Effect.Effect<AgentToolResult<WebfetchDetails>, ToolFailure, HttpClient.HttpClient> =>
+}: FetchResultOptions): Effect.Effect<AgentToolResult<WebfetchDetails>, ToolFailure, HttpClient.HttpClient | FileSystem | Path> =>
   Effect.gen(function* () {
     const url = yield* parseUrlEffect(params.url)
     const format = resolveFormat(params.format)
@@ -381,7 +383,7 @@ export const webfetchEffect = (
   params: WebfetchInput,
   signal: AbortSignal | undefined,
   onUpdate: AgentToolUpdateCallback<unknown> | undefined
-): Effect.Effect<AgentToolResult<WebfetchDetails>, ToolFailure, HttpClient.HttpClient> =>
+): Effect.Effect<AgentToolResult<WebfetchDetails>, ToolFailure, HttpClient.HttpClient | FileSystem | Path> =>
   Effect.suspend(() =>
     isTrue(signal?.aborted) ? Effect.fail(ToolFailure.make({ message: 'webfetch was cancelled' })) : fetchResult({ onUpdate, params, signal })
   )

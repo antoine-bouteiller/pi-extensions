@@ -1,5 +1,5 @@
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from '@earendil-works/pi-coding-agent'
-import { BunFileSystem } from '@effect/platform-bun'
+import { BunServices } from '@effect/platform-bun'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Effect, FileSystem, Schema } from 'effect'
 
@@ -11,7 +11,8 @@ import {
   MAX_TOTAL_IMAGE_BYTES,
 } from '@/features/mcp/output.js'
 
-const boundGatewayOutput = (content: Parameters<typeof boundGatewayOutputEffect>[0]) => Effect.runPromise(boundGatewayOutputEffect(content))
+const boundGatewayOutput = (content: Parameters<typeof boundGatewayOutputEffect>[0]) =>
+  Effect.runPromise(boundGatewayOutputEffect(content).pipe(Effect.provide(BunServices.layer)))
 
 const imageBlock = (data: string) => ({ data, mimeType: 'image/png', type: 'image' as const })
 
@@ -57,7 +58,7 @@ describe('MCP gateway output', () => {
       }
       expect(yield* fs.readFileString(path)).toBe(text)
       expect((yield* fs.stat(path)).mode & 0o777).toBe(0o600)
-    }).pipe(Effect.provide(BunFileSystem.layer))
+    }).pipe(Effect.provide(BunServices.layer))
   )
 
   it.effect('rejects image and block payloads beyond their count caps', () =>
