@@ -1,8 +1,9 @@
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
+import { asExtensionContext, asResult } from '@tests/utils/casts.js'
 import { Effect } from 'effect'
 
 import { type PersistedResolvedProfile } from '@/features/sub_agents/model.js'
-import { createActivityProjection, createSubagentsOperator } from '@/features/sub_agents/operator.js'
+import { createActivityProjection, createPanicEditor, createSubagentsOperator } from '@/features/sub_agents/operator.js'
 import { type SubagentRecord, type SubagentStoreApi } from '@/features/sub_agents/store.js'
 import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
 
@@ -40,6 +41,134 @@ const store = (records: readonly { readonly agentId: string; readonly record: Su
   removeLog: () => Effect.void,
   replaceRecord: () => Effect.void,
   writeFullResult: () => Effect.succeed('result'),
+})
+
+interface InputHandler {
+  handleInput: (data: string) => void
+}
+
+type EditorFactory = (tui: unknown, theme: unknown, keybindings: unknown) => InputHandler
+
+const panicEditorFixture = ({
+  idle = true,
+  live = true,
+  previous,
+}: { readonly idle?: boolean; readonly live?: boolean; readonly previous?: EditorFactory } = {}) => {
+  let editor = previous
+  let terminalInputRegistrations = 0
+  const interrupted: string[] = []
+  const ctx = asExtensionContext({
+    isIdle: () => idle,
+    ui: {
+      getEditorComponent: () => editor,
+      onTerminalInput: () => {
+        terminalInputRegistrations += 1
+        return () => undefined
+      },
+      setEditorComponent: (next: EditorFactory | undefined) => {
+        editor = next
+      },
+    },
+  })
+  const panic = createPanicEditor({
+    ctx,
+    hasLiveCurrentSession: () => live,
+    interruptAll: () => {
+      interrupted.push('all')
+      return Promise.resolve()
+    },
+  })
+  return {
+    editor: () => editor,
+    interrupted,
+    panic,
+    setEditor: (next: EditorFactory | undefined) => {
+      editor = next
+    },
+    terminalInputRegistrations: () => terminalInputRegistrations,
+  }
+}
+
+const later: EditorFactory = () => ({ handleInput: () => undefined })
+
+describe('sub-agent panic editor', () => {
+  it('composes the prior factory and delegates ordinary input on its returned editor', () => {
+    const inputs: string[] = []
+    const priorEditor: InputHandler = { handleInput: (data) => inputs.push(data) }
+    let factoryCalls = 0
+    const previous: EditorFactory = () => {
+      factoryCalls += 1
+      return priorEditor
+    }
+    const fixture = panicEditorFixture({ previous })
+
+    fixture.panic.install()
+    const installed = asResult<EditorFactory>(fixture.editor())
+    expect(installed({}, {}, {})).toBe(priorEditor)
+    installed({}, {}, {}).handleInput('x')
+
+    expect(factoryCalls).toBe(2)
+    expect(inputs).toEqual(['x'])
+    expect(fixture.terminalInputRegistrations()).toBe(0)
+  })
+
+  it('consumes only idle Escape with live children and otherwise delegates', () => {
+    for (const [idle, live, expectedInterrupts] of [
+      [true, true, 1],
+      [false, true, 0],
+      [true, false, 0],
+    ] as const) {
+      const inputs: string[] = []
+      const fixture = panicEditorFixture({ idle, live, previous: () => ({ handleInput: (data) => inputs.push(data) }) })
+      fixture.panic.install()
+      asResult<EditorFactory>(fixture.editor())({}, {}, {}).handleInput('\u001b')
+
+      expect(fixture.interrupted).toHaveLength(expectedInterrupts)
+      expect(inputs).toEqual(expectedInterrupts === 0 ? ['\u001b'] : [])
+    }
+  })
+
+  it('installs and disposes idempotently, restores its own prior factory, and deactivates stale wrappers', () => {
+    const inputs: string[] = []
+    const previous: EditorFactory = () => ({ handleInput: (data) => inputs.push(data) })
+    const fixture = panicEditorFixture({ previous })
+
+    fixture.panic.install()
+    const installed = asResult<EditorFactory>(fixture.editor())
+    const wrapped = installed({}, {}, {})
+    fixture.panic.install()
+    fixture.panic.dispose()
+    fixture.panic.dispose()
+    wrapped.handleInput('\u001b')
+
+    expect(fixture.editor()).toBe(previous)
+    expect(fixture.interrupted).toEqual([])
+    expect(inputs).toEqual(['\u001b'])
+  })
+
+  it('deactivates editors built by a disposed factory invoked later', () => {
+    const inputs: string[] = []
+    const previous: EditorFactory = () => ({ handleInput: (data) => inputs.push(data) })
+    const fixture = panicEditorFixture({ previous })
+
+    fixture.panic.install()
+    const installed = asResult<EditorFactory>(fixture.editor())
+    fixture.panic.dispose()
+    installed({}, {}, {}).handleInput('\u001b')
+
+    expect(fixture.interrupted).toEqual([])
+    expect(inputs).toEqual(['\u001b'])
+  })
+
+  it('does not overwrite a later editor factory during teardown', () => {
+    const fixture = panicEditorFixture()
+
+    fixture.panic.install()
+    fixture.setEditor(later)
+    fixture.panic.dispose()
+
+    expect(fixture.editor()).toBe(later)
+  })
 })
 
 describe('sub-agent operator activity projection', () => {

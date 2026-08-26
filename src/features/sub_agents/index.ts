@@ -6,6 +6,7 @@ import { AgentActivity, type AppRuntime } from '#shared/effect/app_services'
 import { type FeatureActivationError, type FeaturePlugin } from '#shared/effect/feature'
 import { makeCommandHandler, makeToolExecutor, runManagedEffect, runManagedRepeatingEffect } from '#shared/effect/runtime'
 
+import { toChildModel } from './model.js'
 import { createPanicEditor, createSubagentsOperator } from './operator.js'
 import { SubagentOrchestrator, type SubagentOrchestratorApi } from './orchestrator.js'
 import { getOrCreateSubagentRuntime, type SubagentRuntime } from './runtime.js'
@@ -217,7 +218,7 @@ const defaultDependencies: SubagentFeatureDependencies = {
         )
       ).then((authenticated) => ({
         authenticated_providers: authenticated.flatMap(({ authenticated: configured, provider }) => (configured ? [provider] : [])),
-        models: models.map((model) => ({ contextWindow: model.contextWindow, model: model.id, provider: model.provider })),
+        models: models.map(toChildModel),
       }))
     })
   },

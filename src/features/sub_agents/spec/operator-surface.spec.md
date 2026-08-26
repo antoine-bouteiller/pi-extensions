@@ -120,7 +120,9 @@ unreadable session file; no pre-ready agent can be selected.
 - Escape falls through to host cancellation while a parent turn is running and falls through unchanged while
   idle with no live children. While idle with live current-session children, it consumes the key, interrupts
   all of them, suppresses only interruption outcomes created by that invocation, and preserves notices that
-  were already queued.
+  were already queued. The guard decorates each editor returned by the factory active at installation (or the
+  default editor when none exists), delegates all fall-through input to that same editor, and restores the
+  previous factory only if no later factory has replaced it.
 
 ### Interactions
 
@@ -135,11 +137,14 @@ stateDiagram-v2
     Session --> Session: Escape while idle stops all children
 ```
 
-The panic key is an observer of terminal input, active only while the session is idle and at least one
-child is live; it calls the engine's interrupt-all for the current session and never touches host turn
-cancellation. It suppresses only the interruption outcomes created by that invocation, preserving
-notices queued before it. The engine API's targeted interrupt delivers its interruption result
-synchronously; the key uses that API without replaying notifications (`[KD-10.1]` of the umbrella).
+The panic key decorates the editor instances created by the factory active at installation, so Pi's normal
+focused-component dispatch determines when it receives input. It is active only while the session is idle
+and at least one child is live; it calls the engine's interrupt-all for the current session and never touches
+host turn cancellation. It suppresses only the interruption outcomes created by that invocation, preserving
+notices queued before it. Teardown deactivates produced wrappers and restores the prior factory only while
+this feature still owns the configured factory; it does not preserve arbitrary already-mounted editor
+internals or compose a factory registered later. The engine API's targeted interrupt delivers its
+interruption result synchronously; the key uses that API without replaying notifications (`[KD-10.1]` of the umbrella).
 
 The key guard is evaluated before consuming the event:
 

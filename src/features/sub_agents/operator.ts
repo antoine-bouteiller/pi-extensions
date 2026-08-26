@@ -190,25 +190,32 @@ export interface PanicEditor {
 
 /** Installs the idle-only Escape guard without taking over host cancellation. */
 export const createPanicEditor = ({ ctx, hasLiveCurrentSession, interruptAll }: PanicEditorOptions): PanicEditor => {
-  const previous = ctx.ui.getEditorComponent()
   let installed = false
+  let installations = 0
+  let previous: ReturnType<typeof ctx.ui.getEditorComponent>
+  let installedFactory: NonNullable<ReturnType<typeof ctx.ui.getEditorComponent>> | undefined
   const install = (): void => {
     if (installed) {
       return
     }
     installed = true
-    ctx.ui.setEditorComponent((tui, theme, keybindings) => {
-      class PanicEditorComponent extends CustomEditor {
-        override handleInput(data: string): void {
-          if (matchesKey(data, 'escape') && ctx.isIdle() && hasLiveCurrentSession()) {
-            void interruptAll()
-            return
-          }
-          super.handleInput(data)
+    installations += 1
+    const installation = installations
+    const previousFactory = ctx.ui.getEditorComponent()
+    previous = previousFactory
+    installedFactory = (tui, theme, keybindings) => {
+      const editor = previousFactory?.(tui, theme, keybindings) ?? new CustomEditor(tui, theme, keybindings)
+      const handleInput = editor.handleInput.bind(editor)
+      editor.handleInput = (data: string): void => {
+        if (installed && installations === installation && matchesKey(data, 'escape') && ctx.isIdle() && hasLiveCurrentSession()) {
+          void interruptAll()
+          return
         }
+        handleInput(data)
       }
-      return new PanicEditorComponent(tui, theme, keybindings)
-    })
+      return editor
+    }
+    ctx.ui.setEditorComponent(installedFactory)
   }
   return {
     dispose() {
@@ -216,7 +223,10 @@ export const createPanicEditor = ({ ctx, hasLiveCurrentSession, interruptAll }: 
         return
       }
       installed = false
-      ctx.ui.setEditorComponent(previous)
+      if (ctx.ui.getEditorComponent() === installedFactory) {
+        ctx.ui.setEditorComponent(previous)
+      }
+      installedFactory = undefined
     },
     install,
   }
