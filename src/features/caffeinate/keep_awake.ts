@@ -1,7 +1,6 @@
 import { Data, Deferred, Effect, Exit, Scope } from 'effect'
 import { ChildProcess } from 'effect/unstable/process'
-
-import { bunChildProcessSpawner } from '#shared/effect/bun_services'
+import { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner'
 
 export class CaffeinateError extends Data.TaggedError('CaffeinateError')<{ readonly cause: unknown }> {}
 
@@ -15,11 +14,11 @@ export interface CaffeinateDependencies {
   readonly isSubagent: boolean
   readonly pid: number
   readonly platform: NodeJS.Platform
-  readonly spawn: (command: string, args: readonly string[]) => Effect.Effect<CaffeinateProcess, CaffeinateError>
+  readonly spawn: (command: string, args: readonly string[]) => Effect.Effect<CaffeinateProcess, CaffeinateError, ChildProcessSpawner>
 }
 
 export interface KeepAwake {
-  readonly start: Effect.Effect<void>
+  readonly start: Effect.Effect<void, never, ChildProcessSpawner>
   readonly stop: Effect.Effect<void>
 }
 
@@ -27,10 +26,11 @@ export interface KeepAwake {
 const KILL_ESCALATION_MS = 1000
 const STOP_TIMEOUT_MS = 2000
 
-const spawnCaffeinate = (command: string, args: readonly string[]): Effect.Effect<CaffeinateProcess, CaffeinateError> =>
+const spawnCaffeinate = (command: string, args: readonly string[]): Effect.Effect<CaffeinateProcess, CaffeinateError, ChildProcessSpawner> =>
   Effect.gen(function* () {
     const scope = Scope.makeUnsafe()
-    const child = yield* bunChildProcessSpawner
+    const spawner = yield* ChildProcessSpawner
+    const child = yield* spawner
       .spawn(
         ChildProcess.make(command, args, {
           detached: false,
@@ -79,7 +79,7 @@ const killCaffeinate = (current: RunningCaffeinate): Effect.Effect<void> =>
 export const makeKeepAwake = (dependencies: CaffeinateDependencies): KeepAwake => {
   let running: RunningCaffeinate | undefined
 
-  const supervise = (current: RunningCaffeinate): Effect.Effect<void> =>
+  const supervise = (current: RunningCaffeinate): Effect.Effect<void, never, ChildProcessSpawner> =>
     Effect.gen(function* () {
       const child = yield* dependencies.spawn('/usr/bin/caffeinate', ['-w', String(dependencies.pid)])
       current.child = child
@@ -101,7 +101,7 @@ export const makeKeepAwake = (dependencies: CaffeinateDependencies): KeepAwake =
       )
     )
 
-  const start: Effect.Effect<void> = Effect.gen(function* () {
+  const start: Effect.Effect<void, never, ChildProcessSpawner> = Effect.gen(function* () {
     if (dependencies.platform !== 'darwin' || running !== undefined) {
       return
     }

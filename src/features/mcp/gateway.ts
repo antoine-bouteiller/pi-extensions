@@ -7,10 +7,10 @@ import { type Path } from 'effect/Path'
 import { Type, type Static } from 'typebox'
 
 import { type AppServices } from '#shared/effect/app_services'
-import { bunPath } from '#shared/effect/bun_services'
 import { ToolFailure } from '#shared/effect/errors'
 import { createStatusChannel } from '#shared/state/status_bar'
 import { type JsonObject, type JsonValue, jsonText } from '#shared/utils/json'
+import { join } from '#shared/utils/path'
 import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '#shared/utils/predicates'
 import { isRecord } from '#shared/utils/records'
 
@@ -24,8 +24,6 @@ import {
   type McpServerStatus as McpServerStatusValue,
   type McpToolAnnotations,
 } from './types.js'
-
-const { join } = bunPath
 
 const SEARCH_RESULT_LIMIT = 30
 const SEARCH_FETCH_LIMIT = SEARCH_RESULT_LIMIT + 1

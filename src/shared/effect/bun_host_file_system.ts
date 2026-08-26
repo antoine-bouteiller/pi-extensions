@@ -1,10 +1,10 @@
 /* oxlint-disable effecttsgo/node-builtin-import -- Effect FileSystem lacks no-follow metadata, typed directory entries, and the unscoped descriptor ownership cross-process locks need. */
 import fs from 'node:fs'
-import nodePath from 'node:path'
 
 import { type Cause, Effect } from 'effect'
 
 import { unknownError } from '#shared/effect/errors'
+import { dirname, isAbsolute, join, relative as relativePath, resolve as resolvePath, sep } from '#shared/utils/path'
 
 const isMissingPathError = (error: unknown): boolean =>
   error instanceof Error && 'code' in error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')
@@ -85,14 +85,14 @@ export const readHostDirectoryEntries = (path: string): Effect.Effect<HostDirect
   })
 
 const isContained = (root: string, candidate: string): boolean => {
-  const relative = nodePath.relative(root, candidate)
-  return relative.length > 0 && !relative.startsWith(`..${nodePath.sep}`) && relative !== '..' && !nodePath.isAbsolute(relative)
+  const relative = relativePath(root, candidate)
+  return relative.length > 0 && !relative.startsWith(`..${sep}`) && relative !== '..' && !isAbsolute(relative)
 }
 
 /** Reject a lexical escape and every symlink component, including the supplied root itself. */
 const noSymlinkComponent = (root: string, candidate: string): void => {
-  const absoluteRoot = nodePath.resolve(root)
-  const absoluteCandidate = nodePath.resolve(candidate)
+  const absoluteRoot = resolvePath(root)
+  const absoluteCandidate = resolvePath(candidate)
   if (!isContained(absoluteRoot, absoluteCandidate)) {
     throw new Error('Artifact path is outside its run directory')
   }
@@ -100,8 +100,8 @@ const noSymlinkComponent = (root: string, candidate: string): void => {
   if (fs.lstatSync(current).isSymbolicLink()) {
     throw new Error('Artifact root is a symbolic link')
   }
-  for (const component of nodePath.relative(absoluteRoot, absoluteCandidate).split(nodePath.sep)) {
-    current = nodePath.join(current, component)
+  for (const component of relativePath(absoluteRoot, absoluteCandidate).split(sep)) {
+    current = join(current, component)
     if (fs.lstatSync(current).isSymbolicLink()) {
       throw new Error('Artifact path contains a symbolic link')
     }
@@ -200,15 +200,15 @@ export const readOwnerOnlyFile = (options: ReadOwnerOnlyFileOptions): Effect.Eff
  * than validated by reopening its replacement.
  */
 const noSymbolicLinkParent = (expectedDir: string, path: string): void => {
-  let parent = nodePath.dirname(nodePath.resolve(path))
-  while (parent !== nodePath.dirname(parent)) {
+  let parent = dirname(resolvePath(path))
+  while (parent !== dirname(parent)) {
     if (fs.lstatSync(parent).isSymbolicLink()) {
       throw new Error('Worker session path contains a symbolic link')
     }
     if (fs.realpathSync(parent) === expectedDir) {
       return
     }
-    parent = nodePath.dirname(parent)
+    parent = dirname(parent)
   }
 }
 
@@ -301,7 +301,7 @@ export const createPrivateSessionFile = (directory: string): Effect.Effect<strin
     catch: unknownError,
     try: () => {
       ensurePrivateDirectorySync(directory)
-      const path = nodePath.join(directory, `${Bun.randomUUIDv7()}.jsonl`)
+      const path = join(directory, `${Bun.randomUUIDv7()}.jsonl`)
       const descriptor = fs.openSync(path, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY, 0o600)
       fs.closeSync(descriptor)
       return path
@@ -313,7 +313,7 @@ export const createPrivateSessionFilePromise = (directory: string): Promise<stri
   Promise.resolve()
     .then(() => ensurePrivateDirectorySync(directory))
     .then(() => {
-      const path = nodePath.join(directory, `${Bun.randomUUIDv7()}.jsonl`)
+      const path = join(directory, `${Bun.randomUUIDv7()}.jsonl`)
       const descriptor = fs.openSync(path, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY, 0o600)
       fs.closeSync(descriptor)
       return path
@@ -323,7 +323,7 @@ export const writePrivateUniqueFilePromise = (directory: string, extension: stri
   Promise.resolve().then(() => {
     ensurePrivateDirectorySync(directory)
     const name = `${Bun.randomUUIDv7()}${extension}`
-    const path = nodePath.join(directory, name)
+    const path = join(directory, name)
     const descriptor = fs.openSync(path, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY, 0o600)
     try {
       fs.writeFileSync(descriptor, content)
@@ -344,7 +344,7 @@ export const writePrivateUniqueFile = (
     try: () => {
       ensurePrivateDirectorySync(directory)
       const name = `${Bun.randomUUIDv7()}${extension}`
-      const path = nodePath.join(directory, name)
+      const path = join(directory, name)
       const descriptor = fs.openSync(path, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY, 0o600)
       try {
         fs.writeFileSync(descriptor, content)

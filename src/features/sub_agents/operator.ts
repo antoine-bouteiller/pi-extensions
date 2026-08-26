@@ -1,9 +1,8 @@
 import { CustomEditor, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { matchesKey } from '@earendil-works/pi-tui'
-import { Effect } from 'effect'
+import { Effect, Path } from 'effect'
 
 import { lstatHostFile, readOwnerOnlyFile } from '#shared/effect/bun_host_file_system'
-import { bunPath } from '#shared/effect/bun_services'
 import { type RunningAgent } from '#shared/state/agent_activity'
 
 import { type AgentTurnRecord, type SubagentRecord, type SubagentStoreApi } from './store.js'
@@ -88,7 +87,7 @@ type TranscriptRead = 'unchanged' | { readonly content: TranscriptContent; reado
 
 interface TranscriptOverlay {
   readonly content: () => TranscriptContent
-  readonly refresh: Effect.Effect<TranscriptContent>
+  readonly refresh: Effect.Effect<TranscriptContent, never, Path.Path>
 }
 
 export interface SubagentsOperator {
@@ -122,29 +121,32 @@ const completeJsonLines = (bytes: Uint8Array): readonly unknown[] => {
 export const createSubagentsOperator = ({ activity, sessionId, store }: SubagentsOperatorOptions): SubagentsOperator => {
   const recordFor = (agentId: string): Effect.Effect<SubagentRecord | undefined> =>
     store.readRecord(agentId).pipe(Effect.orElseSucceed(() => undefined))
-  const readTranscript = (agentId: string, lastStamp: string | undefined): Effect.Effect<TranscriptRead> =>
-    recordFor(agentId).pipe(
-      Effect.flatMap((record) => {
-        if (record === undefined || record.session !== sessionId) {
-          return Effect.succeed<TranscriptRead>({ content: unavailableTranscript })
-        }
-        return lstatHostFile(record.sessionPath).pipe(
-          Effect.flatMap((info) => {
-            const stamp = `${info.mtimeMs}:${info.size}`
-            return stamp === lastStamp
-              ? Effect.succeed<TranscriptRead>('unchanged')
-              : readOwnerOnlyFile({
-                  maxBytes: 10 * 1024 * 1024,
-                  path: record.sessionPath,
-                  root: bunPath.dirname(record.sessionPath),
-                }).pipe(
-                  Effect.map((file) => ({ content: { entries: completeJsonLines(file.bytes), turns: record.turns, unavailable: false }, stamp }))
-                )
-          }),
-          Effect.orElseSucceed<TranscriptRead>(() => ({ content: unavailableTranscript }))
-        )
-      })
-    )
+  const readTranscript = (agentId: string, lastStamp: string | undefined): Effect.Effect<TranscriptRead, never, Path.Path> =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path
+      return yield* recordFor(agentId).pipe(
+        Effect.flatMap((record) => {
+          if (record === undefined || record.session !== sessionId) {
+            return Effect.succeed<TranscriptRead>({ content: unavailableTranscript })
+          }
+          return lstatHostFile(record.sessionPath).pipe(
+            Effect.flatMap((info) => {
+              const stamp = `${info.mtimeMs}:${info.size}`
+              return stamp === lastStamp
+                ? Effect.succeed<TranscriptRead>('unchanged')
+                : readOwnerOnlyFile({
+                    maxBytes: 10 * 1024 * 1024,
+                    path: record.sessionPath,
+                    root: path.dirname(record.sessionPath),
+                  }).pipe(
+                    Effect.map((file) => ({ content: { entries: completeJsonLines(file.bytes), turns: record.turns, unavailable: false }, stamp }))
+                  )
+            }),
+            Effect.orElseSucceed<TranscriptRead>(() => ({ content: unavailableTranscript }))
+          )
+        })
+      )
+    })
   return {
     list: store.listRecords.pipe(
       Effect.orElseSucceed(() => []),

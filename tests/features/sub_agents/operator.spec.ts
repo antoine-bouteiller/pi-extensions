@@ -1,11 +1,11 @@
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asExtensionContext, asResult } from '@tests/utils/casts.js'
-import { Effect } from 'effect'
+import { Effect, FileSystem } from 'effect'
 
+import { join } from '#shared/utils/path'
 import { type PersistedResolvedProfile } from '@/features/sub_agents/model.js'
 import { createActivityProjection, createPanicEditor, createSubagentsOperator } from '@/features/sub_agents/operator.js'
 import { type SubagentRecord, type SubagentStoreApi } from '@/features/sub_agents/store.js'
-import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
 
 const frozenMtime = 1_700_000_000_000
 const profile: PersistedResolvedProfile = {
@@ -204,10 +204,11 @@ describe('sub-agent operator activity projection', () => {
 
   it.scoped('refreshes growing transcripts, retains the last content after removal, then marks it unavailable', () =>
     Effect.gen(function* () {
-      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'operator-transcript-' })
-      const path = bunPath.join(root, 'session.json')
-      yield* bunFileSystem.writeFileString(path, '{"event":1}\n')
-      yield* bunFileSystem.chmod(path, 0o600)
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'operator-transcript-' })
+      const path = join(root, 'session.json')
+      yield* fs.writeFileString(path, '{"event":1}\n')
+      yield* fs.chmod(path, 0o600)
       const operator = createSubagentsOperator({
         activity: () => [],
         sessionId: 'current',
@@ -216,10 +217,10 @@ describe('sub-agent operator activity projection', () => {
       const transcript = operator.open('one')
       yield* transcript.refresh
       expect(transcript.content().entries).toEqual([{ event: 1 }])
-      yield* bunFileSystem.writeFileString(path, '{"event":1}\n{"event":2}\n')
+      yield* fs.writeFileString(path, '{"event":1}\n{"event":2}\n')
       yield* transcript.refresh
       expect(transcript.content().entries).toEqual([{ event: 1 }, { event: 2 }])
-      yield* bunFileSystem.remove(path)
+      yield* fs.remove(path)
       yield* transcript.refresh
       expect(transcript.content()).toEqual({ entries: [{ event: 1 }, { event: 2 }], turns: [], unavailable: true })
     })
@@ -227,26 +228,27 @@ describe('sub-agent operator activity projection', () => {
 
   it.scoped('reparses the transcript only when the session file changed', () =>
     Effect.gen(function* () {
-      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'operator-transcript-stamp-' })
-      const path = bunPath.join(root, 'session.json')
-      yield* bunFileSystem.writeFileString(path, '{"event":1}\n')
-      yield* bunFileSystem.chmod(path, 0o600)
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'operator-transcript-stamp-' })
+      const path = join(root, 'session.json')
+      yield* fs.writeFileString(path, '{"event":1}\n')
+      yield* fs.chmod(path, 0o600)
       const operator = createSubagentsOperator({
         activity: () => [],
         sessionId: 'current',
         store: store([{ agentId: 'one', record: settled('current', 'task', path) }]),
       })
-      yield* bunFileSystem.utimes(path, frozenMtime, frozenMtime)
+      yield* fs.utimes(path, frozenMtime, frozenMtime)
       const transcript = operator.open('one')
       yield* transcript.refresh
       expect(transcript.content().entries).toEqual([{ event: 1 }])
 
-      yield* bunFileSystem.writeFileString(path, '{"event":2}\n')
-      yield* bunFileSystem.utimes(path, frozenMtime, frozenMtime)
+      yield* fs.writeFileString(path, '{"event":2}\n')
+      yield* fs.utimes(path, frozenMtime, frozenMtime)
       yield* transcript.refresh
       expect(transcript.content().entries).toEqual([{ event: 1 }])
 
-      yield* bunFileSystem.writeFileString(path, '{"event":2}\n{"event":3}\n')
+      yield* fs.writeFileString(path, '{"event":2}\n{"event":3}\n')
       yield* transcript.refresh
       expect(transcript.content().entries).toEqual([{ event: 2 }, { event: 3 }])
     })
