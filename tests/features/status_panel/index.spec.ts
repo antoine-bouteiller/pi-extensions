@@ -7,12 +7,12 @@ import { asExtensionContext } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { withProcessEnv } from '@tests/utils/process_env.js'
 import { runtime } from '@tests/utils/runtime.js'
-import { Effect } from 'effect'
+import { Effect, FileSystem } from 'effect'
 
+import { join } from '#shared/utils/path'
 import { feature, makeFeature } from '@/features/status_panel/index.js'
 import { columns, formatTokens, progressBar } from '@/features/status_panel/render.js'
 import { emptyGitInfoState, emptyModelInfoState } from '@/features/status_panel/state.js'
-import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
 import { runningAgents } from '@/shared/state/agent_activity.js'
 import { azureQuota, consumeSubagentAzureQuota, writeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
 
@@ -60,15 +60,16 @@ describe('status panel registration', () => {
   it.effect('claims a quota handoff once across concurrent consumers', () => {
     const temporaryRoot = process.env.PI_SUBAGENT_TEMP_DIR || tmpdir()
     return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
       const token = randomUUID()
       yield* writeSubagentAzureQuota(token, 150)
-      const directory = bunPath.join(temporaryRoot, 'pi-codex-subagents', userInfo().username, 'quota')
-      const target = bunPath.join(directory, `${token}.json`)
+      const directory = join(temporaryRoot, 'pi-codex-subagents', userInfo().username, 'quota')
+      const target = join(directory, `${token}.json`)
       if (process.platform !== 'win32') {
-        expect((yield* bunFileSystem.stat(directory)).mode & 0o777).toBe(0o700)
-        expect((yield* bunFileSystem.stat(target)).mode & 0o777).toBe(0o600)
+        expect((yield* fs.stat(directory)).mode & 0o777).toBe(0o700)
+        expect((yield* fs.stat(target)).mode & 0o777).toBe(0o600)
       }
-      expect((yield* bunFileSystem.readDirectory(directory)).some((name) => name.includes('.tmp'))).toBe(false)
+      expect((yield* fs.readDirectory(directory)).some((name) => name.includes('.tmp'))).toBe(false)
       const claimed = yield* Effect.all([consumeSubagentAzureQuota(token), consumeSubagentAzureQuota(token)], { concurrency: 2 })
       expect(claimed.filter((value) => value === 100)).toHaveLength(1)
       expect(claimed.filter((value) => value === undefined)).toHaveLength(1)
@@ -80,13 +81,14 @@ describe('status panel registration', () => {
   it.effect('treats a corrupt quota handoff as absent instead of failing', () => {
     const temporaryRoot = process.env.PI_SUBAGENT_TEMP_DIR || tmpdir()
     return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
       const token = randomUUID()
-      const directory = bunPath.join(temporaryRoot, 'pi-codex-subagents', userInfo().username, 'quota')
-      yield* bunFileSystem.makeDirectory(directory, { recursive: true })
-      yield* bunFileSystem.writeFileString(bunPath.join(directory, `${token}.json`), '{ not json')
+      const directory = join(temporaryRoot, 'pi-codex-subagents', userInfo().username, 'quota')
+      yield* fs.makeDirectory(directory, { recursive: true })
+      yield* fs.writeFileString(join(directory, `${token}.json`), '{ not json')
 
       expect(yield* consumeSubagentAzureQuota(token)).toBeUndefined()
-      expect((yield* bunFileSystem.readDirectory(directory)).some((name) => name.startsWith(token))).toBe(false)
+      expect((yield* fs.readDirectory(directory)).some((name) => name.startsWith(token))).toBe(false)
     })
   })
 

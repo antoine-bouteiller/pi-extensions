@@ -1,9 +1,9 @@
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { Effect, Fiber, Result } from 'effect'
+import { Effect, Fiber, Result, FileSystem } from 'effect'
 
+import { join } from '#shared/utils/path'
 import { ArtifactTooLargeError, makeSubagentStoreLive, SubagentStore, type SubagentRecord } from '@/features/sub_agents/store.js'
 import { hostFilePermissions } from '@/shared/effect/bun_host_file_system.js'
-import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
 
 const profile = { contextCeiling: 1, key: 'scout' as const, model: 'model', prompt: 'prompt', provider: 'provider', tools: [] }
 const record = (settledAt?: number): SubagentRecord => {
@@ -25,7 +25,8 @@ const record = (settledAt?: number): SubagentRecord => {
 describe('SubagentStore', () => {
   it.effect('creates owner-only directories and artifacts, atomically replaces records, and retains live records', () =>
     Effect.gen(function* () {
-      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'subagent-store-' })
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'subagent-store-' })
       yield* Effect.provide(
         Effect.gen(function* () {
           const store = yield* SubagentStore
@@ -39,16 +40,16 @@ describe('SubagentStore', () => {
           const result = yield* store.writeFullResult('agent', new TextEncoder().encode('result'))
           yield* store.replaceRecord('agent', record(1))
           yield* store.replaceRecord('agent', record(2))
-          const run = bunPath.join(root, 'pi-codex-subagents', 'owner', 'runs', 'agent')
-          expect(session.runDirectory).toBe(yield* bunFileSystem.realPath(run))
-          expect(session.sessionPath).toBe(yield* bunFileSystem.realPath(bunPath.join(run, 'session.json')))
+          const run = join(root, 'pi-codex-subagents', 'owner', 'runs', 'agent')
+          expect(session.runDirectory).toBe(yield* fs.realPath(run))
+          expect(session.sessionPath).toBe(yield* fs.realPath(join(run, 'session.json')))
           expect(log).toMatch(new RegExp(`^${run}/stderr-1-[A-Za-z0-9-]+\\.log$`))
           expect(resumedLog).toMatch(new RegExp(`^${run}/stderr-2-[A-Za-z0-9-]+\\.log$`))
-          for (const target of [run, log, resumedLog, result, session.sessionPath, bunPath.join(run, 'record.json')]) {
+          for (const target of [run, log, resumedLog, result, session.sessionPath, join(run, 'record.json')]) {
             const stat = yield* hostFilePermissions(target)
             expect(stat.mode).toBe(target === run ? 0o700 : 0o600)
           }
-          expect(Result.isFailure(yield* Effect.result(hostFilePermissions(bunPath.join(run, 'launch.lease'))))).toBe(true)
+          expect(Result.isFailure(yield* Effect.result(hostFilePermissions(join(run, 'launch.lease'))))).toBe(true)
           const stored = yield* store.readRecord('agent')
           expect(stored?.status === 'running' ? undefined : stored?.settledAt).toBe(2)
           yield* store.replaceRecord('live', record())
@@ -63,7 +64,8 @@ describe('SubagentStore', () => {
 
   it.effect('lets concurrent readers observe only complete record replacements', () =>
     Effect.gen(function* () {
-      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'subagent-atomic-' })
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'subagent-atomic-' })
       yield* Effect.provide(
         Effect.gen(function* () {
           const store = yield* SubagentStore
@@ -99,17 +101,18 @@ describe('SubagentStore', () => {
 
   it.effect('cleans malformed settled artifacts but never prunes a live record', () =>
     Effect.gen(function* () {
-      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'subagent-retention-' })
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'subagent-retention-' })
       yield* Effect.provide(
         Effect.gen(function* () {
           const store = yield* SubagentStore
           yield* store.initialize
           yield* store.replaceRecord('live', record())
           yield* store.replaceRecord('boundary', record(7 * 24 * 60 * 60 * 1000))
-          const malformed = bunPath.join(root, 'pi-codex-subagents', 'owner', 'runs', 'malformed')
-          yield* bunFileSystem.makeDirectory(malformed)
-          yield* bunFileSystem.writeFileString(bunPath.join(malformed, 'record.json'), '{bad')
-          yield* bunFileSystem.chmod(bunPath.join(malformed, 'record.json'), 0o600)
+          const malformed = join(root, 'pi-codex-subagents', 'owner', 'runs', 'malformed')
+          yield* fs.makeDirectory(malformed)
+          yield* fs.writeFileString(join(malformed, 'record.json'), '{bad')
+          yield* fs.chmod(join(malformed, 'record.json'), 0o600)
           yield* store.prune(14 * 24 * 60 * 60 * 1000)
           expect((yield* store.readRecord('live'))?.status).toBe('running')
           expect(yield* store.readRecord('boundary')).toBeUndefined()
@@ -122,7 +125,8 @@ describe('SubagentStore', () => {
 
   it.effect('enumerates artifacts without deleting counterparts and preserves provisional leases while pruning', () =>
     Effect.gen(function* () {
-      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'subagent-enumeration-' })
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'subagent-enumeration-' })
       yield* Effect.provide(
         Effect.gen(function* () {
           const store = yield* SubagentStore
@@ -152,15 +156,16 @@ describe('SubagentStore', () => {
 
   it.effect('reports physically oversized artifacts without returning an oversized copy', () =>
     Effect.gen(function* () {
-      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'subagent-oversize-' })
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'subagent-oversize-' })
       yield* Effect.provide(
         Effect.gen(function* () {
           const store = yield* SubagentStore
           yield* store.initialize
           yield* store.createLease('agent', { identity: { birthMarker: 'birth', pid: 1 }, session: 'session', taskName: 'task' })
           const artifact = yield* store.artifactPath('agent', 'oversized.txt')
-          yield* bunFileSystem.writeFile(artifact, new Uint8Array(10 * 1024 * 1024 + 1))
-          yield* bunFileSystem.chmod(artifact, 0o600)
+          yield* fs.writeFile(artifact, new Uint8Array(10 * 1024 * 1024 + 1))
+          yield* fs.chmod(artifact, 0o600)
           const outcome = yield* Effect.result(store.readArtifact('agent', 'oversized.txt', 10 * 1024 * 1024))
           expect(Result.isFailure(outcome)).toBe(true)
           if (Result.isFailure(outcome) && outcome.failure instanceof ArtifactTooLargeError) {
@@ -176,14 +181,15 @@ describe('SubagentStore', () => {
 
   it.effect('rejects insecure records and bounded full results', () =>
     Effect.gen(function* () {
-      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'subagent-security-' })
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'subagent-security-' })
       yield* Effect.provide(
         Effect.gen(function* () {
           const store = yield* SubagentStore
           yield* store.initialize
           yield* store.replaceRecord('agent', record(1))
           const target = yield* store.artifactPath('agent', 'record.json')
-          yield* bunFileSystem.chmod(target, 0o644)
+          yield* fs.chmod(target, 0o644)
           expect(Result.isFailure(yield* Effect.result(store.readRecord('agent')))).toBe(true)
           expect(Result.isFailure(yield* Effect.result(store.writeFullResult('agent', new Uint8Array(10 * 1024 * 1024 + 1))))).toBe(true)
         }),

@@ -12,7 +12,7 @@ import {
 import { Value } from 'typebox/value'
 
 import { createPrivateSessionFilePromise, writePrivateUniqueFilePromise } from '#shared/effect/bun_host_file_system'
-import { bunPath } from '#shared/effect/bun_services'
+import { join } from '#shared/utils/path'
 
 import {
   ChildCommandErrorFrameSchema,
@@ -204,8 +204,8 @@ export class SubagentWorker {
       .then((sessionManager) =>
         this.#sdk.runtime
           .create({
-            authPath: bunPath.join(config.worker.agentDir, 'auth.json'),
-            modelsPath: bunPath.join(config.worker.agentDir, 'models.json'),
+            authPath: join(config.worker.agentDir, 'auth.json'),
+            modelsPath: join(config.worker.agentDir, 'models.json'),
           })
           .then((modelRuntime) => ({ modelRuntime, sessionManager }))
       )

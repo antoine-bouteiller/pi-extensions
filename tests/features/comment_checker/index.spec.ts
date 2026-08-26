@@ -2,6 +2,7 @@ import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect, FileSystem, Path } from 'effect'
+import { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner'
 
 import { makeCommentCheckerRunner, type CheckerRunner } from '@/features/comment_checker/checker.js'
 import { makeFeature } from '@/features/comment_checker/index.js'
@@ -24,6 +25,18 @@ const preparedFeature = (runner: CheckerRunner, executable = '/tools/comment-che
   makeFeature({ makeRunner: (path) => (expect(path).toBe(executable), runner), which: () => executable }).prepare
 
 describe('comment checker', () => {
+  it('retains the ChildProcessSpawner requirement when dependencies omit makeRunner', () => {
+    const { prepare } = makeFeature({ which: () => '/tools/comment-checker' })
+
+    type Requirements = typeof prepare extends Effect.Effect<unknown, unknown, infer Value> ? Value : never
+    type IsExactMatch<Left, Right> = [Left, Right] extends [Right, Left] ? true : false
+    type Assert<Condition extends true> = Condition
+    const requiredEnvironment: Assert<IsExactMatch<Requirements, Path.Path | ChildProcessSpawner>> = true
+
+    expect(prepare).toBeDefined()
+    expect(requiredEnvironment).toBe(true)
+  })
+
   it.effect('prepares an implementation using the resolved absolute executable', () =>
     Effect.gen(function* () {
       const fixture = createFakePi()
@@ -190,8 +203,13 @@ process.exit(2)
         { mode: 0o700 }
       )
 
-      const runner = makeCommentCheckerRunner(executable)
-      expect(yield* runner(checkerInput)).toEqual({ exitCode: 2, stderr: '', stdout: jsonText(checkerInput) })
+      const spawner = runtime.runSync(ChildProcessSpawner)
+      const runner = makeCommentCheckerRunner(executable, (command) => spawner.spawn(command))
+      expect(yield* runner(checkerInput)).toEqual({
+        exitCode: 2,
+        stderr: '',
+        stdout: jsonText(checkerInput),
+      })
       expect(yield* runner({ ...checkerInput, tool_input: { content: 'overflow', file_path: checkerInput.tool_input.file_path } })).toEqual({
         exitCode: undefined,
         stderr: '',

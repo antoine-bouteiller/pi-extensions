@@ -1,10 +1,9 @@
 import { estimateTokens } from '@earendil-works/pi-coding-agent'
-import { Clock, Context, Deferred, Effect, Exit, Layer, Predicate, Ref, Schema, Scope, Semaphore } from 'effect'
+import { Clock, Context, Deferred, Effect, Exit, Layer, Path, Predicate, Ref, Schema, Scope, Semaphore } from 'effect'
 import { Value } from 'typebox/value'
 
 import { AgentActivity, type AgentActivityApi } from '#shared/effect/app_services'
 import { validateWorkerSessionPath } from '#shared/effect/bun_host_file_system'
-import { bunPath } from '#shared/effect/bun_services'
 import { type RunningAgent } from '#shared/state/agent_activity'
 
 import {
@@ -465,6 +464,7 @@ interface OrchestratorDependencies {
   readonly activity: AgentActivityApi
   readonly cleanup: Ref.Ref<ReadonlyMap<string, Cleanup>>
   readonly notifications: NotificationSinkApi
+  readonly pathService: Path.Path
   readonly process: ChildProcessApi
   readonly resolver: ProfileResolverApi
   readonly store: SubagentStoreApi
@@ -520,7 +520,7 @@ const cleanupForTurn = (turn: Turn): Cleanup => ({
   turn: turn.turn,
 })
 
-const make = ({ activity, cleanup, notifications, process, resolver, store }: OrchestratorDependencies): MadeOrchestrator => {
+const make = ({ activity, cleanup, notifications, pathService, process, resolver, store }: OrchestratorDependencies): MadeOrchestrator => {
   const sessions = new Map<string, Session>()
   // Ponytail: global session lifecycle lock; use per-session locks when cross-session contention is measured
   const lifecycle = Semaphore.makeUnsafe(1)
@@ -1809,7 +1809,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
             resume === undefined
               ? yield* store.createSession(reservation.agentId).pipe(Effect.mapError((error) => refusal('startup_failed', error.message)))
               : {
-                  runDirectory: bunPath.dirname(resume.sessionPath),
+                  runDirectory: pathService.dirname(resume.sessionPath),
                   sessionPath: resume.sessionPath,
                 }
           const config = yield* Effect.try({
@@ -2935,16 +2935,18 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
 export const SubagentOrchestratorLive: Layer.Layer<
   SubagentOrchestrator,
   never,
-  AgentActivity | SubagentStore | ProfileResolver | ChildProcess | NotificationSink
+  AgentActivity | SubagentStore | ProfileResolver | ChildProcess | NotificationSink | Path.Path
 > = Layer.effect(
   SubagentOrchestrator,
   Effect.acquireRelease(
     Effect.gen(function* () {
+      const pathService = yield* Path.Path
       const cleanup = yield* Ref.make<ReadonlyMap<string, Cleanup>>(new Map())
       return make({
         activity: yield* AgentActivity,
         cleanup,
         notifications: yield* NotificationSink,
+        pathService,
         process: yield* ChildProcess,
         resolver: yield* ProfileResolver,
         store: yield* SubagentStore,

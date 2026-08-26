@@ -1,9 +1,8 @@
 import { type ExtensionContext, type ToolResultEvent } from '@earendil-works/pi-coding-agent'
-import { Cause, Context, Effect, Stream } from 'effect'
+import { Cause, Context, Effect, type Scope, Stream } from 'effect'
 import { type PlatformError } from 'effect/PlatformError'
 import { ChildProcess } from 'effect/unstable/process'
 
-import { bunChildProcessSpawner } from '#shared/effect/bun_services'
 import { jsonText, type JsonObject } from '#shared/utils/json'
 import { isEmptyString } from '#shared/utils/predicates'
 import { isRecord } from '#shared/utils/records'
@@ -113,7 +112,15 @@ const collectOutput = (stream: Stream.Stream<Uint8Array, PlatformError>): Effect
     }
   ).pipe(Effect.map(({ chunks }) => Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString()))
 
-const runCommentChecker = (input: HookInput, executable: string): Effect.Effect<CheckerResult> =>
+interface SpawnedChild {
+  readonly exitCode: Effect.Effect<number, PlatformError>
+  readonly stderr: Stream.Stream<Uint8Array, PlatformError>
+  readonly stdout: Stream.Stream<Uint8Array, PlatformError>
+}
+
+type Spawn = (command: ChildProcess.Command) => Effect.Effect<SpawnedChild, PlatformError, Scope.Scope>
+
+const runCommentChecker = (input: HookInput, executable: string, spawn: Spawn): Effect.Effect<CheckerResult> =>
   Effect.scoped(
     Effect.gen(function* () {
       const command = ChildProcess.make(executable, ['check'], {
@@ -123,7 +130,7 @@ const runCommentChecker = (input: HookInput, executable: string): Effect.Effect<
         stdin: { endOnDone: true, stream: Stream.succeed(new TextEncoder().encode(jsonText(input))) },
         stdout: 'pipe',
       })
-      const child = yield* bunChildProcessSpawner.spawn(command)
+      const child = yield* spawn(command)
       const { exitCode, stderr, stdout } = yield* Effect.all(
         {
           exitCode: child.exitCode,
@@ -132,7 +139,7 @@ const runCommentChecker = (input: HookInput, executable: string): Effect.Effect<
         },
         { concurrency: 'unbounded' }
       )
-      return { exitCode: Number(exitCode), stderr, stdout }
+      return { exitCode, stderr, stdout }
     })
   ).pipe(
     Effect.timeoutOrElse({ duration: PROCESS_TIMEOUT_MS, orElse: () => Effect.succeed(EMPTY_CHECKER_RESULT) }),
@@ -140,9 +147,9 @@ const runCommentChecker = (input: HookInput, executable: string): Effect.Effect<
   )
 
 export const makeCommentCheckerRunner =
-  (executable: string): CheckerRunner =>
+  (executable: string, spawn: Spawn): CheckerRunner =>
   (input) =>
-    runCommentChecker(input, executable)
+    runCommentChecker(input, executable, spawn)
 
 const checkerResult = (
   event: ToolResultEvent,

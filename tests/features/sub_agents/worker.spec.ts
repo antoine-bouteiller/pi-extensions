@@ -1,8 +1,8 @@
 import { type AgentSessionEvent } from '@earendil-works/pi-coding-agent'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { Effect, pipe } from 'effect'
+import { Effect, pipe, FileSystem } from 'effect'
 
-import { bunFileSystem, bunPath } from '@/shared/effect/bun_services.js'
+import { join } from '#shared/utils/path'
 
 import {
   JsonlDecoder,
@@ -85,7 +85,7 @@ const artifactResult = (value: unknown): ArtifactResult => {
 const sessionPath = (value: unknown): string => {
   const path = typeof value === 'object' && value !== null ? Reflect.get(value, 'session_path') : undefined
   if (typeof path !== 'string') {
-    throw new Error('Ready frame did not include a session path.')
+    throw new Error('Ready frame did not include a session nodePath.')
   }
   return path
 }
@@ -319,8 +319,9 @@ describe('sub-agent worker protocol', () => {
     'enforces output boundaries and writes relative artifacts at exact byte counts',
     () =>
       Effect.gen(function* () {
-        const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'sub-agent-artifact-' })
-        const runDir = bunPath.join(root, 'run')
+        const fs = yield* FileSystem.FileSystem
+        const root = yield* fs.makeTempDirectory({ prefix: 'sub-agent-artifact-' })
+        const runDir = join(root, 'run')
         const artifactFrame = { ...config, run_dir: runDir }
         for (const conclusion of [
           'x'.repeat(MAX_INLINE_BYTES),
@@ -345,7 +346,7 @@ describe('sub-agent worker protocol', () => {
             if (conclusion === `${'x\n'.repeat(MAX_INLINE_LINES)}x`) {
               expect(artifact.conclusion_preview).toBe(`${'x\n'.repeat(MAX_INLINE_LINES - 1)}x`)
             }
-            expect(yield* bunFileSystem.readFileString(bunPath.join(runDir, artifact.conclusion_artifact))).toBe(conclusion)
+            expect(yield* fs.readFileString(join(runDir, artifact.conclusion_artifact))).toBe(conclusion)
           }
         }
         const exactLimit = yield* startHarnessedWorker({ frame: artifactFrame })
@@ -370,6 +371,7 @@ describe('sub-agent worker protocol', () => {
 
   it.effect('builds artifact previews without repeatedly encoding their accumulated prefix', () =>
     Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
       const conclusion = 'x'.repeat(MAX_INLINE_BYTES + 1)
       let encodedConclusionBytes = 0
       const originalEncode = Reflect.get(TextEncoder.prototype, 'encode')
@@ -380,8 +382,8 @@ describe('sub-agent worker protocol', () => {
         return originalEncode.call(this, input)
       }
       try {
-        const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'sub-agent-preview-' })
-        const started = yield* startHarnessedWorker({ frame: { ...config, run_dir: bunPath.join(root, 'run') } })
+        const root = yield* fs.makeTempDirectory({ prefix: 'sub-agent-preview-' })
+        const started = yield* startHarnessedWorker({ frame: { ...config, run_dir: join(root, 'run') } })
         yield* promise(() => started.harness.settle(conclusion))
         expect(artifactResult(frames(started.output).at(-1)).conclusion_preview).toBe('x'.repeat(MAX_INLINE_BYTES))
         expect(encodedConclusionBytes).toBeLessThanOrEqual(conclusion.length * 3)
@@ -462,10 +464,11 @@ describe('sub-agent worker protocol', () => {
     'runs the real worker entrypoint against a loopback provider without stdout contamination',
     () =>
       Effect.gen(function* () {
-        const root = yield* bunFileSystem.makeTempDirectoryScoped({ prefix: 'sub-agent-worker-' })
-        const agentDir = bunPath.join(root, 'agent')
-        const runDir = bunPath.join(root, 'run')
-        const sessions = bunPath.join(root, 'sessions')
+        const fs = yield* FileSystem.FileSystem
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: 'sub-agent-worker-' })
+        const agentDir = join(root, 'agent')
+        const runDir = join(root, 'run')
+        const sessions = join(root, 'sessions')
         const provider = yield* Effect.acquireRelease(
           Effect.sync(() => startFakeProvider('deterministic conclusion')),
           (active) => Effect.sync(active.close)
@@ -480,8 +483,8 @@ describe('sub-agent worker protocol', () => {
             },
           },
         }
-        yield* bunFileSystem.makeDirectory(agentDir, { recursive: true })
-        yield* promise(() => Bun.write(bunPath.join(agentDir, 'models.json'), JSON.stringify(models)))
+        yield* fs.makeDirectory(agentDir, { recursive: true })
+        yield* promise(() => Bun.write(join(agentDir, 'models.json'), JSON.stringify(models)))
         const entrypoint = new URL('../../../src/features/sub_agents/worker.ts', import.meta.url).pathname
         const frame = {
           ...config,
@@ -525,7 +528,7 @@ describe('sub-agent worker protocol', () => {
         const ready = childFrames[readyIndex]
         const path = sessionPath(ready)
         expect(path.startsWith(`${sessions}/`)).toBe(true)
-        expect(yield* bunFileSystem.readFileString(path)).toContain('session')
+        expect(yield* fs.readFileString(path)).toContain('session')
       }),
     20_000
   )
