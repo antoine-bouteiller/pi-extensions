@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { BunFileSystem, BunPath } from '@effect/platform-bun'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asNarrowed } from '@tests/utils/casts.js'
-import { DateTime, Effect, FileSystem, Layer, Random } from 'effect'
+import { DateTime, Effect, FileSystem, Layer, Option, PlatformError, Random } from 'effect'
 
 import { dirname, join } from '#shared/utils/path'
 import { boundToolTextEffect, SPILL_TTL_MS, truncateOutput, truncationNotice, writePrivateTempFileEffect } from '@/shared/utils/tool_output.js'
@@ -116,6 +116,183 @@ describe('bounded tool output', () => {
       expect(after.filter((entry) => entry.startsWith('tool-output-failure-'))).toEqual([])
       expect(before.filter((entry) => entry.startsWith('tool-output-failure-'))).toEqual([])
     }).pipe(Effect.provide(BunFileSystem.layer))
+  )
+
+  it.effect('writePrivateTempFileEffect ignores a failed spill directory read', () =>
+    Effect.gen(function* () {
+      const fakeDirectory = join(tmpdir(), 'tool-output-read-directory-failure')
+      const readDirectoryCalls: string[] = []
+      const errnoCause = Object.assign(new Error('permission denied'), { code: 'EACCES' })
+      const fileSystem = asNarrowed<FileSystem.FileSystem, object>({
+        makeTempDirectory: () => Effect.succeed(fakeDirectory),
+        readDirectory: (path: string) =>
+          Effect.suspend(() => {
+            readDirectoryCalls.push(path)
+            return Effect.fail(
+              PlatformError.systemError({
+                _tag: 'PermissionDenied',
+                cause: errnoCause,
+                method: 'readDirectory',
+                module: 'FileSystem',
+                pathOrDescriptor: tmpdir(),
+              })
+            )
+          }),
+        writeFileString: () => Effect.void,
+      })
+
+      const path = yield* writePrivateTempFileEffect('secret', { prefix: 'tool-output-read-directory-failure-' }).pipe(
+        Effect.provide(Layer.merge(Layer.succeed(FileSystem.FileSystem)(fileSystem), BunPath.layer))
+      )
+
+      expect(path).toBe(join(fakeDirectory, 'output.txt'))
+      expect(readDirectoryCalls).toEqual([tmpdir()])
+    })
+  )
+
+  it.effect('writePrivateTempFileEffect ignores a failed spill entry stat', () =>
+    Effect.gen(function* () {
+      const fakeDirectory = join(tmpdir(), 'tool-output-stat-failure')
+      const staleEntry = 'tool-output-stat-failure-stale'
+      const stalePath = join(tmpdir(), staleEntry)
+      const readDirectoryCalls: string[] = []
+      const statCalls: string[] = []
+      const errnoCause = Object.assign(new Error('no such file or directory'), { code: 'ENOENT' })
+      const fileSystem = asNarrowed<FileSystem.FileSystem, object>({
+        makeTempDirectory: () => Effect.succeed(fakeDirectory),
+        readDirectory: (path: string) => Effect.sync(() => readDirectoryCalls.push(path)).pipe(Effect.as([staleEntry])),
+        stat: (path: string) =>
+          Effect.suspend(() => {
+            statCalls.push(path)
+            return Effect.fail(
+              PlatformError.systemError({
+                _tag: 'NotFound',
+                cause: errnoCause,
+                method: 'stat',
+                module: 'FileSystem',
+                pathOrDescriptor: path,
+              })
+            )
+          }),
+        writeFileString: () => Effect.void,
+      })
+
+      const path = yield* writePrivateTempFileEffect('secret', { prefix: 'tool-output-stat-failure-' }).pipe(
+        Effect.provide(Layer.merge(Layer.succeed(FileSystem.FileSystem)(fileSystem), BunPath.layer))
+      )
+
+      expect(path).toBe(join(fakeDirectory, 'output.txt'))
+      expect(readDirectoryCalls).toEqual([tmpdir()])
+      expect(statCalls).toEqual([stalePath])
+    })
+  )
+
+  it.effect('writePrivateTempFileEffect ignores a failed expired spill removal', () =>
+    Effect.gen(function* () {
+      const fakeDirectory = join(tmpdir(), 'tool-output-remove-failure')
+      const staleEntry = 'tool-output-remove-failure-stale'
+      const stalePath = join(tmpdir(), staleEntry)
+      const staleModified = DateTime.toDateUtc(DateTime.makeUnsafe((yield* Effect.clockWith((clock) => clock.currentTimeMillis)) - SPILL_TTL_MS - 1))
+      const readDirectoryCalls: string[] = []
+      const statCalls: string[] = []
+      const removeCalls: { readonly options?: { readonly force?: boolean; readonly recursive?: boolean }; readonly path: string }[] = []
+      const errnoCause = Object.assign(new Error('permission denied'), { code: 'EACCES' })
+      const fileSystem = asNarrowed<FileSystem.FileSystem, object>({
+        makeTempDirectory: () => Effect.succeed(fakeDirectory),
+        readDirectory: (path: string) => Effect.sync(() => readDirectoryCalls.push(path)).pipe(Effect.as([staleEntry])),
+        remove: (path: string, options?: { readonly force?: boolean; readonly recursive?: boolean }) =>
+          Effect.suspend(() => {
+            removeCalls.push({ options, path })
+            return Effect.fail(
+              PlatformError.systemError({
+                _tag: 'PermissionDenied',
+                cause: errnoCause,
+                method: 'remove',
+                module: 'FileSystem',
+                pathOrDescriptor: path,
+              })
+            )
+          }),
+        stat: (path: string) =>
+          Effect.sync(() => statCalls.push(path)).pipe(Effect.as(asNarrowed<FileSystem.File.Info, object>({ mtime: Option.some(staleModified) }))),
+        writeFileString: () => Effect.void,
+      })
+
+      const path = yield* writePrivateTempFileEffect('secret', { prefix: 'tool-output-remove-failure-' }).pipe(
+        Effect.provide(Layer.merge(Layer.succeed(FileSystem.FileSystem)(fileSystem), BunPath.layer))
+      )
+
+      expect(path).toBe(join(fakeDirectory, 'output.txt'))
+      expect(readDirectoryCalls).toEqual([tmpdir()])
+      expect(statCalls).toEqual([stalePath])
+      expect(removeCalls).toEqual([{ options: { force: true, recursive: true }, path: stalePath }])
+    })
+  )
+
+  it.effect('writePrivateTempFileEffect removes its directory after a write failure', () =>
+    Effect.gen(function* () {
+      const fakeDirectory = join(tmpdir(), 'tool-output-write-failure')
+      const errnoCause = Object.assign(new Error('input/output error'), { code: 'EIO' })
+      const writeFailure = PlatformError.systemError({
+        _tag: 'Unknown',
+        cause: errnoCause,
+        method: 'writeFile',
+        module: 'FileSystem',
+        pathOrDescriptor: join(fakeDirectory, 'output.txt'),
+      })
+      const removeCalls: string[] = []
+      const fileSystem = asNarrowed<FileSystem.FileSystem, object>({
+        makeTempDirectory: () => Effect.succeed(fakeDirectory),
+        readDirectory: () => Effect.succeed([]),
+        remove: (path: string) =>
+          Effect.sync(() => {
+            removeCalls.push(path)
+          }),
+        writeFileString: () => Effect.fail(writeFailure),
+      })
+
+      const failure = yield* Effect.flip(
+        writePrivateTempFileEffect('secret', { prefix: 'tool-output-write-failure-' }).pipe(
+          Effect.provide(Layer.merge(Layer.succeed(FileSystem.FileSystem)(fileSystem), BunPath.layer))
+        )
+      )
+
+      expect(failure._tag).toBe('UnknownError')
+      expect(failure.cause).toBe(writeFailure)
+      expect(removeCalls).toEqual([fakeDirectory])
+    })
+  )
+
+  it.effect('writePrivateTempFileEffect does not clean up when making its directory fails', () =>
+    Effect.gen(function* () {
+      const errnoCause = Object.assign(new Error('permission denied'), { code: 'EACCES' })
+      const makeDirectoryFailure = PlatformError.systemError({
+        _tag: 'PermissionDenied',
+        cause: errnoCause,
+        method: 'makeTempDirectory',
+        module: 'FileSystem',
+        pathOrDescriptor: tmpdir(),
+      })
+      const removeCalls: string[] = []
+      const fileSystem = asNarrowed<FileSystem.FileSystem, object>({
+        makeTempDirectory: () => Effect.fail(makeDirectoryFailure),
+        readDirectory: () => Effect.succeed([]),
+        remove: (path: string) =>
+          Effect.sync(() => {
+            removeCalls.push(path)
+          }),
+      })
+
+      const failure = yield* Effect.flip(
+        writePrivateTempFileEffect('secret', { prefix: 'tool-output-make-directory-failure-' }).pipe(
+          Effect.provide(Layer.merge(Layer.succeed(FileSystem.FileSystem)(fileSystem), BunPath.layer))
+        )
+      )
+
+      expect(failure._tag).toBe('UnknownError')
+      expect(failure.cause).toBe(makeDirectoryFailure)
+      expect(removeCalls).toEqual([])
+    })
   )
 
   it.effect('boundToolTextEffect spills the complete text and keeps the notice inside the budget', () =>
