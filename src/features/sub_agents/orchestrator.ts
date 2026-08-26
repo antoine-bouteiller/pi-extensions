@@ -850,7 +850,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
       session,
       snapshot(session).pipe(
         Effect.flatMap((state) =>
-          state.phase === 'open'
+          state.phase === 'open' && state.starting.has(provisional.slotId)
             ? Ref.set(session.state, {
                 ...state,
                 provisional: new Map(state.provisional).set(provisional.slotId, provisional),
@@ -2233,15 +2233,30 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
     interruptAll: (key) =>
       active(key).pipe(
         Effect.flatMap((session) =>
-          snapshot(session).pipe(
-            Effect.flatMap((state) =>
-              Effect.forEach([...state.provisional.values()], (provisional) => cleanupProvisional(provisional), {
+          locked(
+            session,
+            snapshot(session).pipe(
+              Effect.flatMap((state) => {
+                const provisional = [...state.provisional.values()]
+                const starting = [...state.starting.values()]
+                const startingSlots = new Set(starting.map((reservation) => reservation.slotId))
+                return Ref.set(session.state, {
+                  ...state,
+                  provisional: new Map([...state.provisional].filter(([slotId]) => !startingSlots.has(slotId))),
+                  slots: new Map([...state.slots].filter(([slotId]) => !startingSlots.has(slotId))),
+                  starting: new Map([...state.starting].filter(([slotId]) => !startingSlots.has(slotId))),
+                }).pipe(Effect.as({ provisional, turns: [...state.agents.values()] }))
+              })
+            )
+          ).pipe(
+            Effect.flatMap(({ provisional, turns }) =>
+              Effect.forEach(provisional, (item) => cleanupProvisional(item), {
                 concurrency: 'unbounded',
                 discard: true,
               }).pipe(
                 Effect.andThen(
                   Effect.forEach(
-                    [...state.agents.values()],
+                    turns,
                     (turn) =>
                       turn.result === undefined
                         ? settle(
@@ -2495,11 +2510,18 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                           : locked(
                               session,
                               Effect.gen(function* () {
+                                const state = yield* snapshot(session)
+                                const current = state.agents.get(target)
+                                if (current === undefined) {
+                                  return yield* refusal('unknown_agent', `Unknown agent "${target}".`)
+                                }
+                                if (current !== turn || current.agentId !== turn.agentId) {
+                                  return yield* refusal('not_resumable', 'The completed agent is no longer available.')
+                                }
                                 if ((yield* Ref.get(turn.followUp)) !== 'available') {
                                   return yield* refusal('follow_up_used', 'The follow-up allowance has already been used.')
                                 }
-                                const state = yield* snapshot(session)
-                                if (state.agents.get(target)?.stopping === true) {
+                                if (current.stopping) {
                                   return yield* refusal('not_ready', 'The completed agent is still stopping.')
                                 }
                                 const retained = [...(yield* Ref.get(cleanup)).values()].filter((item) => item.session === session.key)
@@ -2511,7 +2533,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                                   ...retained.flatMap((item) => (item.profile === undefined ? [] : [{ ...item, profile: item.profile }])),
                                 ]
                                 if (
-                                  state.agents.get(target)?.generation !== turn.generation ||
+                                  current.generation !== turn.generation ||
                                   state.slots.size + retained.length >= 3 ||
                                   (resolved.profile.key === 'implementer' && reservations.some((item) => item.profile.key === 'implementer'))
                                 ) {

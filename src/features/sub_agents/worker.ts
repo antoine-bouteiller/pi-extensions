@@ -65,6 +65,8 @@ const deferred = (): Deferred => {
   return { promise: result.promise, reject: result.reject, resolve: result.resolve }
 }
 const utf8 = new TextEncoder()
+// Ponytail: Cap pending progress writes at 64; upgrade to byte accounting if progress frames grow beyond fixed metadata.
+const MAX_PENDING_PROGRESS_WRITES = 64
 const diagnostic = (message: string): void => {
   process.stderr.write(`[sub-agent worker] ${message}\n`)
 }
@@ -121,6 +123,7 @@ export class SubagentWorker {
   readonly #finished = deferred()
   #control: Promise<void> = Promise.resolve()
   #writes: Promise<void> = Promise.resolve()
+  #pendingWrites = 0
 
   constructor(output: Output, factory: SessionFactory = sdk) {
     this.#output = output
@@ -398,7 +401,7 @@ export class SubagentWorker {
     this.#settled = true
     this.#winnerStatus = frame.status
     this.#state = 'settled'
-    return this.#emit(frame).then(() => {
+    return this.#emit(frame).finally(() => {
       this.#session?.dispose()
       this.#state = 'exiting'
       this.#finished.resolve()
@@ -441,8 +444,14 @@ export class SubagentWorker {
     if (!isChildFrame(frame)) {
       throw new ProtocolError('Worker attempted to emit an invalid child frame.')
     }
-    this.#writes = this.#writes.then(() => this.#output.write(encodeFrame(frame)))
-    return this.#writes
+    if (frame.type === 'progress' && this.#pendingWrites >= MAX_PENDING_PROGRESS_WRITES) {
+      return Promise.resolve()
+    }
+    this.#pendingWrites += 1
+    this.#writes = this.#writes.catch(() => undefined).then(() => this.#output.write(encodeFrame(frame)))
+    return this.#writes.finally(() => {
+      this.#pendingWrites -= 1
+    })
   }
 }
 
