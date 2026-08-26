@@ -2,7 +2,13 @@ import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Context, Deferred, Effect, Exit, Fiber, Layer, Queue, Ref, Scope } from 'effect'
 import { TestClock } from 'effect/testing'
 
-import { type AdmissionSnapshot, type PersistedResolvedProfile, type ProfileKey, type SpawnAgentInput } from '@/features/sub_agents/model.js'
+import {
+  type AdmissionSnapshot,
+  type PersistedResolvedProfile,
+  type ProfileKey,
+  type ProfileResolution,
+  type SpawnAgentInput,
+} from '@/features/sub_agents/model.js'
 import { SubagentOrchestrator, SubagentOrchestratorLive, WORKER_ENTRYPOINT } from '@/features/sub_agents/orchestrator.js'
 import { ChildProcess, ProcessError, type RunningChild, type SpawnRequest, type TerminationResult } from '@/features/sub_agents/process.js'
 import {
@@ -73,6 +79,7 @@ interface HarnessOptions {
   readonly failResumeLog?: boolean
   readonly deleteFails?: boolean
   readonly gateReplaceRecord?: boolean
+  readonly gateResolveAt?: number
   readonly gateTermination?: boolean
   readonly leases?: readonly { readonly agentId: string; readonly lease: LaunchLease }[]
   readonly gateNotifications?: boolean
@@ -98,6 +105,7 @@ const harness = (root: string, options: HarnessOptions = {}) =>
     const replaceGate = yield* Deferred.make<void>()
     const terminationGate = yield* Deferred.make<void>()
     const spawnCompletionGate = yield* Deferred.make<void>()
+    const resolveGate = yield* Deferred.make<void>()
     let deletes = 0
     let logCreates = 0
     let logRemovals = 0
@@ -113,6 +121,7 @@ const harness = (root: string, options: HarnessOptions = {}) =>
     let pruneCalls = 0
     let releases = 0
     let replaceRecordCalls = 0
+    let resolveCalls = 0
     let spawnCalls = 0
     const spawnRequests: SpawnRequest[] = []
     const store: SubagentStoreApi = {
@@ -267,17 +276,22 @@ const harness = (root: string, options: HarnessOptions = {}) =>
     const resolver = {
       resolve: (key: string, _snapshot: AdmissionSnapshot) => {
         const resolved = availableProfiles.find((profileKey) => profileKey === key)
-        return resolved === undefined
-          ? Effect.succeed({ error: { code: 'unknown_profile' as const, message: 'unknown' }, ok: false as const })
-          : Effect.succeed(
-              options.maxOutputTokens === undefined
-                ? { ok: true as const, profile: { ...profile(resolved), contextCeiling: options.contextCeiling ?? 1 } }
-                : {
-                    maxOutputTokens: options.maxOutputTokens,
-                    ok: true as const,
-                    profile: { ...profile(resolved), contextCeiling: options.contextCeiling ?? 1 },
-                  }
-            )
+        const value: Effect.Effect<ProfileResolution> =
+          resolved === undefined
+            ? Effect.succeed({ error: { code: 'unknown_profile' as const, message: 'unknown' }, ok: false as const })
+            : Effect.succeed(
+                options.maxOutputTokens === undefined
+                  ? { ok: true as const, profile: { ...profile(resolved), contextCeiling: options.contextCeiling ?? 1 } }
+                  : {
+                      maxOutputTokens: options.maxOutputTokens,
+                      ok: true as const,
+                      profile: { ...profile(resolved), contextCeiling: options.contextCeiling ?? 1 },
+                    }
+              )
+        return Effect.sync(() => {
+          resolveCalls += 1
+          return options.gateResolveAt === resolveCalls
+        }).pipe(Effect.flatMap((gate) => (gate ? Deferred.await(resolveGate).pipe(Effect.andThen(value)) : value)))
       },
     }
     yield* bunFileSystem.writeFileString(bunPath.join(root, 'session.json'), '{}')
@@ -325,6 +339,7 @@ const harness = (root: string, options: HarnessOptions = {}) =>
       records: () => records,
       releaseNotifications: Deferred.succeed(notificationGate, undefined).pipe(Effect.asVoid),
       releaseReplaceRecord: Deferred.succeed(replaceGate, undefined).pipe(Effect.asVoid),
+      releaseResolve: Deferred.succeed(resolveGate, undefined).pipe(Effect.asVoid),
       releaseSpawnCompletion: Deferred.succeed(spawnCompletionGate, undefined).pipe(Effect.asVoid),
       releaseTermination: Deferred.succeed(terminationGate, undefined).pipe(Effect.asVoid),
       releases: () => releases,
@@ -2054,6 +2069,28 @@ describe('SubagentOrchestrator', () => {
     })
   )
 
+  it.scoped('panic interrupts a launch reserved after its snapshot would otherwise escape', () =>
+    Effect.gen(function* () {
+      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'orchestrator-panic-starting-' }).pipe(Effect.flatMap(bunFileSystem.realPath))
+      const fake = yield* harness(root, { gateSpawnCompletion: true, profiles: ['scout'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('panic-starting')
+          const spawning = yield* Effect.forkChild(orchestrator.spawn('panic-starting', admission, request('reserved')))
+          yield* TestClock.adjust('1 millis')
+          expect(fake.children).toHaveLength(1)
+          yield* orchestrator.interruptAll('panic-starting')
+          yield* fake.releaseSpawnCompletion
+          expect((yield* Fiber.join(spawning).pipe(Effect.exit))._tag).toBe('Failure')
+          expect(yield* orchestrator.list('panic-starting')).toEqual([])
+          expect(fake.records()).toHaveLength(0)
+        }),
+        fake.layer
+      )
+    })
+  )
+
   it.scoped('reports not_ready while a completed agent resume is provisional', () =>
     Effect.gen(function* () {
       const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'orchestrator-resume-starting-' }).pipe(Effect.flatMap(bunFileSystem.realPath))
@@ -2221,6 +2258,41 @@ describe('SubagentOrchestrator', () => {
           fake.layer
         )
       }
+    })
+  )
+
+  it.scoped('refuses a captured resume after a same-name replacement commits', () =>
+    Effect.gen(function* () {
+      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'orchestrator-resume-replacement-' }).pipe(Effect.flatMap(bunFileSystem.realPath))
+      const fake = yield* harness(root, { contextCeiling: 100_000, gateResolveAt: 2, profiles: ['scout'], termination: ['mismatch'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('resume-replacement')
+          const initial = yield* Effect.forkChild(orchestrator.spawn('resume-replacement', admission, request('source', 'scout', false)))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[0], 'agent-1', bunPath.join(root, 'session.json'))
+          yield* completed(fake.children[0], 'agent-1')
+          yield* Fiber.join(initial)
+          yield* fake.children[0].exit
+          yield* Effect.yieldNow
+
+          const captured = yield* Effect.forkChild(orchestrator.send('resume-replacement', admission, 'source', 'first'))
+          yield* TestClock.adjust('1 millis')
+          const replacing = yield* Effect.forkChild(orchestrator.send('resume-replacement', admission, 'source', 'second'))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[1], 'agent-1', bunPath.join(root, 'session.json'), 2)
+          yield* completed(fake.children[1], 'agent-1', 'second', 2)
+          expect((yield* Fiber.join(replacing)).turn).toBe(2)
+
+          yield* fake.releaseResolve
+          const code = yield* Fiber.join(captured).pipe(
+            Effect.match({ onFailure: (error) => (error._tag === 'PublicRefusalError' ? error.code : 'lifecycle'), onSuccess: () => 'accepted' })
+          )
+          expect(code).toBe('not_resumable')
+        }),
+        fake.layer
+      )
     })
   )
 
@@ -2403,6 +2475,7 @@ describe('SubagentOrchestrator', () => {
           yield* completed(fake.children[0], 'agent-1')
           yield* fake.children[0].exit
           yield* Fiber.join(initial)
+          yield* Effect.yieldNow
           expect((yield* Effect.exit(orchestrator.send('resume-release', admission, 'done', 'next')))._tag).toBe('Failure')
           const [entry] = yield* orchestrator.list('resume-release')
           expect(entry?.follow_up_available).toBe(true)

@@ -215,6 +215,69 @@ describe('sub-agent worker protocol', () => {
     })
   )
 
+  it.effect('settles and exits when the terminal result write rejects', () =>
+    Effect.gen(function* () {
+      const harness = workerHarness()
+      const worker = new SubagentWorker(
+        {
+          write: (value) => {
+            if (frameType(JSON.parse(value)) === 'result') {
+              return Promise.reject(new Error('broken parent pipe'))
+            }
+            return undefined
+          },
+        },
+        harness.factory
+      )
+      yield* promise(() => worker.accept(config))
+      yield* promise(() => worker.accept(task('task body')))
+      yield* promise(() => harness.promptStarted())
+      yield* promise(() => harness.start())
+      yield* promise(() =>
+        harness.settle('done').then(
+          () => expect.unreachable(),
+          () => undefined
+        )
+      )
+      yield* promise(() => worker.waitForSettlement())
+      expect(worker.state).toBe('exiting')
+      expect(harness.disposed()).toBe(1)
+    })
+  )
+
+  it.effect('continues terminal writes after a failed advisory progress frame', () =>
+    Effect.gen(function* () {
+      const output: string[] = []
+      const harness = workerHarness()
+      const worker = new SubagentWorker(
+        {
+          write: (value) => {
+            const frame = JSON.parse(value) as unknown
+            const activity = typeof frame === 'object' && frame !== null ? Reflect.get(frame, 'activity') : undefined
+            if (frameType(frame) === 'progress' && activity === 'assistant_activity') {
+              return Promise.reject(new Error('broken progress write'))
+            }
+            output.push(value)
+            return undefined
+          },
+        },
+        harness.factory
+      )
+      yield* promise(() => worker.accept(config))
+      yield* promise(() => worker.accept(task('task body')))
+      yield* promise(() => harness.promptStarted())
+      yield* promise(() => harness.start())
+      yield* promise(() =>
+        harness.emit(sdkEvent('message_update')).then(
+          () => expect.unreachable(),
+          () => undefined
+        )
+      )
+      yield* promise(() => harness.settle('done'))
+      expect(frames(output).at(-1)).toEqual(expect.objectContaining({ conclusion: 'done', type: 'result' }))
+    })
+  )
+
   it.effect('reports rejected steering and interrupts without an acknowledgement', () =>
     Effect.gen(function* () {
       const rejected = yield* startHarnessedWorker()
