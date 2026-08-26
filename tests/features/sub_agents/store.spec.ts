@@ -31,6 +31,8 @@ describe('SubagentStore', () => {
           const store = yield* SubagentStore
           yield* store.initialize
           yield* store.createLease('agent', { identity: { birthMarker: 'birth', pid: 1 }, session: 'session', taskName: 'task' })
+          yield* store.removeLease('agent', { birthMarker: 'other', pid: 1 })
+          expect(yield* store.listLeases).toHaveLength(1)
           const log = yield* store.createLog('agent', 1)
           const resumedLog = yield* store.createLog('agent', 2)
           const session = yield* store.createSession('agent')
@@ -40,8 +42,8 @@ describe('SubagentStore', () => {
           const run = bunPath.join(root, 'pi-codex-subagents', 'owner', 'runs', 'agent')
           expect(session.runDirectory).toBe(yield* bunFileSystem.realPath(run))
           expect(session.sessionPath).toBe(yield* bunFileSystem.realPath(bunPath.join(run, 'session.json')))
-          expect(log).toBe(bunPath.join(run, 'stderr-1.log'))
-          expect(resumedLog).toBe(bunPath.join(run, 'stderr-2.log'))
+          expect(log).toMatch(new RegExp(`^${run}/stderr-1-[A-Za-z0-9-]+\\.log$`))
+          expect(resumedLog).toMatch(new RegExp(`^${run}/stderr-2-[A-Za-z0-9-]+\\.log$`))
           for (const target of [run, log, resumedLog, result, session.sessionPath, bunPath.join(run, 'record.json')]) {
             const stat = yield* hostFilePermissions(target)
             expect(stat.mode).toBe(target === run ? 0o700 : 0o600)
@@ -126,14 +128,22 @@ describe('SubagentStore', () => {
           const store = yield* SubagentStore
           yield* store.initialize
           yield* store.replaceRecord('record-only', record(1))
+          yield* store.replaceRecord('record-with-lease', record(1))
           yield* store.createLease('lease-only', { identity: { birthMarker: 'birth', pid: 1 }, session: 'session', taskName: 'task' })
-          expect((yield* store.listLeases).map(({ agentId }) => agentId)).toEqual(['lease-only'])
+          yield* store.createLease('record-with-lease', {
+            identity: { birthMarker: 'birth', pid: 2 },
+            preserveRecord: true,
+            session: 'session',
+            taskName: 'task',
+          })
+          expect((yield* store.listLeases).map(({ agentId }) => agentId).toSorted()).toEqual(['lease-only', 'record-with-lease'])
           expect((yield* store.readRecord('record-only'))?.status).toBe('completed')
-          expect((yield* store.listRecords).map(({ agentId }) => agentId)).toEqual(['record-only'])
-          expect((yield* store.listLeases).map(({ agentId }) => agentId)).toEqual(['lease-only'])
+          expect((yield* store.listRecords).map(({ agentId }) => agentId).toSorted()).toEqual(['record-only', 'record-with-lease'])
+          expect((yield* store.listLeases).map(({ agentId }) => agentId).toSorted()).toEqual(['lease-only', 'record-with-lease'])
           yield* store.prune(1 + 7 * 24 * 60 * 60 * 1000)
-          expect((yield* store.listLeases).map(({ agentId }) => agentId)).toEqual(['lease-only'])
+          expect((yield* store.listLeases).map(({ agentId }) => agentId).toSorted()).toEqual(['lease-only', 'record-with-lease'])
           expect(yield* store.readRecord('record-only')).toBeUndefined()
+          expect((yield* store.readRecord('record-with-lease'))?.status).toBe('completed')
         }),
         makeSubagentStoreLive({ tempDirectory: root, username: 'owner' })
       )

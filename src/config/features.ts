@@ -19,7 +19,7 @@ import { feature as subAgents } from '#features/sub_agents/index'
 import { feature as webfetch } from '#features/webfetch/index'
 import { type FeaturePlugin } from '#shared/effect/feature'
 
-const features = [
+export const features = [
   { ...askUser, suppressInChild: true },
   autoTheme,
   { ...backgroundPoll, suppressInChild: true },

@@ -6,6 +6,7 @@ import {
   ChildProcess,
   macosProcessBirthMarker,
   makeChildProcessLive,
+  ProcessError,
   type PlatformChild,
   type ProcessPlatform,
 } from '@/features/sub_agents/process.js'
@@ -100,6 +101,7 @@ describe('ChildProcess', () => {
         Effect.sync(() => {
           forced = true
         }),
+      isPidExited: () => Effect.succeed(false),
       spawn: () =>
         Effect.succeed({
           ...child,
@@ -134,6 +136,7 @@ describe('ChildProcess', () => {
         Effect.sync(() => {
           signals += 1
         }),
+      isPidExited: () => Effect.succeed(false),
       spawn: () =>
         Effect.succeed({
           ...child,
@@ -158,31 +161,53 @@ describe('ChildProcess', () => {
     }).pipe(Effect.provide(makeChildProcessLive(platform)))
   })
 
-  it.effect('does not signal exited, unreadable, or mismatched identities', () => {
-    const outcomes: string[] = []
+  it.effect('force terminates a verified child after the five-second virtual grace', () => {
     let signals = 0
     const platform: ProcessPlatform = {
-      birthMarker: (pid) => {
-        if (pid === 1) {
-          return Effect.void.pipe(Effect.as(undefined))
-        }
-        if (pid === 2) {
-          return Effect.succeed('other')
-        }
-        return Effect.succeed('birth')
-      },
+      birthMarker: () => Effect.succeed('birth'),
       forceTerminate: () =>
         Effect.sync(() => {
           signals += 1
         }),
+      isPidExited: () => Effect.succeed(false),
+      spawn: () => Effect.succeed({ ...child, isAlive: () => true, wait: Effect.never }),
+    }
+    return Effect.gen(function* () {
+      const process = yield* ChildProcess
+      const running = yield* process.spawn({ args: [], command: 'worker', cwd: '/', environment: {} })
+      const interruption = yield* Effect.forkDetach(process.interruptVerified(running, 'interrupt\n'))
+      yield* Effect.yieldNow
+      yield* TestClock.adjust('5 seconds')
+      yield* Fiber.join(interruption)
+      expect(signals).toBe(1)
+    }).pipe(Effect.provide(makeChildProcessLive(platform)))
+  })
+
+  it.effect('releases confirmed exited PIDs without signalling unreadable or mismatched identities', () => {
+    const outcomes: string[] = []
+    let signals = 0
+    const platform: ProcessPlatform = {
+      birthMarker: (pid) => {
+        if (pid === 2) {
+          return Effect.succeed('other')
+        }
+        return pid === 4 ? Effect.succeed('birth') : Effect.void.pipe(Effect.as(undefined))
+      },
+      forceTerminate: (pid) =>
+        Effect.sync(() => {
+          signals += 1
+        }).pipe(Effect.andThen(pid === 4 ? Effect.fail(new ProcessError({ cause: 'gone', message: 'gone' })) : Effect.void)),
+      isPidExited: (pid) => Effect.succeed(pid === 3 || pid === 4),
       spawn: () => Effect.succeed(child),
     }
     return Effect.gen(function* () {
       const process = yield* ChildProcess
       outcomes.push(yield* process.terminateVerified({ birthMarker: 'birth', pid: 1 }))
       outcomes.push(yield* process.terminateVerified({ birthMarker: 'birth', pid: 2 }))
-      expect(outcomes).toEqual(['unverifiable', 'mismatch'])
-      expect(signals).toBe(0)
+      outcomes.push(yield* process.terminateVerified({ birthMarker: 'birth', pid: 3 }))
+      outcomes.push(yield* process.terminateVerified({ birthMarker: 'birth', pid: 4 }))
+      expect(outcomes).toEqual(['unverifiable', 'mismatch', 'exited', 'exited'])
+      expect(signals).toBe(1)
     }).pipe(Effect.provide(makeChildProcessLive(platform)))
   })
 
@@ -194,6 +219,7 @@ describe('ChildProcess', () => {
         Effect.sync(() => {
           operations.push('terminate')
         }),
+      isPidExited: () => Effect.succeed(false),
       spawn: () =>
         Effect.succeed({
           ...child,

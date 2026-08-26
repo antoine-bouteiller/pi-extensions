@@ -351,16 +351,30 @@ export class SubagentWorker {
     if (this.#interrupted) {
       return this.#settle(interrupted(config.agent_id, taskId, config.turn))
     }
-    const assistant = lastAssistant(this.#requiredSession())
+    const session = this.#requiredSession()
+    const assistant = lastAssistant(session)
     if (assistant?.stopReason === 'error' || assistant?.stopReason === 'aborted') {
       return this.#settle(failed(config.agent_id, taskId, config.turn, 'agent_failed', assistant.errorMessage ?? 'The model failed.'))
     }
-    const conclusion = lastAssistantText(this.#requiredSession())
+    const conclusion = lastAssistantText(session)
+    const usage = session.getContextUsage()
+    const context =
+      usage?.tokens !== null && usage?.tokens !== undefined && Number.isSafeInteger(usage.tokens) && usage.tokens >= 0
+        ? { context_tokens: usage.tokens }
+        : {}
     if (utf8.encode(conclusion).byteLength > MAX_ARTIFACT_BYTES) {
       return this.#settle(failed(config.agent_id, taskId, config.turn, 'result_too_large', 'The conclusion exceeds 10 MiB.'))
     }
     if (isInlineConclusion(conclusion)) {
-      return this.#settle({ agent_id: config.agent_id, command_id: taskId, conclusion, status: 'completed', turn: config.turn, type: 'result' })
+      return this.#settle({
+        agent_id: config.agent_id,
+        command_id: taskId,
+        conclusion,
+        ...context,
+        status: 'completed',
+        turn: config.turn,
+        type: 'result',
+      })
     }
     return writePrivateUniqueFilePromise(config.run_dir, '.txt', conclusion).then((artifact) =>
       this.#settle({
@@ -369,6 +383,7 @@ export class SubagentWorker {
         conclusion_artifact: artifact,
         conclusion_bytes: utf8.encode(conclusion).byteLength,
         conclusion_preview: boundedPreview(conclusion),
+        ...context,
         status: 'completed',
         turn: config.turn,
         type: 'result',
@@ -450,19 +465,34 @@ const isChildFrame = (frame: ChildFrame): boolean =>
   Value.Check(ChildReadyFrameSchema, frame) ||
   Value.Check(ChildResultFrameSchema, frame) ||
   Value.Check(ChildSteerAckFrameSchema, frame)
+const utf8ByteLength = (character: string): number => {
+  const codePoint = character.codePointAt(0)
+  if (codePoint === undefined || codePoint <= 127) {
+    return 1
+  }
+  if (codePoint <= 2047) {
+    return 2
+  }
+  if (codePoint <= 65_535) {
+    return 3
+  }
+  return 4
+}
 const boundedPreview = (value: string): string => {
-  let preview = ''
+  const preview: string[] = []
+  let bytes = 0
   let lines = 1
   for (const character of value) {
-    if (character === '\n') {
-      lines += 1
-    }
-    if (lines > MAX_INLINE_LINES || utf8.encode(`${preview}${character}`).byteLength > MAX_INLINE_BYTES) {
+    const nextLines = lines + (character === '\n' ? 1 : 0)
+    const nextBytes = bytes + utf8ByteLength(character)
+    if (nextLines > MAX_INLINE_LINES || nextBytes > MAX_INLINE_BYTES) {
       break
     }
-    preview += character
+    preview.push(character)
+    bytes = nextBytes
+    lines = nextLines
   }
-  return preview
+  return preview.join('')
 }
 
 export const runWorker = (input: AsyncIterable<Uint8Array>, output: Output, factory: SessionFactory = sdk): Promise<void> => {

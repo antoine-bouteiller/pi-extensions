@@ -31,7 +31,9 @@ export interface RunningChild {
 
 export type TerminationResult = 'exited' | 'mismatch' | 'signalled' | 'stillAlive' | 'unverifiable'
 export interface ChildProcessApi {
+  readonly currentIdentity: Effect.Effect<ProcessIdentity | undefined, ProcessError>
   readonly interruptVerified: (child: RunningChild, interruptFrame: string) => Effect.Effect<void, ProcessError>
+  readonly isIdentityAlive: (identity: ProcessIdentity) => Effect.Effect<boolean, ProcessError>
   readonly spawn: (request: SpawnRequest) => Effect.Effect<RunningChild, SpawnError>
   readonly terminateVerified: (identity: ProcessIdentity) => Effect.Effect<TerminationResult, ProcessError>
 }
@@ -40,6 +42,8 @@ export class ChildProcess extends Context.Service<ChildProcess, ChildProcessApi>
 export interface ProcessPlatform {
   readonly birthMarker: (pid: number) => Effect.Effect<string | undefined, ProcessError>
   readonly forceTerminate: (pid: number) => Effect.Effect<void, ProcessError>
+  /** Whether the PID is confirmed absent; permission and other lookup failures are not absence. */
+  readonly isPidExited: (pid: number) => Effect.Effect<boolean, ProcessError>
   readonly spawn: (request: SpawnRequest) => Effect.Effect<PlatformChild, SpawnError>
 }
 
@@ -99,6 +103,16 @@ const productionPlatform: ProcessPlatform = {
         }
         process.kill(-pid, 'SIGKILL')
       },
+    }),
+  isPidExited: (pid) =>
+    Effect.sync(() => {
+      try {
+        process.kill(pid, 0)
+        return false
+      } catch (error) {
+        // EPERM confirms a live PID whose identity cannot be inspected; only ESRCH confirms absence.
+        return error instanceof Error && 'code' in error && error.code === 'ESRCH'
+      }
     }),
   spawn: (request) =>
     Effect.try({
@@ -187,7 +201,7 @@ const terminate = (platform: ProcessPlatform, identity: ProcessIdentity): Effect
     }
     const marker = yield* platform.birthMarker(identity.pid)
     if (marker === undefined) {
-      return 'unverifiable'
+      return (yield* platform.isPidExited(identity.pid)) ? 'exited' : 'unverifiable'
     }
     if (marker !== identity.birthMarker) {
       return 'mismatch'
@@ -197,7 +211,7 @@ const terminate = (platform: ProcessPlatform, identity: ProcessIdentity): Effect
       Effect.orElseSucceed(() => false)
     )
     if (!signalled) {
-      return 'stillAlive'
+      return (yield* platform.isPidExited(identity.pid)) ? 'exited' : 'stillAlive'
     }
     const finalMarker = yield* platform.birthMarker(identity.pid)
     if (finalMarker === identity.birthMarker) {
@@ -208,6 +222,9 @@ const terminate = (platform: ProcessPlatform, identity: ProcessIdentity): Effect
 
 export const makeChildProcessLive = (platform: ProcessPlatform = productionPlatform): Layer.Layer<ChildProcess> =>
   Layer.succeed(ChildProcess)({
+    currentIdentity: platform
+      .birthMarker(process.pid)
+      .pipe(Effect.map((birthMarker) => (birthMarker === undefined ? undefined : { birthMarker, pid: process.pid }))),
     interruptVerified: (child, interruptFrame) =>
       Effect.ensuring(
         Effect.gen(function* () {
@@ -220,6 +237,8 @@ export const makeChildProcessLive = (platform: ProcessPlatform = productionPlatf
         }),
         child.release.pipe(Effect.ignore)
       ),
+    isIdentityAlive: (identity) =>
+      platform.birthMarker(identity.pid).pipe(Effect.map((birthMarker) => birthMarker !== undefined && birthMarker === identity.birthMarker)),
     spawn: (request) =>
       Effect.gen(function* () {
         const child = yield* platform.spawn(request)

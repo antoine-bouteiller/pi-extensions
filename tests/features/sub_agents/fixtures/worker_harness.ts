@@ -23,7 +23,11 @@ const event = (type: AgentSessionEvent['type']): AgentSessionEvent => asNarrowed
 const noop = (): void => undefined
 
 export const workerHarness = (
-  options: { readonly activeTools?: readonly string[]; readonly model?: { readonly id: string; readonly provider: string } } = {}
+  options: {
+    readonly activeTools?: readonly string[]
+    readonly contextTokens?: number | null
+    readonly model?: { readonly id: string; readonly provider: string }
+  } = {}
 ): WorkerHarness => {
   let abortCount = 0
   let disposeCount = 0
@@ -46,6 +50,7 @@ export const workerHarness = (
       disposeCount += 1
     },
     getActiveToolNames: () => activeTools,
+    getContextUsage: () => ({ contextWindow: 200_000, percent: 0, tokens: options.contextTokens === undefined ? 100 : options.contextTokens }),
     messages,
     model,
     prompt: (message: string, value: PromptOptions) => {

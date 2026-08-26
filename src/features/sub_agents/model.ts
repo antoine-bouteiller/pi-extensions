@@ -291,24 +291,13 @@ const modelFor = (key: ProfileKey, parentProvider: string | undefined): ModelSel
 const refusal = (code: ProfileResolutionError['code'], message: string): ProfileResolution => ({ error: { code, message }, ok: false })
 const has = (values: readonly string[], value: string): boolean => values.includes(value)
 
-const IMPLEMENTER_TOOLS = [
-  'read',
-  'ffgrep',
-  'fffind',
-  'bash',
-  'edit',
-  'write',
-  'hashline_read',
-  'hashline_write',
-  'safe_rm',
-  'webfetch',
-  'mcp',
-] as const
+const IMPLEMENTER_EXCLUDED_TOOL_CLASSES = new Set<ToolClassification>(['async-process', 'delegation', 'operator'])
 const classificationOf = (tool: string): ToolClassification | undefined => Object.entries(TOOL_CLASSES).find(([name]) => name === tool)?.[1]
 const isSafeRequiredTool = (tool: string): boolean => {
   const classification = classificationOf(tool)
-  return classification !== undefined && classification !== 'async-process' && classification !== 'delegation' && classification !== 'operator'
+  return classification !== undefined && !IMPLEMENTER_EXCLUDED_TOOL_CLASSES.has(classification)
 }
+const implementerTools = (registeredTools: readonly string[]): string[] => registeredTools.filter(isSafeRequiredTool)
 
 export const resolveProfileWithRegistry = (
   key: string,
@@ -335,8 +324,7 @@ export const resolveProfileWithRegistry = (
   if (missing !== undefined) {
     return refusal('unavailable_tool', `Required tool "${missing}" is unavailable.`)
   }
-  const tools =
-    profile.key === 'implementer' ? IMPLEMENTER_TOOLS.filter((tool) => has(snapshot.registered_tools, tool)) : [...new Set(profile.requiredTools)]
+  const tools = profile.key === 'implementer' ? implementerTools(snapshot.registered_tools) : [...new Set(profile.requiredTools)]
   return {
     ok: true,
     profile: {
@@ -443,6 +431,7 @@ export const ChildResultFrameSchema = Type.Union([
     agent_id: Type.String(),
     command_id: Type.String(),
     conclusion: InlineResultSchema,
+    context_tokens: Type.Optional(Type.Integer({ minimum: 0 })),
     status: Type.Literal('completed'),
     turn: Type.Integer(),
     type: Type.Literal('result'),
@@ -453,6 +442,7 @@ export const ChildResultFrameSchema = Type.Union([
     conclusion_artifact: Type.String(),
     conclusion_bytes: Type.Integer({ maximum: 10 * 1024 * 1024, minimum: 1 }),
     conclusion_preview: InlineResultSchema,
+    context_tokens: Type.Optional(Type.Integer({ minimum: 0 })),
     status: Type.Literal('completed'),
     turn: Type.Integer(),
     type: Type.Literal('result'),

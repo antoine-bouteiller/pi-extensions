@@ -149,7 +149,7 @@ type OrchestrationError = PublicRefusalError | LifecycleError
 
 interface SubagentOrchestratorApi {
   readonly initialize: Effect.Effect<void, OrchestrationError>
-  readonly openSession: (session: SessionKey) => Effect.Effect<void, OrchestrationError>
+  readonly openSession: (session: SessionKey) => Effect.Effect<number, OrchestrationError>
   readonly closeSession: (session: SessionKey) => Effect.Effect<void, OrchestrationError>
   readonly spawn: (
     session: SessionKey,
@@ -207,8 +207,8 @@ boundary documented at `src/shared/effect/bun_host_file_system.ts:1`.
 The stable layer holds a map of session generations, each with one state: `opening`, `open`, `closing`,
 or `closed`, and an `open` generation owns a `Scope.Closeable`. The asynchronous `initialize` effect
 performs process-wide prune/reap once, guarded by a shared `Deferred`; concurrent callers await the same
-result. The feature descriptor's `activate` effect awaits `initialize`, then `openSession`, and its
-`deactivate` effect calls `closeSession`; every spawn also awaits that barrier defensively. The feature
+result. The feature descriptor's `activate` effect awaits `initialize`, then `openSession`, whose returned
+generation binds notifications to that exact session generation; its `deactivate` effect calls `closeSession`; every spawn also awaits that barrier defensively. The feature
 coordinator supplies the per-session `ExtensionContext`, scope, and replacement ordering, so this service
 registers no session lifecycle hook of its own. `openSession` creates a new generation only from absent/`closed`.
 
