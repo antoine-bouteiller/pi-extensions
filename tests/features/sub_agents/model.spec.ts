@@ -152,7 +152,7 @@ describe('sub-agent model', () => {
     expect(result.ok && result.profile.contextCeiling).toBe(100_000)
   })
 
-  it('refuses unsafe configuration before missing tools and has exact tool allow-lists', () => {
+  it('refuses unsafe configuration before missing tools and derives implementer tools from safe classifications', () => {
     const malformed = { ...PROFILE_REGISTRY, scout: { ...PROFILE_REGISTRY.scout, requiredTools: ['ask_user'] } }
     expect(resolveProfileWithRegistry('scout', snapshot(), malformed)).toEqual({
       error: { code: 'unsafe_tool', message: 'Configured tool "ask_user" is unsafe.' },
@@ -168,7 +168,8 @@ describe('sub-agent model', () => {
     const registered = [...tools, 'background_poll', 'ask_user', 'spawn_agent', 'unknown_tool']
     const result = resolveProfile('implementer', snapshot(registered))
     expect(result.ok ? result.profile.tools : []).toEqual(tools)
-    expect(resolveProfile('implementer', snapshot(['read', 'ffgrep', 'fffind', 'bash', 'edit', 'write'])).ok).toBe(true)
+    const requiredOnly = resolveProfile('implementer', snapshot(['read', 'ffgrep', 'fffind', 'bash', 'edit', 'write']))
+    expect(requiredOnly.ok ? requiredOnly.profile.tools : []).toEqual(['read', 'ffgrep', 'fffind', 'bash', 'edit', 'write'])
   })
 
   it('constructs a child environment with fresh reserved values and read-only policy', () => {

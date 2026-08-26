@@ -468,6 +468,7 @@ Every enabled descriptor uses exactly this metadata and its `feature:<id>` key:
 | `rules`                     | 📜   | `rules`           |
 | `safety-guard`              | 🛡️   | `cmd-guard`       |
 | `status-panel`              | 📊   | `status-panel`    |
+| `sub-agents`                | 🧑‍🤝‍🧑   | `sub-agents`      |
 | `webfetch`                  | 🌐   | `webfetch`        |
 
 ## 9. Open Questions

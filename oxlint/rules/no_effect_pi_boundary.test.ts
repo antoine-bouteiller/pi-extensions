@@ -108,6 +108,7 @@ tester.run('pi-extensions/no-effect-pi-boundary', noEffectPiBoundaryRule, {
     at('src/config/feature_coordinator.ts', 'import { makeEventHandler } from "#shared/effect/runtime"; makeEventHandler(runtime);'),
     at('src/config/feature_coordinator.ts', 'import { makeEventHandler as handler } from "#shared/effect/runtime"; handler(runtime);'),
     at('src/config/runtime.ts', 'import { ManagedRuntime } from "effect"; ManagedRuntime.make(layer);'),
+    at('src/features/sub_agents/runtime.ts', 'import { ManagedRuntime } from "effect"; ManagedRuntime.make(layer);'),
     at('src/shared/effect/runtime.ts', 'import { Effect } from "effect"; Effect.runPromise(effect);'),
     at('src/shared/effect/runtime.ts', 'runtime.runPromise(effect); this.runtime["runSync"](effect);'),
     at('src/features/example/index.ts', 'client.runPromise(effect); other.registerTool({});'),

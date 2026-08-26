@@ -11,7 +11,6 @@ import { FetchHttpClient, type HttpClient } from 'effect/unstable/http'
 
 import { type WebfetchDetails, type WebfetchInput } from '@/features/webfetch/fetch.js'
 import { feature } from '@/features/webfetch/index.js'
-import { SubagentOrchestratorProductionLive } from '@/shared/effect/app_services.js'
 import { isTrue } from '@/shared/utils/predicates.js'
 
 /** The shape `HttpClientRequest.get`'s injected `Fetch` accepts. */
@@ -33,7 +32,7 @@ const pendingFetch = (signal: AbortSignal | null | undefined, onStart?: () => vo
 const createHarness = (fetchImpl: WebfetchFetch, clock?: Clock.Clock) => {
   const fixture = createFakePi()
   const stubs = clock === undefined ? stubHttpClient(fetchImpl) : Layer.mergeAll(stubHttpClient(fetchImpl), Layer.succeed(Clock.Clock)(clock))
-  feature.implementation.register(fixture.pi, testRuntime(Layer.mergeAll(stubs, SubagentOrchestratorProductionLive)))
+  feature.implementation.register(fixture.pi, testRuntime(stubs))
   const tool = fixture.state.tools.get('webfetch')
 
   const execute = (
@@ -93,15 +92,7 @@ describe('webfetch feature', () => {
       const fixture = createFakePi()
 
       expect(feature).toMatchObject({ bootstrap: 'eager', id: 'webfetch', status: { icon: '🌐', name: 'webfetch' } })
-      feature.implementation.register(
-        fixture.pi,
-        testRuntime(
-          Layer.mergeAll(
-            stubHttpClient(() => Promise.resolve(new Response('ok'))),
-            SubagentOrchestratorProductionLive
-          )
-        )
-      )
+      feature.implementation.register(fixture.pi, testRuntime(stubHttpClient(() => Promise.resolve(new Response('ok')))))
       expect(fixture.state.tools.has('webfetch')).toBe(true)
     })
   )

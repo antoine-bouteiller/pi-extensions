@@ -25,7 +25,14 @@ import {
 } from '@/features/sub_agents/model.js'
 import { LifecycleError, PublicRefusalError, SubagentOrchestrator, type SubagentOrchestratorApi } from '@/features/sub_agents/orchestrator.js'
 import { NotificationSink } from '@/features/sub_agents/store.js'
-import { makeDelegationTools, makePiNotificationSink, PARENT_GUIDANCE } from '@/features/sub_agents/tools.js'
+import {
+  bindProductionNotificationSink,
+  clearProductionNotificationSink,
+  makeDelegationTools,
+  makePiNotificationSink,
+  PARENT_GUIDANCE,
+  ProductionNotificationSinkLive,
+} from '@/features/sub_agents/tools.js'
 import { type ToolFailure } from '@/shared/effect/errors.js'
 import { PiCtx, Ui } from '@/shared/effect/pi_services.js'
 import { type HandlerServices, type ToolInvocation } from '@/shared/effect/runtime.js'
@@ -99,7 +106,7 @@ const orchestrator = (snapshots: AdmissionSnapshot[]): SubagentOrchestratorApi =
     session === 'refusal'
       ? Effect.fail(refusal())
       : Effect.succeed([{ current_turn: 1, follow_up_available: true, profile: 'removed-profile', status: 'running' as const, task_name: 'task' }]),
-  openSession: () => Effect.void,
+  openSession: () => Effect.succeed(1),
   read: (session, target) =>
     session === 'refusal'
       ? Effect.fail(refusal())
@@ -350,6 +357,30 @@ describe('delegation tool boundary', () => {
           )
         )
         expect(failure).toMatchObject({ _tag: 'ToolFailure', message: 'host exploded' })
+      })
+    ))
+
+  it('clears only the exact notification binding and releases the matching production target', () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const first = createFakePi()
+        const second = createFakePi()
+        bindProductionNotificationSink(first.pi, 'first', 1, context('first'))
+        bindProductionNotificationSink(second.pi, 'second', 2, context('second'))
+        clearProductionNotificationSink('first', 1)
+        yield* Effect.service(NotificationSink).pipe(
+          Effect.flatMap((service) => service.publish(['current'], { generation: 2, session: 'second' })),
+          Effect.provide(ProductionNotificationSinkLive)
+        )
+        expect(first.state.messages).toHaveLength(0)
+        expect(second.state.messages).toEqual([{ message: 'current', options: undefined }])
+
+        clearProductionNotificationSink('second', 2)
+        yield* Effect.service(NotificationSink).pipe(
+          Effect.flatMap((service) => service.publish(['released'], { generation: 2, session: 'second' })),
+          Effect.provide(ProductionNotificationSinkLive)
+        )
+        expect(second.state.messages).toHaveLength(1)
       })
     ))
 

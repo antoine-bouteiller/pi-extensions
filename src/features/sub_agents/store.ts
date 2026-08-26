@@ -9,7 +9,9 @@ import {
   ensurePrivateDirectory,
   readHostDirectoryEntries,
   readOwnerOnlyFile,
+  removeHeldFileIfUnchanged,
   removeHostPath,
+  withHeldFile,
   writePrivateFile,
 } from '#shared/effect/bun_host_file_system'
 import { bunFileSystem, bunPath } from '#shared/effect/bun_services'
@@ -33,6 +35,8 @@ export interface AgentTurnRecord {
 }
 export interface LaunchLease {
   readonly identity: ProcessIdentity
+  readonly owner?: ProcessIdentity
+  readonly preserveRecord?: boolean
   readonly session: string
   readonly taskName: string
 }
@@ -43,6 +47,7 @@ interface PrivateRunDescriptor {
 export type SubagentRecord =
   | {
       readonly identity: ProcessIdentity
+      readonly owner?: ProcessIdentity
       readonly logPath: string
       readonly profile: PersistedResolvedProfile
       readonly session: string
@@ -52,6 +57,7 @@ export type SubagentRecord =
       readonly turns: readonly AgentTurnRecord[]
     }
   | {
+      readonly contextTokens?: number
       readonly logPath: string
       readonly profile: PersistedResolvedProfile
       readonly session: string
@@ -96,7 +102,8 @@ export interface SubagentStoreApi {
   readonly readArtifact: (agentId: string, name: string, maxBytes: number) => Effect.Effect<Uint8Array, ArtifactTooLargeError | StoreError>
   readonly prune: (now: number) => Effect.Effect<void, StoreError>
   readonly readRecord: (agentId: string) => Effect.Effect<SubagentRecord | undefined, StoreError>
-  readonly removeLease: (agentId: string) => Effect.Effect<void, StoreError>
+  readonly removeLease: (agentId: string, identity?: ProcessIdentity) => Effect.Effect<void, StoreError>
+  readonly removeLog: (agentId: string, path: string) => Effect.Effect<void, StoreError>
   readonly replaceRecord: (agentId: string, record: SubagentRecord) => Effect.Effect<void, StoreError>
   readonly writeFullResult: (agentId: string, content: Uint8Array) => Effect.Effect<string, StoreError>
 }
@@ -111,11 +118,21 @@ const ProcessIdentitySchema = Type.Object(
   { additionalProperties: false }
 )
 const StoredTurnSchema = Type.Object({ profile: PersistedResolvedProfileSchema, result: AgentResultSchema }, { additionalProperties: false })
-const LeaseSchema = Type.Object({ identity: ProcessIdentitySchema, session: Type.String(), taskName: Type.String() }, { additionalProperties: false })
+const LeaseSchema = Type.Object(
+  {
+    identity: ProcessIdentitySchema,
+    owner: Type.Optional(ProcessIdentitySchema),
+    preserveRecord: Type.Optional(Type.Boolean()),
+    session: Type.String(),
+    taskName: Type.String(),
+  },
+  { additionalProperties: false }
+)
 const RunningRecordSchema = Type.Object(
   {
     identity: ProcessIdentitySchema,
     logPath: Type.String(),
+    owner: Type.Optional(ProcessIdentitySchema),
     profile: PersistedResolvedProfileSchema,
     session: Type.String(),
     sessionPath: Type.String(),
@@ -127,6 +144,7 @@ const RunningRecordSchema = Type.Object(
 )
 const SettledRecordSchema = Type.Object(
   {
+    contextTokens: Type.Optional(Type.Integer({ minimum: 0 })),
     logPath: Type.String(),
     profile: PersistedResolvedProfileSchema,
     session: Type.String(),
@@ -233,7 +251,9 @@ const makeStore = (config: SubagentStoreConfig): SubagentStoreApi => {
           }).pipe(Effect.mapError(fail))
         : Effect.fail(fail(new Error('Invalid lease'))),
     createLog: (agentId, turn) =>
-      Number.isSafeInteger(turn) && turn > 0 ? create(agentId, `stderr-${turn}.log`) : Effect.fail(fail(new Error('Invalid turn'))),
+      Number.isSafeInteger(turn) && turn > 0
+        ? create(agentId, `stderr-${turn}-${Bun.randomUUIDv7()}.log`)
+        : Effect.fail(fail(new Error('Invalid turn'))),
     createSession,
     delete: removeAgent,
     initialize: Effect.gen(function* () {
@@ -271,7 +291,10 @@ const makeStore = (config: SubagentStoreConfig): SubagentStoreApi => {
               yield* removeAgent(agentId)
             }
           } else if (record.status !== 'running' && now - record.settledAt >= RETENTION_MS) {
-            yield* removeAgent(agentId)
+            const lease = yield* readValue(agentId, 'launch.lease', decodeLease)
+            if (lease === undefined) {
+              yield* removeAgent(agentId)
+            }
           }
         }
       }),
@@ -287,7 +310,35 @@ const makeStore = (config: SubagentStoreConfig): SubagentStoreApi => {
       )
     },
     readRecord: (agentId) => readValue(agentId, 'record.json', decodeRecord),
-    removeLease: (agentId) => removeHostPath(file(agentId, 'launch.lease')).pipe(Effect.mapError(fail)),
+    removeLease: (agentId, identity) => {
+      const path = file(agentId, 'launch.lease')
+      if (identity === undefined) {
+        return removeHostPath(path).pipe(Effect.mapError(fail))
+      }
+      return withHeldFile(path, (handle) =>
+        removeHeldFileIfUnchanged({
+          contentMatches: (content) => {
+            const lease = decodeLease(new TextEncoder().encode(content))
+            return lease?.identity.pid === identity.pid && lease.identity.birthMarker === identity.birthMarker
+          },
+          handle,
+          path,
+        })
+      ).pipe(
+        Effect.catch((error) =>
+          error.cause instanceof Error && 'code' in error.cause && error.cause.code === 'ENOENT' ? Effect.succeed(false) : Effect.fail(error)
+        ),
+        Effect.mapError(fail),
+        Effect.asVoid
+      )
+    },
+    removeLog: (agentId, path) => {
+      const directory = agentDirectory(agentId)
+      const name = bunPath.basename(path)
+      return bunPath.dirname(path) === directory && /^stderr-[1-9][0-9]*-[A-Za-z0-9-]+\.log$/.test(name)
+        ? removeHostPath(path).pipe(Effect.mapError(fail))
+        : Effect.fail(fail(new Error('Invalid log path')))
+    },
     replaceRecord: (agentId, record) =>
       Effect.gen(function* () {
         yield* ensurePrivateDirectory(agentDirectory(agentId))

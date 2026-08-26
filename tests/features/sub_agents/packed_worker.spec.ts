@@ -106,6 +106,7 @@ describe('packed sub-agent worker', () => {
           agent_id: 'agent',
           command_id: 'task-command',
           conclusion: 'packed deterministic conclusion',
+          context_tokens: 11,
           status: 'completed',
           turn: 1,
           type: 'result',

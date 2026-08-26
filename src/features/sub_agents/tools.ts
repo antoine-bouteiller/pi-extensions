@@ -186,6 +186,7 @@ returned; use the inspection tools for durable results and conversations.`
 
 export interface PiNotificationSink {
   readonly bind: (session: string, generation: number, ctx: ExtensionContext) => void
+  readonly clear: (session: string, generation: number) => boolean
   readonly layer: Layer.Layer<NotificationSink>
 }
 
@@ -217,6 +218,13 @@ export const makePiNotificationSink = (pi: NotificationPi): PiNotificationSink =
     bind: (sessionId, generation, ctx): void => {
       binding = { ctx, generation, session: sessionId }
     },
+    clear: (sessionId, generation): boolean => {
+      if (binding?.session !== sessionId || binding.generation !== generation) {
+        return false
+      }
+      binding = undefined
+      return true
+    },
     layer: Layer.succeed(NotificationSink)({ publish }),
   }
 }
@@ -231,6 +239,12 @@ const productionNotificationSink = makePiNotificationSink({
 export const bindProductionNotificationSink = (pi: NotificationPi, sessionId: string, generation: number, ctx: ExtensionContext): void => {
   productionPi = pi
   productionNotificationSink.bind(sessionId, generation, ctx)
+}
+
+export const clearProductionNotificationSink = (sessionId: string, generation: number): void => {
+  if (productionNotificationSink.clear(sessionId, generation)) {
+    productionPi = undefined
+  }
 }
 
 export const ProductionNotificationSinkLive = productionNotificationSink.layer

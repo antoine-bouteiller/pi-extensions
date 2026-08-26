@@ -208,7 +208,7 @@ describe('sub-agent worker protocol', () => {
         expect.objectContaining({ activity: 'assistant_activity', type: 'progress' }),
         expect.objectContaining({ activity: 'tool_started', type: 'progress' }),
         expect.objectContaining({ activity: 'tool_finished', type: 'progress' }),
-        { agent_id: 'agent', command_id: 'task-command', conclusion: 'done', status: 'completed', turn: 1, type: 'result' },
+        { agent_id: 'agent', command_id: 'task-command', conclusion: 'done', context_tokens: 100, status: 'completed', turn: 1, type: 'result' },
         expect.objectContaining({ code: 'turn_settled', command_id: 'late-steer', status: 'completed', type: 'command_error' }),
       ])
       expect(harness.disposed()).toBe(1)
@@ -292,7 +292,9 @@ describe('sub-agent worker protocol', () => {
         const multibyte = yield* startHarnessedWorker({ frame: artifactFrame })
         const multibyteConclusion = '€'.repeat(Math.ceil(MAX_INLINE_BYTES / 3))
         yield* promise(() => multibyte.harness.settle(multibyteConclusion))
-        expect(artifactResult(frames(multibyte.output).at(-1)).conclusion_bytes).toBe(bytes.encode(multibyteConclusion).byteLength)
+        const multibyteArtifact = artifactResult(frames(multibyte.output).at(-1))
+        expect(multibyteArtifact.conclusion_bytes).toBe(bytes.encode(multibyteConclusion).byteLength)
+        expect(multibyteArtifact.conclusion_preview).toBe('€'.repeat(Math.floor(MAX_INLINE_BYTES / 3)))
 
         const tooLarge = yield* startHarnessedWorker({ frame: artifactFrame })
         yield* promise(() => tooLarge.harness.settle('x'.repeat(MAX_ARTIFACT_BYTES + 1)))
@@ -301,6 +303,29 @@ describe('sub-agent worker protocol', () => {
         )
       }),
     20_000
+  )
+
+  it.effect('builds artifact previews without repeatedly encoding their accumulated prefix', () =>
+    Effect.gen(function* () {
+      const conclusion = 'x'.repeat(MAX_INLINE_BYTES + 1)
+      let encodedConclusionBytes = 0
+      const originalEncode = Reflect.get(TextEncoder.prototype, 'encode')
+      TextEncoder.prototype.encode = function encode(input = '') {
+        if (/^x+$/.test(input)) {
+          encodedConclusionBytes += input.length
+        }
+        return originalEncode.call(this, input)
+      }
+      try {
+        const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'sub-agent-preview-' })
+        const started = yield* startHarnessedWorker({ frame: { ...config, run_dir: bunPath.join(root, 'run') } })
+        yield* promise(() => started.harness.settle(conclusion))
+        expect(artifactResult(frames(started.output).at(-1)).conclusion_preview).toBe('x'.repeat(MAX_INLINE_BYTES))
+        expect(encodedConclusionBytes).toBeLessThanOrEqual(conclusion.length * 3)
+      } finally {
+        TextEncoder.prototype.encode = originalEncode
+      }
+    })
   )
 
   it.effect('exits without a terminal frame when boot cannot validate active tools', () =>
@@ -329,15 +354,18 @@ describe('sub-agent worker protocol', () => {
     })
   )
 
-  it.effect(
+  it.scoped(
     'runs the real worker entrypoint against a loopback provider without stdout contamination',
     () =>
       Effect.gen(function* () {
-        const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'sub-agent-worker-' })
+        const root = yield* bunFileSystem.makeTempDirectoryScoped({ prefix: 'sub-agent-worker-' })
         const agentDir = bunPath.join(root, 'agent')
         const runDir = bunPath.join(root, 'run')
         const sessions = bunPath.join(root, 'sessions')
-        const provider = startFakeProvider('deterministic conclusion')
+        const provider = yield* Effect.acquireRelease(
+          Effect.sync(() => startFakeProvider('deterministic conclusion')),
+          (active) => Effect.sync(active.close)
+        )
         const models = {
           providers: {
             fake: {
@@ -357,20 +385,24 @@ describe('sub-agent worker protocol', () => {
           session: { expected_dir: sessions, mode: 'create' as const },
           worker: { ...config.worker, agentDir, cwd: '/tmp', model: 'fake-model', prompt: 'exact prompt', provider: 'fake' },
         }
-        const child = Bun.spawn([process.execPath, entrypoint], {
-          cwd: '/tmp',
-          env: { ...process.env, PI_OFFLINE: '1' },
-          stderr: 'pipe',
-          stdin: 'pipe',
-          stdout: 'pipe',
-        })
+        const child = yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            Bun.spawn([process.execPath, entrypoint], {
+              cwd: '/tmp',
+              env: { ...process.env, PI_OFFLINE: '1' },
+              stderr: 'pipe',
+              stdin: 'pipe',
+              stdout: 'pipe',
+            })
+          ),
+          (active) => Effect.sync(() => active.kill()).pipe(Effect.ignore, Effect.andThen(Effect.promise(() => active.exited).pipe(Effect.ignore)))
+        )
         yield* promise(() => Promise.resolve(child.stdin.write(encodeFrame(frame))))
         yield* promise(() => Promise.resolve(child.stdin.write(encodeFrame(task('say hello')))))
         yield* promise(() => Promise.resolve(child.stdin.flush()))
         const stdout = yield* promise(() => new Response(child.stdout).text())
         const stderr = yield* promise(() => new Response(child.stderr).text())
         const exitCode = yield* promise(() => child.exited)
-        provider.close()
         expect(exitCode, stderr).toBe(0)
         const childFrames = strictFrames(stdout)
         const readyIndex = childFrames.findIndex((candidate) => frameType(candidate) === 'ready')
@@ -381,6 +413,7 @@ describe('sub-agent worker protocol', () => {
           agent_id: 'agent',
           command_id: 'task-command',
           conclusion: 'deterministic conclusion',
+          context_tokens: 9,
           status: 'completed',
           turn: 1,
           type: 'result',

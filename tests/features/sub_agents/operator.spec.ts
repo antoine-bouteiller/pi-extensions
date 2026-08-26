@@ -37,6 +37,7 @@ const store = (records: readonly { readonly agentId: string; readonly record: Su
   readArtifact: () => Effect.succeed(new Uint8Array()),
   readRecord: (agentId) => Effect.succeed(records.find((entry) => entry.agentId === agentId)?.record),
   removeLease: () => Effect.void,
+  removeLog: () => Effect.void,
   replaceRecord: () => Effect.void,
   writeFullResult: () => Effect.succeed('result'),
 })

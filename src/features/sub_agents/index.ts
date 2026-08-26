@@ -7,9 +7,16 @@ import { type FeatureActivationError, type FeaturePlugin } from '#shared/effect/
 import { makeCommandHandler, makeToolExecutor, runManagedEffect, runManagedRepeatingEffect } from '#shared/effect/runtime'
 
 import { createPanicEditor, createSubagentsOperator } from './operator.js'
-import { SubagentOrchestrator } from './orchestrator.js'
+import { SubagentOrchestrator, type SubagentOrchestratorApi } from './orchestrator.js'
+import { getOrCreateSubagentRuntime, type SubagentRuntime } from './runtime.js'
 import { SubagentStore, SubagentStoreLive } from './store.js'
-import { bindProductionNotificationSink, makeDelegationTools, PARENT_GUIDANCE, type DelegationToolDependencies } from './tools.js'
+import {
+  bindProductionNotificationSink,
+  clearProductionNotificationSink,
+  makeDelegationTools,
+  PARENT_GUIDANCE,
+  type DelegationToolDependencies,
+} from './tools.js'
 
 export interface SubagentFeatureDependencies extends Omit<DelegationToolDependencies, 'pi' | 'runtime'> {
   readonly isSubagent?: () => boolean
@@ -27,9 +34,10 @@ export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
   const isSubagent = dependencies.isSubagent ?? (() => Bun.env.PI_SUBAGENT === '1')
   let pi: ExtensionAPI | undefined
   let panic: ReturnType<typeof createPanicEditor> | undefined
-  let runtime: AppRuntime | undefined
-  let generation = 0
+  let orchestrationRuntime: SubagentRuntime | undefined
+  let orchestrator: SubagentOrchestratorApi | undefined
   let session: string | undefined
+  let notificationBinding: { readonly generation: number; readonly session: string } | undefined
   return {
     bootstrap: 'eager',
     id: 'sub-agents',
@@ -39,45 +47,54 @@ export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
           return Effect.void
         }
         const sessionId = ctx.sessionManager.getSessionId()
-        return Effect.gen(function* () {
-          const orchestrator = yield* SubagentOrchestrator
-          yield* orchestrator.initialize
-          yield* orchestrator.openSession(sessionId)
-          session = sessionId
-          if (pi !== undefined) {
-            bindProductionNotificationSink(pi, sessionId, ++generation, ctx)
-          }
-          panic = createPanicEditor({
-            ctx,
-            hasLiveCurrentSession: () => orchestrator.hasLiveChildren(sessionId),
-            interruptAll: () =>
-              runtime === undefined ? Promise.resolve() : runManagedEffect(runtime, orchestrator.interruptAll(sessionId).pipe(Effect.ignore)),
-          })
-          panic.install()
-        }).pipe(Effect.mapError(activationError))
+        const runtime = orchestrationRuntime
+        return runtime === undefined
+          ? Effect.fail(activationError(new Error('Sub-agent feature has not been registered.')))
+          : Effect.gen(function* () {
+              const activeOrchestrator = yield* Effect.tryPromise(() => runManagedEffect(runtime, Effect.service(SubagentOrchestrator)))
+              orchestrator = activeOrchestrator
+              yield* activeOrchestrator.initialize
+              const notificationGeneration = yield* activeOrchestrator.openSession(sessionId)
+              session = sessionId
+              if (pi !== undefined) {
+                bindProductionNotificationSink(pi, sessionId, notificationGeneration, ctx)
+                notificationBinding = { generation: notificationGeneration, session: sessionId }
+              }
+              panic = createPanicEditor({
+                ctx,
+                hasLiveCurrentSession: () => activeOrchestrator.hasLiveChildren(sessionId),
+                interruptAll: () => runManagedEffect(runtime, activeOrchestrator.interruptAll(sessionId).pipe(Effect.ignore)),
+              })
+              panic.install()
+            }).pipe(Effect.mapError(activationError))
       },
       deactivate: (_ctx, _reason) => {
         const sessionId = session
+        const binding = notificationBinding
         panic?.dispose()
         panic = undefined
         session = undefined
-        return sessionId === undefined
-          ? Effect.void
-          : Effect.service(SubagentOrchestrator).pipe(
-              Effect.flatMap((orchestrator) => orchestrator.closeSession(sessionId)),
+        notificationBinding = undefined
+        const runtime = orchestrationRuntime
+        const activeOrchestrator = orchestrator
+        const unbind = Effect.sync(() => binding && clearProductionNotificationSink(binding.session, binding.generation))
+        return sessionId === undefined || runtime === undefined || activeOrchestrator === undefined
+          ? unbind
+          : unbind.pipe(
+              Effect.andThen(Effect.tryPromise(() => runManagedEffect(runtime, activeOrchestrator.closeSession(sessionId)))),
               Effect.mapError(activationError)
             )
       },
       register: (registeredPi: ExtensionAPI, registeredRuntime?: AppRuntime): void => {
-        const toolRuntime = dependencies.runtime ?? registeredRuntime
+        const toolRuntime = dependencies.runtime ?? (registeredRuntime === undefined ? undefined : getOrCreateSubagentRuntime())
         if (toolRuntime === undefined) {
           throw new Error('Sub-agent feature requires an application runtime.')
         }
         pi = registeredPi
-        runtime = registeredRuntime
         if (isSubagent()) {
           return
         }
+        orchestrationRuntime = toolRuntime
         const execute = makeToolExecutor(toolRuntime)
         const [spawn, wait, waitAll, list, read, send, interrupt] = makeDelegationTools({ ...dependencies, pi, runtime: toolRuntime }, execute)
         registeredPi.registerTool(spawn)
@@ -89,13 +106,14 @@ export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
         registeredPi.registerTool(interrupt)
         registeredPi.on('before_agent_start', (event) => ({ systemPrompt: `${event.systemPrompt}\n\n${PARENT_GUIDANCE}` }))
         if (registeredRuntime !== undefined) {
+          const applicationRuntime = registeredRuntime
           registeredPi.registerCommand('subagents', {
             description: 'Inspect sub-agent conversations for the current session.',
-            handler: makeCommandHandler(registeredRuntime)((_args, ctx) => {
+            handler: makeCommandHandler(applicationRuntime)((_args, ctx) => {
               const operator = createSubagentsOperator({
-                activity: registeredRuntime.runSync(Effect.service(AgentActivity)).list,
+                activity: applicationRuntime.runSync(Effect.service(AgentActivity)).list,
                 sessionId: ctx.sessionManager.getSessionId(),
-                store: Context.get(registeredRuntime.runSync(Effect.scoped(Layer.build(SubagentStoreLive))), SubagentStore),
+                store: Context.get(applicationRuntime.runSync(Effect.scoped(Layer.build(SubagentStoreLive))), SubagentStore),
               })
               return operator.list.pipe(
                 Effect.flatMap((rows) =>
@@ -125,7 +143,7 @@ export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
                                   tui.requestRender()
                                 }
                                 const stopRefreshing = runManagedRepeatingEffect(
-                                  registeredRuntime,
+                                  applicationRuntime,
                                   transcript.refresh.pipe(
                                     Effect.tap(() => Effect.sync(render)),
                                     Effect.ignore

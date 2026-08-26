@@ -97,6 +97,7 @@ type PersistedResolvedProfile = {
   contextCeiling: number
 }
 type WorkerConfig = {
+  version: 1
   cwd: string
   agentDir: string // the only location from which persisted auth/model catalogs may be read
   provider: string

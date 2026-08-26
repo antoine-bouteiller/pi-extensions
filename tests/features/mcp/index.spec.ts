@@ -6,7 +6,7 @@ import { asCommand, asExtensionContext, asTool } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { testRuntime } from '@tests/utils/runtime.js'
-import { Effect, Fiber, Layer } from 'effect'
+import { Effect, Fiber } from 'effect'
 import { FetchHttpClient } from 'effect/unstable/http'
 
 import {
@@ -22,7 +22,6 @@ import {
 } from '@/features/mcp/gateway.js'
 import { makeFeature } from '@/features/mcp/index.js'
 import { type McpServerMap } from '@/features/mcp/types.js'
-import { SubagentOrchestratorProductionLive } from '@/shared/effect/app_services.js'
 import { publishStatus } from '@/shared/state/status_bar.js'
 import { type JsonObject, parseJsonText } from '@/shared/utils/json.js'
 
@@ -147,7 +146,7 @@ const createHarness = (overrides: Partial<McpGatewayManager> = {}, gateway: (man
     gatewayFactoryCalls += 1
     return gatewayValue
   })
-  const runtime = testRuntime(Layer.mergeAll(FetchHttpClient.layer, SubagentOrchestratorProductionLive))
+  const runtime = testRuntime(FetchHttpClient.layer)
   implementation.register(fixture.pi, runtime)
 
   const start = (ctx = context()): Promise<void> =>
