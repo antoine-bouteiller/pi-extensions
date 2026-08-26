@@ -24,6 +24,7 @@ export interface HostFileInfo {
   readonly isFile: boolean
   readonly isSymbolicLink: boolean
   readonly mtimeMs: number
+  readonly size: number
 }
 
 export interface HostDirectoryEntry {
@@ -63,6 +64,7 @@ const fileInfo = (stat: fs.Stats): HostFileInfo => ({
   isFile: stat.isFile(),
   isSymbolicLink: stat.isSymbolicLink(),
   mtimeMs: stat.mtimeMs,
+  size: stat.size,
 })
 
 export const lstatHostFile = (path: string): Effect.Effect<HostFileInfo, Cause.UnknownError> =>
