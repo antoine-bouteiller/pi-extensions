@@ -198,11 +198,10 @@ The live layer depends on narrow replaceable ports:
 | `AgentActivity`              | Publishes the ready-running projection already shared with the status sidebar (`src/shared/effect/app_services.ts:29`).                               |
 | Effect `FileSystem` / `Path` | Supply portable storage operations beneath `SubagentStore`; host-specific no-follow and process-identity operations stay in their adapters.           |
 
-These dependencies are provided to `SubagentOrchestratorLive` through layers. The orchestration core
-must not import the eager Bun service singletons because those cannot be substituted per test
-(`src/shared/effect/bun_services.ts:5`). Host filesystem behavior absent from Effect `FileSystem`, such
-as no-follow metadata or descriptor ownership, belongs in the dedicated adapter, following the existing
-boundary documented at `src/shared/effect/bun_host_file_system.ts:1`.
+These dependencies are provided to `SubagentOrchestratorLive` through layers and `AppServices`
+context, so they remain replaceable per test. Host filesystem behavior absent from Effect `FileSystem`,
+such as no-follow metadata or descriptor ownership, belongs in the dedicated adapter, following the
+existing boundary documented at `src/shared/effect/bun_host_file_system.ts:1`.
 
 The stable layer holds a map of session generations, each with one state: `opening`, `open`, `closing`,
 or `closed`, and an `open` generation owns a `Scope.Closeable`. The asynchronous `initialize` effect
