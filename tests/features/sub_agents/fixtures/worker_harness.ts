@@ -15,6 +15,7 @@ export interface WorkerHarness {
   readonly prompt: () => string | undefined
   readonly promptStarted: () => Promise<void>
   readonly rejectSteer: (message: string) => void
+  readonly releaseCreate: () => void
   readonly settle: (content: string, stopReason?: 'aborted' | 'error') => Promise<void>
   readonly start: () => Promise<void>
 }
@@ -26,6 +27,7 @@ export const workerHarness = (
   options: {
     readonly activeTools?: readonly string[]
     readonly contextTokens?: number | null
+    readonly holdCreate?: boolean
     readonly model?: { readonly id: string; readonly provider: string }
   } = {}
 ): WorkerHarness => {
@@ -67,8 +69,9 @@ export const workerHarness = (
       return noop
     },
   })
+  const held = Promise.withResolvers<void>()
   const factory = asNarrowed<SessionFactory, object>({
-    create: () => Promise.resolve({ session }),
+    create: () => (options.holdCreate === true ? held.promise.then(() => ({ session })) : Promise.resolve({ session })),
     resourceLoader: class {
       reload(): Promise<void> {
         return Promise.resolve()
@@ -93,6 +96,9 @@ export const workerHarness = (
     promptStarted: () => promptStarted,
     rejectSteer: (message) => {
       steerError = new Error(message)
+    },
+    releaseCreate: () => {
+      held.resolve()
     },
     settle: (content, stopReason) => {
       messages.push({ content: [{ text: content, type: 'text' }], role: 'assistant', stopReason })

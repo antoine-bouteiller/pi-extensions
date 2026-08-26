@@ -413,7 +413,48 @@ describe('sub-agent worker protocol', () => {
         )
       )
       expect(harness.prompt()).toBeUndefined()
+      expect(harness.disposed()).toBe(1)
       expect(output).toEqual([])
+    })
+  )
+
+  it.effect('disposes a session created after the parent stream ended during startup', () =>
+    Effect.gen(function* () {
+      const output: string[] = []
+      const harness = workerHarness({ holdCreate: true })
+      const worker = new SubagentWorker(
+        {
+          write: (value) => {
+            output.push(value)
+          },
+        },
+        harness.factory
+      )
+      yield* promise(() => worker.accept(config))
+      yield* promise(() => worker.accept(task('task body')))
+      const ended = worker.parentEof()
+      harness.releaseCreate()
+      yield* rejects(ended)
+      yield* promise(() =>
+        worker.waitForSettlement().then(
+          () => expect.unreachable(),
+          (error: unknown) => expect(error).toBeInstanceOf(Error)
+        )
+      )
+      expect(harness.prompt()).toBeUndefined()
+      expect(harness.disposed()).toBe(1)
+      expect(output).toEqual([])
+    })
+  )
+
+  it.effect('bounds an oversized failure message so the frame stays encodable', () =>
+    Effect.gen(function* () {
+      const rejected = yield* startHarnessedWorker()
+      rejected.harness.rejectSteer('x'.repeat(2 * MAX_FRAME_BYTES))
+      yield* promise(() => rejected.worker.accept({ agent_id: 'agent', command_id: 'steer-command', message: 'focus', turn: 1, type: 'steer' }))
+      const frame = frames(rejected.output).at(-1)
+      expect(frame).toEqual(expect.objectContaining({ code: 'queue_rejected', command_id: 'steer-command', type: 'command_error' }))
+      expect(bytes.encode(encodeFrame(frame)).byteLength).toBeLessThanOrEqual(MAX_FRAME_BYTES)
     })
   )
 

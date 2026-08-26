@@ -2,7 +2,7 @@ import { CustomEditor, type ExtensionContext } from '@earendil-works/pi-coding-a
 import { matchesKey } from '@earendil-works/pi-tui'
 import { Effect } from 'effect'
 
-import { readOwnerOnlyFile } from '#shared/effect/bun_host_file_system'
+import { lstatHostFile, readOwnerOnlyFile } from '#shared/effect/bun_host_file_system'
 import { bunPath } from '#shared/effect/bun_services'
 import { type RunningAgent } from '#shared/state/agent_activity'
 
@@ -84,6 +84,8 @@ interface TranscriptContent {
   readonly unavailable: boolean
 }
 
+type TranscriptRead = 'unchanged' | { readonly content: TranscriptContent; readonly stamp?: string }
+
 interface TranscriptOverlay {
   readonly content: () => TranscriptContent
   readonly refresh: Effect.Effect<TranscriptContent>
@@ -120,19 +122,26 @@ const completeJsonLines = (bytes: Uint8Array): readonly unknown[] => {
 export const createSubagentsOperator = ({ activity, sessionId, store }: SubagentsOperatorOptions): SubagentsOperator => {
   const recordFor = (agentId: string): Effect.Effect<SubagentRecord | undefined> =>
     store.readRecord(agentId).pipe(Effect.orElseSucceed(() => undefined))
-  const readTranscript = (agentId: string): Effect.Effect<TranscriptContent> =>
+  const readTranscript = (agentId: string, lastStamp: string | undefined): Effect.Effect<TranscriptRead> =>
     recordFor(agentId).pipe(
       Effect.flatMap((record) => {
         if (record === undefined || record.session !== sessionId) {
-          return Effect.succeed(unavailableTranscript)
+          return Effect.succeed<TranscriptRead>({ content: unavailableTranscript })
         }
-        return readOwnerOnlyFile({
-          maxBytes: 10 * 1024 * 1024,
-          path: record.sessionPath,
-          root: bunPath.dirname(record.sessionPath),
-        }).pipe(
-          Effect.map((file) => ({ entries: completeJsonLines(file.bytes), turns: record.turns, unavailable: false })),
-          Effect.orElseSucceed(() => unavailableTranscript)
+        return lstatHostFile(record.sessionPath).pipe(
+          Effect.flatMap((info) => {
+            const stamp = `${info.mtimeMs}:${info.size}`
+            return stamp === lastStamp
+              ? Effect.succeed<TranscriptRead>('unchanged')
+              : readOwnerOnlyFile({
+                  maxBytes: 10 * 1024 * 1024,
+                  path: record.sessionPath,
+                  root: bunPath.dirname(record.sessionPath),
+                }).pipe(
+                  Effect.map((file) => ({ content: { entries: completeJsonLines(file.bytes), turns: record.turns, unavailable: false }, stamp }))
+                )
+          }),
+          Effect.orElseSucceed<TranscriptRead>(() => ({ content: unavailableTranscript }))
         )
       })
     )
@@ -156,11 +165,17 @@ export const createSubagentsOperator = ({ activity, sessionId, store }: Subagent
     ),
     open: (agentId) => {
       let current = unavailableTranscript
+      let stamp: string | undefined
       return {
         content: () => current,
         refresh: Effect.suspend(() =>
-          readTranscript(agentId).pipe(
-            Effect.map((next) => {
+          readTranscript(agentId, stamp).pipe(
+            Effect.map((read) => {
+              if (read === 'unchanged') {
+                return current
+              }
+              const { content: next, stamp: nextStamp } = read
+              stamp = nextStamp
               if (!next.unavailable) {
                 current = next
               } else if (current.entries.length === 0 && current.turns.length === 0) {

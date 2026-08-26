@@ -67,6 +67,8 @@ const deferred = (): Deferred => {
 const utf8 = new TextEncoder()
 // Ponytail: Cap pending progress writes at 64; upgrade to byte accounting if progress frames grow beyond fixed metadata.
 const MAX_PENDING_PROGRESS_WRITES = 64
+/** Keeps terminal result frames encodable: an unbounded SDK error message would exceed the 1 MiB frame limit. */
+const MAX_ERROR_MESSAGE_CHARS = 4096
 const diagnostic = (message: string): void => {
   process.stderr.write(`[sub-agent worker] ${message}\n`)
 }
@@ -116,6 +118,7 @@ export class SubagentWorker {
   #state: WorkerState = 'awaiting_config'
   #taskId: string | undefined
   #settled = false
+  #disposed = false
   #interrupted = false
   #winnerStatus: 'completed' | 'failed' | 'interrupted' = 'failed'
   readonly #preflight = deferred()
@@ -167,7 +170,7 @@ export class SubagentWorker {
     }
     this.#interrupted = true
     return Promise.resolve(this.#session?.abort())
-      .then(() => this.#session?.dispose())
+      .then(() => this.#disposeSession())
       .then(() => Promise.reject(new ProtocolError('Parent stdin ended before worker completion.')))
   }
 
@@ -188,6 +191,7 @@ export class SubagentWorker {
     this.#taskId = command_id
     void this.#boot(command_id, message).catch((error: unknown) => {
       this.#state = 'exiting'
+      this.#disposeSession()
       this.#finished.reject(error instanceof Error ? error : new Error(errorMessage(error)))
     })
     return Promise.resolve()
@@ -235,6 +239,9 @@ export class SubagentWorker {
       })
       .then((result) => {
         this.#session = result.session
+        if (this.#interrupted) {
+          throw new ProtocolError('Parent stdin ended before worker completion.')
+        }
         return this.#session.bindExtensions({ mode: 'print' })
       })
       .then(() => {
@@ -402,10 +409,18 @@ export class SubagentWorker {
     this.#winnerStatus = frame.status
     this.#state = 'settled'
     return this.#emit(frame).finally(() => {
-      this.#session?.dispose()
+      this.#disposeSession()
       this.#state = 'exiting'
       this.#finished.resolve()
     })
+  }
+
+  #disposeSession(): void {
+    if (this.#session === undefined || this.#disposed) {
+      return
+    }
+    this.#disposed = true
+    this.#session.dispose()
   }
 
   #assertIdentity(agentId: string, turn: number): void {
@@ -467,7 +482,8 @@ const progressFor = (event: AgentSessionEvent): 'assistant_activity' | 'tool_fin
   }
   return undefined
 }
-const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : 'Unknown worker failure.')
+const errorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message.slice(0, MAX_ERROR_MESSAGE_CHARS) : 'Unknown worker failure.'
 const isChildFrame = (frame: ChildFrame): boolean =>
   Value.Check(ChildCommandErrorFrameSchema, frame) ||
   Value.Check(ChildProgressFrameSchema, frame) ||
