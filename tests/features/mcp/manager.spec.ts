@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url'
 
 import { DEFAULT_MAX_BYTES } from '@earendil-works/pi-coding-agent'
+import { BunServices } from '@effect/platform-bun'
 import { UnauthorizedError, type OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
 import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { type Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
@@ -188,7 +189,8 @@ const harness = (
 /** The manager is Effect-native; these behavioural tests drive it through one promise facade. */
 const promised = (manager: McpManager) => ({
   authenticate: (server: string, options?: McpOperationOptions) => promiseFromEffect(manager.authenticate(server, options)),
-  call: (tool: string, args: JsonObject, options?: McpOperationOptions) => promiseFromEffect(manager.call(tool, args, options)),
+  call: (tool: string, args: JsonObject, options?: McpOperationOptions) =>
+    promiseFromEffect(manager.call(tool, args, options).pipe(Effect.provide(BunServices.layer))),
   close: () => promiseFromEffect(manager.close),
   connect: (server: string, options?: McpOperationOptions) => promiseFromEffect(manager.connect(server, options)),
   describe: (tool: string, options?: McpOperationOptions) => promiseFromEffect(manager.describe(tool, options)),

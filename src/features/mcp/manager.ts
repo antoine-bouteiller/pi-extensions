@@ -6,6 +6,8 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { type Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { Context, Data, Deferred, Effect, Fiber, Layer, Result, Schema } from 'effect'
+import { type FileSystem } from 'effect/FileSystem'
+import { type Path } from 'effect/Path'
 
 import { type JsonObject } from '#shared/utils/json'
 import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isTrue } from '#shared/utils/predicates'
@@ -577,7 +579,11 @@ export class McpManager {
     return this.resolveTool(tool, options, 'describe').pipe(Effect.map((metadata) => ({ ...metadata, annotations: { ...metadata.annotations } })))
   }
 
-  call(tool: string, args: JsonObject, options: { server?: string; signal?: AbortSignal } = {}): Effect.Effect<AgentToolResult<unknown>, McpFailure> {
+  call(
+    tool: string,
+    args: JsonObject,
+    options: { server?: string; signal?: AbortSignal } = {}
+  ): Effect.Effect<AgentToolResult<unknown>, McpFailure, FileSystem | Path> {
     return Effect.gen({ self: this }, function* () {
       const metadata = yield* this.resolveTool(tool, options, 'call')
       const runtime = yield* this.runtime(metadata.server)

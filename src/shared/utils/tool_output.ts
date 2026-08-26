@@ -2,8 +2,9 @@ import { tmpdir } from 'node:os'
 
 import { formatSize, truncateHead, truncateTail } from '@earendil-works/pi-coding-agent'
 import { type Cause, Effect, Option } from 'effect'
+import { FileSystem } from 'effect/FileSystem'
+import { Path } from 'effect/Path'
 
-import { bunFileSystem, bunPath } from '#shared/effect/bun_services'
 import { unknownError } from '#shared/effect/errors'
 
 export interface Truncation {
@@ -55,20 +56,22 @@ export const SPILL_TTL_MS = 24 * 60 * 60 * 1000
  * ponytail: age-based sweep keyed on the caller's prefix; replace with session-scoped cleanup if a
  * spill ever needs to outlive its session or be removed the moment the session ends.
  */
-const reapExpiredSpills = (prefix: string): Effect.Effect<void> =>
+const reapExpiredSpills = (prefix: string): Effect.Effect<void, never, FileSystem | Path> =>
   Effect.gen(function* () {
+    const fs = yield* FileSystem
+    const path = yield* Path
     const root = tmpdir()
     const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis)
-    const entries = yield* bunFileSystem.readDirectory(root)
+    const entries = yield* fs.readDirectory(root)
     yield* Effect.forEach(
       entries.filter((entry) => entry.startsWith(prefix)),
       (entry) => {
-        const path = bunPath.join(root, entry)
-        return bunFileSystem.stat(path).pipe(
+        const entryPath = path.join(root, entry)
+        return fs.stat(entryPath).pipe(
           Effect.flatMap((info) => {
             const modified = Option.getOrUndefined(info.mtime)
             return modified !== undefined && now - modified.getTime() > SPILL_TTL_MS
-              ? bunFileSystem.remove(path, { force: true, recursive: true })
+              ? fs.remove(entryPath, { force: true, recursive: true })
               : Effect.void
           }),
           Effect.ignore
@@ -82,19 +85,21 @@ const reapExpiredSpills = (prefix: string): Effect.Effect<void> =>
 export const writePrivateTempFileEffect = (
   content: string,
   { prefix, filename = 'output.txt' }: { prefix: string; filename?: string }
-): Effect.Effect<string, Cause.UnknownError> =>
+): Effect.Effect<string, Cause.UnknownError, FileSystem | Path> =>
   Effect.gen(function* () {
+    const fs = yield* FileSystem
+    const path = yield* Path
     yield* reapExpiredSpills(prefix)
-    const directory = yield* bunFileSystem.makeTempDirectory({ prefix })
-    const path = bunPath.join(directory, filename)
-    yield* bunFileSystem
-      .writeFileString(path, content, { mode: 0o600 })
-      .pipe(Effect.onError(() => bunFileSystem.remove(directory, { force: true, recursive: true }).pipe(Effect.ignore)))
-    return path
+    const directory = yield* fs.makeTempDirectory({ prefix })
+    const filePath = path.join(directory, filename)
+    yield* fs
+      .writeFileString(filePath, content, { mode: 0o600 })
+      .pipe(Effect.onError(() => fs.remove(directory, { force: true, recursive: true }).pipe(Effect.ignore)))
+    return filePath
   }).pipe(Effect.mapError(unknownError))
 
-interface BoundToolTextEffectOptions<Failure> extends TruncateOptions {
-  saveFullOutput: (content: string) => Effect.Effect<string, Failure>
+interface BoundToolTextEffectOptions<Failure, Requirements> extends TruncateOptions {
+  saveFullOutput: (content: string) => Effect.Effect<string, Failure, Requirements>
   /** Room reserved for the notice so the final text still fits the caller's budget. */
   noticeBytes?: number
   noticeLines?: number
@@ -109,10 +114,10 @@ interface BoundToolTextEffectOptions<Failure> extends TruncateOptions {
  * A failed spill stays in the error channel.
  */
 
-export const boundToolTextEffect = <Failure = never>(
+export const boundToolTextEffect = <Failure = never, Requirements = never>(
   text: string,
-  { maxBytes, maxLines, from = 'head', saveFullOutput, noticeBytes = 2048, noticeLines = 4 }: BoundToolTextEffectOptions<Failure>
-): Effect.Effect<BoundedText, Failure> =>
+  { maxBytes, maxLines, from = 'head', saveFullOutput, noticeBytes = 2048, noticeLines = 4 }: BoundToolTextEffectOptions<Failure, Requirements>
+): Effect.Effect<BoundedText, Failure, Requirements> =>
   Effect.gen(function* () {
     const initial = truncateOutput(text, { from, maxBytes, maxLines })
     if (!initial.truncated) {

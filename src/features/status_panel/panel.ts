@@ -1,5 +1,7 @@
 import { type ExtensionAPI, type ExtensionContext, type ExtensionEvent, type ReadonlyFooterDataProvider } from '@earendil-works/pi-coding-agent'
-import { Effect, Path, Ref } from 'effect'
+import { Effect, Path as PathService, Ref } from 'effect'
+import { type FileSystem } from 'effect/FileSystem'
+import { type Path } from 'effect/Path'
 import { type HttpClient } from 'effect/unstable/http'
 
 import { type AppRuntime, AgentActivity, StatusBar } from '#shared/effect/app_services'
@@ -45,7 +47,10 @@ export interface PanelHandlers {
   readonly sessionShutdown: (event: PiEvent<'session_shutdown'>, ctx: ExtensionContext) => Effect.Effect<void>
 }
 
-export const recordSubagentQuota = (event: PiEvent<'after_provider_response'>, ctx: ExtensionContext): Effect.Effect<void> => {
+export const recordSubagentQuota = (
+  event: PiEvent<'after_provider_response'>,
+  ctx: ExtensionContext
+): Effect.Effect<void, never, FileSystem | Path> => {
   const quota = quotaFromHeaders(ctx.model?.provider ?? '', event.headers)
   return quota === undefined ? Effect.void : writeSubagentAzureQuota(process.env.PI_SUBAGENT_OWNER_TOKEN ?? '', quota.percent)
 }
@@ -54,7 +59,7 @@ export const makePanelController = ({ dependencies, pi, runtime }: PanelControll
   // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; permanent: synchronous feature registration cannot yield, so its services are extracted like `[KD-1]`/`[C-1]`
   const agentActivity = runtime.runSync(AgentActivity)
   // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; permanent: synchronous feature registration cannot yield, so its services are extracted like `[KD-1]`/`[C-1]`
-  const path = runtime.runSync(Path.Path)
+  const path = runtime.runSync(PathService.Path)
   // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; permanent: synchronous feature registration cannot yield, so its services are extracted like `[KD-1]`/`[C-1]`
   const statusBar = runtime.runSync(StatusBar)
   const stateRef = Ref.makeUnsafe<PanelState>(emptyPanelState())

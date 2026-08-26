@@ -1,5 +1,7 @@
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from '@earendil-works/pi-coding-agent'
 import { Effect } from 'effect'
+import { type FileSystem } from 'effect/FileSystem'
+import { type Path } from 'effect/Path'
 
 import { boundToolTextEffect, writePrivateTempFileEffect } from '#shared/utils/tool_output'
 
@@ -53,7 +55,7 @@ const imageBudgetError = (content: GatewayContent[]): McpError | undefined => {
  * count budget, and the complete text is written to a private temporary file when truncation
  * occurs.
  */
-export const boundGatewayOutput = (content: GatewayContent[]): Effect.Effect<BoundedOutput, McpError> =>
+export const boundGatewayOutput = (content: GatewayContent[]): Effect.Effect<BoundedOutput, McpError, FileSystem | Path> =>
   Effect.gen(function* () {
     const overBudget = imageBudgetError(content)
     if (overBudget !== undefined) {

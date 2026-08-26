@@ -1,6 +1,6 @@
 import os from 'node:os'
 
-import { Context, Data, Effect, Layer } from 'effect'
+import { Context, Data, Effect, FileSystem, Layer, Path } from 'effect'
 import { Type } from 'typebox'
 import { Value } from 'typebox/value'
 
@@ -14,7 +14,6 @@ import {
   withHeldFile,
   writePrivateFile,
 } from '#shared/effect/bun_host_file_system'
-import { bunFileSystem, bunPath } from '#shared/effect/bun_services'
 
 import {
   AgentResultSchema,
@@ -188,22 +187,28 @@ const decodeRecord = (content: Uint8Array): SubagentRecord | undefined => {
 }
 const encode = (value: unknown): string => JSON.stringify(value)
 
-const makeStore = (config: SubagentStoreConfig): SubagentStoreApi => {
+interface StoreServices {
+  readonly fs: FileSystem.FileSystem
+  readonly path: Path.Path
+}
+
+const makeStore = (config: SubagentStoreConfig, services: StoreServices): SubagentStoreApi => {
+  const { fs, path } = services
   const temporaryDirectory = config.tempDirectory ?? Bun.env.PI_SUBAGENT_TEMP_DIR ?? os.tmpdir()
   const username = config.username ?? os.userInfo().username
-  const privateRoot = bunPath.join(temporaryDirectory, 'pi-codex-subagents', username)
-  const root = bunPath.join(privateRoot, 'runs')
+  const privateRoot = path.join(temporaryDirectory, 'pi-codex-subagents', username)
+  const root = path.join(privateRoot, 'runs')
   const agentDirectory = (agentId: string): string => {
     if (!isSafeName(agentId)) {
       throw new Error('Unsafe agent identifier')
     }
-    return bunPath.join(root, agentId)
+    return path.join(root, agentId)
   }
   const file = (agentId: string, name: string): string => {
     if (!isSafeName(name)) {
       throw new Error('Unsafe artifact name')
     }
-    return bunPath.join(agentDirectory(agentId), name)
+    return path.join(agentDirectory(agentId), name)
   }
   const readValue = <Value>(
     agentId: string,
@@ -237,8 +242,8 @@ const makeStore = (config: SubagentStoreConfig): SubagentStoreApi => {
   const createSession = (agentId: string): Effect.Effect<PrivateRunDescriptor, StoreError> =>
     Effect.gen(function* () {
       const sessionPath = yield* create(agentId, 'session.json')
-      const runDirectory = yield* bunFileSystem.realPath(agentDirectory(agentId))
-      const canonicalSessionPath = yield* bunFileSystem.realPath(sessionPath)
+      const runDirectory = yield* fs.realPath(agentDirectory(agentId))
+      const canonicalSessionPath = yield* fs.realPath(sessionPath)
       return { runDirectory, sessionPath: canonicalSessionPath }
     }).pipe(Effect.mapError(fail))
   return {
@@ -257,7 +262,7 @@ const makeStore = (config: SubagentStoreConfig): SubagentStoreApi => {
     createSession,
     delete: removeAgent,
     initialize: Effect.gen(function* () {
-      yield* ensurePrivateDirectory(bunPath.join(temporaryDirectory, 'pi-codex-subagents'))
+      yield* ensurePrivateDirectory(path.join(temporaryDirectory, 'pi-codex-subagents'))
       yield* ensurePrivateDirectory(privateRoot)
       yield* ensurePrivateDirectory(root)
     }).pipe(Effect.mapError(fail)),
@@ -311,18 +316,18 @@ const makeStore = (config: SubagentStoreConfig): SubagentStoreApi => {
     },
     readRecord: (agentId) => readValue(agentId, 'record.json', decodeRecord),
     removeLease: (agentId, identity) => {
-      const path = file(agentId, 'launch.lease')
+      const leasePath = file(agentId, 'launch.lease')
       if (identity === undefined) {
-        return removeHostPath(path).pipe(Effect.mapError(fail))
+        return removeHostPath(leasePath).pipe(Effect.mapError(fail))
       }
-      return withHeldFile(path, (handle) =>
+      return withHeldFile(leasePath, (handle) =>
         removeHeldFileIfUnchanged({
           contentMatches: (content) => {
             const lease = decodeLease(new TextEncoder().encode(content))
             return lease?.identity.pid === identity.pid && lease.identity.birthMarker === identity.birthMarker
           },
           handle,
-          path,
+          path: leasePath,
         })
       ).pipe(
         Effect.catchIf(
@@ -333,11 +338,11 @@ const makeStore = (config: SubagentStoreConfig): SubagentStoreApi => {
         Effect.asVoid
       )
     },
-    removeLog: (agentId, path) => {
+    removeLog: (agentId, logPath) => {
       const directory = agentDirectory(agentId)
-      const name = bunPath.basename(path)
-      return bunPath.dirname(path) === directory && /^stderr-[1-9][0-9]*-[A-Za-z0-9-]+\.log$/.test(name)
-        ? removeHostPath(path).pipe(Effect.mapError(fail))
+      const name = path.basename(logPath)
+      return path.dirname(logPath) === directory && /^stderr-[1-9][0-9]*-[A-Za-z0-9-]+\.log$/.test(name)
+        ? removeHostPath(logPath).pipe(Effect.mapError(fail))
         : Effect.fail(fail(new Error('Invalid log path')))
     },
     replaceRecord: (agentId, record) =>
@@ -357,5 +362,10 @@ const makeStore = (config: SubagentStoreConfig): SubagentStoreApi => {
           }).pipe(Effect.mapError(fail)),
   }
 }
-export const makeSubagentStoreLive = (config: SubagentStoreConfig = {}): Layer.Layer<SubagentStore> => Layer.succeed(SubagentStore)(makeStore(config))
-export const SubagentStoreLive: Layer.Layer<SubagentStore> = makeSubagentStoreLive()
+export const makeSubagentStoreLive = (config: SubagentStoreConfig = {}): Layer.Layer<SubagentStore, never, FileSystem.FileSystem | Path.Path> =>
+  Layer.effect(SubagentStore)(
+    Effect.gen(function* () {
+      return makeStore(config, { fs: yield* FileSystem.FileSystem, path: yield* Path.Path })
+    })
+  )
+export const SubagentStoreLive: Layer.Layer<SubagentStore, never, FileSystem.FileSystem | Path.Path> = makeSubagentStoreLive()
