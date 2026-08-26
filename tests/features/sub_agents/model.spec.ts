@@ -25,6 +25,7 @@ import {
   SendMessageInputSchema,
   SpawnAgentInputSchema,
   TaskNameSchema,
+  toChildModel,
   WaitAgentInputSchema,
   WaitAllInputSchema,
   WorkerConfigSchema,
@@ -150,6 +151,31 @@ describe('sub-agent model', () => {
     const registry = { ...PROFILE_REGISTRY, scout: { ...PROFILE_REGISTRY.scout, contextCeiling: 100_000 } }
     const result = resolveProfileWithRegistry('scout', snapshot(), registry)
     expect(result.ok && result.profile.contextCeiling).toBe(100_000)
+  })
+
+  it('projects runtime model output limits through the child view and profile resolution', () => {
+    expect(toChildModel({ contextWindow: 300_000, id: 'gpt-5.6-luna', maxTokens: 16_384, provider: 'azure-openai' })).toEqual({
+      contextWindow: 300_000,
+      maxTokens: 16_384,
+      model: 'gpt-5.6-luna',
+      provider: 'azure-openai',
+    })
+    expect(toChildModel({ contextWindow: 300_000, id: 'gpt-5.6-luna', provider: 'azure-openai' })).toEqual({
+      contextWindow: 300_000,
+      model: 'gpt-5.6-luna',
+      provider: 'azure-openai',
+    })
+    const base = snapshot()
+    const resolved = resolveProfile('scout', {
+      ...base,
+      child_model_view: {
+        authenticated_providers: base.child_model_view.authenticated_providers,
+        models: [{ contextWindow: 300_000, maxTokens: 16_384, model: 'gpt-5.6-luna', provider: 'azure-openai' }],
+      },
+    })
+    expect(resolved.ok && resolved.maxOutputTokens).toBe(16_384)
+    const fallback = resolveProfile('scout', snapshot())
+    expect(fallback.ok && fallback.maxOutputTokens).toBeUndefined()
   })
 
   it('refuses unsafe configuration before missing tools and derives implementer tools from safe classifications', () => {

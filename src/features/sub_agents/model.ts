@@ -124,9 +124,21 @@ export type InterruptAgentInput = Static<typeof InterruptAgentInputSchema>
 
 interface ChildModel {
   readonly contextWindow: number
+  /** Runtime-only maximum output size; absent for injected or older model views. */
+  readonly maxTokens?: number
   readonly model: string
   readonly provider: string
 }
+
+export const toChildModel = (model: {
+  readonly contextWindow: number
+  readonly id: string
+  readonly maxTokens?: number
+  readonly provider: string
+}): ChildModel =>
+  model.maxTokens === undefined
+    ? { contextWindow: model.contextWindow, model: model.id, provider: model.provider }
+    : { contextWindow: model.contextWindow, maxTokens: model.maxTokens, model: model.id, provider: model.provider }
 /** This is constructed by the adapter's child-equivalent runtime, never from parent-memory keys. */
 export interface ChildModelView {
   readonly authenticated_providers: readonly string[]
@@ -179,7 +191,7 @@ interface ProfileResolutionError {
   readonly message: string
 }
 export type ProfileResolution =
-  | { readonly ok: true; readonly profile: PersistedResolvedProfile }
+  | { readonly maxOutputTokens?: number; readonly ok: true; readonly profile: PersistedResolvedProfile }
   | { readonly error: ProfileResolutionError; readonly ok: false }
 
 export interface ProfileDefinition {
@@ -325,18 +337,19 @@ export const resolveProfileWithRegistry = (
     return refusal('unavailable_tool', `Required tool "${missing}" is unavailable.`)
   }
   const tools = profile.key === 'implementer' ? implementerTools(snapshot.registered_tools) : [...new Set(profile.requiredTools)]
-  return {
-    ok: true,
-    profile: {
-      contextCeiling: Math.min(profile.contextCeiling ?? 200_000, model.contextWindow),
-      key: profile.key,
-      model: selected.model,
-      prompt: profile.prompt,
-      provider: selected.provider,
-      thinkingLevel: profile.thinkingLevel,
-      tools: [...tools],
-    },
+  const resolvedProfile = {
+    contextCeiling: Math.min(profile.contextCeiling ?? 200_000, model.contextWindow),
+    key: profile.key,
+    model: selected.model,
+    prompt: profile.prompt,
+    provider: selected.provider,
+    thinkingLevel: profile.thinkingLevel,
+    tools: [...tools],
   }
+  if (model.maxTokens === undefined) {
+    return { ok: true, profile: resolvedProfile }
+  }
+  return { maxOutputTokens: model.maxTokens, ok: true, profile: resolvedProfile }
 }
 
 export const resolveProfile = (key: string, snapshot: AdmissionSnapshot): ProfileResolution =>

@@ -592,7 +592,8 @@ available. That acceptance does not claim or settle the turn's delivery, and doe
 an existing foreground waiter remains owner; otherwise eventual settlement is notification-eligible and
 claimable. A `completed` agent freshly resolves its profile against
 the parent's current model; a removed profile yields `unknown_profile`. It checks capacity and measures projected context
-including the proposed message and the model's maximum-output reserve (8,192 tokens when unavailable).
+in token units: persisted context tokens, Pi's conservative estimate of the proposed message, and the
+currently resolved child-equivalent model's `maxTokens` (8,192 tokens only when that metadata is unavailable).
 If context cannot be measured or `projected >= ceiling`, it refuses `context_limit` without consumption.
 Its accepted resume provisionally dispatches and reserves synchronous delivery, returning the next-turn
 `AgentResult` only after readiness commits consumption. Caller cancellation before that reserved claim

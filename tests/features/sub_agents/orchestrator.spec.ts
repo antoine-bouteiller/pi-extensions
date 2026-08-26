@@ -77,6 +77,7 @@ interface HarnessOptions {
   readonly leases?: readonly { readonly agentId: string; readonly lease: LaunchLease }[]
   readonly gateNotifications?: boolean
   readonly liveOwners?: readonly ProcessIdentity[]
+  readonly maxOutputTokens?: number
   readonly initializeFailures?: number
   readonly notificationFails?: boolean
   readonly profiles?: readonly ProfileKey[]
@@ -268,7 +269,15 @@ const harness = (root: string, options: HarnessOptions = {}) =>
         const resolved = availableProfiles.find((profileKey) => profileKey === key)
         return resolved === undefined
           ? Effect.succeed({ error: { code: 'unknown_profile' as const, message: 'unknown' }, ok: false as const })
-          : Effect.succeed({ ok: true as const, profile: { ...profile(resolved), contextCeiling: options.contextCeiling ?? 1 } })
+          : Effect.succeed(
+              options.maxOutputTokens === undefined
+                ? { ok: true as const, profile: { ...profile(resolved), contextCeiling: options.contextCeiling ?? 1 } }
+                : {
+                    maxOutputTokens: options.maxOutputTokens,
+                    ok: true as const,
+                    profile: { ...profile(resolved), contextCeiling: options.contextCeiling ?? 1 },
+                  }
+            )
       },
     }
     yield* bunFileSystem.writeFileString(bunPath.join(root, 'session.json'), '{}')
@@ -999,7 +1008,7 @@ describe('SubagentOrchestrator', () => {
           const resumed = yield* Effect.exit(orchestrator.send('settled-cleanup', admission, 'source', 'resume'))
           expect(resumed._tag).toBe('Failure')
           if (resumed._tag === 'Failure') {
-            expect(resumed.cause.toString()).toContain('capacity')
+            expect(resumed.cause.toString()).toContain('still cleaning up')
           }
           yield* fake.children[0].emit(undefined)
           yield* fake.children[0].exit
@@ -1164,6 +1173,77 @@ describe('SubagentOrchestrator', () => {
     })
   )
 
+  it.scoped('deletes a resumed provisional mismatch and frees its predecessor task name', () =>
+    Effect.gen(function* () {
+      const root = yield* bunFileSystem
+        .makeTempDirectory({ prefix: 'orchestrator-resumed-provisional-mismatch-' })
+        .pipe(Effect.flatMap(bunFileSystem.realPath))
+      const fake = yield* harness(root, { contextCeiling: 10_000, profiles: ['scout'], termination: ['mismatch'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('resumed-provisional-mismatch')
+          const initial = yield* Effect.forkChild(orchestrator.spawn('resumed-provisional-mismatch', admission, request('source', 'scout', false)))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[0], 'agent-1', bunPath.join(root, 'session.json'))
+          yield* completed(fake.children[0], 'agent-1')
+          yield* Fiber.join(initial)
+          yield* fake.children[0].exit
+          yield* Effect.yieldNow
+          const resumed = yield* Effect.forkChild(orchestrator.send('resumed-provisional-mismatch', admission, 'source', 'next'))
+          yield* TestClock.adjust('1 millis')
+          yield* orchestrator.interruptAll('resumed-provisional-mismatch')
+          yield* fake.children[1].emit(undefined)
+          expect((yield* Fiber.join(resumed).pipe(Effect.exit))._tag).toBe('Failure')
+          expect(yield* orchestrator.list('resumed-provisional-mismatch')).toEqual([])
+          const replacement = yield* Effect.forkChild(orchestrator.spawn('resumed-provisional-mismatch', admission, request('source')))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[2], 'agent-2', bunPath.join(root, 'session.json'))
+          yield* Fiber.join(replacement)
+          expect((yield* orchestrator.list('resumed-provisional-mismatch'))[0]?.status).toBe('running')
+        }),
+        fake.layer
+      )
+    })
+  )
+
+  it.scoped('deletes a resumed turn on identity mismatch without signalling it', () =>
+    Effect.gen(function* () {
+      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'orchestrator-resumed-mismatch-' }).pipe(Effect.flatMap(bunFileSystem.realPath))
+      const fake = yield* harness(root, { contextCeiling: 10_000, profiles: ['scout'], termination: ['mismatch'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('resumed-mismatch')
+          const initial = yield* Effect.forkChild(orchestrator.spawn('resumed-mismatch', admission, request('source', 'scout', false)))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[0], 'agent-1', bunPath.join(root, 'session.json'))
+          yield* completed(fake.children[0], 'agent-1')
+          yield* Fiber.join(initial)
+          yield* fake.children[0].exit
+          yield* Effect.yieldNow
+          const resumed = yield* Effect.forkChild(orchestrator.send('resumed-mismatch', admission, 'source', 'next'))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[1], 'agent-1', bunPath.join(root, 'session.json'), 2)
+          const closing = yield* Effect.forkChild(orchestrator.closeSession('resumed-mismatch'))
+          yield* TestClock.adjust('5 seconds')
+          yield* Fiber.join(closing)
+          yield* Fiber.join(resumed).pipe(Effect.exit)
+          expect(fake.deletes()).toBe(1)
+          expect(fake.forceCalls()).toBe(1)
+          yield* orchestrator.openSession('fresh')
+          const replacement = yield* Effect.forkChild(orchestrator.spawn('fresh', admission, request('source')))
+          yield* TestClock.adjust('1 millis')
+          expect(frameAgentId(fake.children[2].writes()[0])).not.toBe('agent-1')
+          yield* ready(fake.children[2], frameAgentId(fake.children[2].writes()[0]) ?? 'missing', bunPath.join(root, 'session.json'))
+          yield* completed(fake.children[2], frameAgentId(fake.children[2].writes()[0]) ?? 'missing')
+          yield* Fiber.join(replacement)
+        }),
+        fake.layer
+      )
+    })
+  )
+
   it.scoped('reconciles persisted runs before pruning and preserves unverifiable ownership', () =>
     Effect.gen(function* () {
       const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'orchestrator-reconcile-' }).pipe(Effect.flatMap(bunFileSystem.realPath))
@@ -1275,7 +1355,7 @@ describe('SubagentOrchestrator', () => {
         Effect.gen(function* () {
           const orchestrator = yield* SubagentOrchestrator
           yield* orchestrator.initialize
-          expect(fake.forceCalls()).toBe(5)
+          expect(fake.forceCalls()).toBe(3)
           expect(fake.deletes()).toBe(4)
           expect(fake.pruneCalls()).toBe(1)
         }),
@@ -1870,6 +1950,56 @@ describe('SubagentOrchestrator', () => {
     })
   )
 
+  it.scoped('refuses resume when the resolved model reserves more output than the fallback', () =>
+    Effect.gen(function* () {
+      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'orchestrator-reserve-' }).pipe(Effect.flatMap(bunFileSystem.realPath))
+      const fake = yield* harness(root, { contextCeiling: 8300, maxOutputTokens: 16_384, profiles: ['scout'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('reserve')
+          const initial = yield* Effect.forkChild(orchestrator.spawn('reserve', admission, request('done', 'scout', false)))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[0], 'agent-1', bunPath.join(root, 'session.json'))
+          yield* completed(fake.children[0], 'agent-1')
+          yield* Fiber.join(initial)
+          yield* fake.children[0].exit
+          const refused = yield* Effect.exit(orchestrator.send('reserve', admission, 'done', 'x'.repeat(4)))
+          expect(refused._tag).toBe('Failure')
+          if (refused._tag === 'Failure') {
+            expect(refused.cause.toString()).toContain('context limit')
+          }
+        }),
+        fake.layer
+      )
+    })
+  )
+
+  it.scoped('admits resumes using token estimates and the resolved model output limit', () =>
+    Effect.gen(function* () {
+      const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'orchestrator-estimate-' }).pipe(Effect.flatMap(bunFileSystem.realPath))
+      const fake = yield* harness(root, { contextCeiling: 1200, maxOutputTokens: 1024, profiles: ['scout'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('estimate')
+          const initial = yield* Effect.forkChild(orchestrator.spawn('estimate', admission, request('done', 'scout', false)))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[0], 'agent-1', bunPath.join(root, 'session.json'))
+          yield* completed(fake.children[0], 'agent-1')
+          yield* Fiber.join(initial)
+          yield* fake.children[0].exit
+          const resumed = yield* Effect.forkChild(orchestrator.send('estimate', admission, 'done', 'é'.repeat(60)))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[1], 'agent-1', bunPath.join(root, 'session.json'), 2)
+          yield* completed(fake.children[1], 'agent-1', 'again', 2)
+          expect((yield* Fiber.join(resumed)).turn).toBe(2)
+        }),
+        fake.layer
+      )
+    })
+  )
+
   it.scoped('re-resolves resumes and validates open-mode readiness and its timeout', () =>
     Effect.gen(function* () {
       const root = yield* bunFileSystem.makeTempDirectory({ prefix: 'orchestrator-open-' }).pipe(Effect.flatMap(bunFileSystem.realPath))
@@ -1987,6 +2117,35 @@ describe('SubagentOrchestrator', () => {
           yield* fake.releaseNotifications
           yield* Effect.yieldNow
           expect(fake.notifications().flat().join('\n')).toContain('Sub-agent two completed: survives')
+        }),
+        fake.layer
+      )
+    })
+  )
+
+  it.scoped('does not let a mismatched deadline settle a same-name replacement', () =>
+    Effect.gen(function* () {
+      const root = yield* bunFileSystem
+        .makeTempDirectory({ prefix: 'orchestrator-mismatched-deadline-' })
+        .pipe(Effect.flatMap(bunFileSystem.realPath))
+      const fake = yield* harness(root, { profiles: ['scout'], termination: ['mismatch'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('mismatched-deadline')
+          const initial = yield* Effect.forkChild(orchestrator.spawn('mismatched-deadline', admission, request('worker')))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[0], 'agent-1', bunPath.join(root, 'session.json'))
+          yield* Fiber.join(initial)
+          const interrupting = yield* Effect.forkChild(orchestrator.interrupt('mismatched-deadline', 'worker'))
+          yield* TestClock.adjust('5 seconds')
+          yield* Fiber.join(interrupting)
+          const replacement = yield* Effect.forkChild(orchestrator.spawn('mismatched-deadline', admission, request('worker')))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[1], 'agent-2', bunPath.join(root, 'session.json'))
+          yield* Fiber.join(replacement)
+          yield* TestClock.adjust(1_795_000)
+          expect((yield* orchestrator.list('mismatched-deadline'))[0]?.status).toBe('running')
         }),
         fake.layer
       )
@@ -2213,6 +2372,7 @@ describe('SubagentOrchestrator', () => {
           yield* TestClock.adjust('1 millis')
           yield* ready(measured.children[0], 'agent-1', bunPath.join(root, 'session.json'))
           yield* completed(measured.children[0], 'agent-1')
+          yield* measured.children[0].exit
           yield* Fiber.join(initial)
           const resumed = yield* Effect.forkChild(orchestrator.send('measured', admission, 'done', 'next'))
           yield* TestClock.adjust('1 millis')
@@ -2241,17 +2401,23 @@ describe('SubagentOrchestrator', () => {
           yield* TestClock.adjust('1 millis')
           yield* ready(fake.children[0], 'agent-1', bunPath.join(root, 'session.json'))
           yield* completed(fake.children[0], 'agent-1')
+          yield* fake.children[0].exit
           yield* Fiber.join(initial)
           expect((yield* Effect.exit(orchestrator.send('resume-release', admission, 'done', 'next')))._tag).toBe('Failure')
           const [entry] = yield* orchestrator.list('resume-release')
           expect(entry?.follow_up_available).toBe(true)
+          const blocked = yield* Effect.exit(orchestrator.send('resume-release', admission, 'done', 'next'))
+          expect(blocked._tag).toBe('Failure')
+          if (blocked._tag === 'Failure') {
+            expect(blocked.cause.toString()).toContain('still cleaning up')
+          }
+          yield* fake.children[1].exit
+          yield* Effect.yieldNow
           const retried = yield* Effect.forkChild(orchestrator.send('resume-release', admission, 'done', 'next'))
           yield* TestClock.adjust('1 millis')
           yield* ready(fake.children[2], 'agent-1', bunPath.join(root, 'session.json'), 2)
           yield* completed(fake.children[2], 'agent-1', 'again', 2)
           expect((yield* Fiber.join(retried)).turn).toBe(2)
-          yield* fake.children[1].exit
-          yield* Effect.yieldNow
           expect(fake.logRemovals()).toBe(1)
         }),
         fake.layer

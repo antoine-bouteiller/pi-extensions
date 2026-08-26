@@ -1,3 +1,4 @@
+import { estimateTokens } from '@earendil-works/pi-coding-agent'
 import { Clock, Context, Deferred, Effect, Exit, Layer, Ref, Schema, Scope, Semaphore } from 'effect'
 import { Value } from 'typebox/value'
 
@@ -141,6 +142,7 @@ interface Turn extends Reservation {
   readonly sessionPath: string
   readonly settledAt?: number
   readonly state: TurnState
+  readonly stopping: boolean
   readonly steerResponse: Ref.Ref<Deferred.Deferred<SteeringAck | CommandError> | undefined>
   readonly result?: AgentResult
   readonly warningEnqueued: boolean
@@ -170,20 +172,27 @@ const commitWaitClaims = (claims: readonly Turn[]): Effect.Effect<void> =>
   })
 
 interface Notice {
+  readonly agentId: string
+  readonly generation: number
   readonly id: number
   readonly kind: 'settlement' | 'warning'
   readonly message: string
   readonly result?: AgentResult
   readonly settledAt: number
   readonly taskName: string
+  readonly turn: number
 }
 interface Provisional extends Reservation {
   readonly child: RunningChild
+  readonly cleanupClaimed: Ref.Ref<boolean>
+  readonly committed: Ref.Ref<boolean>
   readonly deleteArtifacts: boolean
   readonly generation: number
   readonly logPath: string
+  readonly predecessor?: Turn
   readonly resourceReleased: Ref.Ref<boolean>
   readonly session: SessionKey
+  readonly turn: number
 }
 interface Snapshot {
   readonly agents: ReadonlyMap<string, Turn>
@@ -205,14 +214,20 @@ const notificationToken = (session: Session): NotificationToken => ({
   session: session.key,
 })
 interface Cleanup {
+  readonly agentId: string
   readonly child?: RunningChild
+  readonly detachedProvisional?: boolean
+  readonly generation: number
   readonly identity: ProcessIdentity
   readonly logPath?: string
   readonly preserveRecord?: boolean
+  readonly predecessor?: Turn
+  readonly removeArtifacts?: boolean
   readonly release?: Effect.Effect<void, ProcessError>
   readonly profile?: PersistedResolvedProfile
   readonly session: SessionKey
   readonly taskName: string
+  readonly turn: number
 }
 interface ChildDecoder {
   readonly end: () => void
@@ -475,6 +490,36 @@ const activityColor = (profile: string): RunningAgent['color'] => {
   }
 }
 
+const cleanupForProvisional = (provisional: Provisional): Cleanup => ({
+  agentId: provisional.agentId,
+  child: provisional.child,
+  generation: provisional.generation,
+  identity: provisional.child.identity,
+  logPath: provisional.logPath,
+  predecessor: provisional.predecessor,
+  session: provisional.session,
+  taskName: provisional.taskName,
+  turn: provisional.turn,
+})
+
+const sameIdentity = (left: ProcessIdentity, right: ProcessIdentity) => left.pid === right.pid && left.birthMarker === right.birthMarker
+const sameTurn = (current: Turn | undefined, token: Turn): current is Turn =>
+  current !== undefined &&
+  current.agentId === token.agentId &&
+  current.generation === token.generation &&
+  current.turn === token.turn &&
+  sameIdentity(current.child.identity, token.child.identity)
+const cleanupForTurn = (turn: Turn): Cleanup => ({
+  agentId: turn.agentId,
+  child: turn.child,
+  generation: turn.generation,
+  identity: turn.child.identity,
+  logPath: turn.logPath,
+  session: turn.sessionKey,
+  taskName: turn.taskName,
+  turn: turn.turn,
+})
+
 const make = ({ activity, cleanup, notifications, process, resolver, store }: OrchestratorDependencies): MadeOrchestrator => {
   const sessions = new Map<string, Session>()
   // Ponytail: global session lifecycle lock; use per-session locks when cross-session contention is measured
@@ -520,20 +565,22 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
       Effect.andThen(Ref.update(cleanup, (items) => new Map(items).set(cleanupKey(agentId, item.identity), item))),
       Effect.asVoid
     )
-  const releaseCleanup = (agentId: string, item: Cleanup, removeArtifacts = false) =>
+  const releaseCleanup = (agentId: string, item: Cleanup, removeArtifacts = item.removeArtifacts === true) =>
     (item.release ?? item.child?.release ?? Effect.void).pipe(
       Effect.andThen(
         store.listLeases.pipe(
           Effect.flatMap((leases) => {
             const lease = leases.find((candidate) => candidate.agentId === agentId)?.lease
             if (lease !== undefined && (lease.identity.pid !== item.identity.pid || lease.identity.birthMarker !== item.identity.birthMarker)) {
-              return Effect.void
+              return item.logPath === undefined ? Effect.void : store.removeLog(agentId, item.logPath)
             }
-            return removeArtifacts && item.preserveRecord !== true ? store.delete(agentId) : store.removeLease(agentId, item.identity)
+            return (removeArtifacts ? store.delete(agentId) : store.removeLease(agentId, item.identity)).pipe(
+              Effect.andThen(item.logPath === undefined ? Effect.void : store.removeLog(agentId, item.logPath)),
+              Effect.andThen(removeArtifacts ? removeExactCleanup(item) : clearExactStopping(item))
+            )
           })
         )
       ),
-      Effect.andThen(item.logPath === undefined ? Effect.void : store.removeLog(agentId, item.logPath)),
       Effect.andThen(
         Ref.update(cleanup, (items) => {
           const next = new Map(items)
@@ -547,6 +594,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
     if (item.child === undefined) {
       return Effect.void
     }
+    let removeArtifacts = item.removeArtifacts === true
     const { child } = item
     const retry = (): Effect.Effect<void> =>
       Effect.race(child.wait.pipe(Effect.as('exited' as const)), Effect.sleep('5 seconds').pipe(Effect.as('retry' as const))).pipe(
@@ -557,7 +605,10 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                 Effect.orElseSucceed(() => 'stillAlive' as const),
                 Effect.flatMap((result) =>
                   result === 'exited' || result === 'mismatch' || result === 'signalled'
-                    ? releaseCleanup(agentId, item, result === 'mismatch').pipe(
+                    ? Effect.sync(() => {
+                        removeArtifacts ||= result === 'mismatch'
+                      }).pipe(
+                        Effect.andThen(releaseCleanup(agentId, item, removeArtifacts)),
                         Effect.catch(() => Effect.sleep('5 seconds').pipe(Effect.andThen(retry)))
                       )
                     : retry()
@@ -579,6 +630,95 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
       Effect.catch((error) => superviseHandoff(agentId, item).pipe(Effect.andThen(Effect.fail(error)))),
       Effect.orDie
     )
+  const cleanupProvisional = (provisional: Provisional): Effect.Effect<void> => {
+    const item = cleanupForProvisional(provisional)
+    const handoffProvisional = (removeArtifacts = false) =>
+      handoff(provisional.agentId, {
+        ...item,
+        preserveRecord: !provisional.deleteArtifacts,
+        profile: provisional.profile,
+        release: releaseProvisional(provisional),
+        removeArtifacts,
+      })
+    const claim = (): Effect.Effect<boolean> => {
+      const session = sessions.get(provisional.session)
+      if (session === undefined) {
+        return Ref.modify(provisional.cleanupClaimed, (claimed) => [!claimed, true] as const)
+      }
+      return locked(
+        session,
+        snapshot(session).pipe(
+          Effect.flatMap((state) => {
+            const current = state.provisional.get(provisional.slotId)
+            if (current !== provisional) {
+              return Ref.get(provisional.committed).pipe(
+                Effect.flatMap((committed) =>
+                  committed ? Effect.succeed(false) : Ref.modify(provisional.cleanupClaimed, (claimed) => [!claimed, true] as const)
+                )
+              )
+            }
+            return Ref.modify(provisional.cleanupClaimed, (claimed) => [!claimed, true] as const).pipe(
+              Effect.flatMap((owner) => {
+                if (!owner) {
+                  return Effect.succeed(false)
+                }
+                const provisionalItems = copy(state.provisional)
+                provisionalItems.delete(provisional.slotId)
+                const slots = copy(state.slots)
+                slots.delete(provisional.slotId)
+                const starting = copy(state.starting)
+                starting.delete(provisional.slotId)
+                return Ref.set(session.state, { ...state, provisional: provisionalItems, slots, starting }).pipe(Effect.as(true))
+              })
+            )
+          })
+        )
+      )
+    }
+    return Effect.uninterruptibleMask((restore) =>
+      claim().pipe(
+        Effect.flatMap((owner) => {
+          if (!owner) {
+            return Effect.void
+          }
+          const ownedItem: Cleanup = { ...item, detachedProvisional: true }
+          return restore(process.terminateVerified(provisional.child.identity)).pipe(
+            Effect.orElseSucceed(() => 'unverifiable' as const),
+            Effect.flatMap((stopped) => {
+              if (stopped === 'mismatch') {
+                return deleteOwnedMismatch(ownedItem).pipe(
+                  Effect.andThen(releaseProvisional(provisional).pipe(Effect.ignore)),
+                  Effect.catch(() =>
+                    handoff(provisional.agentId, {
+                      ...ownedItem,
+                      preserveRecord: !provisional.deleteArtifacts,
+                      profile: provisional.profile,
+                      release: releaseProvisional(provisional),
+                      removeArtifacts: true,
+                    }).pipe(Effect.ignore)
+                  )
+                )
+              }
+              if (stopped === 'stillAlive' || stopped === 'unverifiable') {
+                return handoffProvisional()
+              }
+              return releaseProvisional(provisional).pipe(
+                Effect.ignore,
+                Effect.andThen(
+                  (provisional.deleteArtifacts
+                    ? store.delete(provisional.agentId)
+                    : store.removeLease(provisional.agentId, provisional.child.identity)
+                  ).pipe(Effect.ignore)
+                ),
+                Effect.andThen(store.removeLog(provisional.agentId, provisional.logPath).pipe(Effect.ignore))
+              )
+            }),
+            Effect.onInterrupt(() => Effect.uninterruptible(handoffProvisional().pipe(Effect.ignore)))
+          )
+        })
+      )
+    )
+  }
   const findTurn = (session: Session, name: string): Effect.Effect<Turn | undefined> =>
     snapshot(session).pipe(Effect.map((state) => state.agents.get(name)))
   const batch = (notices: readonly Notice[]): readonly Notice[] => {
@@ -678,7 +818,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
       Effect.gen(function* () {
         const state = yield* snapshot(session)
         const current = state.agents.get(token.taskName)
-        if (current === undefined || current.generation !== token.generation || current.state !== 'running' || current.warningEnqueued) {
+        if (!sameTurn(current, token) || current.state !== 'running' || current.warningEnqueued) {
           return false
         }
         const agents = copy(state.agents)
@@ -692,10 +832,13 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
           ? Clock.currentTimeMillis.pipe(
               Effect.flatMap((settledAt) =>
                 enqueueNotice(session, {
+                  agentId: token.agentId,
+                  generation: token.generation,
                   kind: 'warning',
                   message: `Sub-agent ${token.taskName} has produced no verified progress for 5 minutes; it is still running.`,
                   settledAt,
                   taskName: token.taskName,
+                  turn: token.turn,
                 })
               )
             )
@@ -714,21 +857,6 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
               })
             : Effect.fail(unavailable())
         )
-      )
-    )
-  const removeProvisional = (session: Session, slotId: string): Effect.Effect<void> =>
-    locked(
-      session,
-      snapshot(session).pipe(
-        Effect.flatMap((state) => {
-          const provisional = copy(state.provisional)
-          provisional.delete(slotId)
-          const slots = copy(state.slots)
-          slots.delete(slotId)
-          const starting = copy(state.starting)
-          starting.delete(slotId)
-          return Ref.set(session.state, { ...state, provisional, slots, starting })
-        })
       )
     )
   const clearStarting = (session: Session, reservationId: string): Effect.Effect<void> =>
@@ -757,17 +885,135 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
         })
       )
     )
+  const removeExactCleanup = (item: Cleanup): Effect.Effect<void> => {
+    const session = sessions.get(item.session)
+    if (session === undefined || item.child === undefined) {
+      return Effect.void
+    }
+    return locked(
+      session,
+      snapshot(session).pipe(
+        Effect.flatMap((state) => {
+          const current = state.agents.get(item.taskName)
+          const provisional = [...state.provisional.values()].find((candidate) => candidate.agentId === item.agentId)
+          const exactTurn =
+            current !== undefined &&
+            current.agentId === item.agentId &&
+            current.generation === item.generation &&
+            current.turn === item.turn &&
+            sameIdentity(current.child.identity, item.identity)
+          const exactProvisional =
+            provisional !== undefined &&
+            provisional.generation === item.generation &&
+            provisional.turn === item.turn &&
+            sameIdentity(provisional.child.identity, item.identity)
+          const exactPredecessor = item.predecessor !== undefined && sameTurn(current, item.predecessor)
+          if (!exactTurn && !exactProvisional && !exactPredecessor) {
+            return Effect.void
+          }
+          const agents = copy(state.agents)
+          const provisionalItems = copy(state.provisional)
+          const slots = copy(state.slots)
+          const starting = copy(state.starting)
+          if (exactTurn || exactPredecessor) {
+            agents.delete(item.taskName)
+            slots.delete(current.slotId)
+            starting.delete(current.slotId)
+          }
+          if (exactProvisional) {
+            provisionalItems.delete(provisional.slotId)
+            slots.delete(provisional.slotId)
+            starting.delete(provisional.slotId)
+          }
+          return Ref.set(session.state, {
+            ...state,
+            agents,
+            notices: state.notices.filter((notice) => {
+              const target = exactPredecessor ? current : item
+              return (
+                notice.agentId !== target.agentId ||
+                notice.generation !== target.generation ||
+                notice.turn !== target.turn ||
+                notice.taskName !== target.taskName
+              )
+            }),
+            provisional: provisionalItems,
+            slots,
+            starting,
+          })
+        })
+      )
+    )
+  }
+  const clearExactStopping = (item: Cleanup): Effect.Effect<void> => {
+    const session = sessions.get(item.session)
+    if (session === undefined || item.child === undefined) {
+      return Effect.void
+    }
+    return locked(
+      session,
+      snapshot(session).pipe(
+        Effect.flatMap((state) => {
+          const current = state.agents.get(item.taskName)
+          return current !== undefined &&
+            current.agentId === item.agentId &&
+            current.generation === item.generation &&
+            current.turn === item.turn &&
+            sameIdentity(current.child.identity, item.identity)
+            ? Ref.set(session.state, { ...state, agents: new Map(state.agents).set(item.taskName, { ...current, stopping: false }) })
+            : Effect.void
+        })
+      )
+    )
+  }
+  const deleteOwnedMismatch = (item: Cleanup): Effect.Effect<void, StoreError> => {
+    const session = sessions.get(item.session)
+    const destroy = (exact: boolean): Effect.Effect<boolean, StoreError> =>
+      exact
+        ? store.listLeases.pipe(
+            Effect.flatMap((leases) => {
+              const lease = leases.find((candidate) => candidate.agentId === item.agentId)?.lease
+              return lease !== undefined && !sameIdentity(lease.identity, item.identity)
+                ? Effect.succeed(false)
+                : store.delete(item.agentId).pipe(Effect.as(true))
+            })
+          )
+        : Effect.succeed(false)
+    if (session === undefined || item.child === undefined) {
+      return destroy(true).pipe(Effect.asVoid)
+    }
+    return locked(
+      session,
+      snapshot(session).pipe(
+        Effect.flatMap((state) => {
+          const current = state.agents.get(item.taskName)
+          const provisional = [...state.provisional.values()].find((candidate) => candidate.agentId === item.agentId)
+          const exact =
+            item.detachedProvisional === true ||
+            (current !== undefined &&
+              current.generation === item.generation &&
+              current.turn === item.turn &&
+              sameIdentity(current.child.identity, item.identity)) ||
+            (provisional !== undefined &&
+              provisional.generation === item.generation &&
+              provisional.turn === item.turn &&
+              sameIdentity(provisional.child.identity, item.identity))
+          return destroy(exact)
+        })
+      )
+    ).pipe(Effect.flatMap((deleted) => (deleted ? removeExactCleanup(item) : Effect.void)))
+  }
   const releaseSlot = (session: Session, turn: Turn): Effect.Effect<void> =>
     locked(
       session,
       Effect.gen(function* () {
         const state = yield* snapshot(session)
         const latest = state.agents.get(turn.taskName)
-        if (latest === undefined || latest.generation !== turn.generation || latest.released) {
+        if (!sameTurn(latest, turn) || latest.released) {
           return
         }
         const agents = copy(state.agents)
-        agents.set(turn.taskName, { ...latest, released: true })
+        agents.set(turn.taskName, { ...latest, released: true, stopping: false })
         const slots = copy(state.slots)
         slots.delete(turn.slotId)
         yield* Ref.set(session.state, { ...state, agents, slots })
@@ -807,21 +1053,30 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
     locked(
       session,
       handoff(turn.agentId, {
+        agentId: turn.agentId,
         child: turn.child,
+        generation: turn.generation,
         identity: turn.child.identity,
         preserveRecord: turn.turn > 1,
         profile: turn.profile,
         release: releaseProcess(turn),
         session: key,
         taskName: turn.taskName,
+        turn: turn.turn,
       }).pipe(
         Effect.andThen(
           Effect.gen(function* () {
             const state = yield* snapshot(session)
             const latest = state.agents.get(turn.taskName)
             const agents = copy(state.agents)
-            if (latest !== undefined && latest.generation === turn.generation) {
-              agents.set(turn.taskName, { ...latest, released: true })
+            if (
+              latest !== undefined &&
+              latest.agentId === turn.agentId &&
+              latest.generation === turn.generation &&
+              latest.turn === turn.turn &&
+              sameIdentity(latest.child.identity, turn.child.identity)
+            ) {
+              agents.set(turn.taskName, { ...latest, released: true, stopping: false })
             }
             const slots = copy(state.slots)
             slots.delete(turn.slotId)
@@ -850,9 +1105,12 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
       )
     }
     if (stopped === 'mismatch') {
-      const removeArtifacts = turn.turn === 1 ? store.delete(turn.agentId) : store.removeLease(turn.agentId)
-      return Effect.all([removeArtifacts.pipe(Effect.ignore), releaseProcess(turn).pipe(Effect.ignore), releaseSlot(session, turn)]).pipe(
-        Effect.asVoid
+      const item = cleanupForTurn(turn)
+      return deleteOwnedMismatch(item).pipe(
+        Effect.andThen(releaseProcess(turn).pipe(Effect.ignore)),
+        Effect.catch(() =>
+          handoff(turn.agentId, { ...item, profile: turn.profile, release: releaseProcess(turn), removeArtifacts: true }).pipe(Effect.ignore)
+        )
       )
     }
     return handoffTurn(session, key, turn)
@@ -901,7 +1159,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
       Effect.gen(function* () {
         const state = yield* snapshot(session)
         const current = state.agents.get(token.taskName)
-        if (current === undefined || current.generation !== token.generation || current.state !== 'running') {
+        if (!sameTurn(current, token) || current.state !== 'running') {
           return false
         }
         const agents = copy(state.agents)
@@ -928,7 +1186,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
         yield* resolvePendingSteer(current, settledValue, commandId)
         const after = yield* snapshot(session)
         const latest = after.agents.get(token.taskName)
-        if (latest === undefined || latest.generation !== token.generation) {
+        if (!sameTurn(latest, token)) {
           return true
         }
         const settledAgents = copy(after.agents)
@@ -939,6 +1197,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
           result: settledValue,
           settledAt,
           state: 'settled' as const,
+          stopping: options.stopAfter !== false && commandId !== 'close',
           turns: [...latest.turns, { profile: latest.profile, result: settledValue }],
         }
         settledAgents.set(token.taskName, settled)
@@ -946,12 +1205,15 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
           ? [
               ...after.notices,
               {
+                agentId: latest.agentId,
+                generation: latest.generation,
                 id: ++noticeIdentifiers,
                 kind: 'settlement' as const,
                 message: resultMessage(settledValue),
                 result: settledValue,
                 settledAt,
                 taskName: latest.taskName,
+                turn: latest.turn,
               },
             ]
           : after.notices
@@ -1015,12 +1277,15 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
             notices = [
               ...notices,
               {
+                agentId: current.agentId,
+                generation: current.generation,
                 id: ++noticeIdentifiers,
                 kind: 'settlement',
                 message: resultMessage(current.result),
                 result: current.result,
                 settledAt: current.settledAt ?? (yield* Clock.currentTimeMillis),
                 taskName: current.taskName,
+                turn: current.turn,
               },
             ]
           }
@@ -1071,12 +1336,15 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
             notices: [
               ...state.notices,
               {
+                agentId: current.agentId,
+                generation: current.generation,
                 id: ++noticeIdentifiers,
                 kind: 'settlement',
                 message: resultMessage(current.result),
                 result: current.result,
                 settledAt: current.settledAt ?? (yield* Clock.currentTimeMillis),
                 taskName: current.taskName,
+                turn: current.turn,
               },
             ],
           })
@@ -1418,42 +1686,55 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
     agentId: string,
     run: { readonly lease?: LaunchLease; readonly record?: SubagentRecord }
   ): Effect.Effect<void, StoreError | ProcessError> =>
-    hasLiveOwner(run).pipe(
-      Effect.flatMap((liveOwner) =>
-        liveOwner
-          ? Effect.void
-          : // oxlint-disable-next-line eslint/complexity -- reconciliation keeps every ownership outcome in one atomic recovery path
-            Effect.gen(function* () {
-              const identities = [
-                ...(run.lease === undefined ? [] : [run.lease.identity]),
-                ...(run.record?.status === 'running' ? [run.record.identity] : []),
-              ].filter(
-                (identity, index, all) => all.findIndex((other) => other.pid === identity.pid && other.birthMarker === identity.birthMarker) === index
-              )
-              const mismatch = identities.length > 1
-              const stopped: TerminationResult[] = []
-              for (const identity of identities) {
-                stopped.push(yield* process.terminateVerified(identity))
-              }
-              if (mismatch || stopped.some((result) => result === 'exited' || result === 'mismatch' || result === 'signalled')) {
-                yield* run.lease?.preserveRecord === true && run.record?.status !== 'running' ? store.removeLease(agentId) : store.delete(agentId)
-                return
-              }
-              const [identity] = identities
-              const source = run.record ?? run.lease
-              if (identity !== undefined && source !== undefined) {
-                yield* retainCleanup(agentId, {
-                  identity,
-                  preserveRecord: run.lease?.preserveRecord,
-                  profile: run.record?.status === 'running' ? run.record.profile : undefined,
-                  session: source.session,
-                  taskName: source.taskName,
+    run.lease !== undefined && run.record?.status === 'running' && !sameIdentity(run.lease.identity, run.record.identity)
+      ? store.delete(agentId)
+      : hasLiveOwner(run).pipe(
+          Effect.flatMap((liveOwner) =>
+            liveOwner
+              ? Effect.void
+              : // oxlint-disable-next-line eslint/complexity -- reconciliation keeps every ownership outcome in one atomic recovery path
+                Effect.gen(function* () {
+                  const identities = [
+                    ...(run.lease === undefined ? [] : [run.lease.identity]),
+                    ...(run.record?.status === 'running' ? [run.record.identity] : []),
+                  ].filter(
+                    (identity, index, all) =>
+                      all.findIndex((other) => other.pid === identity.pid && other.birthMarker === identity.birthMarker) === index
+                  )
+                  if (identities.length > 1) {
+                    yield* store.delete(agentId)
+                    return
+                  }
+                  const stopped: TerminationResult[] = []
+                  for (const identity of identities) {
+                    stopped.push(yield* process.terminateVerified(identity))
+                  }
+                  if (stopped.some((result) => result === 'mismatch')) {
+                    yield* store.delete(agentId)
+                    return
+                  }
+                  if (stopped.some((result) => result === 'exited' || result === 'signalled')) {
+                    yield* run.lease?.preserveRecord === true && run.record?.status !== 'running' ? store.removeLease(agentId) : store.delete(agentId)
+                    return
+                  }
+                  const [identity] = identities
+                  const source = run.record ?? run.lease
+                  if (identity !== undefined && source !== undefined) {
+                    yield* retainCleanup(agentId, {
+                      agentId,
+                      generation: 0,
+                      identity,
+                      preserveRecord: run.lease?.preserveRecord,
+                      profile: run.record?.status === 'running' ? run.record.profile : undefined,
+                      session: source.session,
+                      taskName: source.taskName,
+                      turn: 0,
+                    })
+                  }
+                  return
                 })
-              }
-              return
-            })
-      )
-    )
+          )
+        )
   const initialize = (): Effect.Effect<void, OrchestrationError> =>
     Effect.suspend(() => {
       if (initialized !== undefined) {
@@ -1574,77 +1855,28 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
               (resume === undefined ? store.delete(reservation.agentId) : store.removeLog(reservation.agentId, logPath)).pipe(Effect.ignore)
             )
           )
+        const predecessor = resume === undefined ? undefined : yield* findTurn(session, request.task_name)
         const provisional: Provisional = {
           ...reservation,
           child,
+          cleanupClaimed: Ref.makeUnsafe(false),
+          committed: Ref.makeUnsafe(false),
           deleteArtifacts: resume === undefined,
           generation: session.generation,
           logPath,
+          predecessor,
           resourceReleased: Ref.makeUnsafe(false),
           session: key,
+          turn: expectedTurn,
         }
-        const cleanupUnregistered = (): Effect.Effect<void> =>
-          process.terminateVerified(child.identity).pipe(
-            Effect.ignore,
-            Effect.andThen(child.isAlive.pipe(Effect.orElseSucceed(() => true))),
-            Effect.flatMap((alive) =>
-              alive
-                ? handoff(reservation.agentId, {
-                    child,
-                    identity: child.identity,
-                    logPath,
-                    preserveRecord: resume !== undefined,
-                    profile: reservation.profile,
-                    release: releaseProvisional(provisional),
-                    session: key,
-                    taskName: reservation.taskName,
-                  })
-                : releaseProvisional(provisional).pipe(
-                    Effect.ignore,
-                    Effect.andThen(
-                      (resume === undefined ? store.delete(reservation.agentId) : store.removeLease(reservation.agentId, child.identity)).pipe(
-                        Effect.ignore
-                      )
-                    ),
-                    Effect.andThen(store.removeLog(reservation.agentId, logPath).pipe(Effect.ignore))
-                  )
-            )
-          )
+        const cleanupUnregistered = (): Effect.Effect<void> => cleanupProvisional(provisional)
         yield* registerProvisional(session, provisional).pipe(Effect.onError(cleanupUnregistered))
         const cleanupLaunch = (): Effect.Effect<boolean> =>
           Ref.get(cleanup).pipe(
             Effect.flatMap((items) =>
               items.has(cleanupKey(reservation.agentId, child.identity))
                 ? Effect.succeed(true)
-                : removeProvisional(session, reservation.slotId).pipe(
-                    Effect.andThen(process.terminateVerified(child.identity)),
-                    Effect.ignore,
-                    Effect.andThen(child.isAlive.pipe(Effect.orElseSucceed(() => true))),
-                    Effect.flatMap((alive) =>
-                      alive
-                        ? handoff(reservation.agentId, {
-                            child,
-                            identity: child.identity,
-                            logPath,
-                            preserveRecord: resume !== undefined,
-                            profile: reservation.profile,
-                            release: releaseProvisional(provisional),
-                            session: key,
-                            taskName: reservation.taskName,
-                          }).pipe(Effect.as(true))
-                        : releaseProvisional(provisional).pipe(
-                            Effect.ignore,
-                            Effect.andThen(
-                              (resume === undefined
-                                ? store.delete(reservation.agentId)
-                                : store.removeLease(reservation.agentId, child.identity)
-                              ).pipe(Effect.ignore)
-                            ),
-                            Effect.andThen(store.removeLog(reservation.agentId, logPath).pipe(Effect.ignore)),
-                            Effect.as(false)
-                          )
-                    )
-                  )
+                : cleanupProvisional(provisional).pipe(Effect.as(false))
             )
           )
         const launched = Effect.gen(function* () {
@@ -1693,6 +1925,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
             settledAt: undefined,
             state: 'running',
             steerResponse: Ref.makeUnsafe<Deferred.Deferred<SteeringAck | CommandError> | undefined>(undefined),
+            stopping: false,
             turn: expectedTurn,
             turns: resume?.turns ?? [],
             warningEnqueued: false,
@@ -1702,7 +1935,13 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
             Effect.uninterruptible(
               Effect.gen(function* () {
                 const state = yield* snapshot(session)
-                if (state.phase !== 'open' || session.generation !== turn.generation || !state.provisional.has(turn.slotId)) {
+                const currentProvisional = state.provisional.get(turn.slotId)
+                if (
+                  state.phase !== 'open' ||
+                  session.generation !== turn.generation ||
+                  currentProvisional !== provisional ||
+                  (yield* Ref.get(provisional.cleanupClaimed))
+                ) {
                   return yield* unavailable()
                 }
                 const running: SubagentRecord = {
@@ -1729,6 +1968,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                   provisional: provisionals,
                   starting,
                 })
+                yield* Ref.set(provisional.committed, true)
                 committed = true
                 admitted = turn
                 yield* Clock.currentTimeMillis.pipe(
@@ -1813,7 +2053,6 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                   yield* Ref.set(session.state, {
                     ...state,
                     phase: 'closing' as const,
-                    provisional: new Map(),
                   })
                   return {
                     provisional: [...state.provisional.values()],
@@ -1824,36 +2063,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                 Effect.flatMap(({ provisional, turns }) =>
                   Effect.forEach(
                     [...provisional, ...turns],
-                    (item) =>
-                      'deleteArtifacts' in item
-                        ? process.terminateVerified(item.child.identity).pipe(
-                            Effect.ignore,
-                            Effect.andThen(item.child.isAlive.pipe(Effect.orElseSucceed(() => true))),
-                            Effect.flatMap((alive) =>
-                              alive
-                                ? handoff(item.agentId, {
-                                    child: item.child,
-                                    identity: item.child.identity,
-                                    logPath: item.logPath,
-                                    preserveRecord: !item.deleteArtifacts,
-                                    profile: item.profile,
-                                    release: releaseProvisional(item),
-                                    session: key,
-                                    taskName: item.taskName,
-                                  })
-                                : releaseProvisional(item).pipe(
-                                    Effect.ignore,
-                                    Effect.andThen(
-                                      (item.deleteArtifacts ? store.delete(item.agentId) : store.removeLease(item.agentId, item.child.identity)).pipe(
-                                        Effect.ignore
-                                      )
-                                    ),
-                                    Effect.andThen(store.removeLog(item.agentId, item.logPath).pipe(Effect.ignore)),
-                                    Effect.andThen(clearProvisionalStarting(session, item.slotId))
-                                  )
-                            )
-                          )
-                        : Effect.succeed(item),
+                    (item) => ('deleteArtifacts' in item ? cleanupProvisional(item) : Effect.succeed(item)),
                     { concurrency: 'unbounded' }
                   ).pipe(
                     Effect.andThen(
@@ -1870,14 +2080,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                               claimed
                                 ? stop(turn, 'close').pipe(
                                     Effect.flatMap(({ errors, stopped }) => {
-                                      const cleanupEffect =
-                                        stopped === 'stillAlive' || stopped === 'unverifiable'
-                                          ? handoffTurn(session, key, turn)
-                                          : Effect.all([
-                                              stopped === 'mismatch' && turn.turn === 1 ? store.delete(turn.agentId) : Effect.void,
-                                              releaseProcess(turn),
-                                              releaseSlot(session, turn),
-                                            ]).pipe(Effect.asVoid)
+                                      const cleanupEffect = completeStop(session, key, turn, stopped)
                                       return cleanupEffect.pipe(
                                         Effect.flatMap(() =>
                                           errors.length === 0
@@ -2032,40 +2235,10 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
         Effect.flatMap((session) =>
           snapshot(session).pipe(
             Effect.flatMap((state) =>
-              Effect.forEach(
-                [...state.provisional.values()],
-                (provisional) =>
-                  removeProvisional(session, provisional.slotId).pipe(
-                    Effect.andThen(process.terminateVerified(provisional.child.identity)),
-                    Effect.ignore,
-                    Effect.andThen(provisional.child.isAlive.pipe(Effect.orElseSucceed(() => true))),
-                    Effect.flatMap((alive) =>
-                      alive
-                        ? handoff(provisional.agentId, {
-                            child: provisional.child,
-                            identity: provisional.child.identity,
-                            logPath: provisional.logPath,
-                            preserveRecord: !provisional.deleteArtifacts,
-                            profile: provisional.profile,
-                            release: releaseProvisional(provisional),
-                            session: key,
-                            taskName: provisional.taskName,
-                          })
-                        : releaseProvisional(provisional).pipe(
-                            Effect.ignore,
-                            Effect.andThen(
-                              (provisional.deleteArtifacts
-                                ? store.delete(provisional.agentId)
-                                : store.removeLease(provisional.agentId, provisional.child.identity)
-                              ).pipe(Effect.ignore)
-                            ),
-                            Effect.andThen(store.removeLog(provisional.agentId, provisional.logPath).pipe(Effect.ignore)),
-                            Effect.andThen(clearProvisionalStarting(session, provisional.slotId))
-                          )
-                    )
-                  ),
-                { concurrency: 'unbounded', discard: true }
-              ).pipe(
+              Effect.forEach([...state.provisional.values()], (provisional) => cleanupProvisional(provisional), {
+                concurrency: 'unbounded',
+                discard: true,
+              }).pipe(
                 Effect.andThen(
                   Effect.forEach(
                     [...state.agents.values()],
@@ -2223,6 +2396,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                                 slotId: `hydrated-${agentId}`,
                                 state: 'settled',
                                 steerResponse: Ref.makeUnsafe<Deferred.Deferred<SteeringAck | CommandError> | undefined>(undefined),
+                                stopping: false,
                                 taskName: record.taskName,
                                 turn: result.turn,
                                 turns: record.turns,
@@ -2313,7 +2487,9 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                         const projected =
                           contextTokens === undefined
                             ? undefined
-                            : contextTokens + new TextEncoder().encode(message).byteLength + FOLLOW_UP_OUTPUT_RESERVE_TOKENS
+                            : contextTokens +
+                              estimateTokens({ content: message, role: 'user', timestamp: 0 }) +
+                              (resolved.maxOutputTokens ?? FOLLOW_UP_OUTPUT_RESERVE_TOKENS)
                         return projected === undefined || projected >= resolved.profile.contextCeiling
                           ? Effect.fail(refusal('context_limit', 'The follow-up would reach the context limit.'))
                           : locked(
@@ -2323,7 +2499,13 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                                   return yield* refusal('follow_up_used', 'The follow-up allowance has already been used.')
                                 }
                                 const state = yield* snapshot(session)
+                                if (state.agents.get(target)?.stopping === true) {
+                                  return yield* refusal('not_ready', 'The completed agent is still stopping.')
+                                }
                                 const retained = [...(yield* Ref.get(cleanup)).values()].filter((item) => item.session === session.key)
+                                if (retained.some((item) => item.agentId === turn.agentId)) {
+                                  return yield* refusal('not_ready', 'The completed agent is still cleaning up.')
+                                }
                                 const reservations = [
                                   ...state.slots.values(),
                                   ...retained.flatMap((item) => (item.profile === undefined ? [] : [{ ...item, profile: item.profile }])),
