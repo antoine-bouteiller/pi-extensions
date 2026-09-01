@@ -14,17 +14,7 @@ const KEBAB_CASE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
 const SNAKE_CASE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/
 
 const MANIFEST_KEYS = ['commands', 'handlers', 'messageRenderers', 'tools'] as const
-const T009_FEATURES = new Set([
-  'auto_theme',
-  'background_poll',
-  'claude_code',
-  'mcp',
-  'prompt_rewind',
-  'rules',
-  'safety_guard',
-  'status_panel',
-  'sub_agents',
-])
+const T009_FEATURES = new Set(['auto_theme', 'background_poll', 'claude_code', 'mcp', 'prompt_rewind', 'rules', 'status_panel', 'sub_agents'])
 const APPROVED_BACKGROUND_FEATURES = new Set(['comment_checker', 'meridian_session_affinity'])
 
 type Manifest = Record<(typeof MANIFEST_KEYS)[number], string[]>
@@ -265,7 +255,6 @@ export const features = [
         },
         prompt_rewind: { bootstrap: 'eager', id: 'prompt-rewind', status: { icon: '↩️', name: 'prompt-rewind' } },
         rules: { bootstrap: 'eager', id: 'rules', status: { icon: '📜', name: 'rules' } },
-        safety_guard: { bootstrap: 'eager', id: 'safety-guard', status: { icon: '🛡️', name: 'cmd-guard' } },
         status_panel: { bootstrap: 'eager', id: 'status-panel', status: { icon: '📊', name: 'status-panel' } },
         sub_agents: { bootstrap: 'eager', id: 'sub-agents', status: { icon: '🧑‍🤝‍🧑', name: 'sub-agents' } },
       })

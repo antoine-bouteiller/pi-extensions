@@ -278,7 +278,6 @@ const TOOL_CLASSES = {
   mcp: 'remote-gateway',
   read: 'local-read',
   read_agent_response: 'delegation',
-  safe_rm: 'local-write',
   send_message: 'delegation',
   spawn_agent: 'delegation',
   wait_agent: 'delegation',

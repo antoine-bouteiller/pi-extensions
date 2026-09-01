@@ -13,7 +13,6 @@ import { feature as mcp } from '#features/mcp/index'
 import { feature as meridianSessionAffinity } from '#features/meridian_session_affinity/index'
 import { feature as promptRewind } from '#features/prompt_rewind/index'
 import { feature as rules } from '#features/rules/index'
-import { feature as safetyGuard } from '#features/safety_guard/index'
 import { feature as statusPanel } from '#features/status_panel/index'
 import { feature as subAgents } from '#features/sub_agents/index'
 import { feature as webfetch } from '#features/webfetch/index'
@@ -31,7 +30,6 @@ export const features = [
   meridianSessionAffinity,
   { ...promptRewind, suppressInChild: true },
   { ...rules, suppressInChild: true },
-  safetyGuard,
   statusPanel,
   { ...subAgents, suppressInChild: true },
   webfetch,

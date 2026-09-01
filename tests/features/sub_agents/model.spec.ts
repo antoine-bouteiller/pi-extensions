@@ -31,7 +31,7 @@ import {
   WorkerConfigSchema,
 } from '../../../src/features/sub_agents/model.js'
 
-const tools = ['read', 'ffgrep', 'fffind', 'bash', 'edit', 'write', 'hashline_read', 'hashline_write', 'safe_rm', 'webfetch', 'mcp']
+const tools = ['read', 'ffgrep', 'fffind', 'bash', 'edit', 'write', 'hashline_read', 'hashline_write', 'webfetch', 'mcp']
 const snapshot = (registeredTools = tools) => ({
   agent_dir: '/agent',
   child_model_view: {

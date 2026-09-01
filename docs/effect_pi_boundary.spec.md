@@ -117,16 +117,16 @@ Pi callbacks ── feature index/coordinator ── shared bridges ── AppRu
                                       (no shared -> config or shared -> feature dependency)
 ```
 
-| Component            | Module                                            | Responsibility / public surface                                                                                                                                       |
-| -------------------- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Shared runtime types | `src/shared/effect/app_services.ts`               | `AppServices`, `AppRuntime`, shared status/activity services (`AppServices` is currently defined at :81 and `AppRuntime` at :83).                                     |
-| Base runtime         | `src/config/runtime.ts`                           | Build the one `AppRuntime` from Bun FS/path, HTTP, status, and activity layers; after this amendment it imports no `#features/mcp/*`.                                 |
-| Inbound bridges      | `src/shared/effect/runtime.ts`                    | `makeToolExecutor`, `makeEventHandler`, proposed `makeCommandHandler`, `perInvocation`, `HandlerServices`.                                                            |
-| Outbound services    | `src/shared/effect/pi_services.ts` / `runtime.ts` | `Pi`, `PiCtx`, `Ui`, `makeUi`; generic `withAbortSignal` remains in `runtime.ts:46-51`. `Pi` is process-stable at `pi_services.ts:4`, `PiCtx` invocation-local at :6. |
-| Feature contract     | `src/shared/effect/feature.ts`                    | Generic descriptor types only. It imports shared types/Pi SDK types, never config types.                                                                              |
-| Coordinator          | `src/config/feature_coordinator.ts`               | Validate, register, maintain state, publish statuses, own session scopes/lifecycle.                                                                                   |
-| Registry             | `src/config/features.ts`                          | Explicit descriptor imports and ordered `features`; `registerFeatures` delegates to coordinator.                                                                      |
-| Feature index        | `src/features/*/index.ts`                         | Export `feature`; own callback registrations and feature-owned preparation/resources.                                                                                 |
+| Component            | Module                                            | Responsibility / public surface                                                                                                       |
+| -------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Shared runtime types | `src/shared/effect/app_services.ts`               | `AppServices`, `AppRuntime`, shared status/activity services (`AppServices` is currently defined at :81 and `AppRuntime` at :83).     |
+| Base runtime         | `src/config/runtime.ts`                           | Build the one `AppRuntime` from Bun FS/path, HTTP, status, and activity layers; after this amendment it imports no `#features/mcp/*`. |
+| Inbound bridges      | `src/shared/effect/runtime.ts`                    | `makeToolExecutor`, `makeEventHandler`, proposed `makeCommandHandler`, `perInvocation`, `HandlerServices`.                            |
+| Outbound services    | `src/shared/effect/pi_services.ts` / `runtime.ts` | `PiCtx`, `Ui`, `makeUi`; generic `withAbortSignal` remains in `runtime.ts:46-51`. `PiCtx` is invocation-local at `pi_services.ts:4`.  |
+| Feature contract     | `src/shared/effect/feature.ts`                    | Generic descriptor types only. It imports shared types/Pi SDK types, never config types.                                              |
+| Coordinator          | `src/config/feature_coordinator.ts`               | Validate, register, maintain state, publish statuses, own session scopes/lifecycle.                                                   |
+| Registry             | `src/config/features.ts`                          | Explicit descriptor imports and ordered `features`; `registerFeatures` delegates to coordinator.                                      |
+| Feature index        | `src/features/*/index.ts`                         | Export `feature`; own callback registrations and feature-owned preparation/resources.                                                 |
 
 ## 8. Detailed Design
 
@@ -176,7 +176,7 @@ contexts directly.
 
 ### 8.3 Outbound bridge, sync work, and ownership
 
-Use `Pi` for process-stable API and `PiCtx`/`Ui` for invocation state. `withAbortSignal` belongs
+Use `PiCtx`/`Ui` for invocation state. `withAbortSignal` belongs
 in `src/shared/effect/runtime.ts:46-51`, not `pi_services.ts`: it is a generic bridge helper around
 an arbitrary host promise and delegates to `Effect.tryPromise`, which supplies the executing fiber's
 signal. Callers use it only for host APIs that accept an `AbortSignal`; Effect `HttpClient` owns its
@@ -466,7 +466,6 @@ Every enabled descriptor uses exactly this metadata and its `feature:<id>` key:
 | `meridian-session-affinity` | 🧭   | `meridian`        |
 | `prompt-rewind`             | ↩️   | `prompt-rewind`   |
 | `rules`                     | 📜   | `rules`           |
-| `safety-guard`              | 🛡️   | `cmd-guard`       |
 | `status-panel`              | 📊   | `status-panel`    |
 | `sub-agents`                | 🧑‍🤝‍🧑   | `sub-agents`      |
 | `webfetch`                  | 🌐   | `webfetch`        |

@@ -143,7 +143,7 @@ classify the current tools as follows; unknown future tools are denied until thi
 | -------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | local-read     | `read`, `ffgrep`, `fffind`, `hashline_read`                                                                             |
 | shell          | `bash`                                                                                                                  |
-| local-write    | `edit`, `write`, `safe_rm`, `hashline_write`                                                                            |
+| local-write    | `edit`, `write`, `hashline_write`                                                                                       |
 | network-read   | `webfetch`                                                                                                              |
 | remote-gateway | `mcp`                                                                                                                   |
 | async-process  | `background_poll`                                                                                                       |
@@ -160,7 +160,7 @@ classify the current tools as follows; unknown future tools are denied until thi
 Every required tool must be registered and available or resolution refuses before process start.
 For `implementer`, the required local baseline is supplemented by every currently registered tool
 that maintainers have classified as neither async-process, operator, nor delegation; this includes the
-guarded local supplements `hashline_read` and `hashline_write`, plus `safe_rm`, `webfetch`, and `mcp`
+guarded local supplements `hashline_read` and `hashline_write`, plus `webfetch` and `mcp`
 when registered and so classified. `background_poll` is denied because its delayed wake-up requires a
 session that survives the first settled turn, while each worker owns exactly one turn. These supplementary classified tools are
 optional: an unavailable one is omitted rather than refusing the delegation.
@@ -257,7 +257,7 @@ This package checks `PI_SUBAGENT=1` during feature registration and skips parent
 explicit per-descriptor policy: `ask_user`, `background_poll`, `caffeinate`, `claude_code`,
 `prompt_rewind`, `rules`, and `sub_agents` itself. `auto_theme` and `caffeinate` already self-suppress on
 `PI_SUBAGENT_OWNER_TOKEN`; synchronous tool, provider, and safety features (`comment_checker`, `hashline`,
-`mcp`, `meridian_session_affinity`, `safety_guard`, `status_panel` quota forwarding, and `webfetch`) stay
+`mcp`, `meridian_session_affinity`, `status_panel` quota forwarding, and `webfetch`) stay
 registered. Persisted authentication and model catalogs are read only from the
 configured shared `agentDir`, while provider keys, proxies, certificates, and related runtime settings use
 ordinary inherited environment resolution. Before admission, the parent creates a child-equivalent model

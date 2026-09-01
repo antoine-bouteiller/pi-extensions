@@ -1,7 +1,5 @@
-import { type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
+import { type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { Context, Effect } from 'effect'
-
-export class Pi extends Context.Service<Pi, ExtensionAPI>()('pi-extensions/shared/effect/pi_services/Pi') {}
 
 export class PiCtx extends Context.Service<PiCtx, ExtensionContext>()('pi-extensions/shared/effect/pi_services/PiCtx') {}
 
@@ -15,8 +13,6 @@ export interface UiApi {
 }
 
 export class Ui extends Context.Service<Ui, UiApi>()('pi-extensions/shared/effect/pi_services/Ui') {}
-
-export const piContext = (pi: ExtensionAPI): Context.Context<Pi> => Context.make(Pi, pi)
 
 export const makeUi = (ctx: ExtensionContext): UiApi => ({
   /*
