@@ -66,7 +66,7 @@ type SelectionResult =
     }
   | undefined
 
-export interface DisplayOption {
+interface DisplayOption {
   label: string
   description?: string
   isOther?: boolean
