@@ -325,8 +325,9 @@ const makeStore = (config: SubagentStoreConfig): SubagentStoreApi => {
           path,
         })
       ).pipe(
-        Effect.catch((error) =>
-          error.cause instanceof Error && 'code' in error.cause && error.cause.code === 'ENOENT' ? Effect.succeed(false) : Effect.fail(error)
+        Effect.catchIf(
+          (error) => error.cause instanceof Error && 'code' in error.cause && error.cause.code === 'ENOENT',
+          () => Effect.succeed(false)
         ),
         Effect.mapError(fail),
         Effect.asVoid

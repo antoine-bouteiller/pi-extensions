@@ -229,8 +229,9 @@ const harness = (root: string, options: HarnessOptions = {}) =>
             identity: { birthMarker: `birth-${spawnCalls}`, pid: spawnCalls },
             isAlive: Ref.get(alive),
             readStdout: Queue.take(stdout).pipe(
-              Effect.flatMap((value) =>
-                value === 'failure' ? Effect.fail(new ProcessError({ cause: 'stdout failed', message: 'stdout failed' })) : Effect.succeed(value)
+              Effect.filterOrFail(
+                (value) => value !== 'failure',
+                () => new ProcessError({ cause: 'stdout failed', message: 'stdout failed' })
               )
             ),
             release: Effect.sync(() => {
@@ -665,7 +666,7 @@ describe('SubagentOrchestrator', () => {
           yield* TestClock.adjust('1 millis')
           expect(fake.children).toHaveLength(4)
           yield* ready(fake.children[3], 'agent-4', bunPath.join(root, 'session.json'))
-          const outcomes = yield* Effect.all(implementers.map((fiber) => Fiber.join(fiber).pipe(Effect.exit)))
+          const outcomes = yield* Effect.forEach(implementers, (fiber) => Fiber.join(fiber).pipe(Effect.exit))
           expect(outcomes.filter((outcome) => outcome._tag === 'Success')).toHaveLength(1)
           expect(outcomes.filter((outcome) => outcome._tag === 'Failure')).toHaveLength(1)
         }),

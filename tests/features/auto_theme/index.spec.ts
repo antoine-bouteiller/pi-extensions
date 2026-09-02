@@ -18,7 +18,7 @@ const createHarness = (
   let sleeperRegistered = Promise.withResolvers<void>()
   let index = 0
   const dependencies: AutoThemeDependencies = {
-    detect: Effect.suspend(() => themes[index++] ?? Effect.succeed(Option.none())),
+    detect: Effect.suspend(() => themes[index++] ?? Effect.succeedNone),
     isSubagent,
     sleep: Effect.callback<void>((resume) => {
       sleepers.push(() => resume(Effect.void))
@@ -51,7 +51,7 @@ const createHarness = (
 describe('auto theme', () => {
   it.effect('applies the system theme and follows changes without repeating it', () =>
     Effect.gen(function* () {
-      const harness = createHarness([Effect.succeed(Option.some('dark')), Effect.succeed(Option.some('dark')), Effect.succeed(Option.some('light'))])
+      const harness = createHarness([Effect.succeedSome('dark'), Effect.succeedSome('dark'), Effect.succeedSome('light')])
       yield* Effect.promise(() => harness.activate())
       yield* Effect.promise(harness.waitForSleeper)
 
@@ -67,7 +67,7 @@ describe('auto theme', () => {
 
   it.effect('does nothing when the theme setting is not a light/dark pair', () =>
     Effect.gen(function* () {
-      const harness = createHarness([Effect.succeed(Option.some('dark'))], false, 'catppuccin-mocha')
+      const harness = createHarness([Effect.succeedSome('dark')], false, 'catppuccin-mocha')
       yield* Effect.promise(() => harness.activate())
       expect(harness.applied).toEqual([])
       yield* Effect.promise(harness.deactivate)
@@ -76,7 +76,7 @@ describe('auto theme', () => {
 
   it.effect('keeps the current theme when system detection is unavailable', () =>
     Effect.gen(function* () {
-      const harness = createHarness([Effect.succeed(Option.none())])
+      const harness = createHarness([Effect.succeedNone])
       yield* Effect.promise(() => harness.activate())
       yield* Effect.promise(harness.waitForSleeper)
       expect(harness.applied).toEqual([])
@@ -100,11 +100,11 @@ describe('auto theme', () => {
 
   it.effect('runs only in the main TUI session', () =>
     Effect.gen(function* () {
-      const harness = createHarness([Effect.succeed(Option.some('dark'))])
+      const harness = createHarness([Effect.succeedSome('dark')])
       yield* Effect.promise(() => harness.activate({ ...harness.context, mode: 'print' }))
       expect(harness.applied).toEqual([])
 
-      const subagent = createHarness([Effect.succeed(Option.some('dark'))], true)
+      const subagent = createHarness([Effect.succeedSome('dark')], true)
       yield* Effect.promise(() => subagent.activate())
       expect(subagent.fixture.state.handlers.size).toBe(0)
       expect(subagent.applied).toEqual([])

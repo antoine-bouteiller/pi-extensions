@@ -85,7 +85,7 @@ const detectUnixTheme = (exec: Exec): Effect.Effect<Option.Option<SystemTheme>> 
         ? run(exec, 'gsettings', ['get', 'org.gnome.desktop.interface', 'color-scheme']).pipe(
             Effect.map((output) => Option.fromNullishOr(gnomeTheme(output)))
           )
-        : Effect.succeed(Option.some(theme))
+        : Effect.succeedSome(theme)
     })
   )
 
