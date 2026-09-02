@@ -107,11 +107,14 @@ export default defineConfig({
     'consistent-type-specifier-style': ['error', 'prefer-inline'],
     'custom-error-definition': 'off',
     'exports-last': 'off',
+    'filename-case': ['error', { cases: { snakeCase: true } }],
     'func-names': ['error', 'as-needed', { generators: 'never' }],
     'group-exports': 'off',
     'init-declarations': 'off',
+    'max-nested-calls': 'off',
     'max-statements': 'off',
     'new-cap': 'off',
+    'no-array-method-this-argument': 'off',
     'no-await-in-loop': 'off',
     'no-continue': 'off',
     'no-magic-numbers': 'off',
@@ -125,10 +128,6 @@ export default defineConfig({
     'sort-imports': 'off',
     'sort-keys': ['error', 'asc', { allowLineSeparatedGroups: true, natural: true }],
     'throw-new-error': 'off',
-    'unicorn/filename-case': ['error', { cases: { snakeCase: true } }],
-
-    // Off by design — default-on in standalone oxlint: schema and Effect pipelines nest calls inherently.
-    'unicorn/max-nested-calls': 'off',
 
     /*
      * Pipeable data-last overloads are for library APIs composed through `pipe`. Nothing in this

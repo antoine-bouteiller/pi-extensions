@@ -717,7 +717,10 @@ export class McpManager {
     }
     return waitWithSignal(Fiber.join(attempt), signal).pipe(
       Effect.asVoid,
-      Effect.catch((error) => (isAuthorizationFailure(error) || runtime.status === 'needs-auth' ? Effect.void : Effect.fail(error)))
+      Effect.catchIf(
+        (error) => isAuthorizationFailure(error) || runtime.status === 'needs-auth',
+        () => Effect.void
+      )
     )
   }
 
@@ -744,7 +747,12 @@ export class McpManager {
       runtime.error = undefined
       this.notify()
       return undefined
-    }).pipe(Effect.catch((error) => (error instanceof PendingAuthorization ? Effect.succeed(error) : Effect.fail(error))))
+    }).pipe(
+      Effect.catchIf(
+        (error): error is PendingAuthorization => error instanceof PendingAuthorization,
+        (error) => Effect.succeed(error)
+      )
+    )
   }
 
   private runOAuthFlow(

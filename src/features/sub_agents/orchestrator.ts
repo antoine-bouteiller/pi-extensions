@@ -1,5 +1,5 @@
 import { estimateTokens } from '@earendil-works/pi-coding-agent'
-import { Clock, Context, Deferred, Effect, Exit, Layer, Ref, Schema, Scope, Semaphore } from 'effect'
+import { Clock, Context, Deferred, Effect, Exit, Layer, Predicate, Ref, Schema, Scope, Semaphore } from 'effect'
 import { Value } from 'typebox/value'
 
 import { AgentActivity, type AgentActivityApi } from '#shared/effect/app_services'
@@ -1232,13 +1232,13 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
         return true
       })
     ).pipe(
-      Effect.flatMap((claimed) =>
-        claimed && options.stopAfter !== false && commandId !== 'close'
-          ? stop(token, commandId).pipe(
-              Effect.flatMap(({ stopped }) => completeStop(session, token.sessionKey, token, stopped)),
-              Effect.as(true)
-            )
-          : Effect.succeed(claimed)
+      Effect.filterOrElse(
+        (claimed) => !claimed || options.stopAfter === false || commandId === 'close',
+        () =>
+          stop(token, commandId).pipe(
+            Effect.flatMap(({ stopped }) => completeStop(session, token.sessionKey, token, stopped)),
+            Effect.as(true)
+          )
       ),
       Effect.uninterruptible
     )
@@ -1680,7 +1680,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
     )
     return owners.length === 0
       ? Effect.succeed(true)
-      : Effect.all(owners.map((owner) => process.isIdentityAlive(owner))).pipe(Effect.map((alive) => alive.some((value) => value)))
+      : Effect.forEach(owners, (owner) => process.isIdentityAlive(owner)).pipe(Effect.map((alive) => alive.some((value) => value)))
   }
   const reconcile = (
     agentId: string,
@@ -1892,9 +1892,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
           const childFrames = decoder()
           const pendingFrames: unknown[] = []
           const path = yield* Effect.timeout(readReady(child, reservation.agentId, expectedTurn, childFrames, pendingFrames), '30 seconds').pipe(
-            Effect.flatMap((value) =>
-              value === undefined ? Effect.fail(refusal('startup_timeout', 'Worker did not become ready in time.')) : Effect.succeed(value)
-            )
+            Effect.filterOrFail(Predicate.isNotUndefined, () => refusal('startup_timeout', 'Worker did not become ready in time.'))
           )
           const checked = yield* validateWorkerSessionPath(
             resume === undefined
@@ -2558,10 +2556,9 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                       Effect.flatMap((reservation) =>
                         store.readRecord(turn.agentId).pipe(
                           Effect.mapError((error) => refusal('agent_failed', error.message)),
-                          Effect.flatMap((record) =>
-                            record === undefined || record.status !== 'completed' || record.session !== key
-                              ? Effect.fail(refusal('not_resumable', 'The completed agent is no longer available.'))
-                              : Effect.succeed(record)
+                          Effect.filterOrFail(
+                            (record): record is NonNullable<typeof record> => record?.status === 'completed' && record.session === key,
+                            () => refusal('not_resumable', 'The completed agent is no longer available.')
                           ),
                           Effect.onExit((exit) => (Exit.isFailure(exit) ? clearStarting(session, reservation.slotId) : Effect.void)),
                           Effect.flatMap((record) =>
@@ -2583,10 +2580,9 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
                                 },
                               }
                             ).pipe(
-                              Effect.flatMap((result) =>
-                                result.status === 'running'
-                                  ? Effect.die('Foreground resume cannot return a running acceptance.')
-                                  : Effect.succeed(result)
+                              Effect.filterOrElse(
+                                (result): result is Exclude<typeof result, { status: 'running' }> => result.status !== 'running',
+                                () => Effect.die('Foreground resume cannot return a running acceptance.')
                               )
                             )
                           )
@@ -2777,7 +2773,7 @@ const make = ({ activity, cleanup, notifications, process, resolver, store }: Or
               Effect.flatMap(({ notices, sort, turns }) =>
                 Ref.make(false).pipe(
                   Effect.flatMap((committed) =>
-                    restore(Effect.all(turns.map((turn) => Deferred.await(turn.deferred)))).pipe(
+                    restore(Effect.forEach(turns, (turn) => Deferred.await(turn.deferred))).pipe(
                       Effect.flatMap((results) => {
                         if (!sort) {
                           return Effect.succeed({ claims: [] as readonly Turn[], results })
