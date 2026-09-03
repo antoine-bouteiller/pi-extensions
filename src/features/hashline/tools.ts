@@ -54,8 +54,12 @@ const throwIfAborted = (signal: AbortSignal | undefined): void => {
   }
 }
 
-/** Keep every path used internally by hashline rooted in the tool context. */
-/* oxlint-disable effecttsgo/async-function -- These overrides must keep the promise-returning signatures declared by hashline's NodeFilesystem. */
+/**
+ * Keep every path used internally by hashline rooted in the tool context.
+ *
+ * The pre-call abort check throws synchronously rather than rejecting; every hashline caller awaits
+ * these methods inside a `try`, so the observable outcome is unchanged.
+ */
 class CwdFilesystem extends NodeFilesystem {
   private readonly cwd: string
 
@@ -71,41 +75,43 @@ class CwdFilesystem extends NodeFilesystem {
     return resolveToolPath(path, this.cwd)
   }
 
-  override async readText(path: string): Promise<string> {
+  override readText(path: string): Promise<string> {
     throwIfAborted(this.signal)
-    const text = await super.readText(this.absolute(path))
-    throwIfAborted(this.signal)
-    return text
+    return super.readText(this.absolute(path)).then((text) => {
+      throwIfAborted(this.signal)
+      return text
+    })
   }
 
-  override async readBinary(path: string): Promise<Uint8Array> {
+  override readBinary(path: string): Promise<Uint8Array> {
     throwIfAborted(this.signal)
-    const bytes = await super.readBinary(this.absolute(path))
-    throwIfAborted(this.signal)
-    return bytes
+    return super.readBinary(this.absolute(path)).then((bytes) => {
+      throwIfAborted(this.signal)
+      return bytes
+    })
   }
 
   // Mutations are checked only before they commit: aborting afterwards would report a failure for a change the file system already took.
-  override async writeText(path: string, content: string) {
+  override writeText(path: string, content: string) {
     throwIfAborted(this.signal)
     return super.writeText(this.absolute(path), content)
   }
 
-  override async delete(path: string): Promise<void> {
+  override delete(path: string): Promise<void> {
     throwIfAborted(this.signal)
-    await super.delete(this.absolute(path))
+    return super.delete(this.absolute(path))
   }
 
-  override async move(from: string, to: string, content?: string): Promise<void> {
+  override move(from: string, to: string, content?: string): Promise<void> {
     throwIfAborted(this.signal)
-    await super.move(this.absolute(from), this.absolute(to), content)
+    return super.move(this.absolute(from), this.absolute(to), content)
   }
 
   override canonicalPath(path: string): string {
     return this.absolute(path)
   }
 
-  override async exists(path: string): Promise<boolean> {
+  override exists(path: string): Promise<boolean> {
     throwIfAborted(this.signal)
     return super.exists(this.absolute(path))
   }
@@ -117,7 +123,6 @@ class CwdFilesystem extends NodeFilesystem {
     return false
   }
 }
-/* oxlint-enable effecttsgo/async-function */
 
 // Deduplicated and ordered so two concurrent patches over an overlapping path set cannot deadlock.
 const mutationQueueSlots = (paths: readonly string[]): Effect.Effect<void, HashlineToolError, Scope.Scope> =>

@@ -503,6 +503,10 @@ const cleanupForProvisional = (provisional: Provisional): Cleanup => ({
 })
 
 const sameIdentity = (left: ProcessIdentity, right: ProcessIdentity) => left.pid === right.pid && left.birthMarker === right.birthMarker
+const orphanIdentities = (run: { readonly lease?: LaunchLease; readonly record?: SubagentRecord }): ProcessIdentity[] =>
+  [...(run.lease === undefined ? [] : [run.lease.identity]), ...(run.record?.status === 'running' ? [run.record.identity] : [])].filter(
+    (identity, index, all) => all.findIndex((other) => sameIdentity(other, identity)) === index
+  )
 const sameTurn = (current: Turn | undefined, token: Turn): current is Turn =>
   current !== undefined &&
   current.agentId === token.agentId &&
@@ -1682,6 +1686,21 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
       ? Effect.succeed(true)
       : Effect.forEach(owners, (owner) => process.isIdentityAlive(owner)).pipe(Effect.map((alive) => alive.some((value) => value)))
   }
+  /** Records the outcome of terminating an orphan; `'live'` means the run still needs cleanup retained. */
+  const settleStopped = (
+    agentId: string,
+    run: { readonly lease?: LaunchLease; readonly record?: SubagentRecord },
+    stopped: readonly TerminationResult[]
+  ): Effect.Effect<'settled' | 'live', StoreError> => {
+    if (stopped.some((result) => result === 'mismatch')) {
+      return store.delete(agentId).pipe(Effect.as('settled' as const))
+    }
+    if (stopped.some((result) => result === 'exited' || result === 'signalled')) {
+      const discard = run.lease?.preserveRecord === true && run.record?.status !== 'running' ? store.removeLease(agentId) : store.delete(agentId)
+      return discard.pipe(Effect.as('settled' as const))
+    }
+    return Effect.succeed('live' as const)
+  }
   const reconcile = (
     agentId: string,
     run: { readonly lease?: LaunchLease; readonly record?: SubagentRecord }
@@ -1692,15 +1711,8 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
           Effect.flatMap((liveOwner) =>
             liveOwner
               ? Effect.void
-              : // oxlint-disable-next-line eslint/complexity -- reconciliation keeps every ownership outcome in one atomic recovery path
-                Effect.gen(function* () {
-                  const identities = [
-                    ...(run.lease === undefined ? [] : [run.lease.identity]),
-                    ...(run.record?.status === 'running' ? [run.record.identity] : []),
-                  ].filter(
-                    (identity, index, all) =>
-                      all.findIndex((other) => other.pid === identity.pid && other.birthMarker === identity.birthMarker) === index
-                  )
+              : Effect.gen(function* () {
+                  const identities = orphanIdentities(run)
                   if (identities.length > 1) {
                     yield* store.delete(agentId)
                     return
@@ -1709,12 +1721,7 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                   for (const identity of identities) {
                     stopped.push(yield* process.terminateVerified(identity))
                   }
-                  if (stopped.some((result) => result === 'mismatch')) {
-                    yield* store.delete(agentId)
-                    return
-                  }
-                  if (stopped.some((result) => result === 'exited' || result === 'signalled')) {
-                    yield* run.lease?.preserveRecord === true && run.record?.status !== 'running' ? store.removeLease(agentId) : store.delete(agentId)
+                  if ((yield* settleStopped(agentId, run, stopped)) === 'settled') {
                     return
                   }
                   const [identity] = identities

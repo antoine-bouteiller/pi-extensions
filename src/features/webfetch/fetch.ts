@@ -186,12 +186,11 @@ interface ResponseCapture {
 }
 
 const capturingFetch = (raw: typeof fetch, box: ResponseCapture): typeof fetch => {
-  // oxlint-disable-next-line effecttsgo/async-function -- Must stay assignable to `typeof fetch` for the callers that receive it.
-  const wrapped = async (input: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1]): ReturnType<typeof fetch> => {
-    const response = await raw(input, init)
-    box.current = { body: response.body, statusText: response.statusText, url: response.url }
-    return response
-  }
+  const wrapped = (input: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1]): ReturnType<typeof fetch> =>
+    raw(input, init).then((response) => {
+      box.current = { body: response.body, statusText: response.statusText, url: response.url }
+      return response
+    })
   return Object.assign(wrapped, { preconnect: raw.preconnect })
 }
 
