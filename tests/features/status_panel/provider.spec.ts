@@ -182,7 +182,7 @@ describe('Anthropic quota polling lifecycle', () => {
   it.effect('does not overlap requests when a timer fires', () =>
     Effect.gen(function* () {
       const requests: ReturnType<typeof deferred<ProviderQuota | undefined>>[] = []
-      const poller = yield* makeQuotaPoller(() => undefined, {
+      const poller = makeQuotaPoller(() => Effect.void, {
         fetchQuota: () =>
           Effect.promise(() => {
             const request = deferred<ProviderQuota | undefined>()
@@ -217,10 +217,11 @@ describe('Anthropic quota polling lifecycle', () => {
     Effect.gen(function* () {
       const published: (ProviderQuota | undefined)[] = []
       let interrupted = false
-      const poller = yield* makeQuotaPoller(
-        (quota) => {
-          published.push(quota)
-        },
+      const poller = makeQuotaPoller(
+        (quota) =>
+          Effect.sync(() => {
+            published.push(quota)
+          }),
         {
           fetchQuota: () => Effect.never.pipe(Effect.onInterrupt(() => Effect.sync(() => (interrupted = true)))),
           refreshMs: 10,
@@ -240,13 +241,14 @@ describe('Anthropic quota polling lifecycle', () => {
     Effect.gen(function* () {
       let fetches = 0
       let publications = 0
-      const poller = yield* makeQuotaPoller(
-        () => {
-          publications += 1
-          if (publications === 1) {
-            throw new Error('render failed')
-          }
-        },
+      const poller = makeQuotaPoller(
+        () =>
+          Effect.sync(() => {
+            publications += 1
+            if (publications === 1) {
+              throw new Error('render failed')
+            }
+          }),
         {
           fetchQuota: () =>
             Effect.sync(() => {
@@ -274,10 +276,11 @@ describe('Anthropic quota polling lifecycle', () => {
         result: ReturnType<typeof deferred<ProviderQuota | undefined>>
       }[] = []
       const published: (ProviderQuota | undefined)[] = []
-      const poller = yield* makeQuotaPoller(
-        (quota) => {
-          published.push(quota)
-        },
+      const poller = makeQuotaPoller(
+        (quota) =>
+          Effect.sync(() => {
+            published.push(quota)
+          }),
         {
           fetchQuota: (baseUrl) =>
             Effect.promise((signal) => {

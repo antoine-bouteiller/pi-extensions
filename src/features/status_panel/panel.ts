@@ -1,10 +1,10 @@
 import { type ExtensionAPI, type ExtensionContext, type ExtensionEvent, type ReadonlyFooterDataProvider } from '@earendil-works/pi-coding-agent'
-import { Effect, Path as PathService, Ref } from 'effect'
+import { Effect, Fiber, MutableRef, Path as PathService, Queue, type Scope } from 'effect'
 import { type FileSystem } from 'effect/FileSystem'
 import { type Path } from 'effect/Path'
 import { type HttpClient } from 'effect/unstable/http'
 
-import { type AppRuntime, AgentActivity, StatusBar } from '#shared/effect/app_services'
+import { AgentActivity, StatusBar, type AgentActivityApi, type StatusBarApi } from '#shared/effect/app_services'
 import { azureQuota, writeSubagentAzureQuota } from '#shared/state/azure_quota'
 import { isEmptyString, isNullOrUndefined, isTrue } from '#shared/utils/predicates'
 
@@ -14,10 +14,11 @@ import { makeQuotaPoller, quotaFromHeaders, type QuotaFetcher, type QuotaPoller 
 import { formatDirectory } from './render.js'
 import { createSidebarController, type SidebarController } from './sidebar.js'
 import { MIN_MAIN_WIDTH, MIN_SIDEBAR_WIDTH } from './split_pane.js'
-import { emptyPanelState, type ModelInfoState, type PanelState } from './state.js'
+import { emptyPanelState, type ModelInfoState, type PanelState, type ProviderQuota } from './state.js'
 import { collectStatuses } from './statuses.js'
 
 const ANTHROPIC_QUOTA_REFRESH_MS = 15_000
+const REDRAW_MS = 400
 
 export interface StatusPanelDependencies {
   fetchAnthropicQuota?: QuotaFetcher
@@ -33,11 +34,13 @@ type PiEvent<Type extends ExtensionEvent['type']> = Extract<ExtensionEvent, { ty
 export interface PanelControllerOptions {
   readonly dependencies: StatusPanelDependencies
   readonly pi: ExtensionAPI
-  readonly runtime: AppRuntime
 }
 
 export interface PanelHandlers {
-  readonly sessionStart: (event: PiEvent<'session_start'>, ctx: ExtensionContext) => Effect.Effect<void, never, HttpClient.HttpClient>
+  readonly sessionStart: (
+    event: PiEvent<'session_start'>,
+    ctx: ExtensionContext
+  ) => Effect.Effect<void, never, HttpClient.HttpClient | AgentActivity | StatusBar | Path | Scope.Scope>
   readonly modelSelect: (event: PiEvent<'model_select'>, ctx: ExtensionContext) => Effect.Effect<void, never, HttpClient.HttpClient>
   readonly thinkingLevelSelect: (event: PiEvent<'thinking_level_select'>, ctx: ExtensionContext) => Effect.Effect<void>
   readonly agentStart: (event: PiEvent<'agent_start'>, ctx: ExtensionContext) => Effect.Effect<void>
@@ -55,67 +58,46 @@ export const recordSubagentQuota = (
   return quota === undefined ? Effect.void : writeSubagentAzureQuota(process.env.PI_SUBAGENT_OWNER_TOKEN ?? '', quota.percent)
 }
 
-export const makePanelController = ({ dependencies, pi, runtime }: PanelControllerOptions): PanelHandlers => {
-  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; permanent: synchronous feature registration cannot yield, so its services are extracted like `[KD-1]`/`[C-1]`
-  const agentActivity = runtime.runSync(AgentActivity)
-  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; permanent: synchronous feature registration cannot yield, so its services are extracted like `[KD-1]`/`[C-1]`
-  const path = runtime.runSync(PathService.Path)
-  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; permanent: synchronous feature registration cannot yield, so its services are extracted like `[KD-1]`/`[C-1]`
-  const statusBar = runtime.runSync(StatusBar)
-  const stateRef = Ref.makeUnsafe<PanelState>(emptyPanelState())
+export const makePanelController = ({ dependencies, pi }: PanelControllerOptions): PanelHandlers => {
+  const panelState = MutableRef.make<PanelState>(emptyPanelState())
 
   let sidebar: SidebarController | undefined
   let footerData: ReadonlyFooterDataProvider | undefined
   let requestRender: (() => void) | undefined
   let anthropicQuotaBaseUrl: string | undefined
   let unsubscribeAzureQuota: (() => void) | undefined
-  let unsubscribeAgentActivity: (() => void) | undefined = agentActivity.subscribe(() => requestRender?.())
-  let unsubscribeStatusBar: (() => void) | undefined = statusBar.subscribe(() => requestRender?.())
+  let unsubscribeAgentActivity: (() => void) | undefined
+  let unsubscribeStatusBar: (() => void) | undefined
+  let sessionScope: Scope.Scope | undefined
+  let gitRefreshRequests: Queue.Queue<void> | undefined
+  let redrawFiber: Fiber.Fiber<never> | undefined
 
-  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: Pi status renderer reads memory-only state synchronously and cannot return an Effect
-  const getState = (): PanelState => Effect.runSync(Ref.get(stateRef))
-  const updateState = (updater: (state: PanelState) => PanelState): Effect.Effect<void> => Ref.update(stateRef, updater)
-  const syncAzureQuota = (): void => {
-    const percent = azureQuota.get()
-    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous Azure quota subscription callback cannot return an Effect
-    Effect.runSync(
-      updateState((state) => {
-        const quotas = { ...state.quotas }
-        if (percent === undefined) {
-          delete quotas.azure
-        } else {
-          quotas.azure = { label: 'azure', percent }
-        }
-        return { ...state, quotas }
-      })
-    )
+  const getState = (): PanelState => MutableRef.get(panelState)
+  const setState = (updater: (state: PanelState) => PanelState): void => {
+    MutableRef.update(panelState, updater)
+  }
+  const updateState = (updater: (state: PanelState) => PanelState): Effect.Effect<void> => Effect.sync(() => setState(updater))
+  const setQuota = (label: 'anthropic' | 'azure', quota: ProviderQuota | undefined): void => {
+    setState((state) => {
+      const quotas = { ...state.quotas }
+      if (quota === undefined) {
+        delete quotas[label]
+      } else {
+        quotas[label] = quota
+      }
+      return { ...state, quotas }
+    })
     requestRender?.()
   }
+  const syncAzureQuota = (): void => {
+    const percent = azureQuota.get()
+    setQuota('azure', percent === undefined ? undefined : { label: 'azure', percent })
+  }
 
-  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous panel registration constructs the quota poller and cannot return an Effect
-  const anthropicQuota: QuotaPoller = Effect.runSync(
-    makeQuotaPoller(
-      (quota) => {
-        // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous quota-poller callback cannot return an Effect
-        Effect.runSync(
-          updateState((state) => {
-            const quotas = { ...state.quotas }
-            if (quota === undefined) {
-              delete quotas.anthropic
-            } else {
-              quotas.anthropic = quota
-            }
-            return { ...state, quotas }
-          })
-        )
-        requestRender?.()
-      },
-      {
-        fetchQuota: dependencies.fetchAnthropicQuota,
-        refreshMs: ANTHROPIC_QUOTA_REFRESH_MS,
-      }
-    )
-  )
+  const anthropicQuota: QuotaPoller = makeQuotaPoller((quota) => Effect.sync(() => setQuota('anthropic', quota)), {
+    fetchQuota: dependencies.fetchAnthropicQuota,
+    refreshMs: ANTHROPIC_QUOTA_REFRESH_MS,
+  })
 
   const startAnthropicQuota = (ctx: ExtensionContext): Effect.Effect<void, never, HttpClient.HttpClient> =>
     Effect.gen(function* () {
@@ -135,11 +117,15 @@ export const makePanelController = ({ dependencies, pi, runtime }: PanelControll
       yield* anthropicQuota.start(baseUrl)
     })
 
-  /** Fire-and-forget by design, like the original `void refreshGit()`: forked detached so it keeps running after the triggering hook's effect completes, instead of being interrupted with it. */
-  const scheduleGitRefresh = (): void => {
-    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-7] §8.8; permanent: detached by design with the justification [KD-7] requires, from a synchronous callback
-    Effect.runFork(Effect.forkDetach(refreshGit()))
-  }
+  /** Fire-and-forget by design, like the original `void refreshGit()`: forked in the session scope so it keeps running after the triggering hook's effect completes, and still ends with the session. */
+  const scheduleGitRefresh = (): Effect.Effect<void> =>
+    sessionScope === undefined ? Effect.void : Effect.forkIn(refreshGit(), sessionScope).pipe(Effect.asVoid)
+
+  const stopRedraw: Effect.Effect<void> = Effect.suspend(() => {
+    const fiber = redrawFiber
+    redrawFiber = undefined
+    return fiber === undefined ? Effect.void : Fiber.interrupt(fiber)
+  })
 
   const refreshGit = (): Effect.Effect<void> =>
     Effect.gen(function* () {
@@ -167,7 +153,7 @@ export const makePanelController = ({ dependencies, pi, runtime }: PanelControll
       requestRender?.()
     })
 
-  const install = (ctx: ExtensionContext): Effect.Effect<void> =>
+  const install = (ctx: ExtensionContext, path: Path, agentActivity: AgentActivityApi): Effect.Effect<void> =>
     Effect.gen(function* () {
       if (ctx.mode !== 'tui') {
         return
@@ -178,7 +164,9 @@ export const makePanelController = ({ dependencies, pi, runtime }: PanelControll
         ctx.ui.setFooter((tui, theme, data: ReadonlyFooterDataProvider) => {
           footerData = data
           const unsubscribe = data.onBranchChange?.(() => {
-            scheduleGitRefresh()
+            if (gitRefreshRequests !== undefined) {
+              Queue.offerUnsafe(gitRefreshRequests, undefined)
+            }
             tui.requestRender()
           })
           return {
@@ -234,7 +222,7 @@ export const makePanelController = ({ dependencies, pi, runtime }: PanelControll
         ctx.ui.setTitle(`pi · ${formatDirectory(ctx.cwd, path)}`)
       })
       yield* refreshModel(ctx)
-      scheduleGitRefresh()
+      yield* scheduleGitRefresh()
     })
 
   return {
@@ -247,6 +235,7 @@ export const makePanelController = ({ dependencies, pi, runtime }: PanelControll
       }),
     agentSettled: (_event, ctx) =>
       Effect.gen(function* () {
+        yield* stopRedraw
         yield* updateState((state) => ({ ...state, activity: 'ready' }))
         yield* refreshModel(ctx)
       }),
@@ -254,6 +243,11 @@ export const makePanelController = ({ dependencies, pi, runtime }: PanelControll
       Effect.gen(function* () {
         yield* updateState((state) => ({ ...state, activity: 'working' }))
         requestRender?.()
+        const scope = sessionScope
+        if (scope === undefined || redrawFiber !== undefined) {
+          return
+        }
+        redrawFiber = yield* Effect.forkIn(Effect.forever(Effect.sleep(REDRAW_MS).pipe(Effect.andThen(Effect.sync(() => requestRender?.())))), scope)
       }),
     modelSelect: (event, ctx) =>
       Effect.gen(function* () {
@@ -268,13 +262,16 @@ export const makePanelController = ({ dependencies, pi, runtime }: PanelControll
           },
         }))
         yield* refreshModel(ctx)
-        scheduleGitRefresh()
+        yield* scheduleGitRefresh()
         yield* startAnthropicQuota(ctx)
       }),
     sessionShutdown: (_event, ctx) =>
       Effect.gen(function* () {
+        yield* stopRedraw
         yield* anthropicQuota.stop
         anthropicQuotaBaseUrl = undefined
+        gitRefreshRequests = undefined
+        sessionScope = undefined
         unsubscribeAzureQuota?.()
         unsubscribeAzureQuota = undefined
         unsubscribeAgentActivity?.()
@@ -291,17 +288,25 @@ export const makePanelController = ({ dependencies, pi, runtime }: PanelControll
       }),
     sessionStart: (_event, ctx) =>
       Effect.gen(function* () {
+        const agentActivity: AgentActivityApi = yield* AgentActivity
+        const statusBar: StatusBarApi = yield* StatusBar
+        const path = yield* PathService.Path
+        sessionScope = yield* Effect.scope
+        yield* stopRedraw
         yield* anthropicQuota.stop
         anthropicQuotaBaseUrl = undefined
         unsubscribeAzureQuota?.()
         unsubscribeAgentActivity?.()
         unsubscribeStatusBar?.()
         azureQuota.set(undefined)
-        yield* Ref.set(stateRef, emptyPanelState())
+        MutableRef.set(panelState, emptyPanelState())
         unsubscribeAzureQuota = azureQuota.subscribe(syncAzureQuota)
         unsubscribeAgentActivity = agentActivity.subscribe(() => requestRender?.())
         unsubscribeStatusBar = statusBar.subscribe(() => requestRender?.())
-        yield* install(ctx)
+        const requests = yield* Queue.sliding<void>(1)
+        gitRefreshRequests = requests
+        yield* Effect.forkIn(Effect.forever(Queue.take(requests).pipe(Effect.andThen(refreshGit()))), sessionScope)
+        yield* install(ctx, path, agentActivity)
         if (ctx.mode !== 'tui') {
           yield* refreshModel(ctx)
         }
@@ -315,7 +320,7 @@ export const makePanelController = ({ dependencies, pi, runtime }: PanelControll
     turnEnd: (_event, ctx) =>
       Effect.gen(function* () {
         yield* refreshModel(ctx)
-        scheduleGitRefresh()
+        yield* scheduleGitRefresh()
       }),
   }
 }

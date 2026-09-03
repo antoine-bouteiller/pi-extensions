@@ -26,7 +26,7 @@ export const makeFeature = (dependencies: StatusPanelDependencies = {}) => {
           pi.on('after_provider_response', onEvent(recordSubagentQuota))
           return
         }
-        handlers = makePanelController({ dependencies, pi, runtime })
+        handlers = makePanelController({ dependencies, pi })
         pi.on('model_select', onEvent(handlers.modelSelect))
         pi.on('thinking_level_select', onEvent(handlers.thinkingLevelSelect))
         pi.on('agent_start', onEvent(handlers.agentStart))

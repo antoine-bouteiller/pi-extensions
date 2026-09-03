@@ -3,16 +3,20 @@ import { randomUUID } from 'node:crypto'
 import { tmpdir, userInfo } from 'node:os'
 
 import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asExtensionContext } from '@tests/utils/casts.js'
+import { asExtensionContext, asFooterDataProvider, asNarrowed } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { withProcessEnv } from '@tests/utils/process_env.js'
 import { runtime } from '@tests/utils/runtime.js'
-import { Effect, FileSystem } from 'effect'
+import { Effect, Exit, FileSystem, Layer, Scope } from 'effect'
+import { TestClock } from 'effect/testing'
+import { FetchHttpClient } from 'effect/unstable/http'
 
 import { join } from '#shared/utils/path'
 import { feature, makeFeature } from '@/features/status_panel/index.js'
+import { makePanelController } from '@/features/status_panel/panel.js'
 import { columns, formatTokens, progressBar } from '@/features/status_panel/render.js'
 import { emptyGitInfoState, emptyModelInfoState } from '@/features/status_panel/state.js'
+import { AgentActivityLive, StatusBarLive } from '@/shared/effect/app_services.js'
 import { runningAgents } from '@/shared/state/agent_activity.js'
 import { azureQuota, consumeSubagentAzureQuota, writeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
 
@@ -26,6 +30,40 @@ afterEach(() => {
 const inMainSession = <Success, Failure, Requirements>(
   use: () => Effect.Effect<Success, Failure, Requirements>
 ): Effect.Effect<Success, Failure, Requirements> => withProcessEnv('PI_SUBAGENT_OWNER_TOKEN', undefined, use)
+
+type PanelImplementation = typeof feature.implementation
+
+const GIT_READS_PER_REFRESH = 3
+
+/** Real event-loop turns: the git fibers await host promises, which virtual time cannot advance. */
+const settle = (until: () => boolean): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    for (let attempt = 0; attempt < 50 && !until(); attempt += 1) {
+      yield* Effect.promise(() => Bun.sleep(1))
+    }
+  })
+
+/** Stands in for the feature coordinator, which owns one closeable scope per activated session. */
+const sessionScopes: Scope.Closeable[] = []
+
+const activateSession = (implementation: PanelImplementation, ctx: unknown, reason: 'startup' | 'resume' = 'startup'): Effect.Effect<void> =>
+  Effect.promise(() => {
+    const scope = Scope.makeUnsafe()
+    sessionScopes.push(scope)
+    return runtime.runPromise(
+      (implementation.activate?.({ reason, type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void).pipe(
+        Effect.provideService(Scope.Scope, scope)
+      )
+    )
+  })
+
+const deactivateSession = (implementation: PanelImplementation, ctx: unknown, reason: 'shutdown' | 'replaced' = 'shutdown'): Effect.Effect<void> =>
+  Effect.promise(() =>
+    runtime.runPromise(implementation.deactivate?.(asExtensionContext(ctx), reason) ?? Effect.void).then(() => {
+      const scope = sessionScopes.pop()
+      return scope === undefined ? undefined : runtime.runPromise(Scope.close(scope, Exit.void))
+    })
+  )
 
 describe('status panel registration', () => {
   it.effect('registers only Azure response forwarding in a subagent', () => {
@@ -196,9 +234,7 @@ describe('status panel formatting', () => {
           ui,
         }
         feature.implementation.register(pi, runtime)
-        yield* Effect.promise(() =>
-          runtime.runPromise(feature.implementation.activate?.({ reason: 'startup', type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void)
-        )
+        yield* activateSession(feature.implementation, ctx, 'startup')
 
         expect(renderFooter?.(80)).toEqual([])
         tui.terminal.columns = 80
@@ -214,7 +250,7 @@ describe('status panel formatting', () => {
         }
         expect(renderSidebar(44).join('\n')).toContain('AGENT')
         expect(renderSidebar(44).join('\n')).toContain('CONTEXT')
-        yield* Effect.promise(() => runtime.runPromise(feature.implementation.deactivate?.(asExtensionContext(ctx), 'shutdown') ?? Effect.void))
+        yield* deactivateSession(feature.implementation, ctx, 'shutdown')
         expect(hiddenOverlays).toBe(1)
       })
     )
@@ -270,12 +306,10 @@ describe('status panel quota lifecycle', () => {
         panel.implementation.register(pi, runtime)
         const ctx = quotaLifecycleContext('rpc')
 
-        yield* Effect.promise(() =>
-          runtime.runPromise(panel.implementation.activate?.({ reason: 'startup', type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void)
-        )
+        yield* activateSession(panel.implementation, ctx, 'startup')
         yield* Effect.promise(() => emit('model_select', { model: ctx.model }, ctx))
         expect(signals).toHaveLength(0)
-        yield* Effect.promise(() => runtime.runPromise(panel.implementation.deactivate?.(asExtensionContext(ctx), 'shutdown') ?? Effect.void))
+        yield* deactivateSession(panel.implementation, ctx, 'shutdown')
       })
     )
   )
@@ -297,9 +331,7 @@ describe('status panel quota lifecycle', () => {
         panel.implementation.register(pi, runtime)
         const ctx = quotaLifecycleContext('tui', 'azure-openai-responses')
 
-        yield* Effect.promise(() =>
-          runtime.runPromise(panel.implementation.activate?.({ reason: 'startup', type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void)
-        )
+        yield* activateSession(panel.implementation, ctx, 'startup')
         expect(signals).toHaveLength(1)
         expect(baseUrls).toEqual(['http://127.0.0.1:3456'])
 
@@ -312,7 +344,7 @@ describe('status panel quota lifecycle', () => {
         expect(signal.aborted).toBeFalse()
         expect(signals).toHaveLength(1)
 
-        yield* Effect.promise(() => runtime.runPromise(panel.implementation.deactivate?.(asExtensionContext(ctx), 'shutdown') ?? Effect.void))
+        yield* deactivateSession(panel.implementation, ctx, 'shutdown')
         expect(signal.aborted).toBeTrue()
       })
     )
@@ -371,16 +403,14 @@ describe('status panel cross-feature sharing', () => {
         }
 
         feature.implementation.register(pi, runtime)
-        yield* Effect.promise(() =>
-          runtime.runPromise(feature.implementation.activate?.({ reason: 'startup', type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void)
-        )
+        yield* activateSession(feature.implementation, ctx, 'startup')
 
         if (renderSidebar === undefined) {
           throw new Error('expected a sidebar renderer')
         }
         expect(renderSidebar(44).join('\n')).toContain('/scout-shared')
 
-        yield* Effect.promise(() => runtime.runPromise(feature.implementation.deactivate?.(asExtensionContext(ctx), 'shutdown') ?? Effect.void))
+        yield* deactivateSession(feature.implementation, ctx, 'shutdown')
       })
     )
   )
@@ -433,27 +463,188 @@ describe('status panel cross-feature sharing', () => {
         }
 
         feature.implementation.register(pi, runtime)
-        yield* Effect.promise(() =>
-          runtime.runPromise(feature.implementation.activate?.({ reason: 'startup', type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void)
-        )
+        yield* activateSession(feature.implementation, ctx, 'startup')
         renders = 0
         runningAgents.publish([{ color: 'accent', name: '/first', profile: 'scout' }])
         expect(renders).toBeGreaterThan(0)
 
-        yield* Effect.promise(() => runtime.runPromise(feature.implementation.deactivate?.(asExtensionContext(ctx), 'replaced') ?? Effect.void))
+        yield* deactivateSession(feature.implementation, ctx, 'replaced')
         renders = 0
         runningAgents.publish([{ color: 'accent', name: '/stale', profile: 'scout' }])
         expect(renders).toBe(0)
 
-        yield* Effect.promise(() =>
-          runtime.runPromise(feature.implementation.activate?.({ reason: 'resume', type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void)
-        )
+        yield* activateSession(feature.implementation, ctx, 'resume')
         renders = 0
         runningAgents.publish([{ color: 'accent', name: '/second', profile: 'scout' }])
         expect(renders).toBeGreaterThan(0)
 
-        yield* Effect.promise(() => runtime.runPromise(feature.implementation.deactivate?.(asExtensionContext(ctx), 'shutdown') ?? Effect.void))
+        yield* deactivateSession(feature.implementation, ctx, 'shutdown')
       })
+    )
+  )
+})
+
+const panelSessionLayer = Layer.mergeAll(AgentActivityLive, StatusBarLive, FetchHttpClient.layer)
+
+const fakeTheme = { bold: (value: string) => value, fg: (_color: string, value: string) => value }
+
+describe('status panel session fibers', () => {
+  it.effect('ticks a redraw only while the agent is working and stops when the session ends', () =>
+    inMainSession(() =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { pi } = createFakePi()
+          let renders = 0
+          const tui = {
+            render: (_width: number) => [],
+            requestRender() {
+              renders += 1
+            },
+            terminal: { columns: 120, rows: 30 },
+          }
+          const ui = {
+            custom(
+              factory: (...args: unknown[]) => { render: (width: number) => string[] },
+              options: { onHandle?: (handle: { hide: () => void }) => void }
+            ) {
+              return promiseFromEffect(
+                Effect.callback<void>((resume) => {
+                  factory(tui, fakeTheme, {}, () => resume(Effect.void))
+                  options.onHandle?.({
+                    hide() {
+                      /* Empty */
+                    },
+                  })
+                })
+              )
+            },
+            setFooter() {
+              /* Empty */
+            },
+            setTitle() {
+              /* Empty */
+            },
+          }
+          const ctx = asExtensionContext({
+            cwd: '/project',
+            getContextUsage: () => undefined,
+            mode: 'tui',
+            model: { contextWindow: 100_000, id: 'model', provider: 'openai' },
+            ui,
+          })
+          const handlers = makePanelController({ dependencies: {}, pi })
+          const agentStart = asNarrowed<Parameters<typeof handlers.agentStart>[0], { type: 'agent_start' }>({ type: 'agent_start' })
+          const agentSettled = asNarrowed<Parameters<typeof handlers.agentSettled>[0], { type: 'agent_settled' }>({ type: 'agent_settled' })
+
+          yield* handlers.sessionStart({ reason: 'startup', type: 'session_start' }, ctx)
+          yield* handlers.agentStart(agentStart, ctx)
+          renders = 0
+          yield* TestClock.adjust('400 millis')
+          const afterFirstTick = renders
+          expect(afterFirstTick).toBeGreaterThan(0)
+          yield* TestClock.adjust('400 millis')
+          expect(renders).toBeGreaterThan(afterFirstTick)
+
+          yield* handlers.agentSettled(agentSettled, ctx)
+          const afterSettle = renders
+          yield* TestClock.adjust('1200 millis')
+          expect(renders).toBe(afterSettle)
+
+          yield* handlers.agentStart(agentStart, ctx)
+          yield* TestClock.adjust('400 millis')
+          expect(renders).toBeGreaterThan(afterSettle)
+
+          yield* handlers.sessionShutdown({ reason: 'quit', type: 'session_shutdown' }, ctx)
+          const afterShutdown = renders
+          yield* TestClock.adjust('1200 millis')
+          expect(renders).toBe(afterShutdown)
+        })
+      ).pipe(Effect.provide(panelSessionLayer))
+    )
+  )
+
+  it.effect('refreshes git information when the footer reports a branch change', () =>
+    inMainSession(() =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const execCalls: string[][] = []
+          const { pi } = createFakePi({
+            exec: (command: string, args: string[]) => {
+              execCalls.push([command, ...args])
+              return Promise.resolve({ code: 0, stderr: '', stdout: 'true' })
+            },
+          })
+          let branchChange: (() => void) | undefined
+          const tui = {
+            render: (_width: number) => [],
+            requestRender() {
+              /* Empty */
+            },
+            terminal: { columns: 80, rows: 30 },
+          }
+          const ui = {
+            custom(
+              factory: (...args: unknown[]) => { render: (width: number) => string[] },
+              options: { onHandle?: (handle: { hide: () => void }) => void }
+            ) {
+              return promiseFromEffect(
+                Effect.callback<void>((resume) => {
+                  factory(tui, fakeTheme, {}, () => resume(Effect.void))
+                  options.onHandle?.({
+                    hide() {
+                      /* Empty */
+                    },
+                  })
+                })
+              )
+            },
+            setFooter(factory?: (tui: unknown, theme: unknown, data: unknown) => unknown) {
+              factory?.(
+                tui,
+                fakeTheme,
+                asFooterDataProvider({
+                  getExtensionStatuses: () => new Map(),
+                  onBranchChange: (listener: () => void) => {
+                    branchChange = listener
+                    return () => undefined
+                  },
+                })
+              )
+            },
+            setTitle() {
+              /* Empty */
+            },
+          }
+          const ctx = asExtensionContext({
+            cwd: '/project',
+            getContextUsage: () => undefined,
+            mode: 'tui',
+            model: { contextWindow: 100_000, id: 'model', provider: 'openai' },
+            ui,
+          })
+          const handlers = makePanelController({ dependencies: {}, pi })
+
+          yield* handlers.sessionStart({ reason: 'startup', type: 'session_start' }, ctx)
+          yield* settle(() => execCalls.length >= GIT_READS_PER_REFRESH)
+          execCalls.length = 0
+
+          expect(branchChange).toBeDefined()
+          branchChange?.()
+          yield* settle(() => execCalls.length >= GIT_READS_PER_REFRESH)
+
+          expect(execCalls.map(([command, subcommand]) => `${command} ${subcommand}`).toSorted()).toEqual([
+            'git branch',
+            'git rev-parse',
+            'git status',
+          ])
+
+          yield* handlers.sessionShutdown({ reason: 'quit', type: 'session_shutdown' }, ctx)
+          execCalls.length = 0
+          branchChange?.()
+          yield* settle(() => execCalls.length > 0)
+          expect(execCalls).toEqual([])
+        })
+      ).pipe(Effect.provide(panelSessionLayer))
     )
   )
 })

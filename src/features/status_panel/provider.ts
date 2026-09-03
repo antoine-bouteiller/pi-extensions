@@ -26,58 +26,57 @@ export interface QuotaPollerOptions {
  * its own `refresh` attempt rather than awaiting the previous one -- so the in-flight guard below
  * is load-bearing, not redundant: without it, a slow gateway would let requests overlap.
  */
-export const makeQuotaPoller = (onQuota: (quota: ProviderQuota | undefined) => void, options: QuotaPollerOptions): Effect.Effect<QuotaPoller> =>
-  Effect.gen(function* () {
-    const fetchQuota = options.fetchQuota ?? fetchAnthropicQuota
-    const generationRef = yield* Ref.make(0)
-    const inFlightRef = yield* Ref.make(false)
-    const fiberRef = yield* Ref.make<Fiber.Fiber<void> | undefined>(undefined)
+export const makeQuotaPoller = (onQuota: (quota: ProviderQuota | undefined) => Effect.Effect<void>, options: QuotaPollerOptions): QuotaPoller => {
+  const fetchQuota = options.fetchQuota ?? fetchAnthropicQuota
+  const generationRef = Ref.makeUnsafe(0)
+  const inFlightRef = Ref.makeUnsafe(false)
+  const fiberRef = Ref.makeUnsafe<Fiber.Fiber<void> | undefined>(undefined)
 
-    const refresh = (generation: number, baseUrl: string): Effect.Effect<void, never, HttpClient.HttpClient> =>
-      Effect.gen(function* () {
-        const currentGeneration = yield* Ref.get(generationRef)
-        if (generation !== currentGeneration || (yield* Ref.get(inFlightRef))) {
-          return
+  const refresh = (generation: number, baseUrl: string): Effect.Effect<void, never, HttpClient.HttpClient> =>
+    Effect.gen(function* () {
+      const currentGeneration = yield* Ref.get(generationRef)
+      if (generation !== currentGeneration || (yield* Ref.get(inFlightRef))) {
+        return
+      }
+      yield* Ref.set(inFlightRef, true)
+      yield* Effect.gen(function* () {
+        /*
+         * The request runs on this fiber, so `stop` interrupting the poll loop is what cancels
+         * the request the gateway is still holding open.
+         */
+        const quota = yield* fetchQuota(baseUrl)
+        if ((yield* Ref.get(generationRef)) === generation) {
+          yield* onQuota(quota).pipe(Effect.ignoreCause)
         }
-        yield* Ref.set(inFlightRef, true)
-        yield* Effect.gen(function* () {
-          /*
-           * The request runs on this fiber, so `stop` interrupting the poll loop is what cancels
-           * the request the gateway is still holding open.
-           */
-          const quota = yield* fetchQuota(baseUrl)
-          if ((yield* Ref.get(generationRef)) === generation) {
-            yield* Effect.sync(() => onQuota(quota)).pipe(Effect.ignoreCause)
-          }
-        }).pipe(Effect.ensuring(Ref.set(inFlightRef, false)))
-      })
+      }).pipe(Effect.ensuring(Ref.set(inFlightRef, false)))
+    })
 
-    const pollLoop = (generation: number, baseUrl: string): Effect.Effect<void, never, HttpClient.HttpClient> =>
-      Effect.gen(function* () {
-        while (true) {
-          yield* Effect.forkChild(refresh(generation, baseUrl), { startImmediately: true })
-          yield* Effect.sleep(Duration.millis(options.refreshMs))
-        }
-      })
-
-    const stop: Effect.Effect<void> = Effect.gen(function* () {
-      yield* Ref.update(generationRef, (value) => value + 1)
-      const fiber = yield* Ref.getAndSet(fiberRef, undefined)
-      if (fiber !== undefined) {
-        yield* Fiber.interrupt(fiber)
+  const pollLoop = (generation: number, baseUrl: string): Effect.Effect<void, never, HttpClient.HttpClient> =>
+    Effect.gen(function* () {
+      while (true) {
+        yield* Effect.forkChild(refresh(generation, baseUrl), { startImmediately: true })
+        yield* Effect.sleep(Duration.millis(options.refreshMs))
       }
     })
 
-    const start = (baseUrl: string): Effect.Effect<void, never, HttpClient.HttpClient> =>
-      Effect.gen(function* () {
-        yield* stop
-        const generation = yield* Ref.get(generationRef)
-        const fiber = yield* Effect.forkDetach(pollLoop(generation, baseUrl), { startImmediately: true })
-        yield* Ref.set(fiberRef, fiber)
-      })
-
-    return { start, stop }
+  const stop: Effect.Effect<void> = Effect.gen(function* () {
+    yield* Ref.update(generationRef, (value) => value + 1)
+    const fiber = yield* Ref.getAndSet(fiberRef, undefined)
+    if (fiber !== undefined) {
+      yield* Fiber.interrupt(fiber)
+    }
   })
+
+  const start = (baseUrl: string): Effect.Effect<void, never, HttpClient.HttpClient> =>
+    Effect.gen(function* () {
+      yield* stop
+      const generation = yield* Ref.get(generationRef)
+      const fiber = yield* Effect.forkDetach(pollLoop(generation, baseUrl), { startImmediately: true })
+      yield* Ref.set(fiberRef, fiber)
+    })
+
+  return { start, stop }
+}
 
 /** One usage window as reported by the gateway, with `utilization` as a 0..1 fraction. */
 const GatewayQuotaWindowSchema = Type.Object({

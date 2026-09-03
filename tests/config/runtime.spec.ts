@@ -2,10 +2,10 @@ import { fileURLToPath } from 'node:url'
 
 import { BunChildProcessSpawner, BunFileSystem, BunPath } from '@effect/platform-bun'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asResult } from '@tests/utils/casts.js'
+import { asExtensionContext, asResult } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { withProcessEnv } from '@tests/utils/process_env.js'
-import { Effect, Layer, ManagedRuntime } from 'effect'
+import { Effect, Exit, Layer, ManagedRuntime, Scope } from 'effect'
 import { FetchHttpClient } from 'effect/unstable/http'
 
 import { getOrCreateProcessRuntime } from '@/config/runtime.js'
@@ -16,7 +16,7 @@ import { parseJsonText } from '@/shared/utils/json.js'
 const BunPlatformLayer = BunChildProcessSpawner.layer.pipe(Layer.provideMerge(Layer.mergeAll(BunFileSystem.layer, BunPath.layer)))
 
 const sharedActivityScript = (paths: { aggregate: string; activity: string; runtime: string; statusPanel: string }): string => `
-  const { Effect } = await import('effect');
+  const { Effect, Scope } = await import('effect');
   const { feature: statusPanel } = await import(${JSON.stringify(paths.statusPanel)});
   const { AgentActivity } = await import(${JSON.stringify(paths.activity)});
   const { getOrCreateProcessRuntime } = await import(${JSON.stringify(paths.runtime)});
@@ -52,7 +52,14 @@ const sharedActivityScript = (paths: { aggregate: string; activity: string; runt
   const explicit = createPi();
   statusPanel.implementation.register(explicit.pi, getOrCreateProcessRuntime());
   const explicitPanel = panelContext();
-  await getOrCreateProcessRuntime().runPromise(statusPanel.implementation.activate({ reason: 'startup', type: 'session_start' }, explicitPanel.ctx));
+  const panelScope = Scope.makeUnsafe();
+  await getOrCreateProcessRuntime().runPromise(
+    Effect.provideService(
+      statusPanel.implementation.activate({ reason: 'startup', type: 'session_start' }, explicitPanel.ctx),
+      Scope.Scope,
+      panelScope
+    )
+  );
 
   const runtime = getOrCreateProcessRuntime();
   await runtime.runPromise(AgentActivity.pipe(Effect.flatMap(activity => activity.publish([{ color: 'accent', name: 'shared-agent', profile: 'scout' }]))));
@@ -94,7 +101,7 @@ describe('process-wide runtime', () => {
     })
   )
 
-  it.effect('uses the runtime supplied to a feature register function', () =>
+  it.effect('uses the runtime supplied to a feature register function when the session activates', () =>
     Effect.gen(function* () {
       let subscriptions = 0
       const sentinelActivity: AgentActivityApi = {
@@ -109,9 +116,22 @@ describe('process-wide runtime', () => {
         Layer.mergeAll(BunPlatformLayer, FetchHttpClient.layer, StatusBarLive, Layer.succeed(AgentActivity)(sentinelActivity))
       )
       yield* withProcessEnv('PI_SUBAGENT_OWNER_TOKEN', undefined, () =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
           statusPanel.implementation.register(createFakePi().pi, runtime)
+          const scope = Scope.makeUnsafe()
+          const ctx = asExtensionContext({
+            cwd: '/project',
+            getContextUsage: () => undefined,
+            mode: 'rpc',
+            model: { contextWindow: 100_000, id: 'model', provider: 'openai' },
+          })
+          yield* Effect.promise(() =>
+            runtime.runPromise(
+              Effect.provideService(statusPanel.implementation.activate({ reason: 'startup', type: 'session_start' }, ctx), Scope.Scope, scope)
+            )
+          )
           expect(subscriptions).toBe(1)
+          yield* Effect.promise(() => runtime.runPromise(Scope.close(scope, Exit.void)))
         })
       ).pipe(Effect.ensuring(Effect.promise(() => runtime.dispose())))
     })

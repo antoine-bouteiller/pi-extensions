@@ -1,6 +1,6 @@
 import { type ExtensionContext, type ThemeColor } from '@earendil-works/pi-coding-agent'
 import { truncateToWidth, visibleWidth, type Component, type OverlayHandle } from '@earendil-works/pi-tui'
-import { DateTime, Effect, Exit, Ref, Scope } from 'effect'
+import { DateTime } from 'effect'
 import { type Path } from 'effect/Path'
 
 import { type RunningAgent } from '#shared/state/agent_activity'
@@ -431,93 +431,37 @@ interface SidebarControllerOptions {
   getState: () => SidebarState
   path: Path
   onError?: (error: unknown) => void
-  redrawMs?: number
 }
 
-// oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous Pi/TUI render callback cannot return an Effect
-const getRef = <Value>(ref: Ref.Ref<Value>): Value => Effect.runSync(Ref.get(ref))
-// oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous Pi/TUI render callback cannot return an Effect
-const setRef = <Value>(ref: Ref.Ref<Value>, value: Value): void => Effect.runSync(Ref.set(ref, value))
-
-const unrefSleep = (milliseconds: number): Effect.Effect<void> =>
-  Effect.callback<void>((resume) => {
-    // oxlint-disable-next-line effecttsgo/global-timers-in-effect -- `Effect.sleep` cannot unref its timer, and this redraw tick must not keep the process alive.
-    const timer = setTimeout(() => resume(Effect.void), milliseconds)
-    timer.unref?.()
-    return Effect.sync(() => clearTimeout(timer))
-  })
-
 export const createSidebarController = (options: SidebarControllerOptions): SidebarController => {
-  const enabledRef = Ref.makeUnsafe(false)
-  const disposedRef = Ref.makeUnsafe(false)
-  const generationRef = Ref.makeUnsafe(0)
-  const overlayHandleRef = Ref.makeUnsafe<OverlayHandle | undefined>(undefined)
-  const requestOverlayRenderRef = Ref.makeUnsafe<(() => void) | undefined>(undefined)
-  const redrawScopeRef = Ref.makeUnsafe<Scope.Closeable | undefined>(undefined)
+  let enabled = false
+  let disposed = false
+  let generation = 0
+  let overlayHandle: OverlayHandle | undefined
+  let requestOverlayRender: (() => void) | undefined
   const split: SplitPaneController = createSplitPaneController({ onError: options.onError })
 
-  const stopRedraw = () => {
-    const scope = getRef(redrawScopeRef)
-    if (scope === undefined) {
-      return
-    }
-    setRef(redrawScopeRef, undefined)
-    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous Pi/TUI controller callback cannot return an Effect; the fiber is owned by the scope being closed
-    Effect.runFork(Scope.close(scope, Exit.void))
-  }
-
-  const startRedraw = (requestRender: () => void, currentGeneration: number) => {
-    if (getRef(redrawScopeRef) !== undefined || options.getState().activity !== 'working') {
-      return
-    }
-    const scope = Scope.makeUnsafe()
-    setRef(redrawScopeRef, scope)
-    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous Pi/TUI controller callback cannot return an Effect; the redraw fiber is owned by `redrawScopeRef`
-    Effect.runFork(
-      Effect.forkScoped(
-        Effect.gen(function* () {
-          while (getRef(enabledRef) && getRef(generationRef) === currentGeneration && options.getState().activity === 'working') {
-            yield* unrefSleep(options.redrawMs ?? 400)
-            if (getRef(enabledRef) && getRef(generationRef) === currentGeneration && options.getState().activity === 'working') {
-              requestRender()
-            }
-          }
-        }).pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              if (getRef(redrawScopeRef) === scope) {
-                setRef(redrawScopeRef, undefined)
-              }
-            })
-          )
-        )
-      ).pipe(Effect.provideService(Scope.Scope, scope))
-    )
-  }
-
   const hide = () => {
-    if (!getRef(enabledRef) && getRef(overlayHandleRef) === undefined) {
+    if (!enabled && overlayHandle === undefined) {
       return
     }
-    setRef(enabledRef, false)
-    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous Pi/TUI controller callback cannot return an Effect
-    Effect.runSync(Ref.update(generationRef, (value) => value + 1))
-    stopRedraw()
-    const handle = getRef(overlayHandleRef)
-    setRef(overlayHandleRef, undefined)
-    setRef(requestOverlayRenderRef, undefined)
+    enabled = false
+    generation += 1
+    const handle = overlayHandle
+    overlayHandle = undefined
+    requestOverlayRender = undefined
     handle?.hide()
     split.hide()
   }
 
   const show = () => {
-    if (getRef(disposedRef) || getRef(enabledRef) || options.ctx.mode !== 'tui') {
+    if (disposed || enabled || options.ctx.mode !== 'tui') {
       return
     }
-    setRef(enabledRef, true)
-    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous Pi/TUI controller callback cannot return an Effect
-    const currentGeneration = Effect.runSync(Ref.updateAndGet(generationRef, (value) => value + 1))
-    const isCurrent = () => getRef(generationRef) === currentGeneration
+    enabled = true
+    generation += 1
+    const currentGeneration = generation
+    const isCurrent = () => generation === currentGeneration
     split.show()
     try {
       const pending = options.ctx.ui.custom<void>(
@@ -535,16 +479,13 @@ export const createSidebarController = (options: SidebarControllerOptions): Side
                 width: sidebarWidth,
               }),
           } satisfies Component
-          if (getRef(enabledRef) && isCurrent()) {
+          if (enabled && isCurrent()) {
             try {
               split.attach(tui, component)
-              const requestRender = () => tui.requestRender()
-              setRef(requestOverlayRenderRef, requestRender)
-              startRedraw(requestRender, currentGeneration)
+              requestOverlayRender = () => tui.requestRender()
             } catch (error) {
               options.onError?.(error)
-              setRef(enabledRef, false)
-              stopRedraw()
+              enabled = false
               split.hide()
             }
           }
@@ -552,8 +493,8 @@ export const createSidebarController = (options: SidebarControllerOptions): Side
         },
         {
           onHandle: (handle) => {
-            if (getRef(enabledRef) && isCurrent()) {
-              setRef(overlayHandleRef, handle)
+            if (enabled && isCurrent()) {
+              overlayHandle = handle
             } else {
               handle.hide()
             }
@@ -568,15 +509,13 @@ export const createSidebarController = (options: SidebarControllerOptions): Side
           if (!isCurrent()) {
             return
           }
-          setRef(enabledRef, false)
-          stopRedraw()
-          setRef(overlayHandleRef, undefined)
-          setRef(requestOverlayRenderRef, undefined)
+          enabled = false
+          overlayHandle = undefined
+          requestOverlayRender = undefined
           split.hide()
         })
     } catch (error) {
-      setRef(enabledRef, false)
-      stopRedraw()
+      enabled = false
       split.hide()
       options.onError?.(error)
     }
@@ -584,26 +523,20 @@ export const createSidebarController = (options: SidebarControllerOptions): Side
 
   return {
     dispose() {
-      if (getRef(disposedRef)) {
+      if (disposed) {
         return
       }
-      setRef(disposedRef, true)
+      disposed = true
       hide()
       split.dispose()
     },
     hide,
-    isVisible: () => getRef(enabledRef),
+    isVisible: () => enabled,
     requestRender() {
-      const requestOverlayRender = getRef(requestOverlayRenderRef)
       if (requestOverlayRender === undefined) {
         split.requestRender()
       } else {
         requestOverlayRender()
-        if (options.getState().activity === 'working') {
-          startRedraw(requestOverlayRender, getRef(generationRef))
-        } else {
-          stopRedraw()
-        }
       }
     },
     show,
