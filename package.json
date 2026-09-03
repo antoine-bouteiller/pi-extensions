@@ -27,7 +27,7 @@
     "@effect/platform-bun": "4.0.0-rc.112",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@napi-rs/keyring": "2.0.0",
-    "@oh-my-pi/hashline": "18.1.1",
+    "@oh-my-pi/hashline": "18.1.2",
     "effect": "4.0.0-rc.112",
     "turndown": "7.2.4"
   },
