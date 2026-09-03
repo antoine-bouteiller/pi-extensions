@@ -3,18 +3,19 @@ import { randomBytes } from 'node:crypto'
 import { BunHttpServer } from '@effect/platform-bun'
 import { UnauthorizedError, type OAuthClientProvider, type OAuthDiscoveryState } from '@modelcontextprotocol/sdk/client/auth.js'
 import { type OAuthClientInformationMixed, type OAuthClientMetadata, type OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js'
-import { Cause, Deferred, Effect, Exit, Scope, Semaphore } from 'effect'
+import { Cause, Deferred, Effect, Exit, Option, Scope, Semaphore } from 'effect'
 import { HttpServerRequest, HttpServerResponse } from 'effect/unstable/http'
 
+import { toPromiseMethod } from '#shared/effect/runtime'
 import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '#shared/utils/predicates'
 
-import { type CredentialStore, type OAuthCredentialPayload } from './keychain.js'
+import { type CredentialStore, type KeychainCredentialError, type OAuthCredentialPayload } from './keychain.js'
 import { assertOpenableAuthorizationUrl, McpError, type OAuthConfig } from './types.js'
 
 const CALLBACK_TIMEOUT_MS = 5 * 60 * 1000
 const DEFAULT_CALLBACK_PORT = 3334
 
-export type OpenUrl = (url: string, signal?: AbortSignal) => Promise<void>
+export type OpenUrl = (url: string) => Effect.Effect<void, McpError>
 
 export interface OAuthCallback {
   readonly redirectUrl: string
@@ -214,10 +215,22 @@ export interface KeychainOAuthProviderOptions {
   signal?: AbortSignal
 }
 
-/** MCP SDK OAuth provider that persists only reusable tokens/registration data. */
+/**
+ * MCP SDK OAuth provider that persists only reusable tokens/registration data.
+ *
+ * Every member the SDK awaits is an Effect internally; the promise-returning members it declares are
+ * assembled in the constructor through the sanctioned `toPromiseMethod` bridge, which also threads
+ * this provider's `AbortSignal` so an SDK abort interrupts the pending store operation.
+ */
 export class KeychainOAuthProvider implements OAuthClientProvider {
   readonly redirectUrl: string
   readonly clientMetadata: OAuthClientMetadata
+  readonly clientInformation: () => Promise<OAuthClientInformationMixed | undefined>
+  readonly saveClientInformation: (clientInformation: OAuthClientInformationMixed) => Promise<void>
+  readonly tokens: () => Promise<OAuthTokens | undefined>
+  readonly saveTokens: (tokens: OAuthTokens) => Promise<void>
+  readonly redirectToAuthorization: (authorizationUrl: URL) => Promise<void>
+  readonly invalidateCredentials: (scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery') => Promise<void>
   private verifier?: string
   private discovery?: OAuthDiscoveryState
   private readonly mutation = Semaphore.makeUnsafe(1)
@@ -225,6 +238,19 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
 
   constructor(options: KeychainOAuthProviderOptions) {
     this.options = options
+    const bridge = { signal: options.signal }
+    this.clientInformation = toPromiseMethod(() => this.clientInformationEffect(), bridge)
+    this.saveClientInformation = toPromiseMethod(
+      (clientInformation: OAuthClientInformationMixed) => this.saveClientInformationEffect(clientInformation),
+      bridge
+    )
+    this.tokens = toPromiseMethod(() => this.tokensEffect(), bridge)
+    this.saveTokens = toPromiseMethod((tokens: OAuthTokens) => this.saveTokensEffect(tokens), bridge)
+    this.redirectToAuthorization = toPromiseMethod((authorizationUrl: URL) => this.redirectToAuthorizationEffect(authorizationUrl), bridge)
+    this.invalidateCredentials = toPromiseMethod(
+      (scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery') => this.invalidateCredentialsEffect(scope),
+      bridge
+    )
     const port = options.config.callbackPort ?? DEFAULT_CALLBACK_PORT
     const { url } = callbackUrl({
       expectedState: options.state ?? 'unused',
@@ -253,49 +279,46 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
     return this.options.state
   }
 
-  // oxlint-disable-next-line effecttsgo/async-function -- Implements the MCP SDK's `OAuthClientProvider`, which declares promise-returning members.
-  async clientInformation(): Promise<OAuthClientInformationMixed | undefined> {
+  private clientInformationEffect(): Effect.Effect<OAuthClientInformationMixed | undefined, KeychainCredentialError> {
     if (isNotNullOrUndefined(this.options.config.clientId) && isNotEmptyString(this.options.config.clientId)) {
       const clientInformation: OAuthClientInformationMixed = { client_id: this.options.config.clientId }
       if (isNotNullOrUndefined(this.options.config.clientSecret) && isNotEmptyString(this.options.config.clientSecret)) {
         clientInformation.client_secret = this.options.config.clientSecret
       }
-      return clientInformation
+      return Effect.succeed(clientInformation)
     }
-    const credential = await this.load()
-    return credential?.clientInformation
+    return this.load().pipe(Effect.map((credential) => credential?.clientInformation))
   }
 
-  // oxlint-disable-next-line effecttsgo/async-function -- Implements the MCP SDK's `OAuthClientProvider`, which declares promise-returning members.
-  async saveClientInformation(clientInformation: OAuthClientInformationMixed): Promise<void> {
-    await this.update((credential) => ({
+  private saveClientInformationEffect(clientInformation: OAuthClientInformationMixed): Effect.Effect<void, KeychainCredentialError> {
+    return this.update((credential) => ({
       serverUrl: this.options.serverUrl,
       ...credential,
       clientInformation,
     }))
   }
 
-  // oxlint-disable-next-line effecttsgo/async-function -- Implements the MCP SDK's `OAuthClientProvider`, which declares promise-returning members.
-  async tokens(): Promise<OAuthTokens | undefined> {
-    const credential = await this.load()
-    return credential?.tokens
+  private tokensEffect(): Effect.Effect<OAuthTokens | undefined, KeychainCredentialError> {
+    return this.load().pipe(Effect.map((credential) => credential?.tokens))
   }
 
-  // oxlint-disable-next-line effecttsgo/async-function -- Implements the MCP SDK's `OAuthClientProvider`, which declares promise-returning members.
-  async saveTokens(tokens: OAuthTokens): Promise<void> {
-    await this.update((credential) => ({
+  private saveTokensEffect(tokens: OAuthTokens): Effect.Effect<void, KeychainCredentialError> {
+    return this.update((credential) => ({
       serverUrl: this.options.serverUrl,
       ...credential,
       tokens,
     }))
   }
 
-  // oxlint-disable-next-line effecttsgo/async-function -- Implements the MCP SDK's `OAuthClientProvider`, which declares promise-returning members.
-  async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
-    if (!isTrue(this.options.interactive) || isNullOrUndefined(this.options.openUrl)) {
-      throw new UnauthorizedError('OAuth authorization is required; use /mcp-auth <server>')
-    }
-    await this.options.openUrl(assertOpenableAuthorizationUrl(authorizationUrl.href).href, this.options.signal)
+  /** Throws like `state()` rather than failing: the SDK matches `instanceof UnauthorizedError`, which a tagged failure would hide. */
+  private redirectToAuthorizationEffect(authorizationUrl: URL): Effect.Effect<void, McpError> {
+    return Effect.suspend(() => {
+      const { interactive, openUrl } = this.options
+      if (!isTrue(interactive) || isNullOrUndefined(openUrl)) {
+        throw new UnauthorizedError('OAuth authorization is required; use /mcp-auth <server>')
+      }
+      return openUrl(assertOpenableAuthorizationUrl(authorizationUrl.href).href)
+    })
   }
 
   saveCodeVerifier(codeVerifier: string): void {
@@ -317,23 +340,21 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
     return this.discovery
   }
 
-  // oxlint-disable-next-line effecttsgo/async-function -- Implements the MCP SDK's `OAuthClientProvider`, which declares promise-returning members.
-  async invalidateCredentials(scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery'): Promise<void> {
+  private invalidateCredentialsEffect(scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery'): Effect.Effect<void, KeychainCredentialError> {
     if (scope === 'verifier') {
       this.verifier = undefined
-      return
+      return Effect.void
     }
     if (scope === 'discovery') {
       this.discovery = undefined
-      return
+      return Effect.void
     }
     if (scope === 'all') {
       this.verifier = undefined
       this.discovery = undefined
-      await this.options.store.delete(this.options.serverName, this.options.signal)
-      return
+      return this.options.store.delete(this.options.serverName)
     }
-    await this.update((credential) => {
+    return this.update((credential) => {
       const next = { ...credential, serverUrl: this.options.serverUrl }
       if (scope === 'client') {
         delete next.clientInformation
@@ -345,25 +366,19 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
     })
   }
 
-  private load(): Promise<OAuthCredentialPayload | undefined> {
-    return this.options.store.get(this.options.serverName, this.options.serverUrl, this.options.signal)
+  private load(): Effect.Effect<OAuthCredentialPayload | undefined, KeychainCredentialError> {
+    return this.options.store.get(this.options.serverName, this.options.serverUrl).pipe(Effect.map(Option.getOrUndefined))
   }
 
-  private update(updater: (current: OAuthCredentialPayload | undefined) => OAuthCredentialPayload | undefined): Promise<void> {
-    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-14a] §8.8; permanent: only the promise-returning `OAuthClientProvider` members above call this, so this is the SDK boundary itself
-    return Effect.runPromise(
-      this.mutation.withPermits(1)(
-        Effect.gen({ self: this }, function* () {
-          const current = yield* Effect.tryPromise(() => this.load())
-          const next = updater(current)
-          yield* Effect.tryPromise(() =>
-            next === undefined
-              ? this.options.store.delete(this.options.serverName, this.options.signal)
-              : this.options.store.set(this.options.serverName, next, this.options.signal)
-          )
-        })
-      ),
-      { signal: this.options.signal }
+  private update(
+    updater: (current: OAuthCredentialPayload | undefined) => OAuthCredentialPayload | undefined
+  ): Effect.Effect<void, KeychainCredentialError> {
+    return this.mutation.withPermits(1)(
+      Effect.gen({ self: this }, function* () {
+        const current = yield* this.load()
+        const next = updater(current)
+        yield* next === undefined ? this.options.store.delete(this.options.serverName) : this.options.store.set(this.options.serverName, next)
+      })
     )
   }
 }

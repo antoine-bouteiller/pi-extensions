@@ -98,6 +98,26 @@ export const makeEventHandler =
     runtime.runPromise(Effect.suspend(() => body(event, ctx)).pipe(Effect.provide(perInvocation(ctx))))
 
 /**
+ * Adapts an Effect-returning method onto a promise-returning SDK contract: a typed failure rejects
+ * with the failure value itself, so an SDK that tests `instanceof` still recognises it, and the
+ * SDK's own `AbortSignal` interrupts the fiber.
+ */
+export const toPromiseMethod =
+  <Args extends readonly unknown[], Value, Failure>(
+    body: (...args: Args) => Effect.Effect<Value, Failure>,
+    options: { readonly signal?: AbortSignal } = {}
+  ) =>
+  /*
+   * Suspended so that a body throwing while its effect is still being built becomes a rejected
+   * promise like every other failure, matching `makeEventHandler`.
+   */
+  (...args: Args): Promise<Value> =>
+    Effect.runPromise(
+      Effect.suspend(() => body(...args)),
+      options
+    )
+
+/**
  * Keeps the rejection in the error channel instead of dying, so callers can `catchAll` it and map
  * it onto their own extension error rather than losing it as a defect.
  */

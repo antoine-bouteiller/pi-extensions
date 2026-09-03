@@ -1,4 +1,5 @@
 import { type ExtensionCommandContext, type ToolDefinition } from '@earendil-works/pi-coding-agent'
+import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
 import { makeAbortController } from '@tests/utils/abort_controller.js'
 import { promiseFromEffect, tryEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asError, asExtensionContext, asNarrowed, asTool } from '@tests/utils/casts.js'
@@ -8,7 +9,7 @@ import { Type } from 'typebox'
 
 import { ToolFailure } from '@/shared/effect/errors.js'
 import { PiCtx, Ui } from '@/shared/effect/pi_services.js'
-import { makeCommandHandler, makeEventHandler, makeToolExecutor, perInvocation, withAbortSignal } from '@/shared/effect/runtime.js'
+import { makeCommandHandler, makeEventHandler, makeToolExecutor, perInvocation, toPromiseMethod, withAbortSignal } from '@/shared/effect/runtime.js'
 
 interface UiCalls {
   confirms: { title: string; message: string; aborted: boolean }[]
@@ -439,6 +440,68 @@ describe('runtime disposal', () => {
       expect(yield* Effect.promise(() => replacement.runPromise(Counter.pipe(Effect.map((counter) => counter.id))))).toBe('counter')
       yield* Effect.promise(() => replacement.dispose())
       expect(released).toBe(2)
+    })
+  )
+})
+
+describe('promise-method adapter', () => {
+  it.effect('rejects with the failure value itself so an SDK instanceof check still matches', () =>
+    Effect.gen(function* () {
+      const failure = new UnauthorizedError('needs authorization')
+      const method = toPromiseMethod((_serverName: string) => Effect.fail(failure))
+
+      const rejection = yield* Effect.promise(() =>
+        method('server').then(
+          () => undefined,
+          (error: unknown) => error
+        )
+      )
+
+      expect(rejection).toBe(failure)
+      expect(rejection).toBeInstanceOf(UnauthorizedError)
+    })
+  )
+
+  it.effect('passes arguments through, rejects a body that throws while building, and interrupts on abort', () =>
+    Effect.gen(function* () {
+      const seen: string[] = []
+      const echo = toPromiseMethod((value: string) => Effect.sync(() => `echo:${value}`))
+      expect(yield* Effect.promise(() => echo('one'))).toBe('echo:one')
+
+      const throwing = toPromiseMethod((): Effect.Effect<void> => {
+        throw new Error('built badly')
+      })
+      expect(
+        asError(
+          yield* Effect.promise(() =>
+            throwing().then(
+              () => undefined,
+              (error: unknown) => error
+            )
+          )
+        ).message
+      ).toBe('built badly')
+
+      const controller = makeAbortController()
+      const pending = toPromiseMethod(
+        () =>
+          Effect.never.pipe(
+            Effect.onInterrupt(() =>
+              Effect.sync(() => {
+                seen.push('interrupted')
+              })
+            )
+          ),
+        { signal: controller.signal }
+      )()
+      const settled = pending.then(
+        () => 'resolved',
+        () => 'rejected'
+      )
+      controller.abort()
+
+      expect(yield* Effect.promise(() => settled)).toBe('rejected')
+      expect(seen).toEqual(['interrupted'])
     })
   )
 })

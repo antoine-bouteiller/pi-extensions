@@ -12,11 +12,12 @@ import { asError } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { httpGet } from '@tests/utils/http.js'
 import { freeLoopbackPort } from '@tests/utils/loopback_port.js'
-import { Effect, Fiber, FileSystem, Path } from 'effect'
+import { Effect, Fiber, FileSystem, Option, Path } from 'effect'
 
 import { readonlyMcpPolicy, type McpOperationOptions, type McpSearchOptions } from '@/features/mcp/gateway.js'
 import { KeychainCredentialError, type CredentialStore } from '@/features/mcp/keychain.js'
 import { McpManager, McpManagerService, mcpManagerLayer } from '@/features/mcp/manager.js'
+import { type OpenUrl } from '@/features/mcp/oauth.js'
 import { type McpGatewayPolicy, type McpServerMap } from '@/features/mcp/types.js'
 import { type JsonObject, jsonText } from '@/shared/utils/json.js'
 
@@ -80,7 +81,7 @@ const harness = (
     listTools?: () => Promise<FakePage>
     call?: (params: { name: string; arguments: JsonObject }) => Promise<unknown>
     callResult?: unknown
-    openUrl?: (url: string, signal?: AbortSignal) => Promise<void>
+    openUrl?: OpenUrl
     credentialStore?: CredentialStore
     policy?: McpGatewayPolicy
   } = {}
@@ -170,17 +171,15 @@ const harness = (
       return transport
     },
     credentialStore: options.credentialStore ?? {
-      delete: () => promiseFromEffect(Effect.void),
+      delete: () => Effect.void,
       get: () =>
-        promiseFromEffect(
-          Effect.sync(() => {
-            calls.keychainReads += 1
-            return undefined
-          })
-        ),
-      set: () => promiseFromEffect(Effect.void),
+        Effect.sync(() => {
+          calls.keychainReads += 1
+          return Option.none()
+        }),
+      set: () => Effect.void,
     },
-    openUrl: options.openUrl ?? (() => promiseFromEffect(Effect.void)),
+    openUrl: options.openUrl ?? (() => Effect.void),
     policy: options.policy,
   })
   return { calls, manager: promised(manager), raw: manager }
@@ -667,13 +666,11 @@ describe('MCP manager', () => {
             })
           ),
         openUrl: (authorizationUrl) =>
-          promiseFromEffect(
-            Effect.sync(() => {
-              opened.push(authorizationUrl)
-              const state = new URL(authorizationUrl).searchParams.get('state')
-              void httpGet(`http://localhost:${port}/callback?code=oauth-code&state=${state}`)
-            })
-          ),
+          Effect.sync(() => {
+            opened.push(authorizationUrl)
+            const state = new URL(authorizationUrl).searchParams.get('state')
+            void httpGet(`http://localhost:${port}/callback?code=oauth-code&state=${state}`)
+          }),
       })
 
       yield* Effect.promise(() => fixture.manager.authenticate('slack'))
@@ -718,12 +715,10 @@ describe('MCP manager', () => {
             })
           ),
         openUrl: (authorizationUrl) =>
-          promiseFromEffect(
-            Effect.sync(() => {
-              openedUrl = authorizationUrl
-              browserOpened.resolve(undefined)
-            })
-          ),
+          Effect.sync(() => {
+            openedUrl = authorizationUrl
+            browserOpened.resolve(undefined)
+          }),
       })
 
       const firstController = makeAbortController()
@@ -784,7 +779,7 @@ describe('MCP manager', () => {
                     type: 'stdio',
                   },
                 },
-                { openUrl: () => promiseFromEffect(Effect.void) }
+                { openUrl: () => Effect.void }
               )
             )
           ),
@@ -838,16 +833,14 @@ describe('MCP manager', () => {
         connect: (_transport, provider) =>
           promiseFromEffect(provider === undefined ? Effect.void : Effect.promise(() => Promise.resolve(provider.tokens())).pipe(Effect.asVoid)),
         credentialStore: {
-          delete: () => promiseFromEffect(Effect.void),
+          delete: () => Effect.void,
           get: () =>
-            promiseFromEffect(
-              Effect.fail(
-                KeychainCredentialError.make({
-                  message: 'macOS Keychain lookup failed. Ensure Keychain is available and unlocked, then retry.',
-                })
-              )
+            Effect.fail(
+              KeychainCredentialError.make({
+                message: 'macOS Keychain lookup failed. Ensure Keychain is available and unlocked, then retry.',
+              })
             ),
-          set: () => promiseFromEffect(Effect.void),
+          set: () => Effect.void,
         },
       })
       yield* Effect.promise(() =>
@@ -893,7 +886,7 @@ describe('MCP manager', () => {
         Effect.gen(function* () {
           const manager = yield* McpManagerService
           return manager.status()
-        }).pipe(Effect.provide(mcpManagerLayer({}, { openUrl: () => promiseFromEffect(Effect.void) })))
+        }).pipe(Effect.provide(mcpManagerLayer({}, { openUrl: () => Effect.void })))
       )
       expect(statuses).toEqual([])
     })

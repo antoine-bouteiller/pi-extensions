@@ -3,11 +3,11 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 
 import { type AsyncEntry as AsyncEntryType } from '@napi-rs/keyring'
-import { Context, Effect, Layer, Option, Schema } from 'effect'
+import { Effect, Option, Result, Schema } from 'effect'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
-import { type JsonObject, type JsonValue } from '#shared/utils/json'
+import { jsonText, parseJsonText, type JsonObject, type JsonValue } from '#shared/utils/json'
 import { isEmptyString } from '#shared/utils/predicates'
 import { isRecord } from '#shared/utils/records'
 
@@ -45,23 +45,12 @@ export interface OAuthCredentialPayload {
   clientInformation?: OAuthClientInformation
 }
 
-/** Async boundary consumed by the OAuth provider; tests can supply an in-memory store. */
+/** Credential boundary consumed by the OAuth provider; tests can supply an in-memory store. */
 export interface CredentialStore {
-  get: (serverName: string, serverUrl: string, signal?: AbortSignal) => Promise<OAuthCredentialPayload | undefined>
-  set: (serverName: string, credential: OAuthCredentialPayload, signal?: AbortSignal) => Promise<void>
-  delete: (serverName: string, signal?: AbortSignal) => Promise<void>
-}
-
-interface CredentialStoreEffectApi {
   readonly delete: (serverName: string) => Effect.Effect<void, KeychainCredentialError>
   readonly get: (serverName: string, serverUrl: string) => Effect.Effect<Option.Option<OAuthCredentialPayload>, KeychainCredentialError>
   readonly set: (serverName: string, credential: OAuthCredentialPayload) => Effect.Effect<void, KeychainCredentialError>
 }
-
-/** Effect-native credential boundary; the Promise interface remains as the MCP SDK adapter. */
-export class CredentialStoreEffect extends Context.Service<CredentialStoreEffect, CredentialStoreEffectApi>()(
-  'pi-extensions/features/mcp/keychain/CredentialStoreEffect'
-) {}
 
 type KeyringEntry = Pick<AsyncEntryType, 'deletePassword' | 'getPassword' | 'setPassword'>
 type EntryFactory = (service: string, account: string) => KeyringEntry
@@ -191,6 +180,12 @@ const isMissingCredential = (error: unknown): boolean => {
   )
 }
 
+/** The keyring reports an absent credential as a failure; both readers recover from it. */
+class MissingKeychainEntry extends Schema.TaggedError<MissingKeychainEntry>()('MissingKeychainEntry', {}) {}
+
+const keychainError = (cause: unknown): KeychainCredentialError =>
+  Schema.is(KeychainCredentialError)(cause) ? cause : KeychainCredentialError.make({ message: 'System keyring OAuth credential operation failed.' })
+
 const operationError = (operation: string, serverName: string): Error =>
   KeychainCredentialError.make({
     message:
@@ -220,71 +215,45 @@ export class KeychainCredentialStore implements CredentialStore {
     return this.createEntry(this.serviceName, keychainAccount(serverName))
   }
 
-  // oxlint-disable-next-line effecttsgo/async-function -- Implements the promise-returning `CredentialStore` awaited by the MCP SDK's OAuth provider; `CredentialStoreEffect` is the Effect-facing wrapper.
-  async get(serverName: string, serverUrl: string, signal?: AbortSignal): Promise<OAuthCredentialPayload | undefined> {
-    let serialized: string | undefined
-    try {
-      const entry = this.entry(serverName)
-      serialized = await entry.getPassword(signal)
-    } catch (error) {
-      if (isMissingCredential(error)) {
-        return undefined
+  get(serverName: string, serverUrl: string): Effect.Effect<Option.Option<OAuthCredentialPayload>, KeychainCredentialError> {
+    return Effect.gen({ self: this }, function* () {
+      const serialized = yield* Effect.tryPromise({
+        catch: (error: unknown) => (isMissingCredential(error) ? MissingKeychainEntry.make({}) : keychainError(operationError('lookup', serverName))),
+        try: (signal) => this.entry(serverName).getPassword(signal),
+      })
+      if (serialized === undefined) {
+        return Option.none<OAuthCredentialPayload>()
       }
-      throw operationError('lookup', serverName)
-    }
-    if (serialized === undefined) {
-      return undefined
-    }
-    try {
-      if (typeof serialized !== 'string') {
-        throw malformed(serverName)
+      const parsed = yield* Effect.result(Effect.try(() => validateCredentialPayload(parseJsonText(serialized), serverName)))
+      if (Result.isFailure(parsed)) {
+        yield* this.delete(serverName)
+        return Option.none<OAuthCredentialPayload>()
       }
-      const credential = validateCredentialPayload(JSON.parse(serialized) as unknown, serverName)
-      return credential.serverUrl === serverUrl ? credential : undefined
-    } catch {
-      await this.delete(serverName, signal)
-      return undefined
-    }
+      return parsed.success.serverUrl === serverUrl ? Option.some(parsed.success) : Option.none()
+    }).pipe(Effect.catchTag('MissingKeychainEntry', () => Effect.succeed(Option.none<OAuthCredentialPayload>())))
   }
 
-  // oxlint-disable-next-line effecttsgo/async-function -- Implements the promise-returning `CredentialStore` awaited by the MCP SDK's OAuth provider.
-  async set(serverName: string, credential: OAuthCredentialPayload, signal?: AbortSignal): Promise<void> {
-    const validated = validateCredentialPayload(credential, serverName)
-    try {
-      const entry = this.entry(serverName)
-      await entry.setPassword(JSON.stringify(validated), signal)
-    } catch {
-      throw operationError('write', serverName)
-    }
+  set(serverName: string, credential: OAuthCredentialPayload): Effect.Effect<void, KeychainCredentialError> {
+    return Effect.try({ catch: keychainError, try: () => validateCredentialPayload(credential, serverName) }).pipe(
+      Effect.flatMap((validated) =>
+        Effect.tryPromise({
+          catch: () => keychainError(operationError('write', serverName)),
+          try: (signal) => this.entry(serverName).setPassword(jsonText(validated), signal),
+        })
+      ),
+      Effect.asVoid
+    )
   }
 
-  // oxlint-disable-next-line effecttsgo/async-function -- Implements the promise-returning `CredentialStore` awaited by the MCP SDK's OAuth provider.
-  async delete(serverName: string, signal?: AbortSignal): Promise<void> {
-    try {
-      const entry = this.entry(serverName)
-      await entry.deletePassword(signal)
-    } catch (error) {
-      if (isMissingCredential(error)) {
-        return
-      }
-      throw operationError('deletion', serverName)
-    }
+  delete(serverName: string): Effect.Effect<void, KeychainCredentialError> {
+    return Effect.tryPromise({
+      catch: (error: unknown) => (isMissingCredential(error) ? MissingKeychainEntry.make({}) : keychainError(operationError('deletion', serverName))),
+      try: (signal) => this.entry(serverName).deletePassword(signal),
+    }).pipe(
+      Effect.asVoid,
+      Effect.catchTag('MissingKeychainEntry', () => Effect.void)
+    )
   }
 }
 
 export const createKeychainCredentialStore = (options: KeychainCredentialStoreOptions = {}): CredentialStore => new KeychainCredentialStore(options)
-
-const asKeychainError = (cause: unknown): KeychainCredentialError =>
-  Schema.is(KeychainCredentialError)(cause) ? cause : KeychainCredentialError.make({ message: 'System keyring OAuth credential operation failed.' })
-
-export const credentialStoreEffectLayer = (options: KeychainCredentialStoreOptions = {}): Layer.Layer<CredentialStoreEffect> => {
-  const store = createKeychainCredentialStore(options)
-  return Layer.succeed(CredentialStoreEffect)({
-    delete: (serverName) => Effect.tryPromise({ catch: asKeychainError, try: () => store.delete(serverName) }),
-    get: (serverName, serverUrl) =>
-      Effect.tryPromise({ catch: asKeychainError, try: () => store.get(serverName, serverUrl) }).pipe(
-        Effect.map((value) => (value === undefined ? Option.none() : Option.some(value)))
-      ),
-    set: (serverName, credential) => Effect.tryPromise({ catch: asKeychainError, try: () => store.set(serverName, credential) }),
-  })
-}

@@ -1,9 +1,10 @@
+import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
 import { makeAbortController } from '@tests/utils/abort_controller.js'
-import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
+import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asError } from '@tests/utils/casts.js'
 import { httpGet } from '@tests/utils/http.js'
 import { freeLoopbackPort } from '@tests/utils/loopback_port.js'
-import { Effect, Fiber } from 'effect'
+import { Effect, Fiber, Option } from 'effect'
 
 import { type CredentialStore, type OAuthCredentialPayload } from '@/features/mcp/keychain.js'
 import { KeychainOAuthProvider, createOAuthState, startOAuthCallback, type OAuthCallback, type OAuthCallbackOptions } from '@/features/mcp/oauth.js'
@@ -14,26 +15,20 @@ class MemoryStore implements CredentialStore {
   value?: OAuthCredentialPayload
   reads = 0
   get(_name: string, url: string) {
-    return promiseFromEffect(
-      Effect.sync(() => {
-        this.reads += 1
-        return this.value?.serverUrl === url ? structuredClone(this.value) : undefined
-      })
-    )
+    return Effect.sync(() => {
+      this.reads += 1
+      return this.value?.serverUrl === url ? Option.some(structuredClone(this.value)) : Option.none()
+    })
   }
   set(_name: string, value: OAuthCredentialPayload) {
-    return promiseFromEffect(
-      Effect.sync(() => {
-        this.value = structuredClone(value)
-      })
-    )
+    return Effect.sync(() => {
+      this.value = structuredClone(value)
+    })
   }
   delete() {
-    return promiseFromEffect(
-      Effect.sync(() => {
-        this.value = undefined
-      })
-    )
+    return Effect.sync(() => {
+      this.value = undefined
+    })
   }
 }
 
@@ -259,18 +254,23 @@ describe('Keychain OAuth provider', () => {
         serverUrl: 'https://mcp.example.test/mcp',
         store: new MemoryStore(),
       })
-      expect(provider.redirectToAuthorization(new URL('https://auth.test'))).rejects.toThrow('/mcp-auth')
+      const refusal = yield* Effect.promise(() =>
+        provider.redirectToAuthorization(new URL('https://auth.test')).then(
+          () => undefined,
+          (error: unknown) => error
+        )
+      )
+      expect(refusal).toBeInstanceOf(UnauthorizedError)
+      expect(asError(refusal).message).toContain('/mcp-auth')
 
       const state = createOAuthState()
       const interactive = new KeychainOAuthProvider({
         config: { callbackPort: 3120 },
         interactive: true,
         openUrl: (url) =>
-          promiseFromEffect(
-            Effect.sync(() => {
-              opened.push(url)
-            })
-          ),
+          Effect.sync(() => {
+            opened.push(url)
+          }),
         serverName: 'remote',
         serverUrl: 'https://mcp.example.test/mcp',
         state,
@@ -285,6 +285,40 @@ describe('Keychain OAuth provider', () => {
       }
       yield* Effect.promise(() => interactive.redirectToAuthorization(new URL('http://localhost:3120/callback')))
       expect(opened).toEqual(['https://auth.test/start', 'http://localhost:3120/callback'])
+    })
+  )
+
+  it.effect('interrupts a pending store read when the SDK aborts the provider signal', () =>
+    Effect.gen(function* () {
+      let interrupted = false
+      const controller = makeAbortController()
+      const provider = new KeychainOAuthProvider({
+        config: { callbackPort: 3121 },
+        serverName: 'remote',
+        serverUrl: 'https://mcp.example.test/mcp',
+        signal: controller.signal,
+        store: {
+          delete: () => Effect.void,
+          get: () =>
+            Effect.never.pipe(
+              Effect.onInterrupt(() =>
+                Effect.sync(() => {
+                  interrupted = true
+                })
+              )
+            ),
+          set: () => Effect.void,
+        },
+      })
+
+      const settled = provider.tokens().then(
+        () => 'resolved',
+        () => 'rejected'
+      )
+      controller.abort()
+
+      expect(yield* Effect.promise(() => settled)).toBe('rejected')
+      expect(interrupted).toBeTrue()
     })
   )
 })

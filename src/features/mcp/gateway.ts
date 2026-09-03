@@ -8,6 +8,7 @@ import { Type, type Static } from 'typebox'
 
 import { type AppServices } from '#shared/effect/app_services'
 import { ToolFailure } from '#shared/effect/errors'
+import { withAbortSignal } from '#shared/effect/runtime'
 import { createStatusChannel } from '#shared/state/status_bar'
 import { type JsonObject, type JsonValue, jsonText } from '#shared/utils/json'
 import { join } from '#shared/utils/path'
@@ -18,6 +19,7 @@ import { loadGlobalMcpConfig } from './config.js'
 import { boundGatewayOutput } from './output.js'
 import {
   assertOpenableAuthorizationUrl,
+  McpError,
   type McpGatewayPolicy,
   type McpPolicyRequest,
   type McpServerMap,
@@ -589,14 +591,16 @@ export const makeMcpGateway = (): McpGatewayApi => ({
       ({ McpManager: Manager }) =>
         new Manager(config, {
           onStatusChange: callbacks.onStatusChange,
-          // oxlint-disable-next-line effecttsgo/async-function -- `openUrl` is handed to the MCP SDK's OAuth provider, which awaits it.
-          async openUrl(url: string, signal?: AbortSignal) {
+          openUrl: (url: string) =>
             // Re-checked at the process boundary: `open` dispatches any scheme the OS has registered.
-            const result = await pi.exec('/usr/bin/open', [assertOpenableAuthorizationUrl(url).href], { signal })
-            if (result.code !== 0) {
-              throw new Error(`Could not open the OAuth authorization page: ${result.stderr.trim()}`)
-            }
-          },
+            withAbortSignal((signal) => pi.exec('/usr/bin/open', [assertOpenableAuthorizationUrl(url).href], { signal })).pipe(
+              Effect.mapError((error) => new McpError({ cause: error, message: 'Could not open the OAuth authorization page' })),
+              Effect.flatMap((result) =>
+                result.code === 0
+                  ? Effect.void
+                  : Effect.fail(new McpError({ message: `Could not open the OAuth authorization page: ${result.stderr.trim()}` }))
+              )
+            ),
           policy,
         })
     ),
