@@ -1,4 +1,3 @@
-/* oxlint-disable effecttsgo/node-builtin-import -- Effect FileSystem lacks no-follow metadata, typed directory entries, and the unscoped descriptor ownership cross-process locks need. */
 import fs from 'node:fs'
 
 import { type Cause, Effect } from 'effect'

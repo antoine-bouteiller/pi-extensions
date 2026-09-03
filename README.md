@@ -29,7 +29,7 @@ The command `bun run check` runs Oxfmt, Oxlint, Knip, and the Bun test suite. Us
 
 **Type checking is handled by Oxlint.** The `oxlint.config.ts` file enables `options.typeAware` and `options.typeCheck`. Because `oxlint-tsgolint` performs the analysis, `bun run lint` serves as the type check for both local development and CI. You do not need a separate type-checking step.
 
-`bun run typecheck` (`tsc --noEmit`) is for information only. It is used to show suggestions from [`@effect/language-service`](https://github.com/Effect-TS/language-service), such as `processEnv`, `globalTimers`, and `nodeBuiltinImport`. These are technically warnings, but they cause `tsc` to fail, so the script is expected to error out. Because of this, it is excluded from `check` and CI. Any other warnings are intentionally allowed via the `overrides` block in `oxlint.config.ts` or via `oxlint-disable` comments.
+`bun run typecheck` (`tsc --noEmit`) is for information only. It is used to show suggestions from [`@effect/language-service`](https://github.com/Effect-TS/language-service), such as `processEnv`, `globalTimers`, and `nodeBuiltinImport`. These are technically warnings, but they cause `tsc` to fail, so the script is expected to error out. Because of this, it is excluded from `check` and CI. Any other warnings are intentionally allowed via the `overrides` block in `oxlint.config.ts`, which is the primary mechanism; an `oxlint-disable` comment is used only where a single call is the right granularity.
 
 ## Layout
 

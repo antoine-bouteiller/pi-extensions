@@ -67,12 +67,37 @@ export default defineConfig({
       },
     },
     {
+      /*
+       * Effect's `FileSystem` lacks the no-follow metadata, typed directory entries, and unscoped
+       * descriptor ownership the cross-process lock and its TOCTOU checks need, so this module is
+       * the one place that reaches for `node:fs` directly.
+       */
+      files: ['src/shared/effect/bun_host_file_system.ts'],
+      rules: {
+        'effecttsgo/node-builtin-import': 'off',
+      },
+    },
+    {
+      /*
+       * The single audited location for test-double casts: it narrows hand-built fakes onto the real
+       * extension interfaces they stand in for, and its type parameters are explicit-only because
+       * the caller names the target shape and there is nothing to infer.
+       */
+      files: ['tests/utils/casts.ts'],
+      rules: {
+        'typescript/no-unnecessary-type-parameters': 'off',
+        'typescript/no-unsafe-type-assertion': 'off',
+      },
+    },
+    {
       files: ['tests/**'],
       rules: {
         // Specs drive features that read the environment; `withProcessEnv` restores it afterwards.
         'effecttsgo/process-env': 'off',
         // Tests are application entry points: each spec provides its own layer, so scope lifetimes don't apply.
         'effecttsgo/strict-effect-provide': 'off',
+        // Specs must write `null` literals to exercise the nullish predicates and the Pi payloads that use them.
+        'unicorn/no-null': 'off',
       },
     },
   ],

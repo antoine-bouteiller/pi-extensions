@@ -73,8 +73,8 @@ defines one boundary and one independently enabled feature contract.
 - `[NG-1]` Reducing Effect usage or converting Effect code to `async`/`await`.
 - `[NG-2]` Migrating the unrelated tool/command/ownership/error divergences in §8.8; lifecycle
   migrations required by `[KD-2a]` are explicitly in scope.
-- `[NG-3]` Retrofitting those divergences to pass `[KD-14a]`; each retains a one-site disable
-  naming its conformance row until migration.
+- `[NG-3]` Retrofitting those divergences to pass `[KD-14a]`; each retained a one-site disable
+  naming its conformance row until migration. Moot since 2026-09-03: §8.8 lists no remaining site.
 - `[NG-4]` Changing Pi SDK signatures or its TypeBox registration requirements.
 - `[NG-5]` Prescribing internal combinator, `gen`, or service-granularity style.
 - `[NG-6]` A configuration UI/file for enablement; imports and registry entries are the mechanism.
@@ -384,14 +384,14 @@ Lifecycle/bootstrap and runtime-composition migrations are complete. The rows be
 unrelated divergences that remain non-goals under `[NG-2]`. Citations name current symbols/checked
 lines; the symbol is durable when a line drifts (`[C-4]`).
 
-| Scope     | Rule       | Divergence                                               | Current sites/symbols                                                                                                                                                                                                                                                            |
-| --------- | ---------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Non-goal  | `[KD-3]`   | Inline tool bridges omit the standard executor behavior. | None. Every site is migrated: `makeToolExecutor` now passes a `ToolInvocation` record and takes `interruptOnAbort` for cooperative bodies.                                                                                                                                       |
-| Non-goal  | `[KD-5]`   | Inline command bridges.                                  | None. `prompt_rewind` and `mcp` now use `makeCommandHandler`.                                                                                                                                                                                                                    |
-| Exception | `[KD-6]`   | Verified memory-only synchronous Effect execution.       | `src/features/background_poll/poll.ts:351`; `src/features/claude_code/discovery.ts:283`; `src/features/mcp/gateway.ts:444,465,527`; `src/features/rules/rules.ts:644`; `src/features/status_panel/panel.ts:70,75,90,94`; `src/features/status_panel/sidebar.ts:410,412,476,491`. |
-| Non-goal  | `[KD-7]`   | Existing fork policies.                                  | `src/features/status_panel/panel.ts:135`; `src/features/status_panel/sidebar.ts:438,448`.                                                                                                                                                                                        |
-| Non-goal  | `[KD-8]`   | Runtime re-entry from effectful code.                    | None. `mutationQueueSlot` (`src/shared/effect/mutation_queue.ts`) acquires Pi's queue as a scoped resource, so the guarded work stays on the calling fiber.                                                                                                                      |
-| Non-goal  | `[KD-14a]` | Direct runtime adapters outside approved owners.         | `src/features/mcp/oauth.ts:353` (the MCP SDK awaits `OAuthClientProvider`). `comment_checker` and `caffeinate` are migrated; `status_panel/panel.ts:54,56,58` is reclassified as permanent service extraction.                                                                   |
+| Scope     | Rule       | Divergence                                               | Current sites/symbols                                                                                                                                                                            |
+| --------- | ---------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Non-goal  | `[KD-3]`   | Inline tool bridges omit the standard executor behavior. | None. Every site is migrated: `makeToolExecutor` now passes a `ToolInvocation` record and takes `interruptOnAbort` for cooperative bodies.                                                       |
+| Non-goal  | `[KD-5]`   | Inline command bridges.                                  | None. `prompt_rewind` and `mcp` now use `makeCommandHandler`.                                                                                                                                    |
+| Exception | `[KD-6]`   | Verified memory-only synchronous Effect execution.       | None. Memory-only state is built with `Ref.makeUnsafe`/`Semaphore.makeUnsafe` and read with `Ref.getUnsafe`; the status panel holds its state in a `MutableRef` and the sidebar in plain locals. |
+| Non-goal  | `[KD-7]`   | Existing fork policies.                                  | None. Every status-panel fork names the session scope (`Effect.forkIn`), and the synchronous footer callback enters Effect through `Queue.offerUnsafe` on a session-scoped queue.                |
+| Non-goal  | `[KD-8]`   | Runtime re-entry from effectful code.                    | None. `mutationQueueSlot` (`src/shared/effect/mutation_queue.ts`) acquires Pi's queue as a scoped resource, so the guarded work stays on the calling fiber.                                      |
+| Non-goal  | `[KD-14a]` | Direct runtime adapters outside approved owners.         | None. `KeychainOAuthProvider` builds its promise-returning SDK members with `toPromiseMethod` from the bridge module, and the status panel resolves its services inside `sessionStart`.          |
 
 ### 8.9 Test boundary
 
@@ -444,9 +444,11 @@ src/features/sub_agents/runtime.ts allow: feature-owned ManagedRuntime.make for 
 all other src/**                   deny: pi.register*, pi.on, bridge helpers, runtime construction/entry
 ```
 
-`Effect.runSync` memory-only TUI sites and every §8.8 site governed by
-`no-effect-pi-boundary` require a one-call disable comment naming the decision and
-removal/permanence rationale. `[KD-9]` remains outside this rule. The lint rule also rejects
+`toPromiseMethod` in `src/shared/effect/runtime.ts` is the sanctioned adapter for third-party
+contracts that declare promise-returning members, such as the MCP SDK's `OAuthClientProvider`: the
+logic stays in Effect and only the outermost method crosses. Memory-only synchronous state uses the
+`*Unsafe` constructors and readers instead of runtime entry, so no §8.8 site governed by
+`no-effect-pi-boundary` carries a disable comment. `[KD-9]` remains outside this rule. The lint rule also rejects
 `session_start`/`session_shutdown` registration from a feature index and rejects config runtime
 imports matching `#features/*`.
 
@@ -483,3 +485,4 @@ N/A
 | 2026-08-24 | Add independent feature plugins, background preflight, and generic persistent health                                                                               | 2–8               | Make features independently enabled, registered, checked, and observable without blocking session startup.                                                                                                                                                                                          |
 | 2026-08-24 | Amend boundary ownership, runtime composition, discriminated plugin contract, bootstrap, coordinator races/state, status/security behavior, conformance, and tests | 2–8               | Resolve all review blockers: implementation-returning preparation, synchronous eager registration/ordered activation, only comment-checker/Meridian background prepare, session-only context, resilient status policy, Meridian HTTP security, full MCP disablement, and lifecycle migration scope. |
 | 2026-08-24 | Complete descriptor-only registry composition and remove completed lifecycle/runtime migrations from conformance                                                   | 8                 | Make configuration the sole enablement surface and retain only active divergence inventory.                                                                                                                                                                                                         |
+| 2026-09-03 | Close the `[KD-6]`, `[KD-7]`, and `[KD-14a]` divergences and name `toPromiseMethod` as the SDK-adapter bridge                                                      | 8.8, 8.11         | Unsafe constructors, `MutableRef`, session-scoped forks, and one bridge adapter replace every inline boundary disable.                                                                                                                                                                              |

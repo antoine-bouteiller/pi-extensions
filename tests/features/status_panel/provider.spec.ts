@@ -84,7 +84,6 @@ describe('Anthropic quota provider', () => {
             {
               isActive: true,
               windows: [
-                // oxlint-disable-next-line unicorn/no-null -- Meridian uses null when no session timer is active.
                 { resetsAt: null, type: 'five_hour', utilization: 0 },
                 { resetsAt: now + 24 * 60 * 60_000, type: 'seven_day', utilization: 0.45 },
               ],

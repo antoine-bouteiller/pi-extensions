@@ -1,6 +1,5 @@
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Effect } from 'effect'
-// oxlint-disable unicorn/no-null -- Null literals are required to exercise the nullish predicates.
 
 import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '@/shared/utils/predicates.js'
 

@@ -1,5 +1,3 @@
-/* oxlint-disable typescript/no-unsafe-type-assertion -- single audited location for test-double casts; narrows hand-built fakes onto the real extension interfaces they stand in for */
-/* oxlint-disable typescript/no-unnecessary-type-parameters -- these type parameters are intentionally explicit-only: the caller names the target shape, there is nothing to infer */
 import { type ExtensionAPI, type ExtensionContext, type ReadonlyFooterDataProvider, type Theme } from '@earendil-works/pi-coding-agent'
 import { type TUI } from '@earendil-works/pi-tui'
 
