@@ -39,7 +39,7 @@
     "@effect/tsgo": "0.39.0",
     "@oxlint/plugins": "1.80.0",
     "@types/bun": "1.4.0",
-    "@types/node": "26.4.0",
+    "@types/node": "26.4.1",
     "@types/turndown": "5.0.6",
     "knip": "6.34.0",
     "lefthook": "^2.1.10",
