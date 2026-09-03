@@ -348,17 +348,12 @@ export interface PollHandlers {
 }
 
 export const makePollHandlers = (pi: ExtensionAPI, exec: PollExec = makePollExec(pi)): PollHandlers => {
-  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous feature registration constructs memory-only state and cannot return an Effect
-  const pollState: PollStateFields = Effect.runSync(
-    Effect.gen(function* () {
-      return {
-        mutex: yield* Semaphore.make(1),
-        sessionScope: yield* Ref.make<Option.Option<Scope.Closeable>>(Option.none()),
-        shuttingDown: yield* Ref.make(false),
-        tasks: yield* Ref.make(HashMap.empty<string, Fiber.Fiber<void>>()),
-      }
-    })
-  )
+  const pollState: PollStateFields = {
+    mutex: Semaphore.makeUnsafe(1),
+    sessionScope: Ref.makeUnsafe<Option.Option<Scope.Closeable>>(Option.none()),
+    shuttingDown: Ref.makeUnsafe(false),
+    tasks: Ref.makeUnsafe(HashMap.empty<string, Fiber.Fiber<void>>()),
+  }
 
   return {
     registerTask: (toolCallId, params, signal, ctx) =>

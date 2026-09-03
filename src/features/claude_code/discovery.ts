@@ -280,15 +280,10 @@ export interface DiscoveryHandlers {
 }
 
 export const makeDiscoveryHandlers = (environment: ClaudeCodeEnvironment): DiscoveryHandlers => {
-  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous feature registration constructs memory-only state and cannot return an Effect
-  const discoveryState: DiscoveryStateFields = Effect.runSync(
-    Effect.gen(function* () {
-      return {
-        activeSkillScope: yield* Ref.make<Option.Option<Scope.Closeable>>(Option.none()),
-        mutex: yield* Semaphore.make(1),
-      }
-    })
-  )
+  const discoveryState: DiscoveryStateFields = {
+    activeSkillScope: Ref.makeUnsafe<Option.Option<Scope.Closeable>>(Option.none()),
+    mutex: Semaphore.makeUnsafe(1),
+  }
 
   return {
     discover: (event, ctx) => discoverResources(event, ctx, environment).pipe(Effect.provideService(DiscoveryState, discoveryState)),

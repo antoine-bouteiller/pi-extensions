@@ -311,12 +311,10 @@ interface McpGatewayStateFields {
   readonly initialization: Ref.Ref<Option.Option<Deferred.Deferred<void, McpOperationError>>>
 }
 
-const makeState: Effect.Effect<McpGatewayStateFields> = Effect.gen(function* () {
-  return {
-    generation: yield* Ref.make(0),
-    initialization: yield* Ref.make<Option.Option<Deferred.Deferred<void, McpOperationError>>>(Option.none()),
-    manager: yield* Ref.make<Option.Option<McpGatewayManager>>(Option.none()),
-  }
+const makeState = (): McpGatewayStateFields => ({
+  generation: Ref.makeUnsafe(0),
+  initialization: Ref.makeUnsafe<Option.Option<Deferred.Deferred<void, McpOperationError>>>(Option.none()),
+  manager: Ref.makeUnsafe<Option.Option<McpGatewayManager>>(Option.none()),
 })
 
 /** Mirrors `if (initialization) { await initialization }` then requires an installed manager. */
@@ -439,8 +437,7 @@ export interface GatewaySession {
 
 /** Owns one gateway lifecycle; its config and manager are supplied by the `McpGateway` service. */
 export const makeGatewaySession = (pi: ExtensionAPI): GatewaySession => {
-  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous feature registration constructs memory-only state and cannot return an Effect
-  const state = Effect.runSync(makeState)
+  const state = makeState()
 
   const startSession = (ctx: ExtensionContext): Effect.Effect<void, McpOperationError, AppServices | McpGateway> =>
     Effect.gen(function* () {
@@ -451,7 +448,6 @@ export const makeGatewaySession = (pi: ExtensionAPI): GatewaySession => {
       yield* Ref.set(state.initialization, Option.some(deferred))
 
       yield* Effect.gen(function* () {
-        const context = yield* Effect.context()
         if (Option.isSome(previousManager)) {
           yield* previousManager.value.close
         }
@@ -460,8 +456,7 @@ export const makeGatewaySession = (pi: ExtensionAPI): GatewaySession => {
           gateway.createManager(config, {
             callbacks: {
               onStatusChange: (update) => {
-                // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: manager synchronous status callback cannot return an Effect
-                if (Effect.runSyncWith(context)(Ref.get(state.generation)) === generation) {
+                if (Ref.getUnsafe(state.generation) === generation) {
                   updateUiStatus(ctx, update)
                 }
               },
@@ -522,8 +517,7 @@ export const makeGatewaySession = (pi: ExtensionAPI): GatewaySession => {
     })
 
   const oauthCompletions = (prefix: string): { label: string; value: string }[] => {
-    // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: Pi synchronous command-completion callback cannot return an Effect
-    const current = Effect.runSync(Ref.get(state.manager))
+    const current = Ref.getUnsafe(state.manager)
     if (Option.isNone(current)) {
       return []
     }

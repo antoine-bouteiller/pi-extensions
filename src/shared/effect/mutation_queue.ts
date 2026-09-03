@@ -14,19 +14,16 @@ export const mutationQueueSlot = (path: string): Effect.Effect<void, Cause.Unkno
     Effect.callback<() => void, Cause.UnknownError>((resume) => {
       let abandoned = false
       let release: (() => void) | undefined
-      const held = withFileMutationQueue(
-        path,
-        () =>
-          // oxlint-disable-next-line effecttsgo/new-promise -- permanent: the queue is held open by a promise only this scope resolves, which no Effect promise constructor expresses.
-          new Promise<void>((resolveHeld) => {
-            release = resolveHeld
-            if (abandoned) {
-              resolveHeld()
-              return
-            }
-            resume(Effect.succeed(resolveHeld))
-          })
-      )
+      const held = withFileMutationQueue(path, () => {
+        const { promise, resolve } = Promise.withResolvers<void>()
+        release = resolve
+        if (abandoned) {
+          resolve()
+        } else {
+          resume(Effect.succeed(resolve))
+        }
+        return promise
+      })
       // Rejects only when the queue never granted the slot, so the waiting fiber must be failed.
       void held.catch((error: unknown) => {
         if (release === undefined && !abandoned) {

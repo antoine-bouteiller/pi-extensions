@@ -641,15 +641,10 @@ export interface RulesHandlers {
 }
 
 export const makeRulesHandlers = (environment: RulesEnvironment): RulesHandlers => {
-  // oxlint-disable-next-line pi-extensions/no-effect-pi-boundary -- spec [KD-6] §8.3; permanent: synchronous feature registration constructs memory-only state and cannot return an Effect
-  const rulesState = Effect.runSync(
-    Effect.gen(function* () {
-      return {
-        activeDiscovery: yield* Ref.make<DiscoverySlot | undefined>(undefined),
-        dynamicInjections: yield* Ref.make(HashSet.empty<string>()),
-      }
-    })
-  )
+  const rulesState = {
+    activeDiscovery: Ref.makeUnsafe<DiscoverySlot | undefined>(undefined),
+    dynamicInjections: Ref.makeUnsafe(HashSet.empty<string>()),
+  }
   const withRulesState = <Success, Failure>(
     effect: Effect.Effect<Success, Failure, RulesState | FileSystem | Path.Path>
   ): Effect.Effect<Success, Failure, FileSystem | Path.Path> => effect.pipe(Effect.provideService(RulesState, rulesState))
