@@ -216,17 +216,17 @@ describe('sub-agent operator activity projection', () => {
       })
       const transcript = operator.open('one')
       yield* transcript.refresh
-      expect(transcript.content().entries).toEqual([{ event: 1 }])
+      expect(transcript.content().text).toBe('{"event":1}\n')
       yield* fs.writeFileString(path, '{"event":1}\n{"event":2}\n')
       yield* transcript.refresh
-      expect(transcript.content().entries).toEqual([{ event: 1 }, { event: 2 }])
+      expect(transcript.content().text).toBe('{"event":1}\n{"event":2}\n')
       yield* fs.remove(path)
       yield* transcript.refresh
-      expect(transcript.content()).toEqual({ entries: [{ event: 1 }, { event: 2 }], turns: [], unavailable: true })
+      expect(transcript.content()).toEqual({ text: '{"event":1}\n{"event":2}\n', turns: [], unavailable: true })
     })
   )
 
-  it.scoped('reparses the transcript only when the session file changed', () =>
+  it.scoped('refreshes the transcript only when the session file changed', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const root = yield* fs.makeTempDirectory({ prefix: 'operator-transcript-stamp-' })
@@ -241,16 +241,16 @@ describe('sub-agent operator activity projection', () => {
       yield* fs.utimes(path, frozenMtime, frozenMtime)
       const transcript = operator.open('one')
       yield* transcript.refresh
-      expect(transcript.content().entries).toEqual([{ event: 1 }])
+      expect(transcript.content().text).toBe('{"event":1}\n')
 
       yield* fs.writeFileString(path, '{"event":2}\n')
       yield* fs.utimes(path, frozenMtime, frozenMtime)
       yield* transcript.refresh
-      expect(transcript.content().entries).toEqual([{ event: 1 }])
+      expect(transcript.content().text).toBe('{"event":1}\n')
 
       yield* fs.writeFileString(path, '{"event":2}\n{"event":3}\n')
       yield* transcript.refresh
-      expect(transcript.content().entries).toEqual([{ event: 2 }, { event: 3 }])
+      expect(transcript.content().text).toBe('{"event":2}\n{"event":3}\n')
     })
   )
 
