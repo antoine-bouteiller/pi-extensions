@@ -162,7 +162,8 @@ type InterruptAgentOutput = AgentResult | SettledInterruptNoop | Refusal
 | `send_message`        | `SendMessageInput`       | `SendMessageOutput`.                                                    |
 | `interrupt_agent`     | `InterruptAgentInput`    | `InterruptAgentOutput`.                                                 |
 
-The `agent_type` descriptions are exactly:
+`agent_type` is a JSON Schema string `enum` over the profile keys so callers and validation errors see the
+accepted values. Its description is `key: description` pairs joined by `; ` in the order below:
 
 | Profile       | Description                                                                                |
 | ------------- | ------------------------------------------------------------------------------------------ |

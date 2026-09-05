@@ -1,3 +1,4 @@
+import { StringEnum } from '@earendil-works/pi-ai'
 import { Type, type Static, type TProperties } from 'typebox'
 
 const closed = <Properties extends TProperties>(properties: Properties) => Type.Object(properties, { additionalProperties: false })
@@ -250,12 +251,10 @@ If the task requires a product decision or mutation, explain the blocker instead
   },
 } satisfies Readonly<Record<ProfileKey, ProfileDefinition>>
 
-const ProfileAgentTypeSchema = Type.Union([
-  Type.Literal('scout', { description: PROFILE_REGISTRY.scout.description }),
-  Type.Literal('librarian', { description: PROFILE_REGISTRY.librarian.description }),
-  Type.Literal('reviewer', { description: PROFILE_REGISTRY.reviewer.description }),
-  Type.Literal('implementer', { description: PROFILE_REGISTRY.implementer.description }),
-])
+export const PROFILE_ORDER = ['scout', 'librarian', 'reviewer', 'implementer'] as const
+const ProfileAgentTypeSchema = StringEnum(PROFILE_ORDER, {
+  description: PROFILE_ORDER.map((key) => `${key}: ${PROFILE_REGISTRY[key].description}`).join('; '),
+})
 export const SpawnAgentInputSchema = closed({
   agent_type: ProfileAgentTypeSchema,
   message: Type.String(),

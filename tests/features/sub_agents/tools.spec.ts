@@ -18,6 +18,7 @@ import {
   type SteeringAck,
   InterruptAgentInputSchema,
   ListAgentsInputSchema,
+  PROFILE_ORDER,
   PROFILE_REGISTRY,
   ReadAgentResponseInputSchema,
   SendMessageInputSchema,
@@ -206,10 +207,10 @@ describe('delegation tool boundary', () => {
           'send_message',
           'interrupt_agent',
         ])
-        const profiles = Object.fromEntries(
-          SpawnAgentInputSchema.properties.agent_type.anyOf.map((schema) => [schema.const, Reflect.get(schema, 'description')])
-        )
-        expect(profiles).toEqual(Object.fromEntries(Object.values(PROFILE_REGISTRY).map(({ description, key }) => [key, description])))
+        const agentType = SpawnAgentInputSchema.properties.agent_type
+        expect(Reflect.get(agentType, 'enum')).toEqual([...PROFILE_ORDER])
+        expect(Reflect.get(agentType, 'type')).toBe('string')
+        expect(Reflect.get(agentType, 'description')).toBe(PROFILE_ORDER.map((key) => `${key}: ${PROFILE_REGISTRY[key].description}`).join('; '))
         const prompts = yield* Effect.promise(() => fixture.emit('before_agent_start', { systemPrompt: 'parent' }))
         expect(prompts).toEqual([{ systemPrompt: `parent\n\n${PARENT_GUIDANCE}` }])
 
