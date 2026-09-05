@@ -1,8 +1,10 @@
 import { type AgentToolUpdateCallback } from '@earendil-works/pi-coding-agent'
+import { BunFileSystem, BunPath } from '@effect/platform-bun'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asExtensionContext, asTool } from '@tests/utils/casts.js'
+import { asExtensionContext, asResult, asTool } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { Effect, Layer, ManagedRuntime } from 'effect'
+import { FileSystem } from 'effect/FileSystem'
 import { Value } from 'typebox/value'
 
 import { makeFeature } from '@/features/sub_agents/index.js'
@@ -33,6 +35,7 @@ import {
   PARENT_GUIDANCE,
   ProductionNotificationSinkLive,
 } from '@/features/sub_agents/tools.js'
+import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { type ToolFailure } from '@/shared/effect/errors.js'
 import { PiCtx, Ui } from '@/shared/effect/pi_services.js'
 import { type HandlerServices, type ToolInvocation } from '@/shared/effect/runtime.js'
@@ -154,6 +157,7 @@ const dependencies = (pi: ReturnType<typeof createFakePi>['pi'], snapshots: Admi
   environment: () => ({ NUMBER: undefined, STRING: 'yes' }),
   pi,
   runtime: ManagedRuntime.make(Layer.succeed(SubagentOrchestrator)(orchestrator(snapshots))),
+  subagents: { scout: 'configured-provider/configured-model' },
 })
 const ui = {
   confirm: () => Effect.succeed(true),
@@ -216,6 +220,41 @@ describe('delegation tool boundary', () => {
         expect(childPrompts).toEqual([])
       })
     ))
+
+  it.scoped('initializes settings on activation or first model selection and passes static models to tools', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: 'subagent-config-boundary-' })
+      const fixture = createFakePi()
+      const snapshots: AdmissionSnapshot[] = []
+      const ports = Layer.succeed(SubagentOrchestrator)(orchestrator(snapshots))
+      const runtime = ManagedRuntime.make(Layer.mergeAll(ports, BunFileSystem.layer, BunPath.layer))
+      yield* Effect.addFinalizer(() => Effect.promise(() => runtime.dispose()))
+      const plugin = makeFeature({
+        ...dependencies(fixture.pi, snapshots),
+        agentDir: root,
+        isSubagent: () => false,
+        runtime,
+        subagents: undefined,
+      })
+      plugin.implementation.register(fixture.pi, asResult<AppRuntime>(runtime))
+      const ctx = asExtensionContext({
+        ...context('initial', { cwd: root, model: undefined }),
+        ui: { getEditorComponent: () => undefined, setEditorComponent: () => undefined },
+      })
+      yield* plugin.implementation.activate({ reason: 'startup', type: 'session_start' }, ctx)
+      expect(yield* fs.exists(`${root}/settings.json`)).toBe(false)
+      const selected = asExtensionContext({ ...ctx, model: { id: 'selected', provider: 'provider' } })
+      yield* Effect.promise(() => fixture.emit('model_select', {}, selected))
+      expect(yield* fs.exists(`${root}/settings.json`)).toBe(true)
+      const changed = asExtensionContext({ ...ctx, model: { id: 'changed', provider: 'other' } })
+      yield* Effect.promise(() => fixture.emit('model_select', {}, changed))
+      const spawn = asTool<DelegationTool>(fixture.state.tools.get('spawn_agent'))
+      yield* Effect.promise(() => spawn.execute('call', { agent_type: 'scout', message: 'go', task_name: 'one' }, undefined, undefined, changed))
+      expect(snapshots[0]?.subagents.scout).toBe('provider/selected')
+      yield* plugin.implementation.deactivate(ctx, 'shutdown')
+    })
+  )
 
   it('uses exact closed snake_case schemas and task-name boundaries', () => {
     const name64 = 'a'.repeat(64)
@@ -295,9 +334,9 @@ describe('delegation tool boundary', () => {
             child_model_view: childModelView,
             cwd: '/work/one',
             environment: { STRING: 'yes' },
-            parent_model: { model: 'parent-model', provider: 'parent-provider' },
             project_trusted: true,
             registered_tools: ['spawn_agent'],
+            subagents: { scout: 'configured-provider/configured-model' },
           },
           {
             agent_dir: '/agents',
@@ -306,6 +345,7 @@ describe('delegation tool boundary', () => {
             environment: { STRING: 'yes' },
             project_trusted: false,
             registered_tools: ['spawn_agent', 'wait_agent'],
+            subagents: { scout: 'configured-provider/configured-model' },
           },
         ])
       })

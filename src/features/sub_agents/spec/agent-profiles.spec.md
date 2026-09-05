@@ -21,7 +21,7 @@ Goals are owned by the umbrella.
 | Decision                           | Choice                                                                                                                                                                                                                                                                                                                      | Rationale                                                                                                                                                                                                 |
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `[KD-1]` Profile registry          | Four shipped profiles: `scout`, `librarian`, `reviewer`, `implementer`                                                                                                                                                                                                                                                      | Exploration, external research, review, and mechanical edits are the errands that recur; a fifth profile earns its place by demand, not by symmetry                                                       |
-| `[KD-2]` Model selection           | `scout` and `librarian` use `azure-openai/gpt-5.6-luna`; `implementer` uses `azure-openai/gpt-5.6-terra`; `reviewer` uses exactly `anthropic/claude-opus-5` iff the current parent provider string is `openai`, otherwise `azure-openai/gpt-5.6-sol`                                                                        | Routing is literal and deterministic: an OpenAI parent gets an Anthropic second opinion, while every other parent provider uses the designated Azure model                                                |
+| `[KD-2.1]` Model selection         | Pi settings contain a `subagents` block with static `"provider/model-id"` strings per profile; an absent block is initialized with the current model for all profiles                                                                                                                                                       | Operators choose models without editing code or supplying selection functions; saved choices do not follow later parent model changes                                                                     |
 | `[KD-3]` Unresolvable model        | Resolution failure refuses the delegation before any process starts, naming the missing provider or model; it never falls back to another model                                                                                                                                                                             | A child that starts and then cannot think wastes an errand, and a silent substitution returns the same model's opinion while claiming otherwise                                                           |
 | `[KD-4.2]` Tool allow-list         | `scout`, `librarian`, and `reviewer` have exact required read-only tool lists. `implementer` has a required local baseline plus every maintainer-classified tool except async-process, operator, and delegation classes; unknown and unclassified tools are denied                                                          | The first three profiles only inspect or report; implementers gain synchronous editing/verification tools, while one-turn workers cannot safely own delayed async-process wake-ups                        |
 | `[KD-6.1]` Child environment       | The worker inherits the parent process environment, replaces every `PI_SUBAGENT*` identity value, and adds `PI_SUBAGENT_READONLY=1` only for policy-read-only profiles. It uses the configured shared `agentDir` for persisted auth/model catalogs; parent-memory-only runtime keys are unsupported and are never forwarded | Ordinary Pi credential, proxy, certificate, and toolchain resolution works without a second credential transport, while replacing reserved markers keeps child identity and flat delegation deterministic |
@@ -53,7 +53,7 @@ Goals are owned by the umbrella.
   them. In particular, the reviewer prompt's explicit prohibition is only on file edits; its
   unrestricted `bash` access does not prevent broader process or network mutation, consistent with
   this policy-only caveat.
-- `[C-4]` `reviewer`'s deterministically selected provider/model may require additional credentials.
+- `[C-4]` A configured provider/model may require additional credentials.
 - `[C-5.1]` The child resolves credentials from the inherited environment and configured shared `agentDir`,
   like an ordinary Pi process. A key supplied only through the parent's `--api-key`,
   `ModelRuntime.setRuntimeApiKey`, or another in-memory credential store is not inherited; child-equivalent
@@ -75,7 +75,7 @@ N/A — the component inventory is owned by the umbrella.
 
 ### Data model
 
-A profile is maintainer-authored data: the profile key, a model rule, a standing prompt, a tool
+A profile is maintainer-authored data: the profile key, a standing prompt, a tool
 allow-list, a context ceiling, and optional description, thinking level, and color. The set of profile
 keys is closed; a delegation naming anything else is refused during admission.
 
@@ -122,12 +122,32 @@ type ProfileResolution =
     }
 ```
 
-| Profile       | Description                                                                                | Model rule                                                                                                             | Effort | Color    |
-| ------------- | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- | ------ | -------- |
-| `scout`       | Quick codebase exploration and focused implementation reconnaissance — read-only by policy | `azure-openai/gpt-5.6-luna`                                                                                            | low    | `blue`   |
-| `librarian`   | Cited web and remote-system research — read-only by policy                                 | `azure-openai/gpt-5.6-luna`                                                                                            | low    | `purple` |
-| `reviewer`    | Read-only plan and implementation review                                                   | exactly `anthropic/claude-opus-5` iff current parent provider string is `openai`; otherwise `azure-openai/gpt-5.6-sol` | high   | `orange` |
-| `implementer` | Scoped code implementation and verification — write-capable                                | `azure-openai/gpt-5.6-terra`                                                                                           | medium | `green`  |
+| Profile       | Description                                                                                | Model setting           | Effort | Color    |
+| ------------- | ------------------------------------------------------------------------------------------ | ----------------------- | ------ | -------- |
+| `scout`       | Quick codebase exploration and focused implementation reconnaissance — read-only by policy | `subagents.scout`       | low    | `blue`   |
+| `librarian`   | Cited web and remote-system research — read-only by policy                                 | `subagents.librarian`   | low    | `purple` |
+| `reviewer`    | Read-only plan and implementation review                                                   | `subagents.reviewer`    | high   | `orange` |
+| `implementer` | Scoped code implementation and verification — write-capable                                | `subagents.implementer` | medium | `green`  |
+
+Settings are read from `<agentDir>/settings.json` and trusted project `.pi/settings.json` at
+session activation and model selection. Project entries replace global entries per profile, and each
+entry is a `"provider/model-id"` string with nonempty provider and model components and no whitespace.
+Only the first slash separates the provider; remaining slashes belong to the model ID. Unknown
+profiles and non-string entries are rejected. An existing block is never rewritten; profiles absent from both scopes refuse with
+`missing_model`. If neither scope has a block, all four entries are persisted to global settings using
+the current model. Without a current model, initialization waits for model selection. Other global
+settings are preserved. Reload Pi after editing the block; no function-based selection is supported.
+
+```json
+{
+  "subagents": {
+    "scout": "anthropic/claude-sonnet-4-5",
+    "librarian": "anthropic/claude-sonnet-4-5",
+    "reviewer": "anthropic/claude-opus-4-1",
+    "implementer": "anthropic/claude-sonnet-4-5"
+  }
+}
+```
 
 These fixed effort assignments reflect the work type: exploration and research are bounded and use
 low effort, review requires deeper adversarial assessment and uses high effort, and implementation
@@ -173,10 +193,8 @@ enforced by neither this feature nor a sandbox. Every other tool not explicitly 
 profiles is absent. Delegation-tool suppression remains an independent flat-topology rule for every
 profile.
 
-For example, a parent whose current provider string is exactly `openai` resolving `reviewer` selects
-`anthropic/claude-opus-5`; every other provider string selects `azure-openai/gpt-5.6-sol`. If that
-selected provider is unavailable, resolution returns `missing_provider` rather than trying the other
-branch. The effective ceiling is the lower bound:
+If a configured provider is unavailable, resolution returns `missing_provider` rather than trying
+another provider. The effective ceiling is the lower bound:
 
 ```ts
 const contextCeiling = Math.min(profile.contextCeiling ?? 200_000, model.contextWindow)
@@ -227,8 +245,8 @@ changed paths, verification results, and any blocker requiring a parent decision
 
 ### API surface
 
-- Profile resolution — the single entry point: validate the name, evaluate the model rule against the
-  parent's model and the operator's authenticated providers, compute the effective context ceiling,
+- Profile resolution — the single entry point: validate the name, look up its configured model and
+  validate it against the child's authenticated providers, compute the effective context ceiling,
   expand and validate the profile's tool allow-list, and return either a resolved profile or an error
   naming the missing provider, missing model, or unavailable required tool.
 - Profile description rendering — render the profile list with each profile's description for the
@@ -239,10 +257,10 @@ changed paths, verification results, and any blocker requiring a parent decision
 
 ### Interactions
 
-The orchestration engine resolves a profile during admission against the parent's current model and
-provider, then stores only that redacted `PersistedResolvedProfile` on the agent record. It derives a
-private `WorkerConfig` separately. On every resumed turn it resolves again against that parent's then-current
-model and provider and persists that turn's redacted resolved profile;
+The orchestration engine resolves a profile during admission against the loaded subagent settings,
+then stores only that redacted `PersistedResolvedProfile` on the agent record. It derives a
+private `WorkerConfig` separately. On every resumed turn it resolves again against the loaded
+settings and available models and persists that turn's redacted resolved profile;
 it does not reuse an earlier selection. Historical persisted profiles keep each record readable and
 explainable after a product update or when its profile no longer exists. If a settled profile is removed,
 resume-time resolution maps it to `unknown_profile`; the historical persisted profile remains readable.
@@ -302,17 +320,17 @@ and launch-boundary behavior rather than prescribe an implementation sequence.
 
 | Contract                          | Scenario and required observation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Resolver matrix                   | Resolve each fixed-model profile and assert its specified provider/model. Resolve `reviewer` with parent provider `openai` and assert `anthropic/claude-opus-5`; resolve it with every other provider string and assert `azure-openai/gpt-5.6-sol`. An unauthenticated selected provider returns `missing_provider`, and an unavailable selected model from an authenticated provider returns `missing_model`; neither case selects the other branch.                                                                                                                                            |
+| Resolver matrix                   | Resolve each profile using its configured provider/model. Initialize an absent settings block from the current model and verify later parent model changes preserve it. Verify trusted project overrides, unchanged unrelated settings, malformed configuration rejection, and missing-profile refusal. An unauthenticated selected provider returns `missing_provider`, and an unavailable selected model returns `missing_model`; neither case falls back.                                                                                                                                     |
 | Required tools and default denial | For each profile, remove one tool from its required-tools row and assert pre-start `unavailable_tool`. With all required tools present, assert the resolved list is exactly each settled row for `scout`, `librarian`, and `reviewer`. For `implementer`, assert available classified synchronous non-operator, non-delegation supplements are included, unavailable supplements are omitted, and `background_poll`, an unknown/unclassified tool, `ask_user`, or any of the seven delegation tools is absent. A newly registered tool remains absent until the classification table is amended. |
 | Environment inheritance           | Given a parent environment containing unrelated configuration, provider keys, and stale `PI_SUBAGENT*` values, assert unrelated values and credentials are inherited unchanged while every reserved marker is replaced. Assert the current `PI_SUBAGENT_ID`, a fresh UUID `PI_SUBAGENT_OWNER_TOKEN`, and `PI_SUBAGENT: '1'`; assert `PI_SUBAGENT_READONLY: '1'` only for `scout`, `librarian`, and `reviewer`. Skills, prompt templates, and context files remain disabled, and only `resolvedProfile.tools` is active.                                                                          |
 | Prompt literals                   | For every profile, assert `systemPromptAppend` equals the corresponding fenced prompt content byte-for-byte, including its text and line breaks but excluding the Markdown fence and any wrapper quotation marks.                                                                                                                                                                                                                                                                                                                                                                                |
 | Persisted/profile config split    | Assert `PersistedResolvedProfile` contains only key, provider/model, prompt, exact tools, thinking, and ceiling. Assert closed JSON `WorkerConfig` also contains cwd, agentDir, project trust, and fixed resource/memory policies, contains no credential value, is never persisted/logged, and rejects unknown fields. The worker uses inherited environment plus configured agentDir for auth, loads configured extensions normally, exposes only exact resolved tool IDs, and fails mismatches pre-ready without fallback.                                                                    |
-| Resume re-resolution              | Admit and settle a child, change the parent provider or model availability, then resume it. Assert the resumed turn resolves anew and persists a new redacted profile rather than reusing a private config; a newly missing provider or model refuses the follow-up. Remove the settled profile before resume and assert the follow-up returns `unknown_profile` while historical data remains readable.                                                                                                                                                                                         |
+| Resume re-resolution              | Admit and settle a child, change the loaded settings or model availability, then resume it. Assert the resumed turn resolves anew and persists a new redacted profile rather than reusing a private config; a newly missing provider or model refuses the follow-up. Remove the settled profile before resume and assert the follow-up returns `unknown_profile` while historical data remains readable.                                                                                                                                                                                         |
 
 ### Error handling
 
 - Unknown profile name → refusal naming the valid names.
-- Model rule resolves to a provider the operator has not authenticated → `missing_provider` refusal
+- Configured model uses a provider unavailable to the child → `missing_provider` refusal
   naming that provider, with no fall-back to a second model.
 - The selected model is not registered or available from its authenticated provider → `missing_model`
   refusal naming that model, with no fall-back.
@@ -338,3 +356,5 @@ N/A.
 | 2026-08-24 | Exclude the async-process class, currently `background_poll`, from one-turn child profiles.                                                                                                                            | 3, 8              | A delayed poll wake-up cannot complete after the worker exits on its first settled turn.                                                |
 | 2026-08-25 | Name the actual parent-only features suppressed in children and gate them through the feature descriptor policy.                                                                                                       | 8                 | The suppression list referenced a feature that does not exist and omitted `auto_theme`.                                                 |
 | 2026-08-25 | Record unproven byte-for-byte child loader isolation and private setup forwarding.                                                                                                                                     | 6                 | Keep the loader-verification gap beside the child-environment contract.                                                                 |
+| 2026-09-05 | Configure static profile models through Pi settings and initialize an absent block from the current model.                                                                                                             | 3, 6, 8           | Make model choice user-configurable without function-based routing.                                                                     |
+| 2026-09-05 | Store each configured model as one provider/model-id string, preserving slashes within model IDs.                                                                                                                      | 3, 8              | Match Pi's model-reference syntax.                                                                                                      |

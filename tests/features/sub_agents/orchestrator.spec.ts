@@ -33,6 +33,7 @@ const admission: AdmissionSnapshot = {
   environment: {},
   project_trusted: true,
   registered_tools: [],
+  subagents: {},
 }
 const request = (task_name: string, agent_type: ProfileKey = 'scout', run_in_background = true): SpawnAgentInput => ({
   agent_type,

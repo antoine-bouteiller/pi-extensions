@@ -149,7 +149,7 @@ export interface AdmissionSnapshot {
   readonly child_model_view: ChildModelView
   readonly cwd: string
   readonly environment: Readonly<Record<string, string>>
-  readonly parent_model?: { readonly model: string; readonly provider: string }
+  readonly subagents: SubagentSettings
   readonly project_trusted: boolean
   readonly registered_tools: readonly string[]
 }
@@ -285,20 +285,14 @@ const TOOL_CLASSES = {
   webfetch: 'network-read',
   write: 'local-write',
 } satisfies Readonly<Record<string, ToolClassification>>
-interface ModelSelection {
-  readonly model: string
-  readonly provider: string
-}
-
-const modelFor = (key: ProfileKey, parentProvider: string | undefined): ModelSelection => {
-  if (key === 'reviewer') {
-    return parentProvider === 'openai' ? { model: 'claude-opus-5', provider: 'anthropic' } : { model: 'gpt-5.6-sol', provider: 'azure-openai' }
-  }
-  if (key === 'implementer') {
-    return { model: 'gpt-5.6-terra', provider: 'azure-openai' }
-  }
-  return { model: 'gpt-5.6-luna', provider: 'azure-openai' }
-}
+const ModelSelectionSchema = Type.String({ pattern: '^[^/\\s]+/\\S+$' })
+export const SubagentSettingsSchema = closed({
+  implementer: Type.Optional(ModelSelectionSchema),
+  librarian: Type.Optional(ModelSelectionSchema),
+  reviewer: Type.Optional(ModelSelectionSchema),
+  scout: Type.Optional(ModelSelectionSchema),
+})
+export type SubagentSettings = Static<typeof SubagentSettingsSchema>
 const refusal = (code: ProfileResolutionError['code'], message: string): ProfileResolution => ({ error: { code, message }, ok: false })
 const has = (values: readonly string[], value: string): boolean => values.includes(value)
 
@@ -319,13 +313,17 @@ export const resolveProfileWithRegistry = (
   if (profile === undefined) {
     return refusal('unknown_profile', `Unknown profile "${key}".`)
   }
-  const selected = modelFor(profile.key, snapshot.parent_model?.provider)
-  if (!has(snapshot.child_model_view.authenticated_providers, selected.provider)) {
-    return refusal('missing_provider', `Selected provider "${selected.provider}" is unavailable to the child.`)
+  const selected = snapshot.subagents[profile.key]
+  if (selected === undefined) {
+    return refusal('missing_model', `No model configured for subagents.${profile.key}.`)
   }
-  const model = snapshot.child_model_view.models.find(({ model: id, provider }) => id === selected.model && provider === selected.provider)
+  const selectedProvider = selected.slice(0, selected.indexOf('/'))
+  if (!has(snapshot.child_model_view.authenticated_providers, selectedProvider)) {
+    return refusal('missing_provider', `Selected provider "${selectedProvider}" is unavailable to the child.`)
+  }
+  const model = snapshot.child_model_view.models.find(({ model: id, provider }) => `${provider}/${id}` === selected)
   if (model === undefined) {
-    return refusal('missing_model', `Selected model "${selected.provider}/${selected.model}" is unavailable to the child.`)
+    return refusal('missing_model', `Selected model "${selected}" is unavailable to the child.`)
   }
   const unsafe = profile.requiredTools.find((tool) => !isSafeRequiredTool(tool))
   if (unsafe !== undefined) {
@@ -339,9 +337,9 @@ export const resolveProfileWithRegistry = (
   const resolvedProfile = {
     contextCeiling: Math.min(profile.contextCeiling ?? 200_000, model.contextWindow),
     key: profile.key,
-    model: selected.model,
+    model: model.model,
     prompt: profile.prompt,
-    provider: selected.provider,
+    provider: model.provider,
     thinkingLevel: profile.thinkingLevel,
     tools: [...tools],
   }

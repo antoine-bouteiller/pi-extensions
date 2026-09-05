@@ -1,15 +1,16 @@
-import { getAgentDir, ModelRuntime, type ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { getAgentDir, ModelRuntime, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { matchesKey, ScrollView, Text, type Component } from '@earendil-works/pi-tui'
 import { Context, Effect, Layer } from 'effect'
 
 import { AgentActivity, type AppRuntime } from '#shared/effect/app_services'
 import { type FeatureActivationError, type FeaturePlugin } from '#shared/effect/feature'
-import { makeCommandHandler, makeToolExecutor, runManagedEffect, runManagedRepeatingEffect } from '#shared/effect/runtime'
+import { makeCommandHandler, makeEventHandler, makeToolExecutor, runManagedEffect, runManagedRepeatingEffect } from '#shared/effect/runtime'
 
 import { toChildModel } from './model.js'
 import { createPanicEditor, createSubagentsOperator } from './operator.js'
 import { SubagentOrchestrator, type SubagentOrchestratorApi } from './orchestrator.js'
 import { getOrCreateSubagentRuntime, type SubagentRuntime } from './runtime.js'
+import { loadSubagentSettings } from './settings.js'
 import { SubagentStore, SubagentStoreLive } from './store.js'
 import {
   bindProductionNotificationSink,
@@ -33,6 +34,18 @@ const activationError = (error: unknown): FeatureActivationError => ({
 
 export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
   const isSubagent = dependencies.isSubagent ?? (() => Bun.env.PI_SUBAGENT === '1')
+  const toolDependencies = { ...dependencies, subagents: dependencies.subagents ?? {} }
+  const loadSettings = (ctx: ExtensionContext) =>
+    dependencies.subagents === undefined
+      ? loadSubagentSettings({ agentDir: dependencies.agentDir, cwd: ctx.cwd, model: ctx.model, projectTrusted: ctx.isProjectTrusted() }).pipe(
+          Effect.tap((settings) =>
+            Effect.sync(() => {
+              toolDependencies.subagents = settings
+            })
+          ),
+          Effect.asVoid
+        )
+      : Effect.void
   let pi: ExtensionAPI | undefined
   let panic: ReturnType<typeof createPanicEditor> | undefined
   let orchestrationRuntime: SubagentRuntime | undefined
@@ -52,6 +65,7 @@ export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
         return runtime === undefined
           ? Effect.fail(activationError(new Error('Sub-agent feature has not been registered.')))
           : Effect.gen(function* () {
+              yield* loadSettings(ctx)
               const activeOrchestrator = yield* Effect.tryPromise(() => runManagedEffect(runtime, Effect.service(SubagentOrchestrator)))
               orchestrator = activeOrchestrator
               yield* activeOrchestrator.initialize
@@ -97,7 +111,7 @@ export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
         }
         orchestrationRuntime = toolRuntime
         const execute = makeToolExecutor(toolRuntime)
-        const tools = makeDelegationTools({ ...dependencies, pi, runtime: toolRuntime }, execute)
+        const tools = makeDelegationTools(Object.assign(toolDependencies, { pi, runtime: toolRuntime }), execute)
 
         for (const tool of tools) {
           registeredPi.registerTool(tool)
@@ -105,6 +119,10 @@ export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
         registeredPi.on('before_agent_start', (event) => ({ systemPrompt: `${event.systemPrompt}\n\n${PARENT_GUIDANCE}` }))
         if (registeredRuntime !== undefined) {
           const applicationRuntime = registeredRuntime
+          registeredPi.on(
+            'model_select',
+            makeEventHandler(applicationRuntime)((_event, ctx) => loadSettings(ctx))
+          )
           registeredPi.registerCommand('subagents', {
             description: 'Inspect sub-agent conversations for the current session.',
             handler: makeCommandHandler(applicationRuntime)((_args, ctx) => {

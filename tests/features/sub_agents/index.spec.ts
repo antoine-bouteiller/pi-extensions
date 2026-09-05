@@ -57,6 +57,7 @@ const escapeGuard = (idle: boolean, live: boolean) =>
       environment: () => ({}),
       isSubagent: () => false,
       runtime: featureRuntime,
+      subagents: {},
     })
     plugin.implementation.register(fixture.pi, asResult<AppRuntime>(runtime))
     yield* plugin.implementation
@@ -118,6 +119,7 @@ describe('sub-agent feature registration', () => {
         environment: () => ({}),
         isSubagent: () => false,
         runtime: asResult<SubagentRuntime>(runtime),
+        subagents: {},
       })
       plugin.implementation.register(fixture.pi, asResult<AppRuntime>(runtime))
       let oldEditor: unknown

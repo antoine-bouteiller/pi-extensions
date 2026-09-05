@@ -110,7 +110,7 @@ type AdmissionSnapshot = {
   cwd: string
   agent_dir: string
   project_trusted: boolean
-  parent_model?: { provider: string; model: string }
+  subagents: Partial<Record<ProfileKey, string>> // provider/model-id
   registered_tools: readonly string[]
   environment: Readonly<Record<string, string>>
 } // immutable, invocation-scoped, never persisted
@@ -176,7 +176,7 @@ class SubagentOrchestrator extends Context.Service<SubagentOrchestrator, Subagen
 ```
 
 The Pi adapter constructs `AdmissionSnapshot` at each `spawn` and `send_message` invocation from
-`ctx.cwd`, the configured agent directory, `ctx.isProjectTrusted()`, `ctx.model`, `pi.getAllTools()`, and
+`ctx.cwd`, the configured agent directory, `ctx.isProjectTrusted()`, loaded subagent settings, `pi.getAllTools()`, and
 a string-only copy of `process.env`. The orchestrator/profile resolver uses only that immutable snapshot
 for initial or resumed admission; it neither retains `PiCtx` nor reads a later invocation's host state.
 Running steering accepts the snapshot for one uniform adapter path but does not consult it.
@@ -696,3 +696,5 @@ N/A.
 | 2026-08-24 | Tag inactivity warnings as injection-only and exclude them from omitted wait snapshots.                                                                                                                                                  | 3, 8              | Preserve the `AgentResult`-only wait contract while sharing notification FIFO ordering.                            |
 | 2026-08-25 | Enter session lifecycle through the feature descriptor's `activate`/`deactivate` rather than a self-registered session-start hook.                                                                                                       | 8                 | The feature coordinator now owns host session start, replacement, and shutdown.                                    |
 | 2026-08-25 | Record deferred implementation verification and the Windows platform exclusion.                                                                                                                                                          | 5, 6              | Keep verification coverage and supported-platform limits beside the orchestration contract.                        |
+| 2026-09-05 | Capture loaded subagent model settings rather than the parent model in admission snapshots.                                                                                                                                              | 8                 | Resolve initial and resumed turns from static configuration.                                                       |
+| 2026-09-05 | Represent admission model settings as provider/model-id strings.                                                                                                                                                                         | 8                 | Match the Pi settings format.                                                                                      |

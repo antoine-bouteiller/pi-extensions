@@ -52,9 +52,14 @@ const snapshot = (registeredTools = tools) => ({
     PI_SUBAGENT_READONLY: 'old',
     PI_SUBAGENT_STALE: 'x',
   },
-  parent_model: { model: 'parent', provider: 'openai' },
   project_trusted: true,
   registered_tools: registeredTools,
+  subagents: {
+    implementer: 'azure-openai/gpt-5.6-terra',
+    librarian: 'azure-openai/gpt-5.6-luna',
+    reviewer: 'anthropic/claude-opus-5',
+    scout: 'azure-openai/gpt-5.6-luna',
+  },
 })
 
 const prompts = {
@@ -112,11 +117,28 @@ describe('sub-agent model', () => {
     }
   })
 
-  it('routes reviewer to Azure for non-OpenAI and absent parent models', () => {
-    for (const parent_model of [undefined, { model: 'parent', provider: 'anthropic' }]) {
-      const result = resolveProfile('reviewer', { ...snapshot(), parent_model })
-      expect(result.ok && result.profile).toMatchObject({ model: 'gpt-5.6-sol', provider: 'azure-openai' })
-    }
+  it('uses only the configured model and refuses an unconfigured profile', () => {
+    const result = resolveProfile('reviewer', {
+      ...snapshot(),
+      subagents: { reviewer: 'azure-openai/gpt-5.6-sol' },
+    })
+    expect(result.ok && result.profile).toMatchObject({ model: 'gpt-5.6-sol', provider: 'azure-openai' })
+    expect(resolveProfile('scout', { ...snapshot(), subagents: {} })).toEqual({
+      error: { code: 'missing_model', message: 'No model configured for subagents.scout.' },
+      ok: false,
+    })
+  })
+
+  it('preserves slashes inside model IDs when resolving provider/model references', () => {
+    const result = resolveProfile('scout', {
+      ...snapshot(),
+      child_model_view: {
+        authenticated_providers: ['openrouter'],
+        models: [{ contextWindow: 128_000, model: 'anthropic/claude-sonnet-4-5', provider: 'openrouter' }],
+      },
+      subagents: { scout: 'openrouter/anthropic/claude-sonnet-4-5' },
+    })
+    expect(result.ok && result.profile).toMatchObject({ model: 'anthropic/claude-sonnet-4-5', provider: 'openrouter' })
   })
 
   it('refuses unknown, unavailable-provider, and unavailable-model selections without fallback', () => {

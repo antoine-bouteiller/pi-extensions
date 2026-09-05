@@ -17,6 +17,7 @@ import {
   SendMessageInputSchema,
   SpawnAgentInputSchema,
   type SpawnAgentInput,
+  type SubagentSettings,
   type WaitAgentInput,
   WaitAgentInputSchema,
   WaitAllInputSchema,
@@ -44,6 +45,7 @@ export interface DelegationToolDependencies {
   readonly environment: () => Readonly<Record<string, string | undefined>>
   readonly pi: ExtensionAPI
   readonly runtime: ManagedRuntime.ManagedRuntime<SubagentOrchestrator, never>
+  readonly subagents?: SubagentSettings
 }
 
 const admission = (ctx: ExtensionContext, dependencies: DelegationToolDependencies): Promise<AdmissionSnapshot> => {
@@ -53,9 +55,9 @@ const admission = (ctx: ExtensionContext, dependencies: DelegationToolDependenci
     child_model_view: childModelView ?? dependencies.childModelView,
     cwd: ctx.cwd,
     environment: environmentCopy(environment),
-    parent_model: ctx.model === undefined ? undefined : { model: ctx.model.id, provider: ctx.model.provider },
     project_trusted: ctx.isProjectTrusted(),
     registered_tools: dependencies.pi.getAllTools().map((tool) => tool.name),
+    subagents: dependencies.subagents ?? {},
   }))
 }
 const withOrchestrator = <Value>(body: (orchestrator: SubagentOrchestratorApi) => Effect.Effect<Value, OrchestrationError>) =>
