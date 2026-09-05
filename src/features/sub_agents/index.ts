@@ -112,9 +112,9 @@ export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
         }
         orchestrationRuntime = toolRuntime
         const execute = makeToolExecutor(toolRuntime)
-        const tools = makeDelegationTools(Object.assign(toolDependencies, { pi, runtime: toolRuntime }), execute)
-
-        for (const tool of tools) {
+        const [spawn, ...rest] = makeDelegationTools(Object.assign(toolDependencies, { pi, runtime: toolRuntime }), execute)
+        registeredPi.registerTool(spawn)
+        for (const tool of rest) {
           registeredPi.registerTool(tool)
         }
         registeredPi.on('before_agent_start', (event) => ({ systemPrompt: `${event.systemPrompt}\n\n${PARENT_GUIDANCE}` }))

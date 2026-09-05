@@ -470,7 +470,7 @@ interface OrchestratorDependencies {
   readonly store: SubagentStoreApi
 }
 
-const activityColor = (profile: string): RunningAgent['color'] => {
+export const profileColor = (profile: string): RunningAgent['color'] => {
   switch (profile) {
     case 'implementer': {
       return 'success'
@@ -1980,7 +1980,7 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                   Effect.flatMap((now) =>
                     activityProjection.publishReady({
                       agentId: turn.agentId,
-                      color: activityColor(turn.profile.key),
+                      color: profileColor(turn.profile.key),
                       lastActivityAt: now,
                       name: turn.taskName,
                       profile: turn.profile.key,

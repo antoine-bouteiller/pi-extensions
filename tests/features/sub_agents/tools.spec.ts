@@ -1,7 +1,7 @@
-import { type AgentToolUpdateCallback } from '@earendil-works/pi-coding-agent'
+import { type AgentToolUpdateCallback, type Theme } from '@earendil-works/pi-coding-agent'
 import { BunFileSystem, BunPath } from '@effect/platform-bun'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asExtensionContext, asResult, asTool } from '@tests/utils/casts.js'
+import { asExtensionContext, asResult, asTheme, asTool } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { Effect, Layer, ManagedRuntime } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
@@ -44,6 +44,16 @@ interface ToolResult {
   readonly content: readonly { readonly text: string; readonly type: 'text' }[]
   readonly details: unknown
 }
+interface SpawnRenderTool {
+  readonly renderCall: (
+    args: { readonly agent_type: string; readonly message: string; readonly run_in_background?: boolean; readonly task_name: string },
+    theme: Theme
+  ) => {
+    render: (width: number) => string[]
+  }
+  readonly renderResult: (result: ToolResult, options: unknown, theme: Theme, context: unknown) => { render: (width: number) => string[] }
+}
+
 interface DelegationTool {
   readonly execute: (
     id: string,
@@ -187,7 +197,7 @@ const adapterTools = (pi: ReturnType<typeof createFakePi>['pi'], snapshots: Admi
   return makeDelegationTools({ ...dependencies(pi, snapshots), runtime: ManagedRuntime.make(layer) }, executeWith(layer))
 }
 const call = (tools: ReturnType<typeof makeDelegationTools>, index: number, input: unknown, ctx = context()): Promise<ToolResult> =>
-  asTool<DelegationTool>(tools[index]).execute('call', input, undefined, undefined, ctx)
+  asResult<DelegationTool>(tools[index]).execute('call', input, undefined, undefined, ctx)
 
 describe('delegation tool boundary', () => {
   it('registers exactly the parent surface, profile descriptions, and guidance', () =>
@@ -255,6 +265,48 @@ describe('delegation tool boundary', () => {
       yield* plugin.implementation.deactivate(ctx, 'shutdown')
     })
   )
+
+  it('renders spawn calls and outcomes with the selected profile color', () => {
+    const fixture = createFakePi()
+    const tool = asResult<SpawnRenderTool>(adapterTools(fixture.pi, [])[0])
+    const colors: string[] = []
+    const theme = asTheme({
+      bold: (value: string) => value,
+      fg: (color: string, value: string) => {
+        colors.push(color)
+        return value
+      },
+    })
+    const renderCall = (input: {
+      readonly agent_type: string
+      readonly message: string
+      readonly run_in_background?: boolean
+      readonly task_name: string
+    }) => tool.renderCall(input, theme).render(120).join('\n').trimEnd()
+    const renderResult = (details: unknown, isError = false, content = 'ignored') =>
+      tool
+        .renderResult({ content: [{ text: content, type: 'text' }], details }, {}, theme, {
+          args: { agent_type: 'scout', message: 'go', task_name: 'task' },
+          isError,
+        })
+        .render(120)
+        .join('\n')
+        .trimEnd()
+
+    expect(renderCall({ agent_type: 'scout', message: 'go', run_in_background: true, task_name: 'task' })).toBe(
+      'spawn_agent task [scout] [background]'
+    )
+    expect(renderCall({ agent_type: 'scout', message: 'go', task_name: 'task' })).toBe('spawn_agent task [scout] [foreground]')
+    expect(renderCall({ agent_type: 'scout', message: 'go', task_name: '' })).toBe('spawn_agent ? [scout] [foreground]')
+    expect(colors).toContain('thinkingLow')
+
+    expect(renderResult(completed())).toBe('✓ task completed')
+    expect(renderResult(failed())).toBe('✗ task failed')
+    expect(renderResult(interrupted())).toBe('✗ task interrupted')
+    expect(renderResult({ profile: 'scout', status: 'running', task_name: 'task', turn: 1 })).toBe('✓ task background')
+    expect(renderResult({ error: { code: 'unknown_agent', message: 'unknown' } })).toBe('✗ unknown')
+    expect(renderResult({ error: { code: 'host_error', message: 'ignored' } }, true, 'host failed')).toBe('✗ host failed')
+  })
 
   it('uses exact closed snake_case schemas and task-name boundaries', () => {
     const name64 = 'a'.repeat(64)

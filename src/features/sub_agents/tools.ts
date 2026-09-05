@@ -1,4 +1,12 @@
-import { type AgentToolUpdateCallback, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
+import {
+  type AgentToolResult,
+  type AgentToolUpdateCallback,
+  type ExtensionAPI,
+  type ExtensionContext,
+  type Theme,
+  type ToolDefinition,
+} from '@earendil-works/pi-coding-agent'
+import { Text } from '@earendil-works/pi-tui'
 import { Effect, Layer, type ManagedRuntime } from 'effect'
 
 import { ToolFailure } from '#shared/effect/errors'
@@ -7,12 +15,14 @@ import { type HandlerServices, type ToolInvocation } from '#shared/effect/runtim
 
 import {
   type AdmissionSnapshot,
+  type AgentResult,
   type ChildModelView,
   type InterruptAgentInput,
   InterruptAgentInputSchema,
   ListAgentsInputSchema,
   type ReadAgentResponseInput,
   ReadAgentResponseInputSchema,
+  type RunningAcceptance,
   type SendMessageInput,
   SendMessageInputSchema,
   SpawnAgentInputSchema,
@@ -23,7 +33,7 @@ import {
   WaitAllInputSchema,
   type WaitAllInput,
 } from './model.js'
-import { type OrchestrationError, type PublicRefusalError, SubagentOrchestrator, type SubagentOrchestratorApi } from './orchestrator.js'
+import { type OrchestrationError, type PublicRefusalError, profileColor, SubagentOrchestrator, type SubagentOrchestratorApi } from './orchestrator.js'
 import { NotificationSink, type NotificationToken } from './store.js'
 
 const json = <Value>(value: Value) => ({
@@ -72,6 +82,40 @@ const withOrchestrator = <Value>(body: (orchestrator: SubagentOrchestratorApi) =
 
 const session = (ctx: ExtensionContext): string => ctx.sessionManager.getSessionId()
 
+type SpawnDetails = AgentResult | RunningAcceptance | { readonly error: { readonly code: string; readonly message: string } }
+type SpawnToolDefinition = ToolDefinition<typeof SpawnAgentInputSchema, SpawnDetails>
+type DelegationTools = readonly [
+  SpawnToolDefinition,
+  ToolDefinition<typeof WaitAgentInputSchema>,
+  ToolDefinition<typeof WaitAllInputSchema>,
+  ToolDefinition<typeof ListAgentsInputSchema>,
+  ToolDefinition<typeof ReadAgentResponseInputSchema>,
+  ToolDefinition<typeof SendMessageInputSchema>,
+  ToolDefinition<typeof InterruptAgentInputSchema>,
+]
+type SpawnRenderContext = Parameters<NonNullable<SpawnToolDefinition['renderResult']>>[3]
+
+const renderSpawnResult = (result: AgentToolResult<SpawnDetails>, _options: unknown, theme: Theme, context: SpawnRenderContext) => {
+  if (context.isError) {
+    const message = result.content.find((content) => content.type === 'text')?.text ?? 'failed'
+    return new Text(theme.fg('error', `✗ ${message}`), 0, 0)
+  }
+
+  const { details } = result
+  if ('status' in details) {
+    const color = profileColor(context.args.agent_type)
+    if (details.status === 'completed') {
+      return new Text(theme.fg('success', '✓ ') + theme.fg(color, details.task_name) + theme.fg('muted', ' completed'), 0, 0)
+    }
+    if (details.status === 'running') {
+      return new Text(theme.fg('success', '✓ ') + theme.fg(color, details.task_name) + theme.fg('muted', ' background'), 0, 0)
+    }
+    return new Text(theme.fg('error', '✗ ') + theme.fg(color, details.task_name) + theme.fg('muted', ` ${details.status}`), 0, 0)
+  }
+
+  return new Text(theme.fg('error', `✗ ${details.error.message}`), 0, 0)
+}
+
 type ToolExecutor = <Params, Result>(
   body: (invocation: ToolInvocation<Params>) => Effect.Effect<Result, ToolFailure, SubagentOrchestrator | HandlerServices>
 ) => (
@@ -82,10 +126,10 @@ type ToolExecutor = <Params, Result>(
   ctx: ExtensionContext
 ) => Promise<Result>
 
-export const makeDelegationTools = (dependencies: DelegationToolDependencies, execute: ToolExecutor) => [
+export const makeDelegationTools: (dependencies: DelegationToolDependencies, execute: ToolExecutor) => DelegationTools = (dependencies, execute) => [
   {
     description: 'Delegate a self-contained task to a named sub-agent. Waits for its conclusion unless run_in_background is true.',
-    execute: execute<SpawnAgentInput, ReturnType<typeof json>>(({ params: input }) =>
+    execute: execute<SpawnAgentInput, AgentToolResult<SpawnDetails>>(({ params: input }) =>
       Effect.service(PiCtx).pipe(
         Effect.flatMap((ctx) =>
           Effect.promise(() => admission(ctx, dependencies)).pipe(
@@ -98,6 +142,16 @@ export const makeDelegationTools = (dependencies: DelegationToolDependencies, ex
     label: 'Spawn Agent',
     name: 'spawn_agent',
     parameters: SpawnAgentInputSchema,
+    renderCall: (args: SpawnAgentInput, theme: Theme) =>
+      new Text(
+        theme.fg('toolTitle', theme.bold('spawn_agent ')) +
+          theme.fg('text', args.task_name || '?') +
+          theme.fg(profileColor(args.agent_type), ` [${args.agent_type}]`) +
+          theme.fg('muted', args.run_in_background === true ? ' [background]' : ' [foreground]'),
+        0,
+        0
+      ),
+    renderResult: renderSpawnResult,
   },
   {
     description: 'Wait for the next eligible sub-agent conclusion, optionally restricted to named targets.',
