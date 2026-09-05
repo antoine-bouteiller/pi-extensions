@@ -76,7 +76,9 @@ describe('sidebar rendering', () => {
 
       expect(lines).toHaveLength(36)
       expect(lines.every((line) => visibleWidth(line) <= 44)).toBeTrue()
-      expect(lines.every((line) => stripAnsi(line).startsWith('│ '))).toBeTrue()
+      expect(lines.every((line) => stripAnsi(line).startsWith('  '))).toBeTrue()
+      expect(lines.some((line) => stripAnsi(line).trim() === '')).toBeTrue()
+
       expect(text).toContain('╭─ ✦ AGENT')
       expect(text).toContain('◆ Working')
       expect(text).toContain('gpt-5.6-sol')

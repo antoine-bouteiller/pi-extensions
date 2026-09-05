@@ -50,6 +50,9 @@ const paint = (theme: SidebarTheme, color: PaletteColor, text: string) => {
 
 const bold = (theme: SidebarTheme, text: string) => theme.bold?.(text) ?? text
 
+/* The left edge stays blank so a terminal selection of the chat or input area only ever picks up trimmable whitespace. */
+const gutterRow = (content: string, width: number, panelWidth: number) => truncateToWidth(`  ${pad(content, panelWidth)}`, width, '')
+
 const ANSI_PATTERN = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g')
 const sanitize = (text: string) =>
   Array.from(text.replace(ANSI_PATTERN, ''), (character) => {
@@ -411,11 +414,9 @@ export const renderSidebarLines = ({
     visible = visible.filter((_group, index) => index !== droppable.index)
   }
   const contentRows = visible.flatMap((group) => group.rows).slice(0, safeHeight)
-  const divider = paint(theme, 'gray', '│')
-  return Array.from({ length: safeHeight }, (_value, index) => {
-    const content = truncateToWidth(contentRows[index] ?? '', panelWidth, '')
-    return truncateToWidth(`${divider} ${pad(content, panelWidth)}`, safeWidth, '')
-  })
+  return Array.from({ length: safeHeight }, (_value, index) =>
+    gutterRow(truncateToWidth(contentRows[index] ?? '', panelWidth, ''), safeWidth, panelWidth)
+  )
 }
 
 export interface SidebarController {
