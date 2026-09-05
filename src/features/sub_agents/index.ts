@@ -1,5 +1,5 @@
 import { getAgentDir, ModelRuntime, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
-import { matchesKey, ScrollView, Text, type Component } from '@earendil-works/pi-tui'
+import { matchesKey, ScrollView, type Component } from '@earendil-works/pi-tui'
 import { Context, Effect, Layer } from 'effect'
 
 import { AgentActivity, type AppRuntime } from '#shared/effect/app_services'
@@ -19,6 +19,7 @@ import {
   PARENT_GUIDANCE,
   type DelegationToolDependencies,
 } from './tools.js'
+import { createTranscriptView } from './transcript.js'
 
 export interface SubagentFeatureDependencies extends Omit<DelegationToolDependencies, 'pi' | 'runtime'> {
   readonly isSubagent?: () => boolean
@@ -152,10 +153,11 @@ export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
                           Effect.promise(() =>
                             ctx.ui.custom<void>(
                               (tui, _theme, _keybindings, done) => {
-                                const body = new Text()
-                                const scroll = new ScrollView(body, { follow: 'end', scrollbar: 'auto' })
+                                const view = createTranscriptView({ cwd: ctx.cwd, title, tui })
+                                const scroll = new ScrollView(view.component, { follow: 'none', scrollbar: 'auto' })
+                                const viewportHeight = (): number => Math.max(1, Math.floor(tui.terminal.rows * 0.8))
                                 const render = (): void => {
-                                  body.setText(renderTranscriptContent(title, transcript.content()))
+                                  view.setContent(transcript.content())
                                   tui.requestRender()
                                 }
                                 const stopRefreshing = runManagedRepeatingEffect(
@@ -179,13 +181,17 @@ export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
                                     } else if (matchesKey(data, 'down')) {
                                       scroll.scrollBy(1)
                                     } else if (matchesKey(data, 'pageUp')) {
-                                      scroll.scrollBy(-Math.max(1, scroll.viewportHeight - 1))
+                                      scroll.scrollBy(-Math.max(1, viewportHeight() - 1))
                                     } else if (matchesKey(data, 'pageDown')) {
-                                      scroll.scrollBy(Math.max(1, scroll.viewportHeight - 1))
+                                      scroll.scrollBy(Math.max(1, viewportHeight() - 1))
                                     }
                                   },
                                   invalidate: () => scroll.invalidate(),
-                                  render: (width) => scroll.render(width),
+                                  render: (width) => {
+                                    const height = viewportHeight()
+                                    scroll.updateLayout(view.component.render(width).length, height, () => tui.requestRender())
+                                    return scroll.render(width).slice(scroll.scrollTop, scroll.scrollTop + height)
+                                  },
                                 } satisfies Component & { readonly dispose: () => void }
                               },
                               { overlay: true, overlayOptions: { maxHeight: '80%', width: '80%' } }
@@ -205,18 +211,6 @@ export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
     },
     status: { icon: '🧑‍🤝‍🧑', name: 'sub-agents' },
   } satisfies EagerFeaturePlugin
-}
-
-export const renderTranscriptContent = (
-  title: string,
-  content: { readonly entries: readonly unknown[]; readonly turns: readonly { readonly result: unknown }[]; readonly unavailable: boolean }
-): string => {
-  if (content.unavailable) {
-    return `${title}\nConversation unavailable: session file could not be read.\n[Back]`
-  }
-  const transcript = content.entries.map((entry) => JSON.stringify(entry))
-  const turns = content.turns.map(({ result }) => JSON.stringify(result))
-  return [title, ...transcript, ...(turns.length === 0 ? [] : ['Durable turn outcomes:', ...turns])].join('\n')
 }
 
 const defaultDependencies: SubagentFeatureDependencies = {

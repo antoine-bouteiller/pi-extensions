@@ -1,14 +1,18 @@
+import { initTheme } from '@earendil-works/pi-coding-agent'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asExtensionContext, asResult, asTheme, asTui } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
-import { Effect, Layer, ManagedRuntime } from 'effect'
+import { runtime as appRuntime } from '@tests/utils/runtime.js'
+import { Context, Effect, Layer, ManagedRuntime } from 'effect'
 
-import { feature, makeFeature, renderTranscriptContent } from '@/features/sub_agents/index.js'
+import { feature, makeFeature } from '@/features/sub_agents/index.js'
 import { SubagentOrchestrator, type SubagentOrchestratorApi } from '@/features/sub_agents/orchestrator.js'
 import { type SubagentRuntime } from '@/features/sub_agents/runtime.js'
-import { NotificationSink } from '@/features/sub_agents/store.js'
+import { NotificationSink, SubagentStore, SubagentStoreLive, type SubagentRecord } from '@/features/sub_agents/store.js'
 import { bindProductionNotificationSink, clearProductionNotificationSink, ProductionNotificationSinkLive } from '@/features/sub_agents/tools.js'
 import { type AppRuntime } from '@/shared/effect/app_services.js'
+
+initTheme()
 
 interface InputHandler {
   readonly handleInput: (data: string) => void
@@ -18,7 +22,19 @@ interface Keybindings {
   readonly matches: () => boolean
 }
 
+interface OverlayComponent extends InputHandler {
+  readonly dispose: () => void
+  readonly render: (width: number) => readonly string[]
+}
+
 type EditorFactory = (tui: ReturnType<typeof asTui>, theme: ReturnType<typeof asTheme>, keybindings: Keybindings) => InputHandler
+
+type OverlayFactory = (
+  tui: ReturnType<typeof asTui>,
+  theme: ReturnType<typeof asTheme>,
+  keybindings: Keybindings,
+  done: () => void
+) => OverlayComponent
 
 const escapeGuard = (idle: boolean, live: boolean) =>
   Effect.gen(function* () {
@@ -148,13 +164,69 @@ describe('sub-agent feature registration', () => {
     })
   )
 
-  it('renders authoritative failed outcomes even without transcript entries', () => {
-    expect(
-      renderTranscriptContent('failed-task · failed', {
-        entries: [],
-        turns: [{ result: { error: { code: 'agent_failed', message: 'worker failed' }, status: 'failed', task_name: 'failed-task', turn: 1 } }],
-        unavailable: false,
+  it.effect('scrolls a transcript overlay opened through the subagents command', () =>
+    Effect.gen(function* () {
+      const fixture = createFakePi()
+      const agentId = `scroll-${Bun.randomUUIDv7()}`
+      const store = Context.get(appRuntime.runSync(Effect.scoped(Layer.build(SubagentStoreLive))), SubagentStore)
+      const session = yield* store.createSession(agentId)
+      const transcript = [
+        { cwd: '/workspace', id: 'session', timestamp: '2025-01-01T00:00:00.000Z', type: 'session', version: 3 },
+        ...Array.from({ length: 30 }, (_unused, position) => ({
+          id: `message-${position}`,
+          message: { content: [{ text: `clipped line ${position}`, type: 'text' }], role: 'user', timestamp: position + 1 },
+          parentId: position === 0 ? null : `message-${position - 1}`,
+          timestamp: `2025-01-01T00:00:${String(position + 1).padStart(2, '0')}.000Z`,
+          type: 'message',
+        })),
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join('\n')
+      yield* Effect.tryPromise(() => Bun.write(session.sessionPath, `${transcript}\n`))
+      const record: SubagentRecord = {
+        logPath: 'worker.log',
+        profile: { contextCeiling: 1, key: 'scout', model: 'model', prompt: 'prompt', provider: 'provider', tools: [] },
+        session: 'current',
+        sessionPath: session.sessionPath,
+        settledAt: 1,
+        status: 'completed',
+        taskName: 'scroll task',
+        turns: [],
+      }
+      yield* store.replaceRecord(agentId, record)
+      let overlay: OverlayComponent | undefined
+      const tui = asTui({ requestRender: () => undefined, terminal: { columns: 100, rows: 20 } })
+      const ctx = asExtensionContext({
+        cwd: '/workspace',
+        sessionManager: { getSessionId: () => 'current' },
+        ui: {
+          custom: (factory: OverlayFactory) => {
+            overlay = factory(tui, asTheme({}), { matches: () => false }, () => undefined)
+            return Promise.resolve()
+          },
+          select: () => Promise.resolve('scroll task (completed)'),
+        },
       })
-    ).toContain('{"error":{"code":"agent_failed","message":"worker failed"},"status":"failed","task_name":"failed-task","turn":1}')
-  })
+      const plugin = makeFeature({
+        agentDir: '/agents',
+        childModelView: { authenticated_providers: [], models: [] },
+        environment: () => ({}),
+        isSubagent: () => false,
+        subagents: {},
+      })
+      plugin.implementation.register(fixture.pi, appRuntime)
+      const command = asResult<{ readonly handler: (args: string, commandCtx: typeof ctx) => Promise<void> }>(fixture.state.commands.get('subagents'))
+      yield* Effect.promise(() => command.handler('', ctx))
+      const component = asResult<OverlayComponent>(overlay)
+      const first = component.render(120)
+      expect(first.length).toBeLessThanOrEqual(Math.floor(20 * 0.8))
+      expect(first.join('\n')).toContain('clipped line 0')
+      expect(first.join('\n')).not.toContain('clipped line 5')
+
+      component.handleInput('\u001b[6~')
+      expect(component.render(120).join('\n')).toContain('clipped line 5')
+      component.dispose()
+      yield* store.delete(agentId)
+    })
+  )
 })

@@ -77,8 +77,8 @@ interface SubagentListRow {
   readonly taskName: string
 }
 
-interface TranscriptContent {
-  readonly entries: readonly unknown[]
+export interface TranscriptContent {
+  readonly text: string
   readonly turns: readonly AgentTurnRecord[]
   readonly unavailable: boolean
 }
@@ -101,20 +101,10 @@ export interface SubagentsOperatorOptions {
   readonly store: SubagentStoreApi
 }
 
-const unavailableTranscript: TranscriptContent = { entries: [], turns: [], unavailable: true }
-const completeJsonLines = (bytes: Uint8Array): readonly unknown[] => {
+const unavailableTranscript: TranscriptContent = { text: '', turns: [], unavailable: true }
+const completeLines = (bytes: Uint8Array): string => {
   const text = new TextDecoder().decode(bytes)
-  const complete = text.endsWith('\n') ? text : text.slice(0, Math.max(0, text.lastIndexOf('\n') + 1))
-  return complete.split('\n').flatMap((line) => {
-    if (line.length === 0) {
-      return []
-    }
-    try {
-      return [JSON.parse(line)]
-    } catch {
-      return []
-    }
-  })
+  return text.endsWith('\n') ? text : text.slice(0, Math.max(0, text.lastIndexOf('\n') + 1))
 }
 
 /** Durable records select conversations; activity can only decorate their live rows. */
@@ -138,9 +128,7 @@ export const createSubagentsOperator = ({ activity, sessionId, store }: Subagent
                     maxBytes: 10 * 1024 * 1024,
                     path: record.sessionPath,
                     root: path.dirname(record.sessionPath),
-                  }).pipe(
-                    Effect.map((file) => ({ content: { entries: completeJsonLines(file.bytes), turns: record.turns, unavailable: false }, stamp }))
-                  )
+                  }).pipe(Effect.map((file) => ({ content: { text: completeLines(file.bytes), turns: record.turns, unavailable: false }, stamp })))
             }),
             Effect.orElseSucceed<TranscriptRead>(() => ({ content: unavailableTranscript }))
           )
@@ -180,7 +168,7 @@ export const createSubagentsOperator = ({ activity, sessionId, store }: Subagent
               stamp = nextStamp
               if (!next.unavailable) {
                 current = next
-              } else if (current.entries.length === 0 && current.turns.length === 0) {
+              } else if (current.text.length === 0 && current.turns.length === 0) {
                 current = next
               } else {
                 current = { ...current, unavailable: true }
