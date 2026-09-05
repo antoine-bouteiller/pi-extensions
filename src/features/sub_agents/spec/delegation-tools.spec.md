@@ -55,7 +55,10 @@ N/A — the component inventory is owned by the umbrella.
 ### API surface
 
 One factory builds the feature and one registration wires lifecycle hooks, seven tools, and completion
-rendering. The operator leaf owns command registration. Registration is skipped when `PI_SUBAGENT=1`.
+rendering. `spawn_agent` owns its call and result rendering: its call row shows the task name, the
+profile-colored agent type, and foreground or background mode, and its result row summarizes completed,
+failed, interrupted, accepted background, or refusal outcomes. The other six delegation tools use Pi's
+default rendering. The operator leaf owns command registration. Registration is skipped when `PI_SUBAGENT=1`.
 Schemas target task names only, have no session selector, and validate `task_name` exactly and
 case-sensitively. TypeBox/Pi reports schema errors; uniqueness remains runtime-validated because it is
 not a JSON-schema array constraint:
@@ -338,3 +341,4 @@ N/A.
 | 2026-08-24 | Keep pre-ready failure private while retaining its lease and claims when a still-live worker moves to cleanup.                      | 8                 | Avoid losing reaping evidence or exceeding capacity after a startup refusal.                                      |
 | 2026-08-24 | Snapshot invocation admission inputs for spawn/send and remove unreachable `wait_conflict` from repeatable targeted waits.          | 3, 8              | Make current-host resolution explicit and keep the public error union implementable.                              |
 | 2026-08-24 | Exclude injection-only inactivity warnings from omitted wait snapshots.                                                             | 8                 | Keep wait outputs limited to `AgentResult`.                                                                       |
+| 2026-09-05 | Record `spawn_agent`-owned call and result rendering, while retaining Pi's default rendering for the other delegation tools.        | 8                 | Make the shipped delegation-tool presentation contract explicit.                                                  |

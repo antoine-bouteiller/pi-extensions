@@ -62,7 +62,9 @@ N/A — the component inventory is owned by the umbrella.
 ### API surface
 
 A read-only overlay owns the child view: transcript rendering and scrolling over the agent's persisted
-session file and authoritative turn records, re-read as the child appends to them. `/subagents` remains
+session file and authoritative turn records, re-read as the child appends to them. The overlay renders
+the full persisted branch without context compaction, keeping pre-compaction messages, thinking, and
+tool history visible, and marks each compaction point with a visible marker line. `/subagents` remains
 a current-session list and transcript overlay, not an ambient or cross-session view.
 
 The shared activity contract (`src/shared/state/agent_activity.ts:5`) defines a ready live child with this
@@ -184,3 +186,4 @@ N/A.
 | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------- |
 | 2026-08-21 | Consolidate readiness-gated current-session visibility, the record-backed `/subagents` overlay and list, profile task-name colors, one-shot queue-delivered inactivity warnings, Escape delivery behavior, stale-PID cleanup, and focused verification contracts | 2, 3, 6, 8        | Keep activity ephemeral, records authoritative, and the sidebar as the sole persistent/ambient indicator |
 | 2026-08-22 | Clarify that transcript inspection uses the worker's owner-validated exact persistent session file.                                                                                                                                                              | 6                 | Keep the overlay aligned with single-writer session ownership.                                           |
+| 2026-09-05 | Record uncompacted persisted-branch rendering and visible compaction markers in the transcript overlay.                                                                                                                                                          | 8                 | Make the shipped transcript-inspection contract explicit.                                                |
