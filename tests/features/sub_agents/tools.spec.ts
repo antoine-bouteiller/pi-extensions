@@ -1,10 +1,12 @@
-import { type AgentToolUpdateCallback, type Theme } from '@earendil-works/pi-coding-agent'
+import { type AgentToolUpdateCallback, type Theme, type ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { BunFileSystem, BunPath } from '@effect/platform-bun'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asExtensionContext, asResult, asTheme, asTool } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
+import { runtime as appRuntime } from '@tests/utils/runtime.js'
 import { Effect, Layer, ManagedRuntime } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
+import { Type } from 'typebox'
 import { Value } from 'typebox/value'
 
 import { makeFeature } from '@/features/sub_agents/index.js'
@@ -33,6 +35,7 @@ import {
   clearProductionNotificationSink,
   makeDelegationTools,
   makePiNotificationSink,
+  PARENT_GUIDANCE,
   ProductionNotificationSinkLive,
 } from '@/features/sub_agents/tools.js'
 import { type AppRuntime } from '@/shared/effect/app_services.js'
@@ -55,6 +58,7 @@ interface SpawnRenderTool {
 }
 
 interface DelegationTool {
+  readonly parameters: { readonly properties: { readonly agent_type: object } }
   readonly execute: (
     id: string,
     input: unknown,
@@ -65,6 +69,14 @@ interface DelegationTool {
 }
 
 const childModelView: ChildModelView = { authenticated_providers: [], models: [] }
+const configuredChildModelView: ChildModelView = {
+  authenticated_providers: ['configured-provider', 'provider'],
+  models: [
+    { contextWindow: 200_000, model: 'configured-model', provider: 'configured-provider' },
+    { contextWindow: 200_000, model: 'selected', provider: 'provider' },
+  ],
+}
+const neverChildModelView = Promise.withResolvers<ChildModelView>()
 const completed = (task_name = 'task'): AgentResult => ({ conclusion: 'done', status: 'completed', task_name, turn: 1 })
 const failed = (task_name = 'task'): AgentResult => ({ error: { code: 'agent_failed', message: 'failed' }, status: 'failed', task_name, turn: 1 })
 const interrupted = (task_name = 'task'): AgentResult => ({
@@ -169,6 +181,31 @@ const dependencies = (pi: ReturnType<typeof createFakePi>['pi'], snapshots: Admi
   runtime: ManagedRuntime.make(Layer.succeed(SubagentOrchestrator)(orchestrator(snapshots))),
   subagents: { scout: 'configured-provider/configured-model' },
 })
+const profileTool = (name: string): ToolDefinition => ({
+  description: '',
+  execute: () => Promise.resolve({ content: [], details: undefined }),
+  label: name,
+  name,
+  parameters: Type.Object({}),
+})
+const PROFILE_TOOL_NAMES = ['read', 'ffgrep', 'fffind', 'bash', 'edit', 'write', 'webfetch', 'mcp']
+const registerProfileTools = (pi: ReturnType<typeof createFakePi>['pi']) => {
+  for (const name of PROFILE_TOOL_NAMES) {
+    pi.registerTool(profileTool(name))
+  }
+}
+const makeActiveToolsStateful = (fixture: ReturnType<typeof createFakePi>) => {
+  let activeTools = [...fixture.state.tools.keys()]
+  const pi: {
+    getActiveTools: () => string[]
+    setActiveTools: (names: string[]) => void
+  } = fixture.pi
+  pi.getActiveTools = () => activeTools
+  pi.setActiveTools = (names) => {
+    activeTools = names
+  }
+  return () => activeTools
+}
 const ui = {
   confirm: () => Effect.succeed(true),
   hasUI: Effect.succeed(true),
@@ -205,17 +242,29 @@ describe('delegation tool boundary', () => {
       Effect.gen(function* () {
         const fixture = createFakePi()
         const snapshots: AdmissionSnapshot[] = []
-        makeFeature({ ...dependencies(fixture.pi, snapshots), isSubagent: () => false }).implementation.register(fixture.pi)
+        registerProfileTools(fixture.pi)
+        const plugin = makeFeature({
+          ...dependencies(fixture.pi, snapshots),
+          childModelView: configuredChildModelView,
+          isSubagent: () => false,
+          subagents: {
+            implementer: 'configured-provider/configured-model',
+            librarian: 'configured-provider/configured-model',
+            reviewer: 'configured-provider/configured-model',
+            scout: 'configured-provider/configured-model',
+          },
+        })
+        plugin.implementation.register(fixture.pi)
+        yield* plugin.implementation.activate(
+          { reason: 'startup', type: 'session_start' },
+          asExtensionContext({ ...context(), ui: { getEditorComponent: () => undefined, setEditorComponent: () => undefined } })
+        )
 
-        expect([...fixture.state.tools.keys()]).toEqual([
-          'spawn_agent',
-          'wait_agent',
-          'wait_all_agents',
-          'list_agents',
-          'read_agent_response',
-          'send_message',
-          'interrupt_agent',
-        ])
+        expect(
+          [...fixture.state.tools.keys()].filter((name) =>
+            ['spawn_agent', 'wait_agent', 'wait_all_agents', 'list_agents', 'read_agent_response', 'send_message', 'interrupt_agent'].includes(name)
+          )
+        ).toEqual(['spawn_agent', 'wait_agent', 'wait_all_agents', 'list_agents', 'read_agent_response', 'send_message', 'interrupt_agent'])
         const agentType = SpawnAgentInputSchema.properties.agent_type
         expect(Reflect.get(agentType, 'enum')).toEqual([...PROFILE_ORDER])
         expect(Reflect.get(agentType, 'type')).toBe('string')
@@ -229,7 +278,7 @@ Delegate narrow, self-contained errands whose intermediate context need not rema
 in the parent conversation. Foreground is the default. Use background execution
 only for clearly independent work, and never duplicate work assigned to a pending
 child. A session may have at most three live children and one live implementer.
-Each child accepts at most one follow-up message and each turn ends after 30
+Each child accepts up to five follow-up messages across its lifetime and each turn ends after 30
 minutes. Prefer a fresh child for distinct work. Only the child’s conclusion is
 returned; use the inspection tools for durable results and conversations. When the
 controller emits more than one \`spawn_agent\` call in a single block, it must name
@@ -244,7 +293,187 @@ otherwise ties an acceptance back to the brief that was sent.`,
         expect(child.state.tools).toHaveLength(0)
         const childPrompts = yield* Effect.promise(() => child.emit('before_agent_start', { systemPrompt: 'child' }))
         expect(childPrompts).toEqual([])
-      })
+      }).pipe(Effect.provide(Layer.merge(BunFileSystem.layer, BunPath.layer)))
+    ))
+
+  it('offers only preflight-resolved profiles and reports unavailable configuration once', () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const fixture = createFakePi()
+        const snapshots: AdmissionSnapshot[] = []
+        registerProfileTools(fixture.pi)
+        const plugin = makeFeature({
+          ...dependencies(fixture.pi, snapshots),
+          childModelView: configuredChildModelView,
+          isSubagent: () => false,
+          subagents: {
+            implementer: 'configured-provider/configured-model',
+            librarian: 'configured-provider/missing-model',
+            reviewer: 'configured-provider/configured-model',
+            scout: 'configured-provider/configured-model',
+          },
+        })
+        plugin.implementation.register(fixture.pi, appRuntime)
+        const ctx = asExtensionContext({
+          ...context(),
+          ui: { getEditorComponent: () => undefined, select: () => Promise.resolve(undefined), setEditorComponent: () => undefined },
+        })
+        yield* plugin.implementation.activate({ reason: 'startup', type: 'session_start' }, ctx)
+        yield* Effect.promise(() => fixture.emit('model_select', {}, ctx))
+        const spawn = asTool<DelegationTool>(fixture.state.tools.get('spawn_agent'))
+        expect(Reflect.get(spawn.parameters.properties.agent_type, 'enum')).toEqual(['scout', 'reviewer', 'implementer'])
+        expect(fixture.state.messages).toHaveLength(1)
+        expect(fixture.state.messages[0]).toMatchObject({
+          message: {
+            content: expect.stringContaining(
+              'librarian: missing_model — Selected model "configured-provider/missing-model" is unavailable to the child.'
+            ),
+            customType: 'subagent-preflight',
+            display: true,
+          },
+          options: { triggerTurn: false },
+        })
+        for (const agent_type of ['scout', 'reviewer', 'implementer']) {
+          const result = yield* Effect.promise(() =>
+            spawn.execute('call', { agent_type, message: 'go', task_name: agent_type }, undefined, undefined, ctx)
+          )
+          expect(result.details).toMatchObject({ status: 'completed' })
+        }
+      }).pipe(Effect.provide(Layer.merge(BunFileSystem.layer, BunPath.layer)))
+    ))
+
+  it('suppresses and restores the delegation surface as profiles become unavailable and recover', () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const fixture = createFakePi()
+        const snapshots: AdmissionSnapshot[] = []
+        let modelView: ChildModelView = {
+          authenticated_providers: ['configured-provider', 'recovered-provider'],
+          models: [
+            { contextWindow: 200_000, model: 'configured-model', provider: 'configured-provider' },
+            { contextWindow: 200_000, model: 'recovered-model', provider: 'recovered-provider' },
+          ],
+        }
+        registerProfileTools(fixture.pi)
+        const activeTools = makeActiveToolsStateful(fixture)
+        const plugin = makeFeature({
+          ...dependencies(fixture.pi, snapshots),
+          childModelViewFor: () => modelView,
+          isSubagent: () => false,
+          subagents: {
+            implementer: 'recovered-provider/recovered-model',
+            librarian: 'configured-provider/configured-model',
+            reviewer: 'recovered-provider/recovered-model',
+            scout: 'configured-provider/configured-model',
+          },
+        })
+        plugin.implementation.register(fixture.pi, appRuntime)
+        const ctx = asExtensionContext({
+          ...context(),
+          ui: { getEditorComponent: () => undefined, select: () => Promise.resolve(undefined), setEditorComponent: () => undefined },
+        })
+        yield* plugin.implementation.activate({ reason: 'startup', type: 'session_start' }, ctx)
+        expect(activeTools()).toEqual([
+          ...PROFILE_TOOL_NAMES,
+          'spawn_agent',
+          'wait_agent',
+          'wait_all_agents',
+          'list_agents',
+          'read_agent_response',
+          'send_message',
+          'interrupt_agent',
+        ])
+        modelView = { authenticated_providers: [], models: [] }
+        yield* Effect.promise(() => fixture.emit('model_select', {}, ctx))
+        expect(activeTools()).toEqual(PROFILE_TOOL_NAMES)
+        const suppressed = yield* Effect.promise(() => fixture.emit('before_agent_start', { systemPrompt: 'parent' }))
+        expect(suppressed).toEqual([{ systemPrompt: 'parent' }])
+        modelView = {
+          authenticated_providers: ['recovered-provider'],
+          models: [{ contextWindow: 200_000, model: 'recovered-model', provider: 'recovered-provider' }],
+        }
+        yield* Effect.promise(() => fixture.emit('model_select', {}, ctx))
+        const spawn = asTool<DelegationTool>(fixture.state.tools.get('spawn_agent'))
+        expect(Reflect.get(spawn.parameters.properties.agent_type, 'enum')).toEqual(['reviewer', 'implementer'])
+        expect(activeTools()).toEqual([
+          ...PROFILE_TOOL_NAMES,
+          'spawn_agent',
+          'wait_agent',
+          'wait_all_agents',
+          'list_agents',
+          'read_agent_response',
+          'send_message',
+          'interrupt_agent',
+        ])
+        const restored = yield* Effect.promise(() => fixture.emit('before_agent_start', { systemPrompt: 'parent' }))
+        expect(restored).toEqual([{ systemPrompt: `parent\n\n${PARENT_GUIDANCE}` }])
+      }).pipe(Effect.provide(Layer.merge(BunFileSystem.layer, BunPath.layer)))
+    ))
+
+  it('keeps every unresolved profile in a bounded long-error notice', () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const fixture = createFakePi()
+        const snapshots: AdmissionSnapshot[] = []
+        registerProfileTools(fixture.pi)
+        const plugin = makeFeature({
+          ...dependencies(fixture.pi, snapshots),
+          childModelViewFor: () => Promise.reject('x'.repeat(5000)),
+          isSubagent: () => false,
+          subagents: {
+            implementer: 'configured-provider/configured-model',
+            librarian: 'configured-provider/configured-model',
+            reviewer: 'configured-provider/configured-model',
+            scout: 'configured-provider/configured-model',
+          },
+        })
+        plugin.implementation.register(fixture.pi)
+        const ctx = asExtensionContext({ ...context(), ui: { getEditorComponent: () => undefined, setEditorComponent: () => undefined } })
+        yield* plugin.implementation.activate({ reason: 'startup', type: 'session_start' }, ctx)
+        const notice = fixture.state.messages[0]?.message
+        const text = typeof notice === 'object' && notice !== null && 'content' in notice && typeof notice.content === 'string' ? notice.content : ''
+        expect(text.length).toBeLessThanOrEqual(4096)
+        for (const key of PROFILE_ORDER) {
+          expect(text).toContain(`${key}: missing_model`)
+        }
+      }).pipe(Effect.provide(Layer.merge(BunFileSystem.layer, BunPath.layer)))
+    ))
+
+  it('reports child-model-view timeout as a resolution failure', () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const fixture = createFakePi()
+        const snapshots: AdmissionSnapshot[] = []
+        registerProfileTools(fixture.pi)
+        const plugin = makeFeature({
+          ...dependencies(fixture.pi, snapshots),
+          childModelViewFor: () => neverChildModelView.promise,
+          childModelViewTimeoutMillis: 1,
+          isSubagent: () => false,
+          subagents: {
+            implementer: 'configured-provider/configured-model',
+            librarian: 'configured-provider/configured-model',
+            reviewer: 'configured-provider/configured-model',
+            scout: 'configured-provider/configured-model',
+          },
+        })
+        plugin.implementation.register(fixture.pi, appRuntime)
+        const ctx = asExtensionContext({
+          ...context(),
+          ui: { getEditorComponent: () => undefined, select: () => Promise.resolve(undefined), setEditorComponent: () => undefined },
+        })
+        yield* plugin.implementation.activate({ reason: 'startup', type: 'session_start' }, ctx)
+        expect(fixture.state.tools.has('spawn_agent')).toBe(false)
+        const command = asResult<{ readonly handler: (args: string, commandCtx: typeof ctx) => Promise<void> }>(
+          fixture.state.commands.get('subagents')
+        )
+        yield* Effect.promise(() => command.handler('', ctx))
+        expect(fixture.state.messages).toHaveLength(1)
+        expect(fixture.state.messages[0]).toMatchObject({
+          message: { content: expect.stringContaining('scout: startup_timeout — Child model view resolution timed out after 1ms.') },
+          options: { triggerTurn: false },
+        })
+      }).pipe(Effect.provide(Layer.merge(BunFileSystem.layer, BunPath.layer)))
     ))
 
   it.scoped('initializes settings on activation or first model selection and passes static models to tools', () =>
@@ -256,9 +485,11 @@ otherwise ties an acceptance back to the brief that was sent.`,
       const ports = Layer.succeed(SubagentOrchestrator)(orchestrator(snapshots))
       const runtime = ManagedRuntime.make(Layer.mergeAll(ports, BunFileSystem.layer, BunPath.layer))
       yield* Effect.addFinalizer(() => Effect.promise(() => runtime.dispose()))
+      registerProfileTools(fixture.pi)
       const plugin = makeFeature({
         ...dependencies(fixture.pi, snapshots),
         agentDir: root,
+        childModelView: configuredChildModelView,
         isSubagent: () => false,
         runtime,
         subagents: undefined,

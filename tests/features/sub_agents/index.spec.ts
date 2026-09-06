@@ -58,7 +58,9 @@ const escapeGuard = (idle: boolean, live: boolean) =>
     const featureRuntime = asResult<SubagentRuntime>(runtime)
     let editor: unknown
     const ctx = asExtensionContext({
+      cwd: '/work',
       isIdle: () => idle,
+      isProjectTrusted: () => true,
       sessionManager: { getSessionId: () => 'current' },
       ui: {
         getEditorComponent: () => undefined,
@@ -142,7 +144,9 @@ describe('sub-agent feature registration', () => {
       plugin.implementation.register(fixture.pi, asResult<AppRuntime>(runtime))
       let oldEditor: unknown
       const oldCtx = asExtensionContext({
+        cwd: '/work',
         isIdle: () => true,
+        isProjectTrusted: () => true,
         sessionManager: { getSessionId: () => 'old' },
         ui: {
           getEditorComponent: () => oldEditor,
@@ -154,6 +158,7 @@ describe('sub-agent feature registration', () => {
       yield* plugin.implementation
         .activate({ reason: 'startup', type: 'session_start' }, oldCtx)
         .pipe(Effect.provideService(SubagentOrchestrator, orchestrator))
+      fixture.state.messages.splice(0)
 
       yield* plugin.implementation.deactivate(oldCtx, 'replaced').pipe(Effect.provideService(SubagentOrchestrator, orchestrator))
 

@@ -58,7 +58,7 @@ One factory builds the feature and one registration wires lifecycle hooks, seven
 rendering. `spawn_agent` owns its call and result rendering: its call row shows the task name, the
 profile-colored agent type, and foreground or background mode, and its result row summarizes completed,
 failed, interrupted, accepted background, or refusal outcomes. The other six delegation tools use Pi's
-default rendering. The operator leaf owns command registration. Registration is skipped when `PI_SUBAGENT=1`.
+default rendering. The operator leaf owns command registration. At activation and model selection, profiles are resolved against the child-equivalent model view and current tool admission; only resolved profile keys appear in `spawn_agent`'s enum. When none resolve, the delegation tools are removed from the active surface and guidance is suppressed; recovery restores the current schema without duplicating tools or guidance. A bounded one-time notice reports every unresolved profile's key and code, truncating messages independently, without claiming provider reachability or child-extension health. Child-model-view timeout bounds asynchronous resolution; a synchronous credential command can still block the event loop. Registration is skipped when `PI_SUBAGENT=1`.
 Schemas target task names only, have no session selector, and validate `task_name` exactly and
 case-sensitively. TypeBox/Pi reports schema errors; uniqueness remains runtime-validated because it is
 not a JSON-schema array constraint:
@@ -165,8 +165,7 @@ type InterruptAgentOutput = AgentResult | SettledInterruptNoop | Refusal
 | `send_message`        | `SendMessageInput`       | `SendMessageOutput`.                                                    |
 | `interrupt_agent`     | `InterruptAgentInput`    | `InterruptAgentOutput`.                                                 |
 
-`agent_type` is a JSON Schema string `enum` over the profile keys so callers and validation errors see the
-accepted values. Its description is `key: description` pairs joined by `; ` in the order below:
+`agent_type` is a JSON Schema string `enum` over the profile keys that resolved during activation, so callers and validation errors see only currently admitted values. Its description is `key: description` pairs joined by `; ` in the order below:
 
 | Profile       | Description                                                                                |
 | ------------- | ------------------------------------------------------------------------------------------ |

@@ -190,7 +190,10 @@ export const WorkerConfigSchema = closed({
 export type WorkerConfig = Static<typeof WorkerConfigSchema>
 
 interface ProfileResolutionError {
-  readonly code: Extract<ToolErrorCode, 'missing_model' | 'missing_provider' | 'unavailable_tool' | 'unknown_profile' | 'unsafe_tool'>
+  readonly code: Extract<
+    ToolErrorCode,
+    'missing_model' | 'missing_provider' | 'unavailable_tool' | 'unknown_profile' | 'unsafe_tool' | 'startup_timeout'
+  >
   readonly message: string
 }
 export type ProfileResolution =
@@ -261,15 +264,18 @@ If the task requires a product decision or mutation, explain the blocker instead
 } satisfies Readonly<Record<ProfileKey, ProfileDefinition>>
 
 export const PROFILE_ORDER = ['scout', 'librarian', 'reviewer', 'implementer'] as const
-const ProfileAgentTypeSchema = StringEnum(PROFILE_ORDER, {
-  description: PROFILE_ORDER.map((key) => `${key}: ${PROFILE_REGISTRY[key].description}`).join('; '),
-})
-export const SpawnAgentInputSchema = closed({
-  agent_type: ProfileAgentTypeSchema,
-  message: Type.String(),
-  run_in_background: Type.Optional(Type.Boolean()),
-  task_name: TaskNameSchema,
-})
+
+export const makeSpawnAgentInputSchema = (keys: readonly ProfileKey[]) =>
+  closed({
+    agent_type: StringEnum(keys, {
+      description: keys.map((key) => `${key}: ${PROFILE_REGISTRY[key].description}`).join('; '),
+    }),
+    message: Type.String(),
+    run_in_background: Type.Optional(Type.Boolean()),
+    task_name: TaskNameSchema,
+  })
+
+export const SpawnAgentInputSchema = makeSpawnAgentInputSchema(PROFILE_ORDER)
 
 type ToolClassification = 'async-process' | 'delegation' | 'local-read' | 'local-write' | 'network-read' | 'operator' | 'remote-gateway' | 'shell'
 const TOOL_CLASSES = {

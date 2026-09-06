@@ -5,14 +5,16 @@ import { AgentActivity, type AppRuntime } from '#shared/effect/app_services'
 import { type FeatureActivationError, type FeaturePlugin } from '#shared/effect/feature'
 import { makeCommandHandler, makeEventHandler, makeToolExecutor, runManagedEffect, runManagedRepeatingEffect } from '#shared/effect/runtime'
 
-import { toChildModel } from './model.js'
+import { PROFILE_ORDER, PROFILE_REGISTRY, resolveProfileWithRegistry, type ProfileKey, type ProfileResolution, toChildModel } from './model.js'
 import { createPanicEditor, createSubagentsOperator } from './operator.js'
 import { SubagentOrchestrator, type SubagentOrchestratorApi } from './orchestrator.js'
 import { getOrCreateSubagentRuntime, type SubagentRuntime } from './runtime.js'
 import { loadSubagentSettings } from './settings.js'
 import { SubagentStore, SubagentStoreLive } from './store.js'
 import {
+  admission,
   bindProductionNotificationSink,
+  isChildModelViewResolutionTimeoutError,
   clearProductionNotificationSink,
   makeDelegationTools,
   PARENT_GUIDANCE,
@@ -27,10 +29,47 @@ export interface SubagentFeatureDependencies extends Omit<DelegationToolDependen
 
 type EagerFeaturePlugin = Extract<FeaturePlugin, { readonly bootstrap: 'eager' }>
 
+const hasMessage = (value: unknown): value is { readonly message: string } =>
+  typeof value === 'object' && value !== null && 'message' in value && typeof value.message === 'string'
+
 const activationError = (error: unknown): FeatureActivationError => ({
   _tag: 'SubagentActivationError',
-  reason: error instanceof Error ? error.message : String(error),
+  reason: hasMessage(error) ? error.message : String(error),
 })
+const failureMessage = (error: unknown): string => {
+  const cause = typeof error === 'object' && error !== null && 'cause' in error ? error.cause : error
+  if (hasMessage(cause)) {
+    return cause.message
+  }
+  if (hasMessage(error)) {
+    return error.message
+  }
+  return String(error)
+}
+const DELEGATION_TOOL_NAMES = [
+  'spawn_agent',
+  'wait_agent',
+  'wait_all_agents',
+  'list_agents',
+  'read_agent_response',
+  'send_message',
+  'interrupt_agent',
+] as const
+const isDelegationToolName = (name: string): boolean => DELEGATION_TOOL_NAMES.some((candidate) => candidate === name)
+const truncate = (text: string, maximumLength: number): string => {
+  if (text.length <= maximumLength) {
+    return text
+  }
+  return maximumLength <= 1 ? text.slice(0, maximumLength) : `${text.slice(0, maximumLength - 1)}…`
+}
+const preflightNotice = (unresolved: readonly (readonly [ProfileKey, Extract<ProfileResolution, { readonly ok: false }>['error']])[]): string => {
+  const heading = 'Sub-agent profiles unavailable (configuration resolution only; provider reachability and child extension loading are not checked):'
+  const prefixes = unresolved.map(([key, error]) => `${key}: ${error.code} — `)
+  const separatorLength = unresolved.length
+  const messageBudget = Math.max(0, 4096 - heading.length - separatorLength - prefixes.reduce((total, prefix) => total + prefix.length, 0))
+  const messageShare = Math.floor(messageBudget / unresolved.length)
+  return [heading, ...unresolved.map(([, error], index) => `${prefixes[index]}${truncate(error.message, messageShare)}`)].join('\n')
+}
 
 export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
   const isSubagent = dependencies.isSubagent ?? (() => Bun.env.PI_SUBAGENT === '1')
@@ -52,6 +91,48 @@ export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
   let orchestrator: SubagentOrchestratorApi | undefined
   let session: string | undefined
   let notificationBinding: { readonly generation: number; readonly session: string } | undefined
+  let delegationToolsEnabled = false
+  let delegationToolsRegistered = false
+  let registeredProfileKeys: readonly ProfileKey[] = []
+  let lastPreflight: string | undefined
+  let registerDelegationTools: ((keys: readonly ProfileKey[]) => void) | undefined
+  const preflight = (ctx: ExtensionContext) => {
+    const activePi = pi
+    if (activePi === undefined) {
+      return Effect.fail({ _tag: 'SubagentRegistrationError', message: 'Sub-agent feature has not been registered.' })
+    }
+    return admission(ctx, Object.assign(toolDependencies, { pi: activePi })).pipe(
+      Effect.map((snapshot) => PROFILE_ORDER.map((key) => [key, resolveProfileWithRegistry(key, snapshot, PROFILE_REGISTRY)] as const)),
+      Effect.catch((error) => {
+        const cause = typeof error === 'object' && error !== null && 'cause' in error ? error.cause : error
+        const message = failureMessage(error)
+        const code = isChildModelViewResolutionTimeoutError(cause) ? 'startup_timeout' : 'missing_model'
+        return Effect.succeed(PROFILE_ORDER.map((key) => [key, { error: { code, message }, ok: false } satisfies ProfileResolution] as const))
+      }),
+      Effect.tap((results) =>
+        Effect.sync(() => {
+          const resolved = results.flatMap(([key, resolution]) => (resolution.ok ? [key] : []))
+          const unresolved = results.flatMap(([key, resolution]) => (resolution.ok ? [] : [[key, resolution.error] as const]))
+          const signature = results
+            .map(([key, resolution]) => (resolution.ok ? `${key}:ok` : `${key}:${resolution.error.code}:${resolution.error.message}`))
+            .join('\n')
+          if (resolved.length > 0 && registerDelegationTools !== undefined) {
+            registerDelegationTools(resolved)
+          } else if (resolved.length === 0 && delegationToolsEnabled) {
+            activePi.setActiveTools(activePi.getActiveTools().filter((name) => !isDelegationToolName(name)))
+            delegationToolsEnabled = false
+          }
+          if (unresolved.length === 0) {
+            lastPreflight = signature
+          } else if (lastPreflight !== signature) {
+            activePi.sendMessage({ content: preflightNotice(unresolved), customType: 'subagent-preflight', display: true }, { triggerTurn: false })
+            lastPreflight = signature
+          }
+        })
+      ),
+      Effect.asVoid
+    )
+  }
   return {
     bootstrap: 'eager',
     id: 'sub-agents',
@@ -63,9 +144,10 @@ export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
         const sessionId = ctx.sessionManager.getSessionId()
         const runtime = orchestrationRuntime
         return runtime === undefined
-          ? Effect.fail(activationError(new Error('Sub-agent feature has not been registered.')))
+          ? Effect.fail(activationError({ _tag: 'SubagentRegistrationError', message: 'Sub-agent feature has not been registered.' }))
           : Effect.gen(function* () {
               yield* loadSettings(ctx)
+              yield* preflight(ctx)
               const activeOrchestrator = yield* Effect.tryPromise(() => runManagedEffect(runtime, Effect.service(SubagentOrchestrator)))
               orchestrator = activeOrchestrator
               yield* activeOrchestrator.initialize
@@ -111,17 +193,33 @@ export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
         }
         orchestrationRuntime = toolRuntime
         const execute = makeToolExecutor(toolRuntime)
-        const [spawn, ...rest] = makeDelegationTools(Object.assign(toolDependencies, { pi, runtime: toolRuntime }), execute)
-        registeredPi.registerTool(spawn)
-        for (const tool of rest) {
-          registeredPi.registerTool(tool)
+        registerDelegationTools = (keys) => {
+          const changed = keys.join(',') !== registeredProfileKeys.join(',')
+          if (!changed && delegationToolsRegistered) {
+            registeredPi.setActiveTools([...new Set([...registeredPi.getActiveTools(), ...DELEGATION_TOOL_NAMES])])
+            delegationToolsEnabled = true
+            return
+          }
+          const [spawn, ...rest] = makeDelegationTools(Object.assign(toolDependencies, { pi: registeredPi, runtime: toolRuntime }), execute, keys)
+          registeredPi.registerTool(spawn)
+          if (!delegationToolsRegistered) {
+            for (const tool of rest) {
+              registeredPi.registerTool(tool)
+            }
+            registeredPi.on('before_agent_start', (event) =>
+              delegationToolsEnabled ? { systemPrompt: `${event.systemPrompt}\n\n${PARENT_GUIDANCE}` } : { systemPrompt: event.systemPrompt }
+            )
+            delegationToolsRegistered = true
+          }
+          registeredPi.setActiveTools([...new Set([...registeredPi.getActiveTools(), ...DELEGATION_TOOL_NAMES])])
+          delegationToolsEnabled = true
+          registeredProfileKeys = [...keys]
         }
-        registeredPi.on('before_agent_start', (event) => ({ systemPrompt: `${event.systemPrompt}\n\n${PARENT_GUIDANCE}` }))
         if (registeredRuntime !== undefined) {
           const applicationRuntime = registeredRuntime
           registeredPi.on(
             'model_select',
-            makeEventHandler(applicationRuntime)((_event, ctx) => loadSettings(ctx))
+            makeEventHandler(applicationRuntime)((_event, ctx) => loadSettings(ctx).pipe(Effect.andThen(preflight(ctx))))
           )
           registeredPi.registerCommand('subagents', {
             description: 'Inspect sub-agent conversations for the current session.',

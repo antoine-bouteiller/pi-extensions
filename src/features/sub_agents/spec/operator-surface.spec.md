@@ -68,7 +68,8 @@ from the host's tools-expanded state, and `app.tools.expand` toggles it only in 
 back to the host. The overlay renders the full persisted branch without context compaction, keeping
 pre-compaction messages, thinking, and tool history visible, and marks each compaction point with a
 visible marker line. `/subagents` remains
-a current-session list and transcript overlay, not an ambient or cross-session view.
+a current-session list and transcript overlay, not an ambient or cross-session view; it remains registered
+even when activation resolves no usable delegation profile, so retained history stays inspectable.
 
 The shared activity contract (`src/shared/state/agent_activity.ts:5`) defines a ready live child with this
 complete `RunningAgent` shape:

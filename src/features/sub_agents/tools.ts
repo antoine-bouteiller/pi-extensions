@@ -7,7 +7,7 @@ import {
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent'
 import { Text } from '@earendil-works/pi-tui'
-import { Effect, Layer, type ManagedRuntime } from 'effect'
+import { Data, Effect, Layer, type ManagedRuntime } from 'effect'
 
 import { ToolFailure } from '#shared/effect/errors'
 import { PiCtx } from '#shared/effect/pi_services'
@@ -22,10 +22,13 @@ import {
   ListAgentsInputSchema,
   type ReadAgentResponseInput,
   ReadAgentResponseInputSchema,
+  PROFILE_ORDER,
+  type ProfileKey,
   type RunningAcceptance,
   type SendMessageInput,
   SendMessageInputSchema,
-  SpawnAgentInputSchema,
+  makeSpawnAgentInputSchema,
+  type SpawnAgentInputSchema,
   type SpawnAgentInput,
   type SubagentSettings,
   type WaitAgentInput,
@@ -53,22 +56,61 @@ export interface DelegationToolDependencies {
     environment: Readonly<Record<string, string | undefined>>
   ) => ChildModelView | Promise<ChildModelView>
   readonly environment: () => Readonly<Record<string, string | undefined>>
+  readonly childModelViewTimeoutMillis?: number
   readonly pi: ExtensionAPI
   readonly runtime: ManagedRuntime.ManagedRuntime<SubagentOrchestrator, never>
   readonly subagents?: SubagentSettings
 }
 
-const admission = (ctx: ExtensionContext, dependencies: DelegationToolDependencies): Promise<AdmissionSnapshot> => {
+const CHILD_MODEL_VIEW_TIMEOUT_MILLIS = 5000
+
+class ChildModelViewResolutionError extends Data.TaggedError('ChildModelViewResolutionError')<{
+  readonly cause: unknown
+  readonly message: string
+}> {}
+export class ChildModelViewResolutionTimeoutError extends Data.TaggedError('ChildModelViewResolutionTimeoutError')<{
+  readonly message: string
+}> {}
+
+export const isChildModelViewResolutionTimeoutError = (error: unknown): error is ChildModelViewResolutionTimeoutError =>
+  typeof error === 'object' && error !== null && '_tag' in error && error._tag === 'ChildModelViewResolutionTimeoutError'
+
+export const admission = (
+  ctx: ExtensionContext,
+  dependencies: Pick<
+    DelegationToolDependencies,
+    'agentDir' | 'childModelView' | 'childModelViewFor' | 'childModelViewTimeoutMillis' | 'environment' | 'pi' | 'subagents'
+  >
+) => {
   const environment = dependencies.environment()
-  return Promise.resolve(dependencies.childModelViewFor?.(ctx, environment)).then((childModelView) => ({
-    agent_dir: dependencies.agentDir,
-    child_model_view: childModelView ?? dependencies.childModelView,
-    cwd: ctx.cwd,
-    environment: environmentCopy(environment),
-    project_trusted: ctx.isProjectTrusted(),
-    registered_tools: dependencies.pi.getAllTools().map((tool) => tool.name),
-    subagents: dependencies.subagents ?? {},
-  }))
+  const timeoutMillis = dependencies.childModelViewTimeoutMillis ?? CHILD_MODEL_VIEW_TIMEOUT_MILLIS
+  const { childModelViewFor } = dependencies
+  const resolveChildModelView = Effect.suspend(() => {
+    if (childModelViewFor === undefined) {
+      return Effect.void
+    }
+    return Effect.tryPromise({
+      catch: (cause) => new ChildModelViewResolutionError({ cause, message: cause instanceof Error ? cause.message : String(cause) }),
+      try: () => Promise.resolve(childModelViewFor(ctx, environment)),
+    }).pipe(
+      // Ponytail: This bounds asynchronous resolution only; isolate resolution behind a subprocess/worker boundary if a synchronous credential command is observed stalling activation.
+      Effect.timeout(timeoutMillis),
+      Effect.catchTag('TimeoutError', () =>
+        Effect.fail(new ChildModelViewResolutionTimeoutError({ message: `Child model view resolution timed out after ${timeoutMillis}ms.` }))
+      )
+    )
+  })
+  return resolveChildModelView.pipe(
+    Effect.map((resolvedChildModelView): AdmissionSnapshot => ({
+      agent_dir: dependencies.agentDir,
+      child_model_view: resolvedChildModelView ?? dependencies.childModelView,
+      cwd: ctx.cwd,
+      environment: environmentCopy(environment),
+      project_trusted: ctx.isProjectTrusted(),
+      registered_tools: dependencies.pi.getAllTools().map((tool) => tool.name),
+      subagents: dependencies.subagents ?? {},
+    }))
+  )
 }
 const withOrchestrator = <Value>(body: (orchestrator: SubagentOrchestratorApi) => Effect.Effect<Value, OrchestrationError>) =>
   Effect.gen(function* () {
@@ -126,111 +168,122 @@ type ToolExecutor = <Params, Result>(
   ctx: ExtensionContext
 ) => Promise<Result>
 
-export const makeDelegationTools: (dependencies: DelegationToolDependencies, execute: ToolExecutor) => DelegationTools = (dependencies, execute) => [
-  {
-    description: 'Delegate a self-contained task to a named sub-agent. Waits for its conclusion unless run_in_background is true.',
-    execute: execute<SpawnAgentInput, AgentToolResult<SpawnDetails>>(({ params: input }) =>
-      Effect.service(PiCtx).pipe(
-        Effect.flatMap((ctx) =>
-          Effect.promise(() => admission(ctx, dependencies)).pipe(
-            Effect.flatMap((snapshot) => withOrchestrator((orchestrator) => orchestrator.spawn(session(ctx), snapshot, input))),
-            Effect.map(json)
+export const makeDelegationTools = (
+  dependencies: DelegationToolDependencies,
+  execute: ToolExecutor,
+  profileKeys: readonly ProfileKey[] = PROFILE_ORDER
+): DelegationTools => {
+  const spawnAgentInputSchema = makeSpawnAgentInputSchema(profileKeys)
+  return [
+    {
+      description: 'Delegate a self-contained task to a named sub-agent. Waits for its conclusion unless run_in_background is true.',
+      execute: execute<SpawnAgentInput, AgentToolResult<SpawnDetails>>(({ params: input }) =>
+        Effect.service(PiCtx).pipe(
+          Effect.flatMap((ctx) =>
+            admission(ctx, dependencies).pipe(
+              Effect.mapError(failure),
+              Effect.flatMap((snapshot) => withOrchestrator((orchestrator) => orchestrator.spawn(session(ctx), snapshot, input))),
+              Effect.map(json)
+            )
           )
         )
-      )
-    ),
-    label: 'Spawn Agent',
-    name: 'spawn_agent',
-    parameters: SpawnAgentInputSchema,
-    renderCall: (args: SpawnAgentInput, theme: Theme) =>
-      new Text(
-        theme.fg('toolTitle', theme.bold('spawn_agent ')) +
-          theme.fg('text', args.task_name || '?') +
-          theme.fg(profileColor(args.agent_type), ` [${args.agent_type}]`) +
-          theme.fg('muted', args.run_in_background === true ? ' [background]' : ' [foreground]'),
-        0,
-        0
       ),
-    renderResult: renderSpawnResult,
-  },
-  {
-    description: 'Wait for the next eligible sub-agent conclusion, optionally restricted to named targets.',
-    execute: execute<WaitAgentInput, ReturnType<typeof json>>(({ params: input }) =>
-      Effect.service(PiCtx).pipe(
-        Effect.flatMap((ctx) => withOrchestrator((orchestrator) => orchestrator.waitOne(session(ctx), input.targets)).pipe(Effect.map(json)))
-      )
-    ),
-    label: 'Wait Agent',
-    name: 'wait_agent',
-    parameters: WaitAgentInputSchema,
-  },
-  {
-    description: 'Wait for all eligible sub-agent conclusions, optionally restricted to named targets.',
-    execute: execute<WaitAllInput, ReturnType<typeof json>>(({ params: input }) =>
-      Effect.service(PiCtx).pipe(
-        Effect.flatMap((ctx) =>
-          withOrchestrator((orchestrator) => orchestrator.waitAll(session(ctx), input.targets).pipe(Effect.map((results) => ({ results })))).pipe(
-            Effect.map(json)
+      label: 'Spawn Agent',
+      name: 'spawn_agent',
+      parameters: spawnAgentInputSchema,
+      renderCall: (args: SpawnAgentInput, theme: Theme) =>
+        new Text(
+          theme.fg('toolTitle', theme.bold('spawn_agent ')) +
+            theme.fg('text', args.task_name || '?') +
+            theme.fg(profileColor(args.agent_type), ` [${args.agent_type}]`) +
+            theme.fg('muted', args.run_in_background === true ? ' [background]' : ' [foreground]'),
+          0,
+          0
+        ),
+      renderResult: renderSpawnResult,
+    },
+    {
+      description: 'Wait for the next eligible sub-agent conclusion, optionally restricted to named targets.',
+      execute: execute<WaitAgentInput, ReturnType<typeof json>>(({ params: input }) =>
+        Effect.service(PiCtx).pipe(
+          Effect.flatMap((ctx) => withOrchestrator((orchestrator) => orchestrator.waitOne(session(ctx), input.targets)).pipe(Effect.map(json)))
+        )
+      ),
+      label: 'Wait Agent',
+      name: 'wait_agent',
+      parameters: WaitAgentInputSchema,
+    },
+    {
+      description: 'Wait for all eligible sub-agent conclusions, optionally restricted to named targets.',
+      execute: execute<WaitAllInput, ReturnType<typeof json>>(({ params: input }) =>
+        Effect.service(PiCtx).pipe(
+          Effect.flatMap((ctx) =>
+            withOrchestrator((orchestrator) => orchestrator.waitAll(session(ctx), input.targets).pipe(Effect.map((results) => ({ results })))).pipe(
+              Effect.map(json)
+            )
           )
         )
-      )
-    ),
-    label: 'Wait All Agents',
-    name: 'wait_all_agents',
-    parameters: WaitAllInputSchema,
-  },
-  {
-    description: 'List sub-agents in the current session and their current status.',
-    execute: execute<Record<string, never>, ReturnType<typeof json>>(() =>
-      Effect.service(PiCtx).pipe(
-        Effect.flatMap((ctx) =>
-          withOrchestrator((orchestrator) => orchestrator.list(session(ctx)).pipe(Effect.map((agents) => ({ agents })))).pipe(Effect.map(json))
-        )
-      )
-    ),
-    label: 'List Agents',
-    name: 'list_agents',
-    parameters: ListAgentsInputSchema,
-  },
-  {
-    description: 'Read durable conclusions for one sub-agent in the current session.',
-    execute: execute<ReadAgentResponseInput, ReturnType<typeof json>>(({ params: input }) =>
-      Effect.service(PiCtx).pipe(
-        Effect.flatMap((ctx) => withOrchestrator((orchestrator) => orchestrator.read(session(ctx), input.target)).pipe(Effect.map(json)))
-      )
-    ),
-    label: 'Read Agent Response',
-    name: 'read_agent_response',
-    parameters: ReadAgentResponseInputSchema,
-  },
-  {
-    description: 'Send one of up to five permitted follow-up messages to a sub-agent in the current session.',
-    execute: execute<SendMessageInput, ReturnType<typeof json>>(({ params: input }) =>
-      Effect.service(PiCtx).pipe(
-        Effect.flatMap((ctx) =>
-          Effect.promise(() => admission(ctx, dependencies)).pipe(
-            Effect.flatMap((snapshot) => withOrchestrator((orchestrator) => orchestrator.send(session(ctx), snapshot, input.target, input.message))),
-            Effect.map(json)
+      ),
+      label: 'Wait All Agents',
+      name: 'wait_all_agents',
+      parameters: WaitAllInputSchema,
+    },
+    {
+      description: 'List sub-agents in the current session and their current status.',
+      execute: execute<Record<string, never>, ReturnType<typeof json>>(() =>
+        Effect.service(PiCtx).pipe(
+          Effect.flatMap((ctx) =>
+            withOrchestrator((orchestrator) => orchestrator.list(session(ctx)).pipe(Effect.map((agents) => ({ agents })))).pipe(Effect.map(json))
           )
         )
-      )
-    ),
-    label: 'Send Message',
-    name: 'send_message',
-    parameters: SendMessageInputSchema,
-  },
-  {
-    description: 'Interrupt a running sub-agent in the current session and return its durable outcome.',
-    execute: execute<InterruptAgentInput, ReturnType<typeof json>>(({ params: input }) =>
-      Effect.service(PiCtx).pipe(
-        Effect.flatMap((ctx) => withOrchestrator((orchestrator) => orchestrator.interrupt(session(ctx), input.target)).pipe(Effect.map(json)))
-      )
-    ),
-    label: 'Interrupt Agent',
-    name: 'interrupt_agent',
-    parameters: InterruptAgentInputSchema,
-  },
-]
+      ),
+      label: 'List Agents',
+      name: 'list_agents',
+      parameters: ListAgentsInputSchema,
+    },
+    {
+      description: 'Read durable conclusions for one sub-agent in the current session.',
+      execute: execute<ReadAgentResponseInput, ReturnType<typeof json>>(({ params: input }) =>
+        Effect.service(PiCtx).pipe(
+          Effect.flatMap((ctx) => withOrchestrator((orchestrator) => orchestrator.read(session(ctx), input.target)).pipe(Effect.map(json)))
+        )
+      ),
+      label: 'Read Agent Response',
+      name: 'read_agent_response',
+      parameters: ReadAgentResponseInputSchema,
+    },
+    {
+      description: 'Send one of up to five permitted follow-up messages to a sub-agent in the current session.',
+      execute: execute<SendMessageInput, ReturnType<typeof json>>(({ params: input }) =>
+        Effect.service(PiCtx).pipe(
+          Effect.flatMap((ctx) =>
+            admission(ctx, dependencies).pipe(
+              Effect.mapError(failure),
+              Effect.flatMap((snapshot) =>
+                withOrchestrator((orchestrator) => orchestrator.send(session(ctx), snapshot, input.target, input.message))
+              ),
+              Effect.map(json)
+            )
+          )
+        )
+      ),
+      label: 'Send Message',
+      name: 'send_message',
+      parameters: SendMessageInputSchema,
+    },
+    {
+      description: 'Interrupt a running sub-agent in the current session and return its durable outcome.',
+      execute: execute<InterruptAgentInput, ReturnType<typeof json>>(({ params: input }) =>
+        Effect.service(PiCtx).pipe(
+          Effect.flatMap((ctx) => withOrchestrator((orchestrator) => orchestrator.interrupt(session(ctx), input.target)).pipe(Effect.map(json)))
+        )
+      ),
+      label: 'Interrupt Agent',
+      name: 'interrupt_agent',
+      parameters: InterruptAgentInputSchema,
+    },
+  ]
+}
 
 export const PARENT_GUIDANCE = `Delegate narrow, self-contained errands whose intermediate context need not remain
 in the parent conversation. Foreground is the default. Use background execution
