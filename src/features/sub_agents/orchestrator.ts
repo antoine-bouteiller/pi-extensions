@@ -1,10 +1,11 @@
 import { estimateTokens } from '@earendil-works/pi-coding-agent'
 import { Clock, Context, Deferred, Effect, Exit, Layer, Path, Predicate, Ref, Schema, Scope, Semaphore } from 'effect'
+import { type Static } from 'typebox'
 import { Value } from 'typebox/value'
 
 import { AgentActivity, type AgentActivityApi } from '#shared/effect/app_services'
 import { validateWorkerSessionPath } from '#shared/effect/bun_host_file_system'
-import { type RunningAgent } from '#shared/state/agent_activity'
+import { type AgentActivityKind, type RunningAgent } from '#shared/state/agent_activity'
 
 import {
   ChildCommandErrorFrameSchema,
@@ -128,6 +129,7 @@ interface WaitDelivery {
 type Delivery = 'unclaimed' | 'notice' | WaitDelivery
 interface Turn extends Reservation {
   readonly activity: Ref.Ref<number>
+  readonly runningTools: Ref.Ref<number>
   readonly child: RunningChild
   readonly background: boolean
   readonly deferred: Deferred.Deferred<AgentResult, PublicRefusalError>
@@ -236,6 +238,14 @@ interface DecodedChunk {
   readonly error?: unknown
   readonly values: readonly unknown[]
 }
+type ChildProgressFrame = Static<typeof ChildProgressFrameSchema>
+const progressActivity = (turn: Turn, progress: ChildProgressFrame['activity']): Effect.Effect<AgentActivityKind> =>
+  Ref.updateAndGet(turn.runningTools, (currentTools) => {
+    if (progress === 'tool_started') {
+      return currentTools + 1
+    }
+    return progress === 'tool_finished' ? Math.max(0, currentTools - 1) : currentTools
+  }).pipe(Effect.map((runningTools) => (runningTools > 0 ? 'tool' : 'thinking')))
 interface DecodedChild {
   readonly command_id: string
   readonly agent_id: string
@@ -537,10 +547,10 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
   let generations = 0
   let noticeIdentifiers = 0
   let deliveryClaims = 0
-  const touch = (turn: Turn): Effect.Effect<void> =>
+  const touch = (turn: Turn, kind?: AgentActivityKind): Effect.Effect<void> =>
     Clock.currentTimeMillis.pipe(
       Effect.flatMap((lastActivityAt) =>
-        Ref.update(turn.activity, (value) => value + 1).pipe(Effect.andThen(activityProjection.updateActivity(turn.agentId, lastActivityAt)))
+        Ref.update(turn.activity, (value) => value + 1).pipe(Effect.andThen(activityProjection.updateActivity(turn.agentId, lastActivityAt, kind)))
       )
     )
   const active = (key: string): Effect.Effect<Session, PublicRefusalError> =>
@@ -1403,7 +1413,7 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
       )
     }
     if (Value.Check(ChildProgressFrameSchema, frame)) {
-      return touch(turn)
+      return progressActivity(turn, frame.activity).pipe(Effect.flatMap((kind) => touch(turn, kind)))
     }
     if (Value.Check(ChildSteerAckFrameSchema, frame)) {
       return touch(turn).pipe(
@@ -1925,6 +1935,7 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
             logPath,
             released: false,
             resourceReleased: Ref.makeUnsafe(false),
+            runningTools: Ref.makeUnsafe(0),
             sessionKey: key,
             sessionPath: checked.canonicalPath,
             settledAt: undefined,
@@ -1979,12 +1990,14 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                 yield* Clock.currentTimeMillis.pipe(
                   Effect.flatMap((now) =>
                     activityProjection.publishReady({
+                      activity: 'starting',
                       agentId: turn.agentId,
                       color: profileColor(turn.profile.key),
                       lastActivityAt: now,
                       name: turn.taskName,
                       profile: turn.profile.key,
                       sessionId: turn.sessionKey,
+                      startedAt: now,
                       state: 'running',
                     })
                   )
@@ -2410,6 +2423,7 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                                 released: true,
                                 resourceReleased: Ref.makeUnsafe(true),
                                 result,
+                                runningTools: Ref.makeUnsafe(0),
                                 sessionKey: key,
                                 sessionPath: record.sessionPath,
                                 settledAt: record.settledAt,

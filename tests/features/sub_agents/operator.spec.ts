@@ -6,6 +6,7 @@ import { join } from '#shared/utils/path'
 import { type PersistedResolvedProfile } from '@/features/sub_agents/model.js'
 import { createActivityProjection, createPanicEditor, createSubagentsOperator } from '@/features/sub_agents/operator.js'
 import { type SubagentRecord, type SubagentStoreApi } from '@/features/sub_agents/store.js'
+import { type RunningAgent } from '@/shared/state/agent_activity.js'
 
 const frozenMtime = 1_700_000_000_000
 const profile: PersistedResolvedProfile = {
@@ -175,11 +176,11 @@ describe('sub-agent panic editor', () => {
 describe('sub-agent operator activity projection', () => {
   it.effect('publishes one ready agent, updates verified activity, and removes settled or closed agents', () =>
     Effect.gen(function* () {
-      const snapshots: string[][] = []
+      const snapshots: (readonly RunningAgent[])[] = []
       const projection = createActivityProjection({
         publish: (agents) =>
           Effect.sync(() => {
-            snapshots.push(agents.map((agent) => agent.agentId ?? ''))
+            snapshots.push(agents)
           }),
       })
       const scout = {
@@ -193,11 +194,17 @@ describe('sub-agent operator activity projection', () => {
 
       yield* projection.publishReady(scout)
       yield* projection.publishReady(scout)
-      yield* projection.updateActivity('scout', 2)
+      yield* projection.updateActivity('scout', 2, 'tool')
+      expect(projection.list()).toEqual([{ ...scout, activity: 'tool', lastActivityAt: 2 }])
+      expect(snapshots[1]).toEqual([{ ...scout, activity: 'tool', lastActivityAt: 2 }])
+      yield* projection.updateActivity('scout', 3)
+      expect(projection.list()).toEqual([{ ...scout, activity: 'tool', lastActivityAt: 3 }])
+      expect(snapshots[2]).toEqual([{ ...scout, activity: 'tool', lastActivityAt: 3 }])
       yield* projection.closeSession('other')
       yield* projection.closeSession('one')
 
-      expect(snapshots).toEqual([['scout'], ['scout'], ['scout'], []])
+      expect(snapshots).toHaveLength(5)
+      expect(snapshots[4]).toEqual([])
       expect(projection.list()).toEqual([])
     })
   )

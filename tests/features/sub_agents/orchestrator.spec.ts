@@ -494,6 +494,44 @@ describe('SubagentOrchestrator', () => {
     })
   )
 
+  it.scoped('projects progress activity while preserving the ready timestamp', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-activity-' }).pipe(Effect.flatMap((path) => fs.realPath(path)))
+      const fake = yield* harness(root, { profiles: ['scout'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('activity')
+          const spawning = yield* Effect.forkChild(orchestrator.spawn('activity', admission, request('worker')))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[0], 'agent-1', join(root, 'session.json'))
+          yield* Fiber.join(spawning)
+          const startedAt = fake.activity()[0]?.startedAt
+          expect(fake.activity()[0]?.activity).toBe('starting')
+          expect(startedAt).toBe(1)
+
+          yield* TestClock.adjust('1 millis')
+          for (const activity of ['tool_started', 'tool_started', 'tool_finished'] as const) {
+            yield* fake.children[0].emit(bytes({ activity, agent_id: 'agent-1', command_id: 'initial', turn: 1, type: 'progress' }))
+            yield* Effect.yieldNow
+          }
+          expect(fake.activity()[0]?.activity).toBe('tool')
+          expect(fake.activity()[0]?.lastActivityAt).toBe(2)
+          expect(fake.activity()[0]?.startedAt).toBe(startedAt)
+
+          yield* TestClock.adjust('1 millis')
+          yield* fake.children[0].emit(bytes({ activity: 'tool_finished', agent_id: 'agent-1', command_id: 'initial', turn: 1, type: 'progress' }))
+          yield* Effect.yieldNow
+          expect(fake.activity()[0]?.activity).toBe('thinking')
+          expect(fake.activity()[0]?.lastActivityAt).toBe(3)
+          expect(fake.activity()[0]?.startedAt).toBe(startedAt)
+        }),
+        fake.layer
+      )
+    })
+  )
+
   it.scoped('reassembles split frames and settles malformed correlation as a protocol failure', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem

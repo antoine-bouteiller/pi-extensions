@@ -168,19 +168,28 @@ const profileColor = (profile: string | undefined): PaletteColor => {
   }
 }
 
-const inactivity = (lastActivityAt: number | undefined, now: number): string => {
-  const elapsed = Math.max(0, now - (lastActivityAt ?? now))
-  return `${Math.floor(elapsed / 60_000)}m idle`
+const pad2 = (value: number): string => String(value).padStart(2, '0')
+
+const runTime = (ms: number): string => {
+  const seconds = Math.floor(ms / 1000)
+  const minutes = Math.floor(seconds / 60)
+  const hours = Math.floor(minutes / 60)
+  return hours > 0 ? `${hours}:${pad2(minutes % 60)}:${pad2(seconds % 60)}` : `${minutes}:${pad2(seconds % 60)}`
+}
+
+const activityLabel = (agent: RunningAgent, now: number): string => {
+  const elapsed = Math.max(0, now - (agent.startedAt ?? agent.lastActivityAt ?? now))
+  return `${agent.activity ?? 'running'} ${runTime(elapsed)}`
 }
 
 const subagentRow = (agent: RunningAgent, width: number, theme: SidebarTheme, now: number) => {
   const marker = '▸ '
-  const idle = inactivity(agent.lastActivityAt, now)
-  const nameWidth = width - visibleWidth(marker) - visibleWidth(idle) - 1
+  const activity = activityLabel(agent, now)
+  const nameWidth = width - visibleWidth(marker) - visibleWidth(activity) - 1
   const name = truncateToWidth(sanitize(agent.name), Math.max(0, nameWidth), '…')
-  const gap = ' '.repeat(Math.max(1, width - visibleWidth(marker) - visibleWidth(name) - visibleWidth(idle)))
+  const gap = ' '.repeat(Math.max(1, width - visibleWidth(marker) - visibleWidth(name) - visibleWidth(activity)))
   const coloredName = paint(theme, profileColor(agent.profile), name)
-  return truncateToWidth(`${paint(theme, 'gray', marker)}${coloredName}${gap}${idle}`, width, '')
+  return truncateToWidth(`${paint(theme, 'gray', marker)}${coloredName}${gap}${activity}`, width, '')
 }
 
 const subagentRows = (agents: readonly RunningAgent[], width: number, theme: SidebarTheme, now: number) => {
