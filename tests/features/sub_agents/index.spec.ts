@@ -80,7 +80,9 @@ const escapeGuard = (idle: boolean, live: boolean) =>
       .activate({ reason: 'startup', type: 'session_start' }, ctx)
       .pipe(Effect.provideService(SubagentOrchestrator, orchestrator))
     const factory = asResult<EditorFactory>(editor)
-    factory(asTui({}), asTheme({}), { matches: () => false }).handleInput('\u001b')
+    factory(asTui({}), asTheme({ bold: (text: string) => text, fg: (_color: string, text: string) => text }), { matches: () => false }).handleInput(
+      '\u001b'
+    )
     yield* Effect.promise(() => Promise.resolve())
     return interrupted
   })
@@ -201,9 +203,15 @@ describe('sub-agent feature registration', () => {
         sessionManager: { getSessionId: () => 'current' },
         ui: {
           custom: (factory: OverlayFactory) => {
-            overlay = factory(tui, asTheme({}), { matches: () => false }, () => undefined)
+            overlay = factory(
+              tui,
+              asTheme({ bold: (text: string) => text, fg: (_color: string, text: string) => text }),
+              { matches: () => false },
+              () => undefined
+            )
             return Promise.resolve()
           },
+          getToolsExpanded: () => false,
           select: () => Promise.resolve('scroll task (completed)'),
         },
       })
@@ -219,7 +227,7 @@ describe('sub-agent feature registration', () => {
       yield* Effect.promise(() => command.handler('', ctx))
       const component = asResult<OverlayComponent>(overlay)
       const first = component.render(120)
-      expect(first.length).toBeLessThanOrEqual(Math.floor(20 * 0.8))
+      expect(first.length).toBe(16)
       expect(first.join('\n')).toContain('clipped line 0')
       expect(first.join('\n')).not.toContain('clipped line 5')
 

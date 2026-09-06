@@ -1,5 +1,4 @@
 import { getAgentDir, ModelRuntime, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
-import { matchesKey, ScrollView, type Component } from '@earendil-works/pi-tui'
 import { Context, Effect, Layer } from 'effect'
 
 import { AgentActivity, type AppRuntime } from '#shared/effect/app_services'
@@ -19,7 +18,7 @@ import {
   PARENT_GUIDANCE,
   type DelegationToolDependencies,
 } from './tools.js'
-import { createTranscriptView } from './transcript.js'
+import { createTranscriptOverlay } from './transcript.js'
 
 export interface SubagentFeatureDependencies extends Omit<DelegationToolDependencies, 'pi' | 'runtime'> {
   readonly isSubagent?: () => boolean
@@ -152,47 +151,27 @@ export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
                         Effect.flatMap(() =>
                           Effect.promise(() =>
                             ctx.ui.custom<void>(
-                              (tui, _theme, _keybindings, done) => {
-                                const view = createTranscriptView({ cwd: ctx.cwd, title, tui })
-                                const scroll = new ScrollView(view.component, { follow: 'none', scrollbar: 'auto' })
-                                const viewportHeight = (): number => Math.max(1, Math.floor(tui.terminal.rows * 0.8))
-                                const render = (): void => {
-                                  view.setContent(transcript.content())
-                                  tui.requestRender()
-                                }
+                              (tui, theme, keybindings, done) => {
+                                const overlay = createTranscriptOverlay({
+                                  content: transcript.content,
+                                  cwd: ctx.cwd,
+                                  expanded: ctx.ui.getToolsExpanded(),
+                                  keybindings,
+                                  onClose: done,
+                                  theme,
+                                  title,
+                                  tui,
+                                })
                                 const stopRefreshing = runManagedRepeatingEffect(
                                   applicationRuntime,
                                   transcript.refresh.pipe(
-                                    Effect.tap(() => Effect.sync(render)),
+                                    Effect.tap(() => Effect.sync(overlay.refresh)),
                                     Effect.ignore
                                   ),
                                   '500 millis'
                                 )
-                                render()
-                                return {
-                                  dispose: () => {
-                                    stopRefreshing()
-                                  },
-                                  handleInput: (data) => {
-                                    if (data === '\u001b' || data === 'q') {
-                                      done()
-                                    } else if (matchesKey(data, 'up')) {
-                                      scroll.scrollBy(-1)
-                                    } else if (matchesKey(data, 'down')) {
-                                      scroll.scrollBy(1)
-                                    } else if (matchesKey(data, 'pageUp')) {
-                                      scroll.scrollBy(-Math.max(1, viewportHeight() - 1))
-                                    } else if (matchesKey(data, 'pageDown')) {
-                                      scroll.scrollBy(Math.max(1, viewportHeight() - 1))
-                                    }
-                                  },
-                                  invalidate: () => scroll.invalidate(),
-                                  render: (width) => {
-                                    const height = viewportHeight()
-                                    scroll.updateLayout(view.component.render(width).length, height, () => tui.requestRender())
-                                    return scroll.render(width).slice(scroll.scrollTop, scroll.scrollTop + height)
-                                  },
-                                } satisfies Component & { readonly dispose: () => void }
+                                overlay.refresh()
+                                return { ...overlay, dispose: stopRefreshing }
                               },
                               { overlay: true, overlayOptions: { maxHeight: '80%', width: '80%' } }
                             )

@@ -1,14 +1,20 @@
 import {
   AssistantMessageComponent,
   getMarkdownTheme,
+  keyHint,
+  type KeybindingsManager,
+  rawKeyHint,
   migrateSessionEntries,
   parseSessionEntries,
   sessionEntryToContextMessages,
   ToolExecutionComponent,
+  type Theme,
+  type ToolDefinition,
   UserMessageComponent,
   type SessionEntry,
 } from '@earendil-works/pi-coding-agent'
-import { Container, Text, type TUI } from '@earendil-works/pi-tui'
+import { Container, matchesKey, ScrollView, Text, truncateToWidth, visibleWidth, type Component, type TUI } from '@earendil-works/pi-tui'
+import { Type } from 'typebox'
 
 import { type TranscriptContent } from './operator.js'
 
@@ -44,6 +50,26 @@ export const entryMessages = (entry: SessionEntry): readonly AgentMessage[] => s
 export interface TranscriptView {
   readonly component: Container
   readonly setContent: (content: TranscriptContent) => void
+  readonly toggleExpanded: () => void
+}
+
+const builtInToolNames = new Set(['read', 'bash', 'powershell', 'edit', 'write', 'grep', 'find', 'ls'])
+
+// oxlint-disable-next-line capitalized-comments
+// ponytail: builtInToolNames mirrors Object.keys(createAllToolDefinitions(cwd)) in pi 0.84.4, which pi does not export.
+// Revalidate on pi upgrades: a new built-in otherwise has its renderer shadowed by generic renderCall.
+const displayOnlyDefinition = (name: string): ToolDefinition => {
+  const definition: ToolDefinition = {
+    description: '',
+    execute: () => Promise.reject(new Error('Transcript tools are display-only.')),
+    label: name,
+    name,
+    parameters: Type.Object({}),
+  }
+  if (!builtInToolNames.has(name)) {
+    definition.renderCall = (args, theme) => new Text(`${theme.fg('toolTitle', theme.bold(name))}\n\n${JSON.stringify(args, undefined, 2)}`)
+  }
+  return definition
 }
 
 const userText = (message: Extract<AgentMessage, { readonly role: 'user' }>): string => {
@@ -56,17 +82,26 @@ const userText = (message: Extract<AgentMessage, { readonly role: 'user' }>): st
     .join('\n')
 }
 
+const pad = (line: string, width: number): string => {
+  const truncated = truncateToWidth(line, width, '')
+  return `${truncated}${' '.repeat(Math.max(0, width - visibleWidth(truncated)))}`
+}
+
 const renderMessage = ({
   component,
   cwd,
   message,
+  expanded,
   pendingTools,
+  tools,
   tui,
 }: {
   readonly component: Container
   readonly cwd: string
+  readonly expanded: boolean
   readonly message: AgentMessage
   readonly pendingTools: Map<string, ToolExecutionComponent>
+  readonly tools: ToolExecutionComponent[]
   readonly tui: TUI
 }): void => {
   if (message.role === 'user') {
@@ -83,10 +118,11 @@ const renderMessage = ({
       if (part.type !== 'toolCall') {
         continue
       }
-      const tool = new ToolExecutionComponent(part.name, part.id, part.arguments, {}, undefined, tui, cwd)
-      tool.setExpanded(true)
+      const tool = new ToolExecutionComponent(part.name, part.id, part.arguments, {}, displayOnlyDefinition(part.name), tui, cwd)
+      tool.setExpanded(expanded)
       component.addChild(tool)
       pendingTools.set(part.id, tool)
+      tools.push(tool)
     }
     if (message.stopReason === 'aborted' || message.stopReason === 'error') {
       const error = message.errorMessage || (message.stopReason === 'aborted' ? 'Operation aborted' : 'Error')
@@ -107,12 +143,86 @@ const renderMessage = ({
   }
 }
 
-export const createTranscriptView = ({ cwd, title, tui }: { readonly cwd: string; readonly title: string; readonly tui: TUI }): TranscriptView => {
+export const createTranscriptOverlay = (options: {
+  readonly content: () => TranscriptContent
+  readonly cwd: string
+  readonly expanded: boolean
+  readonly keybindings: Pick<KeybindingsManager, 'matches'>
+  readonly onClose: () => void
+  readonly theme: Pick<Theme, 'bold' | 'fg'>
+  readonly title: string
+  readonly tui: TUI
+}): Component & { readonly refresh: () => void } => {
+  const view = createTranscriptView(options)
+  const scroll = new ScrollView(view.component, { follow: 'none', scrollbar: 'auto' })
+  const height = (): number => Math.min(options.tui.terminal.rows, Math.max(3, Math.floor(options.tui.terminal.rows * 0.8)))
+  const frame = (width: number, body: readonly string[]): string[] => {
+    const innerWidth = Math.max(1, width - 4)
+    const safeTitle = truncateToWidth(options.title, Math.max(0, innerWidth - 2), '…')
+    const title = options.theme.bold(options.theme.fg('accent', safeTitle))
+    const top = `${options.theme.fg('border', '╭─ ')}${title}${options.theme.fg('border', ` ${'─'.repeat(Math.max(0, innerWidth - visibleWidth(safeTitle) - 1))}╮`)}`
+    const fullHints = `${rawKeyHint('↑↓', 'scroll')}  ${rawKeyHint('pgup/pgdn', 'page')}  ${keyHint('app.tools.expand', 'expand tools')}  ${rawKeyHint('esc', 'close')}`
+    const closeHint = rawKeyHint('esc', 'close')
+    let hints = ''
+    if (visibleWidth(fullHints) <= innerWidth - 2) {
+      hints = fullHints
+    } else if (visibleWidth(closeHint) <= innerWidth - 2) {
+      hints = closeHint
+    }
+    const bottom =
+      hints.length === 0
+        ? options.theme.fg('border', `╰${'─'.repeat(innerWidth + 2)}╯`)
+        : `${options.theme.fg('border', '╰─ ')}${hints}${options.theme.fg('border', ` ${'─'.repeat(Math.max(0, innerWidth - visibleWidth(hints) - 1))}╯`)}`
+    const rows = body.map((row) => `${options.theme.fg('border', '│')} ${pad(row, innerWidth)} ${options.theme.fg('border', '│')}`)
+
+    return [top, ...rows, bottom].slice(0, height()).map((line) => truncateToWidth(line, Math.max(0, width), ''))
+  }
+
+  return {
+    handleInput: (data) => {
+      const bodyRows = Math.max(0, height() - 2)
+      if (options.keybindings.matches(data, 'app.tools.expand')) {
+        view.toggleExpanded()
+        options.tui.requestRender()
+      } else if (matchesKey(data, 'escape') || data === 'q') {
+        options.onClose()
+      } else if (matchesKey(data, 'up')) {
+        scroll.scrollBy(-1)
+      } else if (matchesKey(data, 'down')) {
+        scroll.scrollBy(1)
+      } else if (matchesKey(data, 'pageUp')) {
+        scroll.scrollBy(-Math.max(1, bodyRows - 1))
+      } else if (matchesKey(data, 'pageDown')) {
+        scroll.scrollBy(Math.max(1, bodyRows - 1))
+      }
+    },
+    invalidate: () => scroll.invalidate(),
+    refresh: () => {
+      view.setContent(options.content())
+      options.tui.requestRender()
+    },
+    render: (width) => {
+      const bodyRows = Math.max(0, height() - 2)
+      const innerWidth = Math.max(1, width - 4)
+      scroll.updateLayout(view.component.render(innerWidth).length, bodyRows, () => options.tui.requestRender())
+      const body = scroll.render(innerWidth).slice(scroll.scrollTop, scroll.scrollTop + bodyRows)
+      while (body.length < bodyRows) {
+        body.push('')
+      }
+      return frame(width, body)
+    },
+  }
+}
+
+export const createTranscriptView = (options: { readonly cwd: string; readonly expanded: boolean; readonly tui: TUI }): TranscriptView => {
   const component = new Container()
+  // oxlint-disable-next-line prefer-destructuring
+  let expanded = options.expanded
+  let tools: ToolExecutionComponent[] = []
 
   const rebuild = (content: TranscriptContent): void => {
     component.clear()
-    component.addChild(new Text(title))
+    tools = []
     const pendingTools = new Map<string, ToolExecutionComponent>()
 
     for (const entry of transcriptEntries(content.text)) {
@@ -121,7 +231,7 @@ export const createTranscriptView = ({ cwd, title, tui }: { readonly cwd: string
         continue
       }
       for (const message of entryMessages(entry)) {
-        renderMessage({ component, cwd, message, pendingTools, tui })
+        renderMessage({ component, cwd: options.cwd, expanded, message, pendingTools, tools, tui: options.tui })
       }
     }
 
@@ -145,5 +255,12 @@ export const createTranscriptView = ({ cwd, title, tui }: { readonly cwd: string
     rebuild(content)
   }
 
-  return { component, setContent }
+  const toggleExpanded = (): void => {
+    expanded = !expanded
+    for (const tool of tools) {
+      tool.setExpanded(expanded)
+    }
+  }
+
+  return { component, setContent, toggleExpanded }
 }
