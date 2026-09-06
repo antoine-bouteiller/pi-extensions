@@ -53,24 +53,17 @@ export interface TranscriptView {
   readonly toggleExpanded: () => void
 }
 
-const builtInToolNames = new Set(['read', 'bash', 'powershell', 'edit', 'write', 'grep', 'find', 'ls'])
-
 // oxlint-disable-next-line capitalized-comments
-// ponytail: builtInToolNames mirrors Object.keys(createAllToolDefinitions(cwd)) in pi 0.84.4, which pi does not export.
-// Revalidate on pi upgrades: a new built-in otherwise has its renderer shadowed by generic renderCall.
-const displayOnlyDefinition = (name: string): ToolDefinition => {
-  const definition: ToolDefinition = {
-    description: '',
-    execute: () => Promise.reject(new Error('Transcript tools are display-only.')),
-    label: name,
-    name,
-    parameters: Type.Object({}),
-  }
-  if (!builtInToolNames.has(name)) {
-    definition.renderCall = (args, theme) => new Text(`${theme.fg('toolTitle', theme.bold(name))}\n\n${JSON.stringify(args, undefined, 2)}`)
-  }
-  return definition
-}
+// ponytail: every tool renders generically; pi 0.85.1 moved built-in renderers behind an unexported
+// `withBuiltInRenderers`. Restore per-tool fidelity if pi ever exports them from its package root.
+const displayOnlyDefinition = (name: string): ToolDefinition => ({
+  description: '',
+  execute: () => Promise.reject(new Error('Transcript tools are display-only.')),
+  label: name,
+  name,
+  parameters: Type.Object({}),
+  renderCall: (args, theme) => new Text(`${theme.fg('toolTitle', theme.bold(name))}\n\n${JSON.stringify(args, undefined, 2)}`),
+})
 
 const userText = (message: Extract<AgentMessage, { readonly role: 'user' }>): string => {
   if (typeof message.content === 'string') {
