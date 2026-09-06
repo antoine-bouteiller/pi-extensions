@@ -204,7 +204,7 @@ export const makeDelegationTools: (dependencies: DelegationToolDependencies, exe
     parameters: ReadAgentResponseInputSchema,
   },
   {
-    description: 'Send the one permitted follow-up message to a sub-agent in the current session.',
+    description: 'Send one of up to five permitted follow-up messages to a sub-agent in the current session.',
     execute: execute<SendMessageInput, ReturnType<typeof json>>(({ params: input }) =>
       Effect.service(PiCtx).pipe(
         Effect.flatMap((ctx) =>
@@ -236,7 +236,7 @@ export const PARENT_GUIDANCE = `Delegate narrow, self-contained errands whose in
 in the parent conversation. Foreground is the default. Use background execution
 only for clearly independent work, and never duplicate work assigned to a pending
 child. A session may have at most three live children and one live implementer.
-Each child accepts at most one follow-up message and each turn ends after 30
+Each child accepts up to five follow-up messages across its lifetime and each turn ends after 30
 minutes. Prefer a fresh child for distinct work. Only the child’s conclusion is
 returned; use the inspection tools for durable results and conversations. When the
 controller emits more than one \`spawn_agent\` call in a single block, it must name

@@ -128,6 +128,10 @@ interface WaitDelivery {
   state: 'active' | 'committed' | 'abandoned'
 }
 type Delivery = 'unclaimed' | 'notice' | WaitDelivery
+interface PendingSteer {
+  readonly commandId: string
+  readonly waiting: Deferred.Deferred<SteeringAck | CommandError>
+}
 interface Turn extends Reservation {
   readonly activity: Ref.Ref<number>
   readonly runningTools: Ref.Ref<number>
@@ -137,15 +141,16 @@ interface Turn extends Reservation {
   readonly deadlineMonotonic: bigint
   readonly deadlineWall: number
   readonly delivery: Delivery
-  readonly followUp: Ref.Ref<'available' | 'pending' | 'used'>
+  readonly followUp: Ref.Ref<{ readonly pending: boolean; readonly remaining: number }>
   readonly generation: number
+  readonly issuedSteers: Ref.Ref<number>
   readonly logPath: string
   readonly sessionKey: string
   readonly sessionPath: string
   readonly settledAt?: number
   readonly state: TurnState
   readonly stopping: boolean
-  readonly steerResponse: Ref.Ref<Deferred.Deferred<SteeringAck | CommandError> | undefined>
+  readonly steerResponse: Ref.Ref<PendingSteer | undefined>
   readonly result?: AgentResult
   readonly warningEnqueued: boolean
   readonly turn: number
@@ -290,6 +295,7 @@ const failure = (operation: LifecycleError['operation'], reason: LifecycleError[
 export const WORKER_ENTRYPOINT = Bun.fileURLToPath(new URL('worker.ts', import.meta.url))
 const MAX_LIVE_AGENTS = 4
 const FOLLOW_UP_OUTPUT_RESERVE_TOKENS = 8192
+const FOLLOW_UP_BUDGET = 5
 const MAX_NOTIFICATION_BYTES = 50 * 1024
 const MAX_NOTIFICATION_LINES = 2000
 const SETTLEMENT_GRACE_MS = 15_000
@@ -388,11 +394,11 @@ const resolvePendingSteer = (turn: Turn, value: AgentResult, commandId: string):
     Effect.flatMap((waiting) =>
       waiting === undefined
         ? Effect.void
-        : Ref.set(turn.followUp, 'available').pipe(
+        : Ref.update(turn.followUp, (allowance) => ({ ...allowance, pending: false })).pipe(
             Effect.andThen(
               commandId === 'protocol_error'
                 ? Effect.void
-                : Deferred.succeed(waiting, {
+                : Deferred.succeed(waiting.waiting, {
                     accepted: false,
                     error: { code: 'turn_settled', message: 'The turn settled before steering was accepted.' },
                     status: value.status,
@@ -1440,24 +1446,57 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
     return (
       child.agent_id === turn.agentId &&
       child.turn === turn.turn &&
-      (child.type === 'steer_ack' || child.type === 'command_error' ? child.command_id === 'steer' : child.command_id === 'initial')
+      (child.type === 'steer_ack' || child.type === 'command_error'
+        ? child.command_id === Ref.getUnsafe(turn.steerResponse)?.commandId
+        : child.command_id === 'initial')
     )
   }
-  const answerSteer = (session: Session, turn: Turn, response: SteeringAck | CommandError): Effect.Effect<void> =>
-    Ref.getAndSet(turn.steerResponse, undefined).pipe(
-      Effect.flatMap((waiting) =>
-        waiting === undefined
-          ? settle(
-              session,
-              turn,
-              outcome(turn.taskName, 'failed', 'protocol_error', 'Worker sent an unexpected steering acknowledgement.', turn.turn),
-              'protocol_error'
-            )
-          : Ref.set(turn.followUp, response.accepted ? 'used' : 'available').pipe(Effect.andThen(Deferred.succeed(waiting, response)))
-      ),
-      Effect.asVoid
+  const answerSteer = (session: Session, turn: Turn, commandId: string, response: SteeringAck | CommandError): Effect.Effect<void> =>
+    locked(
+      session,
+      snapshot(session).pipe(
+        Effect.flatMap((state) =>
+          sameTurn(state.agents.get(turn.taskName), turn)
+            ? Ref.modify(turn.steerResponse, (pending) =>
+                pending?.commandId === commandId ? ([pending, undefined] as const) : ([undefined, pending] as const)
+              ).pipe(
+                Effect.flatMap((pending) =>
+                  pending === undefined
+                    ? Effect.void
+                    : Ref.update(turn.followUp, (allowance) =>
+                        response.accepted ? { pending: false, remaining: allowance.remaining - 1 } : { ...allowance, pending: false }
+                      ).pipe(Effect.andThen(Deferred.succeed(pending.waiting, response)))
+                )
+              )
+            : Effect.void
+        )
+      )
     )
+  const staleSteer = (turn: Turn, frame: unknown): boolean => {
+    if (
+      !childLifecycleFrame(frame) ||
+      (frame.type !== 'steer_ack' && frame.type !== 'command_error') ||
+      frame.agent_id !== turn.agentId ||
+      frame.turn !== turn.turn
+    ) {
+      return false
+    }
+    const match = /^steer-(?<sequence>\d+)$/.exec(frame.command_id)
+    if (match === null) {
+      return false
+    }
+    const sequence = Number(match.groups?.sequence)
+    return (
+      Number.isSafeInteger(sequence) &&
+      frame.command_id === `steer-${sequence}` &&
+      sequence < Ref.getUnsafe(turn.issuedSteers) &&
+      frame.command_id !== Ref.getUnsafe(turn.steerResponse)?.commandId
+    )
+  }
   const settleFrame = (session: Session, turn: Turn, frame: unknown): Effect.Effect<void> => {
+    if (staleSteer(turn, frame)) {
+      return Effect.void
+    }
     if (!valid(turn, frame)) {
       return settle(
         session,
@@ -1472,7 +1511,7 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
     if (Value.Check(ChildSteerAckFrameSchema, frame)) {
       return touch(turn).pipe(
         Effect.andThen(
-          answerSteer(session, turn, {
+          answerSteer(session, turn, frame.command_id, {
             accepted: true,
             status: 'running',
             task_name: turn.taskName,
@@ -1484,14 +1523,14 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
     if (Value.Check(ChildCommandErrorFrameSchema, frame)) {
       const response =
         frame.code === 'queue_rejected'
-          ? answerSteer(session, turn, {
+          ? answerSteer(session, turn, frame.command_id, {
               accepted: false,
               error: { code: 'queue_rejected', message: frame.error },
               status: 'running',
               task_name: turn.taskName,
               turn: turn.turn,
             })
-          : answerSteer(session, turn, {
+          : answerSteer(session, turn, frame.command_id, {
               accepted: false,
               error: { code: 'turn_settled', message: frame.error },
               status: frame.status,
@@ -2012,8 +2051,16 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
             deadlineWall,
             deferred: Deferred.makeUnsafe<AgentResult, PublicRefusalError>(),
             delivery: 'unclaimed',
-            followUp: Ref.makeUnsafe<'available' | 'pending' | 'used'>(resume === undefined ? 'available' : 'used'),
+            followUp: Ref.makeUnsafe<{ readonly pending: boolean; readonly remaining: number }>(
+              resume === undefined
+                ? { pending: false, remaining: FOLLOW_UP_BUDGET }
+                : {
+                    pending: false,
+                    remaining: Math.max(0, predecessor === undefined ? 0 : (yield* Ref.get(predecessor.followUp)).remaining - 1),
+                  }
+            ),
             generation: session.generation,
+            issuedSteers: Ref.makeUnsafe(0),
             logPath,
             released: false,
             resourceReleased: Ref.makeUnsafe(false),
@@ -2022,7 +2069,7 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
             sessionPath: checked.canonicalPath,
             settledAt: undefined,
             state: 'running',
-            steerResponse: Ref.makeUnsafe<Deferred.Deferred<SteeringAck | CommandError> | undefined>(undefined),
+            steerResponse: Ref.makeUnsafe<PendingSteer | undefined>(undefined),
             stopping: false,
             turn: expectedTurn,
             turns: resume?.turns ?? [],
@@ -2399,7 +2446,7 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                   return Ref.get(turn.followUp).pipe(
                     Effect.map((allowance) => ({
                       current_turn: turn.turn,
-                      follow_up_available: turn.generation === session.generation && result.status === 'completed' && allowance === 'available',
+                      follow_up_available: turn.generation === session.generation && result.status === 'completed' && allowance.remaining > 0,
                       profile: turn.profile.key,
                       status: result.status,
                       task_name: turn.taskName,
@@ -2417,7 +2464,7 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                             follow_up_available:
                               turn.generation === session.generation &&
                               (record.status === 'running' || record.status === 'completed') &&
-                              allowance === 'available',
+                              allowance.remaining > 0,
                             profile: record.profile.key,
                             status: record.status,
                             task_name: record.taskName,
@@ -2497,8 +2544,9 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                                 deadlineWall: 0,
                                 deferred,
                                 delivery: { claim: 0, kind: 'wait', previous: 'unclaimed', state: 'committed' },
-                                followUp: Ref.makeUnsafe<'available' | 'pending' | 'used'>('used'),
+                                followUp: Ref.makeUnsafe<{ readonly pending: boolean; readonly remaining: number }>({ pending: false, remaining: 0 }),
                                 generation: session.generation,
+                                issuedSteers: Ref.makeUnsafe(0),
                                 logPath: record.logPath,
                                 profile: record.profile,
                                 released: true,
@@ -2510,7 +2558,7 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                                 settledAt: record.settledAt,
                                 slotId: `hydrated-${agentId}`,
                                 state: 'settled',
-                                steerResponse: Ref.makeUnsafe<Deferred.Deferred<SteeringAck | CommandError> | undefined>(undefined),
+                                steerResponse: Ref.makeUnsafe<PendingSteer | undefined>(undefined),
                                 stopping: false,
                                 taskName: record.taskName,
                                 turn: result.turn,
@@ -2618,8 +2666,13 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                                 if (current !== turn || current.agentId !== turn.agentId) {
                                   return yield* refusal('not_resumable', 'The completed agent is no longer available.')
                                 }
-                                if ((yield* Ref.get(turn.followUp)) !== 'available') {
-                                  return yield* refusal('follow_up_used', 'The follow-up allowance has already been used.')
+                                const reserved = yield* Ref.modify(turn.followUp, (allowance) =>
+                                  allowance.pending || allowance.remaining <= 0
+                                    ? ([false, allowance] as const)
+                                    : ([true, { ...allowance, pending: true }] as const)
+                                )
+                                if (!reserved) {
+                                  return yield* refusal('follow_up_used', 'The follow-up allowance has been exhausted.')
                                 }
                                 if (current.stopping) {
                                   return yield* refusal('not_ready', 'The completed agent is still stopping.')
@@ -2640,7 +2693,6 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                                   slotId: `slot-${++slotIdentifiers}`,
                                   taskName: target,
                                 }
-                                yield* Ref.set(turn.followUp, 'pending')
                                 yield* Ref.set(session.state, {
                                   ...state,
                                   slots: new Map(state.slots).set(reservation.slotId, reservation),
@@ -2685,7 +2737,7 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                           )
                         )
                       ),
-                      Effect.onError(() => Ref.set(turn.followUp, 'available'))
+                      Effect.onError(() => Ref.update(turn.followUp, (allowance) => ({ ...allowance, pending: false })))
                     )
                   }),
                   Effect.map((result): SteeringAck | CommandError | AgentResult => result)
@@ -2696,43 +2748,76 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                 Effect.gen(function* () {
                   const current = (yield* snapshot(session)).agents.get(target)
                   if (current !== turn || current.state !== 'running') {
-                    return yield* refusal('follow_up_used', 'The follow-up allowance has already been used.')
+                    const allowance = yield* Ref.get(turn.followUp)
+                    if (allowance.pending || allowance.remaining <= 0) {
+                      return yield* refusal('follow_up_used', 'The follow-up allowance has already been used.')
+                    }
+                    if (sameTurn(current, turn) && current.result !== undefined) {
+                      return {
+                        accepted: false as const,
+                        error: { code: 'turn_settled' as const, message: 'The turn settled before steering was accepted.' },
+                        status: current.result.status,
+                        task_name: target,
+                        turn: current.turn,
+                      }
+                    }
+                    return yield* refusal('not_ready', 'The agent is no longer ready to accept steering.')
                   }
                   const waiting = yield* Deferred.make<SteeringAck | CommandError>()
                   const reserved = yield* Ref.modify(turn.followUp, (allowance) =>
-                    allowance === 'available' ? ([true, 'pending'] as const) : ([false, allowance] as const)
+                    allowance.pending || allowance.remaining <= 0 ? ([false, allowance] as const) : ([true, { ...allowance, pending: true }] as const)
                   )
                   if (!reserved) {
                     return yield* refusal('follow_up_used', 'The follow-up allowance has already been used.')
                   }
-                  yield* Ref.set(turn.steerResponse, waiting)
-                  return waiting
+                  const commandId = yield* Ref.modify(turn.issuedSteers, (issued) => [`steer-${issued}`, issued + 1] as const)
+                  const pending: PendingSteer = { commandId, waiting }
+                  yield* Ref.set(turn.steerResponse, pending)
+                  return pending
                 })
               )
-              let frame: string
-              try {
-                frame = encodeFrame({
-                  agent_id: turn.agentId,
-                  command_id: 'steer',
-                  message,
-                  turn: turn.turn,
-                  type: 'steer',
-                })
-              } catch {
-                return Effect.fail(refusal('frame_too_large', 'Worker frame exceeds the 1 MiB limit.'))
-              }
               return reserve.pipe(
-                Effect.flatMap((waiting) =>
-                  turn.child.write(frame).pipe(
-                    Effect.catch((error) =>
-                      Ref.set(turn.steerResponse, undefined).pipe(
-                        Effect.andThen(Ref.set(turn.followUp, 'available')),
-                        Effect.andThen(Effect.fail(refusal('agent_failed', error.message)))
+                Effect.flatMap((waiting) => {
+                  if (!('waiting' in waiting)) {
+                    return Effect.succeed(waiting)
+                  }
+                  let frame: string
+                  try {
+                    frame = encodeFrame({
+                      agent_id: turn.agentId,
+                      command_id: waiting.commandId,
+                      message,
+                      turn: turn.turn,
+                      type: 'steer',
+                    })
+                  } catch {
+                    return locked(
+                      session,
+                      Ref.modify(turn.steerResponse, (pending) =>
+                        pending?.commandId === waiting.commandId ? ([true, undefined] as const) : ([false, pending] as const)
+                      ).pipe(
+                        Effect.flatMap((owned) =>
+                          owned ? Ref.update(turn.followUp, (allowance) => ({ ...allowance, pending: false })) : Effect.void
+                        )
                       )
+                    ).pipe(Effect.andThen(Effect.fail(refusal('frame_too_large', 'Worker frame exceeds the 1 MiB limit.'))))
+                  }
+                  return turn.child.write(frame).pipe(
+                    Effect.catch((error) =>
+                      locked(
+                        session,
+                        Ref.modify(turn.steerResponse, (pending) =>
+                          pending?.commandId === waiting.commandId ? ([true, undefined] as const) : ([false, pending] as const)
+                        ).pipe(
+                          Effect.flatMap((owned) =>
+                            owned ? Ref.update(turn.followUp, (allowance) => ({ ...allowance, pending: false })) : Effect.void
+                          )
+                        )
+                      ).pipe(Effect.andThen(Effect.fail(refusal('agent_failed', error.message))))
                     ),
                     Effect.andThen(
                       Effect.race(
-                        Deferred.await(waiting),
+                        Deferred.await(waiting.waiting),
                         Deferred.await(turn.deferred).pipe(
                           Effect.map((result): CommandError | AgentResult =>
                             result.status === 'failed'
@@ -2752,7 +2837,7 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                       )
                     )
                   )
-                )
+                })
               )
             })
           )

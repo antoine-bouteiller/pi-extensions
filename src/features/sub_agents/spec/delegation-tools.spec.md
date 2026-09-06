@@ -230,7 +230,7 @@ Delegate narrow, self-contained errands whose intermediate context need not rema
 in the parent conversation. Foreground is the default. Use background execution
 only for clearly independent work, and never duplicate work assigned to a pending
 child. A session may have at most three live children and one live implementer.
-Each child accepts at most one follow-up message and each turn ends after 30
+Each child accepts up to five follow-up messages across its lifetime and each turn ends after 30
 minutes. Prefer a fresh child for distinct work. Only the child’s conclusion is
 returned; use the inspection tools for durable results and conversations. When the
 controller emits more than one `spawn_agent` call in a single block, it must name
@@ -248,11 +248,10 @@ enables only resolved profile tools; no other host tool is available to the chil
 
 ### Follow-up and interruption
 
-`send_message` permits exactly one successfully accepted call for an agent's lifetime. `starting`
+`send_message` permits up to five successfully accepted calls across an agent's lifetime, with the remaining budget inherited by resumed turns. `starting`
 returns `not_ready` without consumption. `running` sends steering and returns `SteeringAck` only after
 the child returns a matching `steer_ack`, or a correlated `CommandError`: `queue_rejected` is `running`,
-while result-first returns `turn_settled` with its actual terminal status. Only the positive acknowledgement
-consumes the allowance. Missing/mismatched acknowledgement or process failure settles and returns failed
+while result-first returns `turn_settled` with its actual terminal status. Only a positive acknowledgement consumes one budget unit. Missing/mismatched acknowledgement or process failure settles and returns failed
 `AgentResult` (`protocol_error` or `agent_failed`), never `CommandError` or a refusal. Ack-first consumes
 even when the result is immediately available. A positive acceptance neither claims nor settles the active
 turn and does not reset its 30-minute deadline. An existing foreground waiter remains owner; otherwise the
@@ -262,13 +261,13 @@ selected model is canonical `missing_model`), checks capacity and projected cont
 and model maximum-output reserve (8,192-token fallback), then dispatches provisionally. At
 `projected >= ceiling` (or if unmeasurable) it returns `context_limit`. Before its 30-second `ready`,
 previous durable turns remain and the send is not consumed; after ready it creates/marks the new running
-turn, consumes, reserves synchronous delivery, waits, and returns its `AgentResult`. Caller cancellation
+turn, consumes one budget unit, reserves synchronous delivery, waits, and returns its `AgentResult`. Caller cancellation
 before this reserved claim settles returns it to the notice queue. Only completed-agent resume and
 explicit API interrupt reserve synchronous delivery. Validation or transport failure before acceptance
 does not consume. `failed`, `interrupted`, restarted, and already-used targets refuse with `not_resumable`
-or `follow_up_used`. `follow_up_available` is true only while the lifetime send allowance is unused,
-the record belongs to the current live session generation, its profile key still exists, and its status is
-`running` or `completed`. It is false after restart/stale generation, a used allowance, a removed profile,
+or `follow_up_used`. `follow_up_available` is true while the lifetime follow-up budget remains, the record belongs to the current
+live session generation, its profile key still exists, and its status is `running` or `completed`. It is false
+after restart/stale generation, an exhausted budget, a removed profile,
 or `failed`/`interrupted`; it does not promise later provider, model, context, or capacity success.
 
 Interrupting a ready `running` agent reserves/claims active-turn delivery before signalling, then waits

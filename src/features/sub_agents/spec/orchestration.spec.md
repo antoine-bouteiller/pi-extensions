@@ -573,20 +573,20 @@ use the same 50 KiB/2,000-line inline cap and set `truncated: true` with `full_r
 
 `list_agents` takes no arguments and returns current-session entries only with
 `task_name`, `profile`, `status`, `current_turn`, and `follow_up_available`. `follow_up_available` is true
-only when the lifetime send allowance is unused, the record belongs to the current live session generation,
-the profile key still exists, and status is `running` or `completed`. It does not promise dynamic
-provider/model/context/capacity admission success. It is false after restart or for a stale generation, a
-used allowance, a removed profile, or `failed`/`interrupted` status. `read_agent_response`
+only when follow-up budget remains, the record belongs to the current live session generation, the profile
+key still exists, and status is `running` or `completed`. It does not promise dynamic
+provider/model/context/capacity admission success. It is false after restart or for a stale generation, an
+exhausted budget, a removed profile, or `failed`/`interrupted` status. `read_agent_response`
 takes a target and returns only `task_name`, `profile`, `status`, and ordered turns. Neither tool has
 cross-session fields.
 
 ### Follow-up routing
 
-`send_message(target, message)` permits exactly one successfully accepted call for the agent's
-lifetime. A `starting` agent refuses `not_ready` without consuming it. A `running` agent sends steering
+`send_message(target, message)` permits up to five successfully accepted calls across the agent's
+lifetime, with the remaining budget inherited by resumed turns. A `starting` agent refuses `not_ready` without consuming it. A `running` agent sends steering
 with a fresh command identity and returns `SteeringAck` only after the matching `steer_ack`, or a correlated
 `CommandError`: `queue_rejected` retains status `running`, while result-first returns `turn_settled` with the
-winning terminal status. Only the positive acknowledgement consumes the allowance. Malformed, missing, or
+winning terminal status. Only the positive acknowledgement consumes one budget unit. Malformed, missing, or
 mismatched acknowledgement and process failure instead settle and return failed `AgentResult`
 (`protocol_error` or `agent_failed`), never a refusal. Ack-first consumes even when the result is already
 available. That acceptance does not claim or settle the turn's delivery, and does not reset the deadline:
@@ -597,7 +597,7 @@ in token units: persisted context tokens, Pi's conservative estimate of the prop
 currently resolved child-equivalent model's `maxTokens` (8,192 tokens only when that metadata is unavailable).
 If context cannot be measured or `projected >= ceiling`, it refuses `context_limit` without consumption.
 Its accepted resume provisionally dispatches and reserves synchronous delivery, returning the next-turn
-`AgentResult` only after readiness commits consumption. Caller cancellation before that reserved claim
+`AgentResult` only after readiness commits consumption of one budget unit. Caller cancellation before that reserved claim
 settles returns it to the notice queue. Validation or transport failure before acceptance does not consume
 the allowance. Only completed-agent resume and explicit API interrupt reserve synchronous delivery.
 `failed`, `interrupted`, restarted, or already-used agents refuse (`not_resumable` or

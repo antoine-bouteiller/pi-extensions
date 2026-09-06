@@ -47,8 +47,12 @@ const completed = (child: ChildControl, agentId: string, conclusion = 'done', tu
   child.emit(
     bytes({ agent_id: agentId, command_id: 'initial', conclusion, context_tokens: contextTokens, status: 'completed', turn, type: 'result' })
   )
-const steerAck = (child: ChildControl, agentId: string, commandId = 'steer'): Effect.Effect<void> =>
-  child.emit(bytes({ agent_id: agentId, command_id: commandId, turn: 1, type: 'steer_ack' }))
+const steerCommandId = (child: ChildControl): string | undefined => {
+  const latest = child.writes().findLast((frame) => frame.includes('"type":"steer"'))
+  return latest === undefined ? undefined : /"command_id":"(?<commandId>[^"]+)"/.exec(latest)?.groups?.commandId
+}
+const steerAck = (child: ChildControl, agentId: string, commandId?: string, turn = 1): Effect.Effect<void> =>
+  child.emit(bytes({ agent_id: agentId, command_id: commandId ?? steerCommandId(child) ?? 'steer', turn, type: 'steer_ack' }))
 
 const profile = (key: ProfileKey): PersistedResolvedProfile => ({
   contextCeiling: 1,
@@ -77,10 +81,12 @@ interface HarnessOptions {
   readonly createLogFails?: boolean
   readonly createSessionFails?: boolean
   readonly failResumeWriteOnce?: boolean
+  readonly gateFirstSteerWriteFailure?: boolean
   readonly gateSpawnCompletion?: boolean
   readonly failResumeLog?: boolean
   readonly deleteFails?: boolean
   readonly gateReplaceRecord?: boolean
+  readonly gateReplaceRecordAt?: number
   readonly gateResolveAt?: number
   readonly gateTermination?: boolean
   readonly leases?: readonly { readonly agentId: string; readonly lease: LaunchLease }[]
@@ -117,10 +123,12 @@ const harness = (root: string, options: HarnessOptions = {}) =>
     const terminationGate = yield* Deferred.make<void>()
     const spawnCompletionGate = yield* Deferred.make<void>()
     const resolveGate = yield* Deferred.make<void>()
+    const steerWriteGate = yield* Deferred.make<void>()
     let deletes = 0
     let logCreates = 0
     let logRemovals = 0
     let resumeWriteFailures = options.failResumeWriteOnce === true ? 1 : 0
+    let steerWriteFailures = options.gateFirstSteerWriteFailure === true ? 1 : 0
     let forceCalls = 0
     let initializeFailures = options.initializeFailures ?? 0
     let initializes = 0
@@ -212,7 +220,10 @@ const harness = (root: string, options: HarnessOptions = {}) =>
           logRemovals += 1
         }),
       replaceRecord: (_agentId: string, record: SubagentRecord) =>
-        (options.gateReplaceRecord === true ? Deferred.await(replaceGate) : Effect.void).pipe(
+        (options.gateReplaceRecord === true || options.gateReplaceRecordAt === replaceRecordCalls + 1
+          ? Deferred.await(replaceGate)
+          : Effect.void
+        ).pipe(
           Effect.andThen(
             Effect.suspend(() => {
               replaceRecordCalls += 1
@@ -262,12 +273,20 @@ const harness = (root: string, options: HarnessOptions = {}) =>
             }),
             wait: Deferred.await(exited).pipe(Effect.as(0)),
             write: (frame: string) =>
-              Effect.sync(() => {
-                if (spawnCalls > 1 && resumeWriteFailures > 0) {
-                  resumeWriteFailures -= 1
-                  throw new ProcessError({ cause: 'write unavailable', message: 'write unavailable' })
+              Effect.suspend(() => {
+                if (frame.includes('"type":"steer"') && steerWriteFailures > 0) {
+                  steerWriteFailures -= 1
+                  return Deferred.await(steerWriteGate).pipe(
+                    Effect.andThen(Effect.fail(new ProcessError({ cause: 'write unavailable', message: 'write unavailable' })))
+                  )
                 }
-                writes.push(frame)
+                return Effect.sync(() => {
+                  if (spawnCalls > 1 && resumeWriteFailures > 0) {
+                    resumeWriteFailures -= 1
+                    throw new ProcessError({ cause: 'write unavailable', message: 'write unavailable' })
+                  }
+                  writes.push(frame)
+                })
               }),
           }
           children.push({
@@ -377,6 +396,7 @@ const harness = (root: string, options: HarnessOptions = {}) =>
       releaseReplaceRecord: Deferred.succeed(replaceGate, undefined).pipe(Effect.asVoid),
       releaseResolve: Deferred.succeed(resolveGate, undefined).pipe(Effect.asVoid),
       releaseSpawnCompletion: Deferred.succeed(spawnCompletionGate, undefined).pipe(Effect.asVoid),
+      releaseSteerWrite: Deferred.succeed(steerWriteGate, undefined).pipe(Effect.asVoid),
       releaseTermination: Deferred.succeed(terminationGate, undefined).pipe(Effect.asVoid),
       releases: () => releases,
       removeProfile: (key: ProfileKey) => {
@@ -2366,6 +2386,187 @@ describe('SubagentOrchestrator', () => {
     })
   )
 
+  it.scoped('does not let a delayed steering write rollback a newer command reservation', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-steer-write-race-' }).pipe(Effect.flatMap(fs.realPath))
+      const fake = yield* harness(root, { gateFirstSteerWriteFailure: true, profiles: ['scout'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('steer-write-race')
+          const spawning = yield* Effect.forkChild(orchestrator.spawn('steer-write-race', admission, request('worker')))
+          yield* TestClock.adjust('1 millis')
+          const [child] = fake.children
+          yield* ready(child, 'agent-1', join(root, 'session.json'))
+          yield* Fiber.join(spawning)
+          const first = yield* Effect.forkChild(orchestrator.send('steer-write-race', admission, 'worker', 'first'))
+          yield* Effect.yieldNow
+          yield* steerAck(child, 'agent-1', 'steer-0')
+          yield* Effect.yieldNow
+          const second = yield* Effect.forkChild(orchestrator.send('steer-write-race', admission, 'worker', 'second'))
+          yield* Effect.yieldNow
+          yield* fake.releaseSteerWrite
+          expect((yield* Effect.exit(Fiber.join(first)))._tag).toBe('Failure')
+          expect(second.pollUnsafe()).toBeUndefined()
+          yield* steerAck(child, 'agent-1')
+          expect('accepted' in (yield* Fiber.join(second))).toBe(true)
+        }),
+        fake.layer
+      )
+    })
+  )
+
+  it.scoped('does not let a validated acknowledgement settle a replacement steering reservation', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-steer-ack-race-' }).pipe(Effect.flatMap(fs.realPath))
+      const fake = yield* harness(root, {
+        contextCeiling: 10_000,
+        gateFirstSteerWriteFailure: true,
+        gateReplaceRecordAt: 3,
+        profiles: ['scout'],
+      })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('steer-ack-race')
+          for (const [index, task] of ['worker', 'blocker'].entries()) {
+            const spawning = yield* Effect.forkChild(orchestrator.spawn('steer-ack-race', admission, request(task)))
+            yield* TestClock.adjust('1 millis')
+            yield* ready(fake.children[index], `agent-${index + 1}`, join(root, 'session.json'))
+            yield* Fiber.join(spawning)
+          }
+          const [worker, blocker] = fake.children
+          const first = yield* Effect.forkChild(orchestrator.send('steer-ack-race', admission, 'worker', 'first'))
+          yield* Effect.yieldNow
+          yield* completed(blocker, 'agent-2')
+          yield* Effect.yieldNow
+          yield* fake.releaseSteerWrite
+          const second = yield* Effect.forkChild(orchestrator.send('steer-ack-race', admission, 'worker', 'second'))
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          yield* steerAck(worker, 'agent-1', 'steer-0')
+          yield* Effect.yieldNow
+          yield* fake.releaseReplaceRecord
+          expect((yield* Effect.exit(Fiber.join(first)))._tag).toBe('Failure')
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          expect(second.pollUnsafe()).toBeUndefined()
+          yield* steerAck(worker, 'agent-1', 'steer-1')
+          expect('accepted' in (yield* Fiber.join(second))).toBe(true)
+          for (const message of ['third', 'fourth', 'fifth', 'sixth']) {
+            const next = yield* Effect.forkChild(orchestrator.send('steer-ack-race', admission, 'worker', message))
+            yield* Effect.yieldNow
+            yield* steerAck(worker, 'agent-1')
+            expect('accepted' in (yield* Fiber.join(next))).toBe(true)
+          }
+          expect((yield* orchestrator.list('steer-ack-race')).find((agent) => agent.task_name === 'worker')?.follow_up_available).toBe(false)
+        }),
+        fake.layer
+      )
+    })
+  )
+
+  it.scoped('returns the settled turn response when settlement wins between lookup and steering reservation', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-steer-settled-race-' }).pipe(Effect.flatMap(fs.realPath))
+      const fake = yield* harness(root, { gateReplaceRecordAt: 2, profiles: ['scout'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('steer-settled-race')
+          const spawning = yield* Effect.forkChild(orchestrator.spawn('steer-settled-race', admission, request('worker')))
+          yield* TestClock.adjust('1 millis')
+          const [child] = fake.children
+          yield* ready(child, 'agent-1', join(root, 'session.json'))
+          yield* Fiber.join(spawning)
+          yield* completed(child, 'agent-1', 'done')
+          yield* Effect.yieldNow
+          const steering = yield* Effect.forkChild(orchestrator.send('steer-settled-race', admission, 'worker', 'follow up'))
+          yield* Effect.yieldNow
+          yield* fake.releaseReplaceRecord
+          const response = yield* Fiber.join(steering)
+          expect('error' in response ? response.error.code : '').toBe('turn_settled')
+          expect(response.status).toBe('completed')
+        }),
+        fake.layer
+      )
+    })
+  )
+
+  it.scoped('shares issued steering history with wait claims when ignoring stale acknowledgements', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-steer-claim-' }).pipe(Effect.flatMap(fs.realPath))
+      const fake = yield* harness(root, { profiles: ['scout'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('steer-claim')
+          const spawning = yield* Effect.forkChild(orchestrator.spawn('steer-claim', admission, request('worker')))
+          yield* TestClock.adjust('1 millis')
+          const [child] = fake.children
+          yield* ready(child, 'agent-1', join(root, 'session.json'))
+          yield* Fiber.join(spawning)
+          const omitted = yield* Effect.forkChild(orchestrator.waitOne('steer-claim'))
+          yield* Effect.yieldNow
+          const rejected = yield* Effect.forkChild(orchestrator.send('steer-claim', admission, 'worker', 'first'))
+          yield* Effect.yieldNow
+          yield* child.emit(
+            bytes({
+              agent_id: 'agent-1',
+              code: 'queue_rejected',
+              command_id: 'steer-0',
+              error: 'busy',
+              status: 'running',
+              turn: 1,
+              type: 'command_error',
+            })
+          )
+          yield* Fiber.join(rejected)
+          const next = yield* Effect.forkChild(orchestrator.send('steer-claim', admission, 'worker', 'second'))
+          yield* Effect.yieldNow
+          yield* steerAck(child, 'agent-1', 'steer-0')
+          yield* Effect.yieldNow
+          expect(next.pollUnsafe()).toBeUndefined()
+          expect((yield* orchestrator.list('steer-claim'))[0]?.status).toBe('running')
+          yield* steerAck(child, 'agent-1', 'steer-1')
+          expect('accepted' in (yield* Fiber.join(next))).toBe(true)
+          yield* Fiber.interrupt(omitted)
+        }),
+        fake.layer
+      )
+    })
+  )
+
+  it.scoped('rejects non-canonical stale steering command ids', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-steer-canonical-' }).pipe(Effect.flatMap(fs.realPath))
+      const fake = yield* harness(root, { profiles: ['scout'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('steer-canonical')
+          const spawning = yield* Effect.forkChild(orchestrator.spawn('steer-canonical', admission, request('worker')))
+          yield* TestClock.adjust('1 millis')
+          const [child] = fake.children
+          yield* ready(child, 'agent-1', join(root, 'session.json'))
+          yield* Fiber.join(spawning)
+          const steering = yield* Effect.forkChild(orchestrator.send('steer-canonical', admission, 'worker', 'first'))
+          yield* Effect.yieldNow
+          yield* steerAck(child, 'agent-1', 'steer-00')
+          const result = yield* Fiber.join(steering)
+          expect('error' in result ? result.error.code : '').toBe('protocol_error')
+        }),
+        fake.layer
+      )
+    })
+  )
+
   it.scoped('bounds notification batches and does not replay consumed notices after a session restart', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
@@ -2408,7 +2609,7 @@ describe('SubagentOrchestrator', () => {
     })
   )
 
-  it.scoped('correlates one lifetime steering allowance without stealing delivery', () =>
+  it.scoped('correlates a counted steering budget without stealing delivery', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-steer-' }).pipe(Effect.flatMap(fs.realPath))
@@ -2427,7 +2628,20 @@ describe('SubagentOrchestrator', () => {
           yield* steerAck(fake.children[0], 'agent-1')
           const acknowledged = yield* Fiber.join(sending)
           expect('accepted' in acknowledged && acknowledged.accepted).toBe(true)
-          expect((yield* Effect.exit(orchestrator.send('steer', admission, 'foreground', 'second')))._tag).toBe('Failure')
+          const second = yield* Effect.forkChild(orchestrator.send('steer', admission, 'foreground', 'second'))
+          yield* Effect.yieldNow
+          yield* steerAck(fake.children[0], 'agent-1')
+          const secondResult = yield* Fiber.join(second)
+          expect('accepted' in secondResult && secondResult.accepted).toBe(true)
+          for (const message of ['third', 'fourth', 'fifth']) {
+            const next = yield* Effect.forkChild(orchestrator.send('steer', admission, 'foreground', message))
+            yield* Effect.yieldNow
+            yield* steerAck(fake.children[0], 'agent-1')
+            const nextResult = yield* Fiber.join(next)
+            expect('accepted' in nextResult && nextResult.accepted).toBe(true)
+          }
+          expect((yield* orchestrator.list('steer'))[0]?.follow_up_available).toBe(false)
+          expect((yield* Effect.exit(orchestrator.send('steer', admission, 'foreground', 'sixth')))._tag).toBe('Failure')
           yield* completed(fake.children[0], 'agent-1')
           expect((yield* Fiber.join(spawning)).status).toBe('completed')
           yield* fake.children[0].exit
@@ -2439,11 +2653,12 @@ describe('SubagentOrchestrator', () => {
           yield* Fiber.join(queued)
           const rejected = yield* Effect.forkChild(orchestrator.send('steer', admission, 'queued', 'first'))
           yield* Effect.yieldNow
+          const rejectedCommandId = steerCommandId(fake.children[1])
           yield* fake.children[1].emit(
             bytes({
               agent_id: 'agent-2',
               code: 'queue_rejected',
-              command_id: 'steer',
+              command_id: rejectedCommandId ?? 'steer',
               error: 'busy',
               status: 'running',
               turn: 1,
@@ -2454,9 +2669,20 @@ describe('SubagentOrchestrator', () => {
           expect('accepted' in queueRejected && queueRejected.accepted).toBe(false)
           const retried = yield* Effect.forkChild(orchestrator.send('steer', admission, 'queued', 'second'))
           yield* Effect.yieldNow
+          yield* steerAck(fake.children[1], 'agent-2', rejectedCommandId)
+          yield* Effect.yieldNow
+          expect(retried.pollUnsafe()).toBeUndefined()
           yield* steerAck(fake.children[1], 'agent-2')
           const retriedResult = yield* Fiber.join(retried)
           expect('accepted' in retriedResult && retriedResult.accepted).toBe(true)
+          for (const message of ['third', 'fourth', 'fifth', 'sixth']) {
+            const next = yield* Effect.forkChild(orchestrator.send('steer', admission, 'queued', message))
+            yield* Effect.yieldNow
+            yield* steerAck(fake.children[1], 'agent-2')
+            const nextResult = yield* Fiber.join(next)
+            expect('accepted' in nextResult && nextResult.accepted).toBe(true)
+          }
+          expect((yield* orchestrator.list('steer')).find((entry) => entry.task_name === 'queued')?.follow_up_available).toBe(false)
 
           const malformed = yield* Effect.forkChild(orchestrator.spawn('steer', admission, request('malformed')))
           yield* TestClock.adjust('1 millis')
@@ -2464,7 +2690,7 @@ describe('SubagentOrchestrator', () => {
           yield* Fiber.join(malformed)
           const mismatch = yield* Effect.forkChild(orchestrator.send('steer', admission, 'malformed', 'first'))
           yield* Effect.yieldNow
-          yield* steerAck(fake.children[2], 'agent-3', 'wrong')
+          yield* steerAck(fake.children[2], 'agent-3', 'steer-999')
           const mismatchResult = yield* Fiber.join(mismatch)
           expect('error' in mismatchResult ? mismatchResult.error.code : '').toBe('protocol_error')
           yield* fake.children[2].exit
@@ -3055,6 +3281,11 @@ describe('SubagentOrchestrator', () => {
           const initial = yield* Effect.forkChild(orchestrator.spawn('measured', admission, request('done', 'scout', false)))
           yield* TestClock.adjust('1 millis')
           yield* ready(measured.children[0], 'agent-1', join(root, 'session.json'))
+          yield* Effect.yieldNow
+          const predecessorSteer = yield* Effect.forkChild(orchestrator.send('measured', admission, 'done', 'before-resume'))
+          yield* Effect.yieldNow
+          yield* steerAck(measured.children[0], 'agent-1')
+          expect('accepted' in (yield* Fiber.join(predecessorSteer)) && (yield* orchestrator.list('measured'))[0]?.follow_up_available).toBe(true)
           yield* completed(measured.children[0], 'agent-1')
           yield* measured.children[0].exit
           yield* Fiber.join(initial)
@@ -3064,7 +3295,16 @@ describe('SubagentOrchestrator', () => {
           yield* Effect.yieldNow
           const [running] = yield* orchestrator.list('measured')
           expect(running?.current_turn).toBe(2)
-          expect(running?.follow_up_available).toBe(false)
+          expect(running?.follow_up_available).toBe(true)
+          for (const message of ['one', 'two', 'three']) {
+            const steering = yield* Effect.forkChild(orchestrator.send('measured', admission, 'done', message))
+            yield* Effect.yieldNow
+            yield* steerAck(measured.children[1], 'agent-1', undefined, 2)
+            const steeringResult = yield* Fiber.join(steering)
+            expect('accepted' in steeringResult && steeringResult.accepted).toBe(true)
+          }
+          expect((yield* orchestrator.list('measured'))[0]?.follow_up_available).toBe(false)
+          expect((yield* Effect.exit(orchestrator.send('measured', admission, 'done', 'four')))._tag).toBe('Failure')
           yield* completed(measured.children[1], 'agent-1', 'again', 2)
           expect((yield* Fiber.join(resumed)).turn).toBe(2)
         }),
