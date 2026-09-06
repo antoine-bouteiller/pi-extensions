@@ -33,7 +33,6 @@ import {
   clearProductionNotificationSink,
   makeDelegationTools,
   makePiNotificationSink,
-  PARENT_GUIDANCE,
   ProductionNotificationSinkLive,
 } from '@/features/sub_agents/tools.js'
 import { type AppRuntime } from '@/shared/effect/app_services.js'
@@ -222,7 +221,23 @@ describe('delegation tool boundary', () => {
         expect(Reflect.get(agentType, 'type')).toBe('string')
         expect(Reflect.get(agentType, 'description')).toBe(PROFILE_ORDER.map((key) => `${key}: ${PROFILE_REGISTRY[key].description}`).join('; '))
         const prompts = yield* Effect.promise(() => fixture.emit('before_agent_start', { systemPrompt: 'parent' }))
-        expect(prompts).toEqual([{ systemPrompt: `parent\n\n${PARENT_GUIDANCE}` }])
+        expect(prompts).toEqual([
+          {
+            systemPrompt: `parent
+
+Delegate narrow, self-contained errands whose intermediate context need not remain
+in the parent conversation. Foreground is the default. Use background execution
+only for clearly independent work, and never duplicate work assigned to a pending
+child. A session may have at most three live children and one live implementer.
+Each child accepts at most one follow-up message and each turn ends after 30
+minutes. Prefer a fresh child for distinct work. Only the child’s conclusion is
+returned; use the inspection tools for durable results and conversations. When the
+controller emits more than one \`spawn_agent\` call in a single block, it must name
+every \`task_name\` in the visible turn text, because each acceptance returns only
+\`{ profile, status, task_name, turn }\` and arrives in a later turn, so nothing
+otherwise ties an acceptance back to the brief that was sent.`,
+          },
+        ])
 
         const child = createFakePi()
         makeFeature({ ...dependencies(child.pi, []), isSubagent: () => true }).implementation.register(child.pi)
