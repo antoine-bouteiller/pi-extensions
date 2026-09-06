@@ -1,5 +1,5 @@
 import { estimateTokens } from '@earendil-works/pi-coding-agent'
-import { Clock, Context, Deferred, Effect, Exit, Layer, Path, Predicate, Ref, Schema, Scope, Semaphore } from 'effect'
+import { Clock, Context, Deferred, Duration, Effect, Exit, Layer, Path, Predicate, Ref, Schema, Scope, Semaphore } from 'effect'
 import { type Static } from 'typebox'
 import { Value } from 'typebox/value'
 
@@ -178,6 +178,7 @@ interface Notice {
   readonly id: number
   readonly kind: 'settlement' | 'warning'
   readonly message: string
+  readonly readyAt: number
   readonly result?: AgentResult
   readonly settledAt: number
   readonly taskName: string
@@ -207,6 +208,7 @@ interface Session {
   readonly generation: number
   readonly key: SessionKey
   readonly mutex: Semaphore.Semaphore
+  notificationWakeAt: number | undefined
   readonly scope: Scope.Closeable
   readonly state: Ref.Ref<Snapshot>
 }
@@ -261,7 +263,15 @@ interface InterruptPlan {
   readonly turn: Turn
   readonly value?: SettledInterruptNoop
 }
+interface WaitAllPlan {
+  readonly claims: readonly Turn[]
+  readonly consumedNotices: readonly Notice[]
+  readonly sort: boolean
+  readonly targets?: readonly string[]
+  readonly turns: readonly Turn[]
+}
 interface WaitOnePlan {
+  readonly claims?: readonly Turn[]
   readonly consumedNotice?: Notice
   readonly notice?: AgentResult
   readonly turns: readonly Turn[]
@@ -282,6 +292,7 @@ const TURN_DEADLINE_MILLIS = 30 * 60 * 1000
 const FOLLOW_UP_OUTPUT_RESERVE_TOKENS = 8192
 const MAX_NOTIFICATION_BYTES = 50 * 1024
 const MAX_NOTIFICATION_LINES = 2000
+const SETTLEMENT_GRACE_MS = 15_000
 const notificationDirections = 'Use list_agents for omitted tasks and read_agent_response for detail.'
 const notificationBytes = new TextEncoder()
 const boundedNotification = (message: string): string => {
@@ -326,6 +337,8 @@ const knownTurns = (state: Snapshot, targets: readonly string[]): readonly Turn[
     return turn === undefined ? [] : [turn]
   })
 }
+const noticeMatchesTurn = (notice: Notice, turn: Turn): boolean =>
+  notice.agentId === turn.agentId && notice.generation === turn.generation && notice.taskName === turn.taskName && notice.turn === turn.turn
 const correlatedInitial = (frame: DecodedChild, agentId: string, turn: number): boolean =>
   frame.agent_id === agentId && frame.turn === turn && frame.command_id === 'initial'
 const childLifecycleFrame = (frame: unknown): frame is DecodedChild =>
@@ -759,24 +772,57 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
         Effect.andThen(
           locked(
             session,
-            snapshot(session).pipe(
-              Effect.flatMap((state) => {
-                const claimed = batch(state.notices)
-                if (claimed.length === 0) {
-                  return Effect.succeed([] as readonly Notice[])
-                }
-                const ids = new Set(claimed.map((notice) => notice.id))
-                return Ref.set(session.state, {
-                  ...state,
-                  notices: state.notices.filter((notice) => !ids.has(notice.id)),
-                }).pipe(Effect.as(claimed))
-              })
-            )
+            Effect.gen(function* () {
+              const now = yield* Clock.currentTimeMillis
+              const state = yield* snapshot(session)
+              const firstUnready = state.notices.findIndex((notice) => notice.readyAt > now)
+              const claimed = batch(firstUnready === -1 ? state.notices : state.notices.slice(0, firstUnready))
+              const claimedIds = new Set(claimed.map((notice) => notice.id))
+              const notices = claimed.length === 0 ? state.notices : state.notices.filter((notice) => !claimedIds.has(notice.id))
+              if (claimed.length > 0) {
+                yield* Ref.set(session.state, { ...state, notices })
+              }
+              return { claimed, earliestReadyAt: notices.find((notice) => notice.readyAt > now)?.readyAt, now }
+            })
           )
         ),
-        Effect.flatMap((claimed) => {
+        Effect.flatMap(({ claimed, earliestReadyAt, now }) => {
+          const schedule =
+            earliestReadyAt === undefined
+              ? Effect.void
+              : locked(
+                  session,
+                  Effect.sync(() => {
+                    if (session.notificationWakeAt !== undefined && session.notificationWakeAt <= earliestReadyAt) {
+                      return false
+                    }
+                    session.notificationWakeAt = earliestReadyAt
+                    return true
+                  })
+                ).pipe(
+                  Effect.flatMap((scheduled) =>
+                    scheduled
+                      ? Effect.forkIn(
+                          Effect.sleep(Duration.millis(earliestReadyAt - now)).pipe(
+                            Effect.andThen(
+                              locked(
+                                session,
+                                Effect.sync(() => {
+                                  if (session.notificationWakeAt === earliestReadyAt) {
+                                    session.notificationWakeAt = undefined
+                                  }
+                                })
+                              )
+                            ),
+                            Effect.andThen(flushNotifications(session))
+                          ),
+                          session.scope
+                        ).pipe(Effect.asVoid)
+                      : Effect.void
+                  )
+                )
           if (claimed.length === 0) {
-            return Effect.void
+            return schedule
           }
           return Effect.uninterruptibleMask((restore) =>
             Ref.make(false).pipe(
@@ -786,7 +832,7 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                   Effect.andThen(
                     notifications
                       .publish([...claimed.map((notice) => notice.message), notificationDirections], notificationToken(session))
-                      .pipe(Effect.ignore)
+                      .pipe(Effect.ignoreCause)
                   ),
                   Effect.ensuring(
                     Ref.get(invoked).pipe(
@@ -810,22 +856,31 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                 )
               )
             )
-          ).pipe(Effect.andThen(flushNotifications(session)))
+          ).pipe(Effect.andThen(schedule), Effect.andThen(flushNotifications(session)))
         })
       )
     )
-  const enqueueNotice = (session: Session, notice: Omit<Notice, 'id'>): Effect.Effect<void> =>
-    locked(
-      session,
-      snapshot(session).pipe(
-        Effect.flatMap((state) =>
-          Ref.set(session.state, {
-            ...state,
-            notices: [...state.notices, { ...notice, id: ++noticeIdentifiers }],
-          })
+  const enqueueNotice = (session: Session, notice: Omit<Notice, 'id' | 'readyAt'>): Effect.Effect<void> =>
+    Clock.currentTimeMillis.pipe(
+      Effect.flatMap((now) =>
+        locked(
+          session,
+          snapshot(session).pipe(
+            Effect.flatMap((state) =>
+              Ref.set(session.state, {
+                ...state,
+                notices: [
+                  ...state.notices,
+                  { ...notice, id: ++noticeIdentifiers, readyAt: now + (notice.kind === 'settlement' ? SETTLEMENT_GRACE_MS : 0) },
+                ],
+              })
+            )
+          )
         )
-      )
-    ).pipe(Effect.andThen(Effect.forkIn(flushNotifications(session), session.scope)), Effect.asVoid)
+      ),
+      Effect.andThen(Effect.forkIn(flushNotifications(session), session.scope)),
+      Effect.asVoid
+    )
   const warnInactive = (session: Session, token: Turn): Effect.Effect<void> =>
     locked(
       session,
@@ -1224,6 +1279,7 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                 id: ++noticeIdentifiers,
                 kind: 'settlement' as const,
                 message: resultMessage(settledValue),
+                readyAt: (yield* Clock.currentTimeMillis) + SETTLEMENT_GRACE_MS,
                 result: settledValue,
                 settledAt,
                 taskName: latest.taskName,
@@ -1267,7 +1323,8 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
       Effect.gen(function* () {
         const state = yield* snapshot(session)
         const agents = copy(state.agents)
-        let notices = consumedNotices.length === 0 ? state.notices : [...consumedNotices, ...state.notices]
+        let notices =
+          consumedNotices.length === 0 ? state.notices : [...consumedNotices, ...state.notices].toSorted((left, right) => left.id - right.id)
         let changed = consumedNotices.length > 0
         for (const claim of claims) {
           if (
@@ -1296,6 +1353,7 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                 id: ++noticeIdentifiers,
                 kind: 'settlement',
                 message: resultMessage(current.result),
+                readyAt: (yield* Clock.currentTimeMillis) + SETTLEMENT_GRACE_MS,
                 result: current.result,
                 settledAt: current.settledAt ?? (yield* Clock.currentTimeMillis),
                 taskName: current.taskName,
@@ -1355,6 +1413,7 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                 id: ++noticeIdentifiers,
                 kind: 'settlement',
                 message: resultMessage(current.result),
+                readyAt: (yield* Clock.currentTimeMillis) + SETTLEMENT_GRACE_MS,
                 result: current.result,
                 settledAt: current.settledAt ?? (yield* Clock.currentTimeMillis),
                 taskName: current.taskName,
@@ -2290,9 +2349,7 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                                   Effect.flatMap((latest) =>
                                     Ref.set(session.state, {
                                       ...latest,
-                                      notices: latest.notices.filter(
-                                        (notice) => !(notice.kind === 'settlement' && notice.taskName === turn.taskName)
-                                      ),
+                                      notices: latest.notices.filter((notice) => !(notice.kind === 'settlement' && noticeMatchesTurn(notice, turn))),
                                     })
                                   )
                                 )
@@ -2361,6 +2418,7 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                   generation: ++generations,
                   key,
                   mutex: Semaphore.makeUnsafe(1),
+                  notificationWakeAt: undefined,
                   scope: Scope.makeUnsafe(),
                   state: Ref.makeUnsafe<Snapshot>({
                     agents: new Map(),
@@ -2754,13 +2812,48 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                       return Effect.fail(refusal('duplicate_target', 'Targets must be unique.'))
                     }
                     const turns = knownTurns(state, targets)
-                    return typeof turns === 'string'
-                      ? Effect.fail(refusal('unknown_agent', `Unknown agent "${turns}".`))
-                      : Effect.succeed({
-                          notices: [] as readonly Notice[],
-                          sort: false,
-                          turns,
-                        })
+                    if (typeof turns === 'string') {
+                      return Effect.fail(refusal('unknown_agent', `Unknown agent "${turns}".`))
+                    }
+                    const consumedNotices = state.notices.filter(
+                      (notice) => notice.kind === 'settlement' && turns.some((turn) => noticeMatchesTurn(notice, turn))
+                    )
+                    const ids = new Set(consumedNotices.map((notice) => notice.id))
+                    const agents = copy(state.agents)
+                    const claims: Turn[] = []
+                    const waitingTurns = turns
+                      .filter((turn) => !consumedNotices.some((notice) => noticeMatchesTurn(notice, turn)))
+                      .map((turn) => {
+                        if (turn.state !== 'running' || turn.delivery !== 'unclaimed') {
+                          return turn
+                        }
+                        const claim = {
+                          ...turn,
+                          delivery: {
+                            claim: ++deliveryClaims,
+                            kind: 'wait' as const,
+                            previous: turn.delivery,
+                            state: 'active' as const,
+                          },
+                        }
+                        agents.set(claim.taskName, claim)
+                        claims.push(claim)
+                        return claim
+                      })
+                    const plan: WaitAllPlan = {
+                      claims,
+                      consumedNotices,
+                      sort: false,
+                      targets,
+                      turns: waitingTurns,
+                    }
+                    return consumedNotices.length === 0 && claims.length === 0
+                      ? Effect.succeed(plan)
+                      : Ref.set(session.state, {
+                          ...state,
+                          agents,
+                          notices: state.notices.filter((notice) => !ids.has(notice.id)),
+                        }).pipe(Effect.as(plan))
                   }
                   const notices = state.notices.filter((notice) => notice.kind === 'settlement')
                   const turns = [...state.agents.values()].filter(
@@ -2787,24 +2880,35 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                     ...state,
                     agents,
                     notices: state.notices.filter((notice) => !ids.has(notice.id)),
-                  }).pipe(Effect.as({ notices, sort: true, turns: claims }))
+                  }).pipe(Effect.as<WaitAllPlan>({ claims, consumedNotices: notices, sort: true, targets: undefined, turns: claims }))
                 })
               )
             ).pipe(
-              Effect.flatMap(({ notices, sort, turns }) =>
+              Effect.tap(({ consumedNotices }) =>
+                consumedNotices.length === 0 ? Effect.void : Effect.forkIn(flushNotifications(session), session.scope).pipe(Effect.asVoid)
+              ),
+              Effect.flatMap(({ claims: installedClaims, consumedNotices, sort, targets: targetNames, turns }) =>
                 Ref.make(false).pipe(
                   Effect.flatMap((committed) =>
                     restore(Effect.forEach(turns, (turn) => Deferred.await(turn.deferred))).pipe(
                       Effect.flatMap((results) => {
                         if (!sort) {
-                          return Effect.succeed({ claims: [] as readonly Turn[], results })
+                          const available = [...consumedNotices.flatMap((notice) => (notice.result === undefined ? [] : [notice.result])), ...results]
+                          return Effect.succeed({
+                            claims: installedClaims,
+                            results:
+                              targetNames === undefined
+                                ? available
+                                : targetNames.flatMap((target) => available.filter((result) => result.task_name === target)),
+                          })
                         }
                         return ownedClaimResults(session, turns, results).pipe(
                           Effect.map((owned) => ({
                             claims: turns.filter((claim) => owned.some((result) => result.task_name === claim.taskName)),
-                            results: [...notices.flatMap((notice) => (notice.result === undefined ? [] : [notice.result])), ...owned].toSorted(
-                              (left, right) => left.task_name.localeCompare(right.task_name)
-                            ),
+                            results: [
+                              ...consumedNotices.flatMap((notice) => (notice.result === undefined ? [] : [notice.result])),
+                              ...owned,
+                            ].toSorted((left, right) => left.task_name.localeCompare(right.task_name)),
                           }))
                         )
                       }),
@@ -2817,7 +2921,7 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                       Effect.map(({ results }) => results),
                       Effect.ensuring(
                         Ref.get(committed).pipe(
-                          Effect.flatMap((didCommit) => (didCommit || !sort ? Effect.void : restoreWaitClaims(session, turns, notices)))
+                          Effect.flatMap((didCommit) => (didCommit ? Effect.void : restoreWaitClaims(session, installedClaims, consumedNotices)))
                         )
                       )
                     )
@@ -2853,10 +2957,35 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                       .toSorted(
                         (left, right) => (left.settledAt ?? Infinity) - (right.settledAt ?? Infinity) || left.taskName.localeCompare(right.taskName)
                       )
-                    return Effect.succeed<WaitOnePlan>({
-                      notice: settled?.result,
-                      turns: settled === undefined ? turns : [],
+                    const consumedNotice =
+                      settled === undefined
+                        ? undefined
+                        : state.notices.find((notice) => notice.kind === 'settlement' && noticeMatchesTurn(notice, settled))
+                    if (settled !== undefined) {
+                      return consumedNotice === undefined
+                        ? Effect.succeed<WaitOnePlan>({ notice: settled.result, turns: [] })
+                        : Ref.set(session.state, {
+                            ...state,
+                            notices: state.notices.filter((notice) => notice.id !== consumedNotice.id),
+                          }).pipe(Effect.as<WaitOnePlan>({ consumedNotice, notice: settled.result, turns: [] }))
+                    }
+                    const agents = copy(state.agents)
+                    const claims: Turn[] = []
+                    const waitingTurns = turns.map((turn) => {
+                      if (turn.state !== 'running' || turn.delivery !== 'unclaimed') {
+                        return turn
+                      }
+                      const claim = {
+                        ...turn,
+                        delivery: { claim: ++deliveryClaims, kind: 'wait' as const, previous: turn.delivery, state: 'active' as const },
+                      }
+                      agents.set(claim.taskName, claim)
+                      claims.push(claim)
+                      return claim
                     })
+                    return claims.length === 0
+                      ? Effect.succeed<WaitOnePlan>({ claims, turns: waitingTurns })
+                      : Ref.set(session.state, { ...state, agents }).pipe(Effect.as<WaitOnePlan>({ claims, turns: waitingTurns }))
                   }
                   const notice = state.notices.find((candidate) => candidate.kind === 'settlement')
                   if (notice !== undefined) {
@@ -2890,11 +3019,14 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                   for (const claim of claims) {
                     agents.set(claim.taskName, claim)
                   }
-                  return Ref.set(session.state, { ...state, agents }).pipe(Effect.as<WaitOnePlan>({ turns: claims }))
+                  return Ref.set(session.state, { ...state, agents }).pipe(Effect.as<WaitOnePlan>({ claims, turns: claims }))
                 })
               )
             ).pipe(
-              Effect.flatMap(({ consumedNotice, notice, turns }) => {
+              Effect.tap(({ consumedNotice }) =>
+                consumedNotice === undefined ? Effect.void : Effect.forkIn(flushNotifications(session), session.scope).pipe(Effect.asVoid)
+              ),
+              Effect.flatMap(({ claims = [], consumedNotice, notice, turns }) => {
                 if (notice !== undefined) {
                   return Ref.make(false).pipe(
                     Effect.flatMap((committed) =>
@@ -2911,7 +3043,9 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                     )
                   )
                 }
-                const wait = (remaining: readonly Turn[]): Effect.Effect<AgentResult, PublicRefusalError> => {
+                const wait = (
+                  remaining: readonly Turn[]
+                ): Effect.Effect<{ readonly result: AgentResult; readonly turn: Turn }, PublicRefusalError> => {
                   const [first, ...rest] = remaining.map((turn) => Deferred.await(turn.deferred).pipe(Effect.map((result) => ({ result, turn }))))
                   if (first === undefined) {
                     return Effect.fail(refusal('empty_targets', 'There are no eligible agents to wait for.'))
@@ -2923,7 +3057,12 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                         locked(session, snapshot(session).pipe(Effect.map((state) => ownsWaitClaim(state.agents.get(turn.taskName), turn)))).pipe(
                           Effect.flatMap((owned) =>
                             targets !== undefined || owned
-                              ? restoreWaitClaims(session, turns, [], [turn]).pipe(Effect.as(result))
+                              ? restoreWaitClaims(
+                                  session,
+                                  targets === undefined ? turns : claims,
+                                  [],
+                                  claims.some((claim) => claim === turn) ? [turn] : []
+                                ).pipe(Effect.as({ result, turn }))
                               : wait(remaining.filter((claim) => claim !== turn))
                           )
                         )
@@ -2933,12 +3072,13 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                 return Ref.make(false).pipe(
                   Effect.flatMap((committed) =>
                     restore(wait(turns)).pipe(
-                      Effect.tap(() =>
-                        (targets === undefined ? commitWaitClaims(turns) : Effect.void).pipe(Effect.andThen(Ref.set(committed, true)))
-                      ),
+                      Effect.tap(() => commitWaitClaims(targets === undefined ? turns : claims).pipe(Effect.andThen(Ref.set(committed, true)))),
+                      Effect.map(({ result }) => result),
                       Effect.ensuring(
                         Ref.get(committed).pipe(
-                          Effect.flatMap((didCommit) => (didCommit || targets !== undefined ? Effect.void : restoreWaitClaims(session, turns)))
+                          Effect.flatMap((didCommit) =>
+                            didCommit ? Effect.void : restoreWaitClaims(session, targets === undefined ? turns : claims)
+                          )
                         )
                       )
                     )

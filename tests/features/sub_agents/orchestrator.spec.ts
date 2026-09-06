@@ -1723,6 +1723,255 @@ describe('SubagentOrchestrator', () => {
     })
   )
 
+  it.scoped('holds background settlement notices until their grace window closes', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-settlement-grace-' }).pipe(Effect.flatMap(fs.realPath))
+      const fake = yield* harness(root, { profiles: ['scout'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('settlement-grace')
+          const spawning = yield* Effect.forkChild(orchestrator.spawn('settlement-grace', admission, request('worker')))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[0], 'agent-1', join(root, 'session.json'))
+          yield* Fiber.join(spawning)
+          yield* completed(fake.children[0], 'agent-1', 'grace result')
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          yield* TestClock.adjust('14 seconds')
+          expect(fake.notifications()).toEqual([])
+          yield* TestClock.adjust('2 seconds')
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          expect(fake.notifications()).toHaveLength(1)
+          expect(fake.notifications()[0]?.join('\n')).toContain('Sub-agent worker completed: grace result')
+        }),
+        fake.layer
+      )
+    })
+  )
+
+  it.scoped('lets waitOne consume a settlement during its grace window', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-settlement-wait-' }).pipe(Effect.flatMap(fs.realPath))
+      const fake = yield* harness(root, { profiles: ['scout'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('settlement-wait')
+          const spawning = yield* Effect.forkChild(orchestrator.spawn('settlement-wait', admission, request('worker')))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[0], 'agent-1', join(root, 'session.json'))
+          yield* Fiber.join(spawning)
+          yield* completed(fake.children[0], 'agent-1', 'wait result')
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          yield* TestClock.adjust('1 second')
+          expect((yield* orchestrator.waitOne('settlement-wait', ['worker'])).status).toBe('completed')
+          yield* TestClock.adjust('30 seconds')
+          expect(fake.notifications()).toEqual([])
+        }),
+        fake.layer
+      )
+    })
+  )
+
+  it.scoped('waits for a resumed turn rather than consuming its prior settlement in targeted waitAll', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-resumed-wait-all-' }).pipe(Effect.flatMap(fs.realPath))
+      const fake = yield* harness(root, { contextCeiling: 100_000, profiles: ['scout'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('resumed-wait-all')
+          const initial = yield* Effect.forkChild(orchestrator.spawn('resumed-wait-all', admission, request('worker')))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[0], 'agent-1', join(root, 'session.json'))
+          yield* Fiber.join(initial)
+          yield* completed(fake.children[0], 'agent-1', 'first result')
+          yield* fake.children[0].exit
+          yield* Effect.yieldNow
+          const resumed = yield* Effect.forkChild(orchestrator.send('resumed-wait-all', admission, 'worker', 'again'))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[1], 'agent-1', join(root, 'session.json'), 2)
+          const waiting = yield* Effect.forkChild(orchestrator.waitAll('resumed-wait-all', ['worker']))
+          yield* Effect.yieldNow
+          yield* completed(fake.children[1], 'agent-1', 'second result', 2)
+          expect((yield* Fiber.join(waiting)).map((result) => result.turn)).toEqual([2])
+          expect((yield* Fiber.join(resumed)).turn).toBe(2)
+          yield* TestClock.adjust('16 seconds')
+          expect(fake.notifications().flat().join('\n')).toContain('Sub-agent worker completed: first result')
+        }),
+        fake.layer
+      )
+    })
+  )
+
+  it.scoped('consumes the matching resumed settlement in targeted waitOne', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-resumed-wait-one-' }).pipe(Effect.flatMap(fs.realPath))
+      const fake = yield* harness(root, { contextCeiling: 100_000, profiles: ['scout'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('resumed-wait-one')
+          const initial = yield* Effect.forkChild(orchestrator.spawn('resumed-wait-one', admission, request('worker')))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[0], 'agent-1', join(root, 'session.json'))
+          yield* Fiber.join(initial)
+          yield* completed(fake.children[0], 'agent-1', 'first result')
+          yield* fake.children[0].exit
+          yield* Effect.yieldNow
+          const resumed = yield* Effect.forkChild(orchestrator.send('resumed-wait-one', admission, 'worker', 'again'))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[1], 'agent-1', join(root, 'session.json'), 2)
+          yield* Effect.yieldNow
+          yield* Fiber.interrupt(resumed)
+          yield* completed(fake.children[1], 'agent-1', 'second result', 2)
+          expect((yield* orchestrator.waitOne('resumed-wait-one', ['worker'])).turn).toBe(2)
+          yield* TestClock.adjust('16 seconds')
+          const published = fake.notifications().flat().join('\n')
+          expect(published).toContain('Sub-agent worker completed: first result')
+          expect(published).not.toContain('Sub-agent worker completed: second result')
+        }),
+        fake.layer
+      )
+    })
+  )
+
+  it.scoped('claims targeted running waitAll targets after consuming prior settlements', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-targeted-running-' }).pipe(Effect.flatMap(fs.realPath))
+      const fake = yield* harness(root, { profiles: ['scout'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('targeted-running')
+          for (const [index, task] of ['first', 'second'].entries()) {
+            const spawning = yield* Effect.forkChild(orchestrator.spawn('targeted-running', admission, request(task)))
+            yield* TestClock.adjust('1 millis')
+            yield* ready(fake.children[index], `agent-${index + 1}`, join(root, 'session.json'))
+            yield* Fiber.join(spawning)
+          }
+          yield* completed(fake.children[0], 'agent-1', 'first result')
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          const waiting = yield* Effect.forkChild(orchestrator.waitAll('targeted-running', ['first', 'second']))
+          yield* Effect.yieldNow
+          yield* completed(fake.children[1], 'agent-2', 'second result')
+          expect((yield* Fiber.join(waiting)).map((result) => result.task_name)).toEqual(['first', 'second'])
+          yield* TestClock.adjust('60 seconds')
+          expect(fake.notifications()).toEqual([])
+        }),
+        fake.layer
+      )
+    })
+  )
+
+  it.scoped('does not abandon another waitAll claim when a targeted wait is cancelled', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-targeted-cancel-' }).pipe(Effect.flatMap(fs.realPath))
+      const fake = yield* harness(root, { profiles: ['scout'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('targeted-cancel')
+          const spawning = yield* Effect.forkChild(orchestrator.spawn('targeted-cancel', admission, request('worker')))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[0], 'agent-1', join(root, 'session.json'))
+          yield* Fiber.join(spawning)
+          const original = yield* Effect.forkChild(orchestrator.waitAll('targeted-cancel'))
+          yield* Effect.yieldNow
+          const targeted = yield* Effect.forkChild(orchestrator.waitAll('targeted-cancel', ['worker']))
+          yield* Effect.yieldNow
+          yield* Fiber.interrupt(targeted)
+          yield* completed(fake.children[0], 'agent-1', 'only result')
+          expect((yield* Fiber.join(original)).map((result) => result.task_name)).toEqual(['worker'])
+          yield* TestClock.adjust('60 seconds')
+          expect(fake.notifications()).toEqual([])
+        }),
+        fake.layer
+      )
+    })
+  )
+
+  it.scoped('has targeted waitAll consume each settlement during the grace window', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-targeted-wait-all-' }).pipe(Effect.flatMap(fs.realPath))
+      const fake = yield* harness(root, { profiles: ['scout'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('targeted-wait-all')
+          for (const [index, task] of ['first', 'second'].entries()) {
+            const spawning = yield* Effect.forkChild(orchestrator.spawn('targeted-wait-all', admission, request(task)))
+            yield* TestClock.adjust('1 millis')
+            yield* ready(fake.children[index], `agent-${index + 1}`, join(root, 'session.json'))
+            yield* Fiber.join(spawning)
+          }
+          yield* completed(fake.children[0], 'agent-1', 'first result')
+          yield* completed(fake.children[1], 'agent-2', 'second result')
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          const results = yield* orchestrator.waitAll('targeted-wait-all', ['first', 'second'])
+          expect(results.map((result) => result.task_name)).toEqual(['first', 'second'])
+          yield* TestClock.adjust('60 seconds')
+          expect(fake.notifications()).toEqual([])
+          const refused = yield* orchestrator.waitAll('targeted-wait-all').pipe(Effect.flip)
+          expect(refused._tag === 'PublicRefusalError' ? refused.code : undefined).toBe('empty_targets')
+        }),
+        fake.layer
+      )
+    })
+  )
+
+  it.scoped('reschedules later notices after a defective publication attempt', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-notification-defect-' }).pipe(Effect.flatMap(fs.realPath))
+      const fake = yield* harness(root, { notificationFails: true, profiles: ['scout'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('notification-defect')
+          for (const [index, task] of ['first', 'second'].entries()) {
+            const spawning = yield* Effect.forkChild(orchestrator.spawn('notification-defect', admission, request(task)))
+            yield* TestClock.adjust('1 millis')
+            yield* ready(fake.children[index], `agent-${index + 1}`, join(root, 'session.json'))
+            yield* Fiber.join(spawning)
+          }
+          yield* completed(fake.children[0], 'agent-1', 'first result')
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          yield* TestClock.adjust('1 second')
+          yield* completed(fake.children[1], 'agent-2', 'second result')
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          yield* TestClock.adjust('14 seconds')
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          expect(fake.notifications()).toHaveLength(1)
+          yield* TestClock.adjust('120 seconds')
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          expect(fake.notifications()).toHaveLength(2)
+          expect(fake.notifications()[1]?.join('\n')).toContain('Sub-agent second completed: second result')
+        }),
+        fake.layer
+      )
+    })
+  )
+
   it.scoped('does not duplicate an already-notified settlement when a settled interrupt is cancelled', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
@@ -1738,6 +1987,8 @@ describe('SubagentOrchestrator', () => {
           yield* Fiber.join(spawning)
           yield* completed(fake.children[0], 'agent-1')
           yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          yield* TestClock.adjust('16 seconds')
           yield* Effect.yieldNow
           yield* Effect.yieldNow
           yield* Effect.yieldNow
@@ -1773,9 +2024,14 @@ describe('SubagentOrchestrator', () => {
           yield* completed(fake.children[0], 'agent-1', 'winner')
           expect((yield* Fiber.join(waiting)).task_name).toBe('first')
           yield* completed(fake.children[1], 'agent-2', 'loser')
-          expect((yield* orchestrator.waitOne('claims', ['second'])).status).toBe('completed')
           yield* Effect.yieldNow
-          expect(fake.notifications().flat().join('\n')).toContain('Sub-agent second completed: loser')
+          yield* Effect.yieldNow
+          yield* TestClock.adjust('16 seconds')
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          const published = fake.notifications().flat().join('\n')
+          expect(published).not.toContain('Sub-agent first completed: winner')
+          expect(published).toContain('Sub-agent second completed: loser')
         }),
         fake.layer
       )
@@ -1807,6 +2063,43 @@ describe('SubagentOrchestrator', () => {
     })
   )
 
+  it.scoped('publishes a warning behind an unready settlement promptly when wait consumes the settlement', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-notice-order-' }).pipe(Effect.flatMap(fs.realPath))
+      const fake = yield* harness(root, { profiles: ['scout'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('notice-order')
+          for (const [index, task] of ['quiet', 'settled'].entries()) {
+            const spawning = yield* Effect.forkChild(orchestrator.spawn('notice-order', admission, request(task)))
+            yield* TestClock.adjust('1 millis')
+            yield* ready(fake.children[index], `agent-${index + 1}`, join(root, 'session.json'))
+            yield* Fiber.join(spawning)
+          }
+          yield* TestClock.adjust('299998 millis')
+          yield* completed(fake.children[1], 'agent-2', 'held result')
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          yield* TestClock.adjust('1 millis')
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          expect(fake.notifications()).toEqual([])
+          expect((yield* orchestrator.waitOne('notice-order', ['settled'])).status).toBe('completed')
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          const [batch] = fake.notifications()
+          expect(fake.notifications()).toHaveLength(1)
+          expect(batch?.[0]).toBe('Sub-agent quiet has produced no verified progress for 5 minutes; it is still running.')
+        }),
+        fake.layer
+      )
+    })
+  )
+
   it.scoped('emits the one-shot injection-only inactivity warning without settling the turn', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
@@ -1823,6 +2116,9 @@ describe('SubagentOrchestrator', () => {
           yield* Effect.yieldNow
           yield* TestClock.adjust('5 minutes')
           yield* TestClock.adjust('1 millis')
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
           yield* Effect.yieldNow
           yield* Effect.yieldNow
           expect((yield* orchestrator.list('warning'))[0]?.status).toBe('running')
@@ -1901,8 +2197,12 @@ describe('SubagentOrchestrator', () => {
           )
           yield* Effect.yieldNow
           yield* Effect.yieldNow
+          yield* TestClock.adjust('16 seconds')
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
           const [batch] = fake.notifications()
           const joined = batch?.join('\n') ?? ''
+          expect(joined).not.toBe('')
           expect(new TextEncoder().encode(joined).byteLength).toBeLessThanOrEqual(50 * 1024)
           expect(joined.split('\n').length).toBeLessThanOrEqual(2000)
           yield* orchestrator.closeSession('notices').pipe(Effect.exit)
@@ -2218,8 +2518,52 @@ describe('SubagentOrchestrator', () => {
           yield* TestClock.adjust('5 seconds')
           yield* Fiber.join(panic)
           yield* fake.releaseNotifications
+          yield* TestClock.adjust('16 seconds')
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
           yield* Effect.yieldNow
           expect(fake.notifications().flat().join('\n')).toContain('Sub-agent two completed: survives')
+        }),
+        fake.layer
+      )
+    })
+  )
+
+  it.scoped('panic preserves a queued settlement from an earlier turn of the interrupted task', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-panic-earlier-turn-' }).pipe(Effect.flatMap(fs.realPath))
+      const fake = yield* harness(root, { contextCeiling: 100_000, profiles: ['scout'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('panic-earlier-turn')
+          const initial = yield* Effect.forkChild(orchestrator.spawn('panic-earlier-turn', admission, request('worker')))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[0], 'agent-1', join(root, 'session.json'))
+          yield* Fiber.join(initial)
+          yield* completed(fake.children[0], 'agent-1', 'first turn')
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          yield* TestClock.adjust('1 second')
+          yield* fake.children[0].exit
+          yield* Effect.yieldNow
+
+          const resumed = yield* Effect.forkChild(orchestrator.send('panic-earlier-turn', admission, 'worker', 'again'))
+          yield* TestClock.adjust('1 millis')
+          yield* Effect.yieldNow
+          yield* ready(fake.children[1], 'agent-1', join(root, 'session.json'), 2)
+          yield* Effect.yieldNow
+          yield* Fiber.interrupt(resumed)
+          yield* Effect.yieldNow
+
+          const panic = yield* Effect.forkChild(orchestrator.interruptAll('panic-earlier-turn'))
+          yield* TestClock.adjust('5 seconds')
+          yield* Fiber.join(panic)
+          yield* TestClock.adjust('30 seconds')
+          yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          expect(fake.notifications().flat().join('\n')).toContain('Sub-agent worker completed: first turn')
         }),
         fake.layer
       )
@@ -2407,8 +2751,9 @@ describe('SubagentOrchestrator', () => {
           yield* Effect.yieldNow
           yield* Fiber.interrupt(spawning)
           yield* completed(fake.children[0], 'agent-1', 'after cancellation')
-          expect((yield* orchestrator.waitOne('foreground-notice', ['worker'])).status).toBe('completed')
           yield* Effect.yieldNow
+          yield* Effect.yieldNow
+          yield* TestClock.adjust('16 seconds')
           yield* Effect.yieldNow
           yield* Effect.yieldNow
           expect(fake.notifications().flat().join('\n')).toContain('Sub-agent worker completed: after cancellation')
