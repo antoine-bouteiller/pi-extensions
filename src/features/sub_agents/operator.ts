@@ -3,7 +3,7 @@ import { matchesKey } from '@earendil-works/pi-tui'
 import { Effect, Path } from 'effect'
 
 import { lstatHostFile, readOwnerOnlyFile } from '#shared/effect/bun_host_file_system'
-import { type RunningAgent } from '#shared/state/agent_activity'
+import { type AgentActivityKind, type RunningAgent } from '#shared/state/agent_activity'
 
 import { type AgentTurnRecord, type SubagentRecord, type SubagentStoreApi } from './store.js'
 
@@ -17,7 +17,7 @@ export interface ActivityProjection {
   readonly list: () => readonly RunningAgent[]
   readonly publishReady: (agent: RunningAgent) => Effect.Effect<void>
   readonly remove: (agentId: string) => Effect.Effect<void>
-  readonly updateActivity: (agentId: string, lastActivityAt: number) => Effect.Effect<void>
+  readonly updateActivity: (agentId: string, lastActivityAt: number, activity?: AgentActivityKind) => Effect.Effect<void>
 }
 
 export interface ActivityProjectionOptions {
@@ -54,7 +54,7 @@ export const createActivityProjection = ({ publish }: ActivityProjectionOptions)
         agents = next
         return true
       }).pipe(Effect.flatMap((removed) => (removed ? flush() : Effect.void))),
-    updateActivity: (agentId, lastActivityAt) =>
+    updateActivity: (agentId, lastActivityAt, activity) =>
       Effect.sync(() => {
         let changed = false
         agents = agents.map((agent) => {
@@ -62,7 +62,7 @@ export const createActivityProjection = ({ publish }: ActivityProjectionOptions)
             return agent
           }
           changed = true
-          return { ...agent, lastActivityAt }
+          return activity === undefined ? { ...agent, lastActivityAt } : { ...agent, activity, lastActivityAt }
         })
         return changed
       }).pipe(Effect.flatMap((changed) => (changed ? flush() : Effect.void))),

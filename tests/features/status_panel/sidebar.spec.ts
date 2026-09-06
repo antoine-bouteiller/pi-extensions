@@ -201,6 +201,29 @@ describe('sidebar rendering', () => {
     })
   )
 
+  it.effect('shows subagent activity with elapsed runtime instead of idle time', () =>
+    Effect.sync(() => {
+      const activeAgent: SidebarState = {
+        ...state,
+        agents: [
+          {
+            activity: 'tool',
+            color: 'accent',
+            name: '/tool-agent',
+            startedAt: 0,
+          },
+        ],
+      }
+      const minuteText = stripAnsi(renderSidebarLines({ height: 36, now: 65_000, state: activeAgent, theme, width: 44 }).join('\n'))
+      const hourText = stripAnsi(renderSidebarLines({ height: 36, now: 3_661_000, state: activeAgent, theme, width: 44 }).join('\n'))
+      const subagentRows = minuteText.slice(minuteText.indexOf('SUBAGENTS'))
+
+      expect(minuteText).toContain('tool 1:05')
+      expect(hourText).toContain('tool 1:01:01')
+      expect(subagentRows).not.toContain('idle')
+    })
+  )
+
   it.effect('caps the subagent list so a large fan-out cannot crowd out other panels', () =>
     Effect.sync(() => {
       const text = stripAnsi(renderSidebarLines({ height: 40, now: 0, state: withAgents(9), theme, width: 44 }).join('\n'))
