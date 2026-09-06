@@ -110,6 +110,7 @@ describe('sub-agent model', () => {
     for (const [key, provider, model] of cases) {
       const profile = resolvedProfile(key)
       expect(profile.contextCeiling).toBe(200_000)
+      expect(profile.turnDeadlineMillis).toBe({ implementer: 30, librarian: 15, reviewer: 20, scout: 10 }[key] * 60 * 1000)
       expect(profile.model).toBe(model)
       expect(profile.prompt).toBe(prompts[key])
       expect(profile.provider).toBe(provider)
@@ -170,9 +171,10 @@ describe('sub-agent model', () => {
     const narrowResult = resolveProfile('scout', narrow)
     expect(narrowResult.ok && narrowResult.profile.contextCeiling).toBe(128_000)
     expect(resolvedProfile('scout').contextCeiling).toBe(200_000)
-    const registry = { ...PROFILE_REGISTRY, scout: { ...PROFILE_REGISTRY.scout, contextCeiling: 100_000 } }
+    const registry = { ...PROFILE_REGISTRY, scout: { ...PROFILE_REGISTRY.scout, contextCeiling: 100_000, turnDeadlineMillis: undefined } }
     const result = resolveProfileWithRegistry('scout', snapshot(), registry)
     expect(result.ok && result.profile.contextCeiling).toBe(100_000)
+    expect(result.ok && result.profile.turnDeadlineMillis).toBe(30 * 60 * 1000)
   })
 
   it('projects runtime model output limits through the child view and profile resolution', () => {
@@ -267,7 +269,16 @@ describe('sub-agent model', () => {
     }
     const profile = resolvedProfile('scout')
     const config = deriveWorkerConfig(profile, snapshot())
-    expect(Object.keys(profile).toSorted()).toEqual(['contextCeiling', 'key', 'model', 'prompt', 'provider', 'thinkingLevel', 'tools'])
+    expect(Object.keys(profile).toSorted()).toEqual([
+      'contextCeiling',
+      'key',
+      'model',
+      'prompt',
+      'provider',
+      'thinkingLevel',
+      'tools',
+      'turnDeadlineMillis',
+    ])
     expect(Object.keys(config).toSorted()).toEqual([
       'agentDir',
       'contextCeiling',

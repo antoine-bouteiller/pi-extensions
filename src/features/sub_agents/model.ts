@@ -156,6 +156,7 @@ export interface AdmissionSnapshot {
 }
 
 const ThinkingLevelSchema = Type.Union([Type.Literal('low'), Type.Literal('medium'), Type.Literal('high')])
+export const TURN_DEADLINE_MILLIS = 30 * 60 * 1000
 export const PersistedResolvedProfileSchema = closed({
   contextCeiling: Type.Number(),
   key: ProfileKeySchema,
@@ -164,6 +165,7 @@ export const PersistedResolvedProfileSchema = closed({
   provider: Type.String(),
   thinkingLevel: Type.Optional(ThinkingLevelSchema),
   tools: Type.Array(Type.String()),
+  turnDeadlineMillis: Type.Optional(Type.Number()),
 })
 export type PersistedResolvedProfile = Static<typeof PersistedResolvedProfileSchema>
 export const WorkerConfigSchema = closed({
@@ -202,6 +204,7 @@ export interface ProfileDefinition {
   readonly prompt: string
   readonly requiredTools: readonly string[]
   readonly thinkingLevel: 'high' | 'low' | 'medium'
+  readonly turnDeadlineMillis?: number
 }
 
 export const PROFILE_REGISTRY = {
@@ -215,6 +218,7 @@ task or refactor unrelated code. Run focused existing checks and return the
 changed paths, verification results, and any blocker requiring a parent decision.\n`,
     requiredTools: ['read', 'ffgrep', 'fffind', 'bash', 'edit', 'write'],
     thinkingLevel: 'medium',
+    turnDeadlineMillis: 30 * 60 * 1000,
   },
   librarian: {
     description: 'Cited web and remote-system research — read-only by policy',
@@ -226,6 +230,7 @@ inference, and return a concise synthesis. If a source or operation is unavailab
 state the limitation rather than guessing.\n`,
     requiredTools: ['read', 'ffgrep', 'fffind', 'webfetch', 'mcp'],
     thinkingLevel: 'low',
+    turnDeadlineMillis: 15 * 60 * 1000,
   },
   reviewer: {
     description: 'Read-only plan and implementation review',
@@ -238,6 +243,7 @@ pre-existing issues, or raise style-only comments unless asked. If there are no
 findings, say so explicitly.\n`,
     requiredTools: ['read', 'ffgrep', 'fffind', 'bash'],
     thinkingLevel: 'high',
+    turnDeadlineMillis: 20 * 60 * 1000,
   },
   scout: {
     description: 'Quick codebase exploration and focused implementation reconnaissance — read-only by policy',
@@ -248,6 +254,7 @@ systems. Return a concise conclusion with relevant paths, symbols, and evidence.
 If the task requires a product decision or mutation, explain the blocker instead.\n`,
     requiredTools: ['read', 'ffgrep', 'fffind', 'bash'],
     thinkingLevel: 'low',
+    turnDeadlineMillis: 10 * 60 * 1000,
   },
 } satisfies Readonly<Record<ProfileKey, ProfileDefinition>>
 
@@ -341,6 +348,7 @@ export const resolveProfileWithRegistry = (
     provider: model.provider,
     thinkingLevel: profile.thinkingLevel,
     tools: [...tools],
+    turnDeadlineMillis: profile.turnDeadlineMillis ?? TURN_DEADLINE_MILLIS,
   }
   if (model.maxTokens === undefined) {
     return { ok: true, profile: resolvedProfile }

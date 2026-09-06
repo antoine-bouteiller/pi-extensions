@@ -57,6 +57,7 @@ const profile = (key: ProfileKey): PersistedResolvedProfile => ({
   prompt: 'prompt',
   provider: 'provider',
   tools: [],
+  turnDeadlineMillis: { implementer: 30, librarian: 15, reviewer: 20, scout: 10 }[key] * 60 * 1000,
 })
 const bytes = (value: Readonly<Record<string, string | number>>): Uint8Array => new TextEncoder().encode(`${JSON.stringify(value)}\n`)
 const frameAgentId = (frame: string | undefined): string | undefined =>
@@ -98,6 +99,7 @@ interface HarnessOptions {
   readonly replaceRecordFailures?: readonly number[]
   readonly replaceRecordPostCommitFailures?: readonly number[]
   readonly termination?: readonly TerminationResult[]
+  readonly turnDeadlineMillis?: number | readonly number[]
 }
 const harness = (root: string, options: HarnessOptions = {}) =>
   Effect.gen(function* () {
@@ -298,16 +300,28 @@ const harness = (root: string, options: HarnessOptions = {}) =>
     const resolver = {
       resolve: (key: string, _snapshot: AdmissionSnapshot) => {
         const resolved = availableProfiles.find((profileKey) => profileKey === key)
+        const configuredDeadline = Array.isArray(options.turnDeadlineMillis) ? options.turnDeadlineMillis[resolveCalls] : options.turnDeadlineMillis
         const value: Effect.Effect<ProfileResolution> =
           resolved === undefined
             ? Effect.succeed({ error: { code: 'unknown_profile' as const, message: 'unknown' }, ok: false as const })
             : Effect.succeed(
                 options.maxOutputTokens === undefined
-                  ? { ok: true as const, profile: { ...profile(resolved), contextCeiling: options.contextCeiling ?? 1 } }
+                  ? {
+                      ok: true as const,
+                      profile: {
+                        ...profile(resolved),
+                        contextCeiling: options.contextCeiling ?? 1,
+                        turnDeadlineMillis: configuredDeadline ?? profile(resolved).turnDeadlineMillis,
+                      },
+                    }
                   : {
                       maxOutputTokens: options.maxOutputTokens,
                       ok: true as const,
-                      profile: { ...profile(resolved), contextCeiling: options.contextCeiling ?? 1 },
+                      profile: {
+                        ...profile(resolved),
+                        contextCeiling: options.contextCeiling ?? 1,
+                        turnDeadlineMillis: configuredDeadline ?? profile(resolved).turnDeadlineMillis,
+                      },
                     }
               )
         return Effect.sync(() => {
@@ -650,7 +664,7 @@ describe('SubagentOrchestrator', () => {
     })
   )
 
-  it.scoped('enforces capacity, implementer, and case-sensitive admission claims', () =>
+  it.scoped('enforces four-slot capacity, concurrent implementers, and case-sensitive admission claims', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-admission-' }).pipe(Effect.flatMap((path) => fs.realPath(path)))
@@ -659,31 +673,39 @@ describe('SubagentOrchestrator', () => {
         Effect.gen(function* () {
           const orchestrator = yield* SubagentOrchestrator
           yield* orchestrator.openSession('admission')
-          for (const [index, name] of ['One', 'two', 'three'].entries()) {
-            const spawning = yield* Effect.forkChild(orchestrator.spawn('admission', admission, request(name)))
+          const admitted = [request('One', 'implementer'), request('two', 'scout'), request('three', 'implementer'), request('four', 'implementer')]
+          for (const [index, admissionRequest] of admitted.entries()) {
+            const spawning = yield* Effect.forkChild(orchestrator.spawn('admission', admission, admissionRequest))
             yield* TestClock.adjust('1 millis')
             yield* ready(fake.children[index], `agent-${index + 1}`, join(root, 'session.json'))
             yield* Fiber.join(spawning)
           }
-          const full = yield* Effect.exit(orchestrator.spawn('admission', admission, request('four')))
-          expect(full._tag).toBe('Failure')
+          const refusalCode = yield* orchestrator
+            .spawn('admission', admission, request('five'))
+            .pipe(
+              Effect.match({ onFailure: (error) => (error._tag === 'PublicRefusalError' ? error.code : 'lifecycle'), onSuccess: () => 'accepted' })
+            )
+          expect(refusalCode).toBe('capacity_exceeded')
 
           yield* orchestrator.openSession('implementers')
-          const first = yield* Effect.forkChild(orchestrator.spawn('implementers', admission, request('build', 'implementer')))
+          const implementers = yield* Effect.forEach(['build', 'build-more', 'build-even-more', 'build-final'], (name) =>
+            Effect.forkChild(orchestrator.spawn('implementers', admission, request(name, 'implementer')))
+          )
           yield* TestClock.adjust('1 millis')
-          yield* ready(fake.children[3], 'agent-4', join(root, 'session.json'))
-          yield* Fiber.join(first)
-          const second = yield* Effect.exit(orchestrator.spawn('implementers', admission, request('build-more', 'implementer')))
-          expect(second._tag).toBe('Failure')
+          expect(fake.children).toHaveLength(8)
+          for (const [index, fiber] of implementers.entries()) {
+            yield* ready(fake.children[index + 4], `agent-${index + 5}`, join(root, 'session.json'))
+            yield* Fiber.join(fiber)
+          }
 
           yield* orchestrator.openSession('names')
           const upper = yield* Effect.forkChild(orchestrator.spawn('names', admission, request('Same')))
           yield* TestClock.adjust('1 millis')
-          yield* ready(fake.children[4], 'agent-5', join(root, 'session.json'))
+          yield* ready(fake.children[8], 'agent-9', join(root, 'session.json'))
           yield* Fiber.join(upper)
           const lower = yield* Effect.forkChild(orchestrator.spawn('names', admission, request('same')))
           yield* TestClock.adjust('1 millis')
-          yield* ready(fake.children[5], 'agent-6', join(root, 'session.json'))
+          yield* ready(fake.children[9], 'agent-10', join(root, 'session.json'))
           yield* Fiber.join(lower)
           const duplicate = yield* Effect.exit(orchestrator.spawn('names', admission, request('Same')))
           expect(duplicate._tag).toBe('Failure')
@@ -693,7 +715,7 @@ describe('SubagentOrchestrator', () => {
     })
   )
 
-  it.scoped('serializes concurrent capacity and implementer admission races at one claim', () =>
+  it.scoped('serializes concurrent four-slot capacity and implementer admission races at one claim', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-concurrent-admission-' }).pipe(Effect.flatMap(fs.realPath))
@@ -702,68 +724,103 @@ describe('SubagentOrchestrator', () => {
         Effect.gen(function* () {
           const orchestrator = yield* SubagentOrchestrator
           yield* orchestrator.openSession('capacity-race')
-          const capacity = yield* Effect.forEach(['one', 'two', 'three', 'four'], (name) =>
+          const capacity = yield* Effect.forEach(['one', 'two', 'three', 'four', 'five'], (name) =>
             Effect.forkChild(orchestrator.spawn('capacity-race', admission, request(name)))
           )
           yield* TestClock.adjust('1 millis')
-          expect(fake.children).toHaveLength(3)
+          expect(fake.children).toHaveLength(4)
           for (const [index, fiber] of capacity.entries()) {
-            if (index < 3) {
+            if (index < 4) {
               yield* ready(fake.children[index], `agent-${index + 1}`, join(root, 'session.json'))
               yield* Fiber.join(fiber)
             } else {
-              expect((yield* Fiber.join(fiber).pipe(Effect.exit))._tag).toBe('Failure')
+              const refusalCode = yield* Fiber.join(fiber).pipe(
+                Effect.match({ onFailure: (error) => (error._tag === 'PublicRefusalError' ? error.code : 'lifecycle'), onSuccess: () => 'accepted' })
+              )
+              expect(refusalCode).toBe('capacity_exceeded')
             }
           }
           yield* orchestrator.openSession('implementer-race')
-          const implementers = yield* Effect.forEach(['first', 'second'], (name) =>
+          const implementers = yield* Effect.forEach(['first', 'second', 'third', 'fourth'], (name) =>
             Effect.forkChild(orchestrator.spawn('implementer-race', admission, request(name, 'implementer')))
           )
           yield* TestClock.adjust('1 millis')
-          expect(fake.children).toHaveLength(4)
-          yield* ready(fake.children[3], 'agent-4', join(root, 'session.json'))
-          const outcomes = yield* Effect.forEach(implementers, (fiber) => Fiber.join(fiber).pipe(Effect.exit))
-          expect(outcomes.filter((outcome) => outcome._tag === 'Success')).toHaveLength(1)
-          expect(outcomes.filter((outcome) => outcome._tag === 'Failure')).toHaveLength(1)
+          expect(fake.children).toHaveLength(8)
+          for (const [index, fiber] of implementers.entries()) {
+            yield* ready(fake.children[index + 4], `agent-${index + 5}`, join(root, 'session.json'))
+            yield* Fiber.join(fiber)
+          }
         }),
         fake.layer
       )
     })
   )
 
-  it.scoped('keeps inactive agents running and expires the dispatch deadline through the virtual clock', () =>
+  it.scoped('keeps inactive agents running, gives scouts a shorter deadline, and preserves implementer runtime', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-timers-' }).pipe(Effect.flatMap((path) => fs.realPath(path)))
-      for (const [index, duration] of [
-        [0, '5 minutes'],
-        [1, '30 minutes'],
-      ] as const) {
-        const fake = yield* harness(root, { profiles: ['scout'] })
-        yield* Effect.provide(
-          Effect.gen(function* () {
-            const orchestrator = yield* SubagentOrchestrator
-            const session = `timer-${index}`
-            yield* orchestrator.openSession(session)
-            const spawning = yield* Effect.forkChild(orchestrator.spawn(session, admission, request('worker')))
-            yield* TestClock.adjust('1 millis')
-            yield* ready(fake.children[0], 'agent-1', join(root, 'session.json'))
-            yield* Fiber.join(spawning)
-            yield* TestClock.adjust(duration)
-            if (index === 0) {
-              expect((yield* orchestrator.list(session))[0]?.status).toBe('running')
-              yield* fake.children[0].emit(
-                bytes({ agent_id: 'agent-1', command_id: 'initial', conclusion: 'done', status: 'completed', turn: 1, type: 'result' })
-              )
-              expect((yield* orchestrator.waitOne(session, ['worker'])).status).toBe('completed')
-            } else {
-              const settled = yield* orchestrator.waitOne(session, ['worker'])
-              expect('error' in settled ? settled.error.code : '').toBe('turn_timeout')
-            }
-          }),
-          fake.layer
-        )
-      }
+      const fake = yield* harness(root, { profiles: ['scout', 'implementer'] })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('timer')
+          const scout = yield* Effect.forkChild(orchestrator.spawn('timer', admission, request('scout')))
+          const implementer = yield* Effect.forkChild(orchestrator.spawn('timer', admission, request('implementer', 'implementer')))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[0], 'agent-1', join(root, 'session.json'))
+          yield* ready(fake.children[1], 'agent-2', join(root, 'session.json'))
+          yield* Fiber.join(scout)
+          yield* Fiber.join(implementer)
+          yield* TestClock.adjust('5 minutes')
+          expect((yield* orchestrator.list('timer')).map(({ status }) => status)).toEqual(['running', 'running'])
+          yield* TestClock.adjust('5 minutes')
+          const settled = yield* orchestrator.waitOne('timer', ['scout'])
+          expect('error' in settled ? settled.error.code : '').toBe('turn_timeout')
+          expect((yield* orchestrator.list('timer')).find(({ task_name }) => task_name === 'implementer')?.status).toBe('running')
+          yield* TestClock.adjust('20 minutes')
+          const implementerSettled = yield* orchestrator.waitOne('timer', ['implementer'])
+          expect('error' in implementerSettled ? implementerSettled.error.code : '').toBe('turn_timeout')
+          expect((yield* orchestrator.list('timer')).find(({ task_name }) => task_name === 'implementer')?.status).toBe('failed')
+        }),
+        fake.layer
+      )
+    })
+  )
+
+  it.scoped('reuses a resumed turn deadline resolved at its spawn', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-resumed-deadline-' }).pipe(Effect.flatMap(fs.realPath))
+      const fake = yield* harness(root, {
+        contextCeiling: 10_000,
+        profiles: ['scout'],
+        turnDeadlineMillis: [10 * 60 * 1000, 5 * 60 * 1000],
+      })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('resumed-deadline')
+          const initial = yield* Effect.forkChild(orchestrator.spawn('resumed-deadline', admission, request('worker', 'scout', false)))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[0], 'agent-1', join(root, 'session.json'))
+          yield* completed(fake.children[0], 'agent-1')
+          yield* Fiber.join(initial)
+          yield* fake.children[0].exit
+          const resumed = yield* Effect.forkChild(orchestrator.send('resumed-deadline', admission, 'worker', 'again'))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[1], 'agent-1', join(root, 'session.json'), 2)
+          yield* Effect.yieldNow
+          expect(fake.records().at(-1)?.profile.turnDeadlineMillis).toBe(10 * 60 * 1000)
+          yield* TestClock.adjust('5 minutes')
+          expect((yield* orchestrator.list('resumed-deadline')).find(({ task_name }) => task_name === 'worker')?.status).toBe('running')
+          yield* TestClock.adjust('5 minutes')
+          const settled = yield* orchestrator.waitOne('resumed-deadline', ['worker'])
+          expect('error' in settled ? settled.error.code : '').toBe('turn_timeout')
+          expect((yield* Fiber.join(resumed)).status).toBe('failed')
+        }),
+        fake.layer
+      )
     })
   )
 
@@ -838,13 +895,13 @@ describe('SubagentOrchestrator', () => {
           yield* Fiber.join(spawning).pipe(Effect.exit)
           yield* orchestrator.closeSession('same').pipe(Effect.exit)
           yield* orchestrator.openSession('same')
-          for (const [index, name] of ['one', 'two'].entries()) {
+          for (const [index, name] of ['one', 'two', 'three'].entries()) {
             const next = yield* Effect.forkChild(orchestrator.spawn('same', admission, request(name)))
             yield* TestClock.adjust('1 millis')
             yield* ready(fake.children[index + 1], `agent-${index + 2}`, join(root, 'session.json'))
             yield* Fiber.join(next)
           }
-          const full = yield* Effect.exit(orchestrator.spawn('same', admission, request('three')))
+          const full = yield* Effect.exit(orchestrator.spawn('same', admission, request('four')))
           expect(full._tag).toBe('Failure')
           expect(fake.forceCalls()).toBe(1)
           expect(fake.releases()).toBe(0)
@@ -1071,13 +1128,13 @@ describe('SubagentOrchestrator', () => {
           expect((yield* orchestrator.waitOne('settled-cleanup', ['source'])).status).toBe('completed')
           yield* TestClock.adjust('5 seconds')
 
-          for (const [index, name] of ['one', 'two'].entries()) {
+          for (const [index, name] of ['one', 'two', 'three'].entries()) {
             const spawning = yield* Effect.forkChild(orchestrator.spawn('settled-cleanup', admission, request(name)))
             yield* TestClock.adjust('1 millis')
             yield* ready(fake.children[index + 1], `agent-${index + 2}`, join(root, 'session.json'))
             yield* Fiber.join(spawning)
           }
-          expect((yield* Effect.exit(orchestrator.spawn('settled-cleanup', admission, request('three'))))._tag).toBe('Failure')
+          expect((yield* Effect.exit(orchestrator.spawn('settled-cleanup', admission, request('four'))))._tag).toBe('Failure')
           const resumed = yield* Effect.exit(orchestrator.send('settled-cleanup', admission, 'source', 'resume'))
           expect(resumed._tag).toBe('Failure')
           if (resumed._tag === 'Failure') {
@@ -1348,14 +1405,14 @@ describe('SubagentOrchestrator', () => {
           expect(fake.deletes()).toBe(0)
           expect(fake.pruneCalls()).toBe(1)
           yield* orchestrator.openSession('orphan')
-          for (const [index, name] of ['one', 'two'].entries()) {
+          for (const [index, name] of ['one', 'two', 'three'].entries()) {
             const spawning = yield* Effect.forkChild(orchestrator.spawn('orphan', admission, request(name)))
             yield* Effect.yieldNow
             yield* TestClock.adjust('1 millis')
             yield* ready(fake.children[index], `agent-${index + 1}`, join(root, 'session.json'))
             yield* Fiber.join(spawning)
           }
-          expect((yield* Effect.exit(orchestrator.spawn('orphan', admission, request('three'))))._tag).toBe('Failure')
+          expect((yield* Effect.exit(orchestrator.spawn('orphan', admission, request('four'))))._tag).toBe('Failure')
         }),
         fake.layer
       )
@@ -2241,12 +2298,12 @@ describe('SubagentOrchestrator', () => {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-warning-' }).pipe(Effect.flatMap(fs.realPath))
-      const fake = yield* harness(root, { profiles: ['scout'] })
+      const fake = yield* harness(root, { profiles: ['implementer'] })
       yield* Effect.provide(
         Effect.gen(function* () {
           const orchestrator = yield* SubagentOrchestrator
           yield* orchestrator.openSession('warning')
-          const spawning = yield* Effect.forkChild(orchestrator.spawn('warning', admission, request('quiet')))
+          const spawning = yield* Effect.forkChild(orchestrator.spawn('warning', admission, request('quiet', 'implementer')))
           yield* TestClock.adjust('1 millis')
           yield* ready(fake.children[0], 'agent-1', join(root, 'session.json'))
           yield* Fiber.join(spawning)
@@ -2633,7 +2690,7 @@ describe('SubagentOrchestrator', () => {
         Effect.gen(function* () {
           const orchestrator = yield* SubagentOrchestrator
           yield* orchestrator.openSession('interrupt')
-          for (const [index, task] of ['one', 'two', 'three'].entries()) {
+          for (const [index, task] of ['one', 'two', 'three', 'four'].entries()) {
             const spawning = yield* Effect.forkChild(orchestrator.spawn('interrupt', admission, request(task)))
             yield* TestClock.adjust('1 millis')
             yield* ready(fake.children[index], `agent-${index + 1}`, join(root, 'session.json'))
@@ -2644,7 +2701,9 @@ describe('SubagentOrchestrator', () => {
           yield* TestClock.adjust('5 seconds')
           const interrupted = yield* Fiber.join(stopping)
           expect('error' in interrupted ? interrupted.error.code : '').toBe('interrupted')
-          expect((yield* Effect.exit(orchestrator.spawn('interrupt', admission, request('four'))))._tag).toBe('Failure')
+          expect((yield* Effect.exit(orchestrator.spawn('interrupt', admission, request('five'))))._tag).toBe('Failure')
+          yield* fake.children[3].exit
+          yield* Effect.yieldNow
           yield* fake.children[0].exit
           yield* Effect.yieldNow
           expect('interrupted' in (yield* orchestrator.interrupt('interrupt', 'one'))).toBe(true)
@@ -2727,7 +2786,7 @@ describe('SubagentOrchestrator', () => {
           yield* TestClock.adjust('1 millis')
           yield* ready(fake.children[1], 'agent-2', join(root, 'session.json'))
           yield* Fiber.join(replacement)
-          yield* TestClock.adjust(1_795_000)
+          yield* TestClock.adjust(595_000)
           expect((yield* orchestrator.list('mismatched-deadline'))[0]?.status).toBe('running')
         }),
         fake.layer
@@ -2763,13 +2822,13 @@ describe('SubagentOrchestrator', () => {
           expect((yield* orchestrator.list('generation')).map((entry) => entry.task_name)).toEqual(['new'])
           expect(fake.activity()).toHaveLength(1)
           expect(fake.records().filter((record) => record.status !== 'running')).toHaveLength(before)
-          for (const [index, name] of ['two', 'three'].entries()) {
+          for (const [index, name] of ['two', 'three', 'four'].entries()) {
             const spawning = yield* Effect.forkChild(orchestrator.spawn('generation', admission, request(name)))
             yield* TestClock.adjust('1 millis')
             yield* ready(fake.children[index + 2], `agent-${index + 3}`, join(root, 'session.json'))
             yield* Fiber.join(spawning)
           }
-          expect((yield* Effect.exit(orchestrator.spawn('generation', admission, request('four'))))._tag).toBe('Failure')
+          expect((yield* Effect.exit(orchestrator.spawn('generation', admission, request('five'))))._tag).toBe('Failure')
         }),
         fake.layer
       )

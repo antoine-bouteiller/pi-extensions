@@ -26,11 +26,11 @@ Goals are owned by the umbrella.
 | `[KD-6]` Record store              | One JSON info file per agent sits beside its session file and log under `${PI_SUBAGENT_TEMP_DIR ?? tmpdir()}/pi-codex-subagents/<username>/runs`                                                                                                                                                                                                                         | Reusing the package's existing private temporary-state root avoids another configuration surface; per-agent files isolate corruption and support transcript inspection                                              |
 | `[KD-7]` Startup reaping           | Startup prunes aged/unparseable records; verified orphans are interrupted, while PID identity mismatch deletes artifacts and releases claims without signalling                                                                                                                                                                                                          | An orphan's stdio belongs to a dead parent, a recycled PID must never be signalled, and seven-day cleanup balances inspection against disk use                                                                      |
 | `[KD-8.2]` Signalling safety       | A stop first requests cooperative protocol interruption. After five seconds, or during startup reaping, the adapter may terminate the process group/tree only while the worker's recorded platform creation marker still matches; observed worker exit releases ownership, and surviving descendants are left alone rather than signalling an unverified reused group ID | Most stops need no OS signal, marker verification protects forced cleanup from PID reuse, and best-effort descendants avoid adding a permanent supervisor process per turn                                          |
-| `[KD-9]` Child channel             | Length-bounded JSONL frames over the child's stdin and stdout; the transcript is read from the child's own session file on disk                                                                                                                                                                                                                                          | One channel for control and none for history; a 1 MiB bound protects the parser while allowing large tasks, and five minutes warns before the 30-minute deadline                                                    |
+| `[KD-9]` Child channel             | Length-bounded JSONL frames over the child's stdin and stdout; the transcript is read from the child's own session file on disk                                                                                                                                                                                                                                          | One channel for control and none for history; a 1 MiB bound protects the parser while allowing large tasks, and five minutes warns before the profile-specific deadline                                             |
 | `[KD-10]` Stop semantics           | Interrupt waits for normal durable delivery; panic is separate and suppresses only outcomes it creates, preserving earlier queued notices                                                                                                                                                                                                                                | Deliberate interruption remains observable without allowing panic cleanup to erase prior work                                                                                                                       |
 | `[KD-11]` Freeze at the ceiling    | An agent whose conversation reaches its context ceiling stays settled and readable, with further follow-ups refused rather than the agent terminated                                                                                                                                                                                                                     | The accumulated work is the valuable part; terminating to enforce a bound would destroy exactly what the bound was protecting                                                                                       |
-| `[KD-12.2]` Capacity admission     | A session holds at most three worker slots, including at most one `implementer`; `starting`, `running`, and terminal workers awaiting verified exit retain slots. A still-live worker handed to cleanup keeps its slot, while observed worker exit releases it even if untracked descendants may remain                                                                  | Counting owned workers through cleanup preserves the bounded worker contract without pretending the extension can safely own descendants after their verifiable group leader disappears                             |
-| `[KD-13]` Turn deadline            | Every initial or resumed turn receives a monotonic 30-minute deadline; steering a running turn does not reset it, and expiry terminates the child and settles it `failed` with `turn_timeout`                                                                                                                                                                            | Thirty minutes bounds every foreground spawn and wait without treating additional guidance as additional execution budget; the 30-second readiness bound aligns with repository process/connect bounds              |
+| `[KD-12.2]` Capacity admission     | A session holds at most four worker slots; `starting`, `running`, and terminal workers awaiting verified exit retain slots. A still-live worker handed to cleanup keeps its slot, while observed worker exit releases it even if untracked descendants may remain                                                                                                        | Counting owned workers through cleanup preserves the bounded worker contract without pretending the extension can safely own descendants after their verifiable group leader disappears                             |
+| `[KD-13]` Turn deadline            | Every initial or resumed turn receives its resolved profile deadline (scout 10 minutes, librarian 15, reviewer 20, implementer 30) as monotonic-plus-wall bounds; steering a running turn does not reset either, and expiry terminates the child and settles it `failed` with `turn_timeout`                                                                             | Per-profile bounds fit the errand while preserving a fixed execution budget; the 30-second readiness bound aligns with repository process/connect bounds                                                            |
 | `[KD-14.2]` Worker lifetime        | One worker runs one initial or resumed turn as process-group/tree leader. Stop and outcome paths request protocol interruption/exit and allow five seconds before marker-verified best-effort tree termination; observed worker exit is terminal even if descendants escaped cleanup, and a follow-up starts a new worker from the stored session                        | Cooperative shutdown handles the normal path, bounded fallback cleans ordinary descendants, and accepting the detached-descendant ceiling avoids a second supervisor process                                        |
 | `[KD-15]` Effect ownership         | `SubagentOrchestrator` is an Effect service in the stable runtime; it owns one closeable child scope per Pi session, and host operations are injected services while public adapters only interpret its typed effects                                                                                                                                                    | Structural concurrency keeps ordinary background ownership bounded by its session and retains failed cleanup for supervised retry, while replaceable host ports make every race and deadline deterministic in tests |
 | `[KD-16]` Worker/session ownership | The package worker is launched with the current Bun executable at an entrypoint resolved from `import.meta.url`. It creates the initial persistent Pi session in the owner-only run directory, includes its validated session path in `ready`, and a resumed turn opens that exact file with `SessionManager.open` as its sole writer                                    | The parent owns durable location and validation while exactly one turn worker writes the Pi session at a time; a parent restart remains non-continuable                                                             |
@@ -47,8 +47,8 @@ Goals are owned by the umbrella.
   mutating, filters on the owning session before doing anything.
 - `[NG-2]` Resuming or adopting a child's conversation after a restart — follows umbrella `[C-9]`: the
   conclusion is durable, the live process is not.
-- `[NG-3.1]` Queuing excess children, configurable limits, or per-profile limits beyond the single
-  `implementer` bound — refines umbrella `[KD-11.2]`; admission either succeeds immediately or refuses.
+- `[NG-3.1]` Queuing excess children, configurable limits, or per-profile limits — refines umbrella
+  `[KD-11.2]`; admission either succeeds immediately or refuses.
 - `[NG-4]` Windows support — spawning, termination, worker startup, and descriptor-based path
   validation refuse on Windows; its process-tree and PowerShell creation-time mechanisms remain for a
   future port.
@@ -57,7 +57,7 @@ Goals are owned by the umbrella.
 
 - `[C-2]` All settled artifacts are retained for seven days from `settledAt`, then pruned; live records are never pruned.
 - `[C-4]` Capacity is session-local, not a machine-wide provider quota; separate sessions can each
-  run three children.
+  run four children. Implementers are not single-writer serialized: up to four may edit the same checkout concurrently.
 - `[C-5]` Deadline scheduling uses Effect's clock and each turn also stores its wall-clock deadline.
   The engine compares that instant after wake or any observed event, so host suspension consumes the
   budget and may time out immediately after resume. While the host is running, termination resolves
@@ -245,8 +245,8 @@ Service-owned state uses Effect concurrency primitives with these semantics:
   specified atomic delivery-claim release and leaves the child turn supervised.
 - Racing effects are losers only after their finalizers run. Interruption is masked while installing or
   transferring resource ownership, then restored while waiting on child I/O, deadlines, or delivery.
-- Startup (30 seconds), inactivity (5 minutes), turn deadline (30 minutes), and termination grace
-  (5 seconds) are named durations evaluated through Effect `Clock`. Each turn also stores its wall-clock
+- Startup (30 seconds), inactivity (5 minutes), the resolved profile turn deadline (scout 10 minutes,
+  librarian 15, reviewer 20, implementer 30), and termination grace (5 seconds) are named durations evaluated through Effect `Clock`. Each turn also stores its wall-clock
   deadline and checks it after scheduler wake or child activity. Tests advance a test clock; they do not
   sleep in wall time.
 
@@ -348,8 +348,8 @@ resumed record—and releases its task-name and capacity claim.
 
 Profile resolution (including canonical `missing_model` where no selected model is available) and closed
 config/task pre-encoding precede one session-locked claim of exact task-name uniqueness and capacity. A
-session holds at most three worker slots and at most one `implementer` slot; a terminal worker keeps its
-slot until verified worker exit or remains charged while the cleanup registry owns that still-live worker. Startup holds an in-memory
+session holds at most four worker slots; a terminal worker keeps its slot until verified worker exit or
+remains charged while the cleanup registry owns that still-live worker. Implementers have no separate limit and may edit the same checkout concurrently. Startup holds an in-memory
 reservation plus a private, atomically written launch lease containing the owning session and
 `ProcessIdentity`; the lease is not an agent record, listing entry, activity entry, or durable turn.
 Startup reaping uses the lease to stop an ownership-verified child after a parent crash. The child must
@@ -371,12 +371,12 @@ result to the cancelled caller. A background spawn returns only after readiness:
 ```
 
 A foreground spawn waits for and returns its `AgentResult`. Both the 30-second startup timer and the
-30-minute per-turn timer start when the task is dispatched, so they overlap during startup. Every
+resolved profile per-turn timer start when the task is dispatched, so they overlap during startup. Every
 initial or resumed turn is one process. A completed-agent resume likewise starts provisionally: before
 its new `ready`, the prior durable history remains intact, the send allowance is not consumed, and it
 returns `startup_timeout`, `startup_failed`, or `frame_too_large` as applicable; it never deletes the
-prior agent. Only `ready` creates/marks the new running turn and consumes the allowance. The 30-minute clock is monotonic and steering never resets
-it. A uniform five-second termination grace applies after an outcome, timeout, interrupt, protocol
+prior agent. Only `ready` creates/marks the new running turn and consumes the allowance. The profile deadline is resolved and persisted at spawn; its monotonic-plus-wall pair is never reset by steering.
+A uniform five-second termination grace applies after an outcome, timeout, interrupt, protocol
 failure, or startup failure before force termination of an ownership-verified process.
 
 Child stdin/stdout uses strict-LF JSONL lifecycle/control frames, each bounded to 1 MiB including its
@@ -621,8 +621,8 @@ Retention never prunes a live record. All operations filter to the current sessi
 
 Focused tests must establish these design contracts, rather than merely exercise happy paths:
 
-- Atomic concurrent admission of the same task name admits exactly one child; concurrent capacity and
-  single-`implementer` races never exceed their limits and leave no losing durable/public record.
+- Atomic concurrent admission of the same task name admits exactly one child; concurrent capacity races
+  never exceed the four-slot limit and leave no losing durable/public record. Concurrent implementers are allowed.
 - Two concurrent sends race to one accepted send only. Running steering returns `SteeringAck` only after
   matching `steer_ack`; a matching `command_error` is correlated negative response and consumes nothing.
   Ack/result races linearize at the positive ack: result-first returns the negative response, ack-first
@@ -648,8 +648,8 @@ Focused tests must establish these design contracts, rather than merely exercise
   suppresses only results it itself creates and never erases an earlier notice. Cancellation of a foreground
   spawn or omitted wait before settlement returns every abandoned claim to the notice queue; cancellation
   after delivery commit never replays it.
-- At exactly 30 minutes the engine requests termination; settlement occurs after exit or at most five
-  seconds later after force termination. Steering never resets either bound. Result frames with the
+- At its resolved profile deadline (scout 10 minutes, librarian 15, reviewer 20, implementer 30), the engine requests termination; settlement occurs after exit or at most five
+  seconds later after force termination. Steering never resets either bound. Killing an implementer can leave partial writes; this settlement is not a rollback. Result frames with the
   wrong discriminant payload are `startup_failed` before readiness and `protocol_error` afterwards.
 - Restart reaping prunes expired/unparseable settled artifacts, interrupts verified orphans, and re-reads
   process identity before every signal/reap; a PID/birth-marker mismatch signals nothing while deleting

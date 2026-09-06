@@ -24,6 +24,7 @@ import {
   type SpawnAgentInput,
   type SteeringAck,
   type ToolErrorCode,
+  TURN_DEADLINE_MILLIS,
   deriveChildEnvironment,
   deriveWorkerConfig,
 } from './model.js'
@@ -227,7 +228,6 @@ interface Cleanup {
   readonly predecessor?: Turn
   readonly removeArtifacts?: boolean
   readonly release?: Effect.Effect<void, ProcessError>
-  readonly profile?: PersistedResolvedProfile
   readonly session: SessionKey
   readonly taskName: string
   readonly turn: number
@@ -288,7 +288,7 @@ const failure = (operation: LifecycleError['operation'], reason: LifecycleError[
     reason,
   })
 export const WORKER_ENTRYPOINT = Bun.fileURLToPath(new URL('worker.ts', import.meta.url))
-const TURN_DEADLINE_MILLIS = 30 * 60 * 1000
+const MAX_LIVE_AGENTS = 4
 const FOLLOW_UP_OUTPUT_RESERVE_TOKENS = 8192
 const MAX_NOTIFICATION_BYTES = 50 * 1024
 const MAX_NOTIFICATION_LINES = 2000
@@ -663,7 +663,6 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
       handoff(provisional.agentId, {
         ...item,
         preserveRecord: !provisional.deleteArtifacts,
-        profile: provisional.profile,
         release: releaseProvisional(provisional),
         removeArtifacts,
       })
@@ -719,7 +718,6 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                     handoff(provisional.agentId, {
                       ...ownedItem,
                       preserveRecord: !provisional.deleteArtifacts,
-                      profile: provisional.profile,
                       release: releaseProvisional(provisional),
                       removeArtifacts: true,
                     }).pipe(Effect.ignore)
@@ -1127,7 +1125,6 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
         generation: turn.generation,
         identity: turn.child.identity,
         preserveRecord: turn.turn > 1,
-        profile: turn.profile,
         release: releaseProcess(turn),
         session: key,
         taskName: turn.taskName,
@@ -1177,9 +1174,7 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
       const item = cleanupForTurn(turn)
       return deleteOwnedMismatch(item).pipe(
         Effect.andThen(releaseProcess(turn).pipe(Effect.ignore)),
-        Effect.catch(() =>
-          handoff(turn.agentId, { ...item, profile: turn.profile, release: releaseProcess(turn), removeArtifacts: true }).pipe(Effect.ignore)
-        )
+        Effect.catch(() => handoff(turn.agentId, { ...item, release: releaseProcess(turn), removeArtifacts: true }).pipe(Effect.ignore))
       )
     }
     return handoffTurn(session, key, turn)
@@ -1829,7 +1824,6 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                       generation: 0,
                       identity,
                       preserveRecord: run.lease?.preserveRecord,
-                      profile: run.record?.status === 'running' ? run.record.profile : undefined,
                       session: source.session,
                       taskName: source.taskName,
                       turn: 0,
@@ -1892,8 +1886,9 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
       Effect.gen(function* () {
         const expectedTurn = resume === undefined ? 1 : resume.turns.length + 1
         const [dispatchWall, dispatchMonotonic] = yield* Effect.all([Clock.currentTimeMillis, Clock.monotonicTimeNanos])
-        const deadlineWall = dispatchWall + TURN_DEADLINE_MILLIS
-        const deadlineMonotonic = dispatchMonotonic + BigInt(TURN_DEADLINE_MILLIS) * 1_000_000n
+        const turnDeadlineMillis = reservation.profile.turnDeadlineMillis ?? TURN_DEADLINE_MILLIS
+        const deadlineWall = dispatchWall + turnDeadlineMillis
+        const deadlineMonotonic = dispatchMonotonic + BigInt(turnDeadlineMillis) * 1_000_000n
         const task = yield* Effect.try({
           catch: () => refusal('frame_too_large', 'Worker frame exceeds the 1 MiB limit.'),
           try: () =>
@@ -2633,20 +2628,15 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                                 if (retained.some((item) => item.agentId === turn.agentId)) {
                                   return yield* refusal('not_ready', 'The completed agent is still cleaning up.')
                                 }
-                                const reservations = [
-                                  ...state.slots.values(),
-                                  ...retained.flatMap((item) => (item.profile === undefined ? [] : [{ ...item, profile: item.profile }])),
-                                ]
-                                if (
-                                  current.generation !== turn.generation ||
-                                  state.slots.size + retained.length >= 3 ||
-                                  (resolved.profile.key === 'implementer' && reservations.some((item) => item.profile.key === 'implementer'))
-                                ) {
-                                  return yield* refusal('capacity_exceeded', 'Worker capacity is exhausted.')
+                                if (current.generation !== turn.generation || state.slots.size + retained.length >= MAX_LIVE_AGENTS) {
+                                  return yield* refusal(
+                                    'capacity_exceeded',
+                                    'Live-agent capacity is exhausted; starting, running, and retained-cleanup workers hold all slots.'
+                                  )
                                 }
                                 const reservation: Reservation = {
                                   agentId: turn.agentId,
-                                  profile: resolved.profile,
+                                  profile: { ...resolved.profile, turnDeadlineMillis: turn.profile.turnDeadlineMillis },
                                   slotId: `slot-${++slotIdentifiers}`,
                                   taskName: target,
                                 }
@@ -2791,15 +2781,11 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                   ) {
                     return yield* refusal('duplicate_task_name', `Task name "${request.task_name}" is already in use.`)
                   }
-                  const reservations = [
-                    ...state.slots.values(),
-                    ...retained.flatMap((item) => (item.profile === undefined ? [] : [{ ...item, profile: item.profile }])),
-                  ]
-                  if (
-                    state.slots.size + retained.length >= 3 ||
-                    (resolved.profile.key === 'implementer' && reservations.some((item) => item.profile.key === 'implementer'))
-                  ) {
-                    return yield* refusal('capacity_exceeded', 'Worker capacity is exhausted.')
+                  if (state.slots.size + retained.length >= MAX_LIVE_AGENTS) {
+                    return yield* refusal(
+                      'capacity_exceeded',
+                      'Live-agent capacity is exhausted; starting, running, and retained-cleanup workers hold all slots.'
+                    )
                   }
                   const agentId = `agent-${Bun.randomUUIDv7()}`
                   const reservation: Reservation = {
