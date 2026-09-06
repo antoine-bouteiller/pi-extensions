@@ -62,9 +62,11 @@ Goals are owned by the umbrella.
   The engine compares that instant after wake or any observed event, so host suspension consumes the
   budget and may time out immediately after resume. While the host is running, termination resolves
   within 30m05s; no elapsed-time guarantee is possible while the machine itself is suspended.
-- `[C-6]` PID-identity mismatch cleanup intentionally deletes prior settled history when it belongs to
-  the same resumed agent record. This is the accepted stale-ownership safety policy: never signal an
-  unverified process, even though the cleanup is an exception to normal seven-day retention.
+- `[C-6]` Restart cleanup treats a durable record as admission: after verified child exit it retains
+  completed turns, records the active turn as interrupted, and sends the settled record through normal
+  seven-day retention; retrying lease cleanup never adds another interrupted turn or resets `settledAt`.
+  PID-identity mismatch cleanup intentionally deletes all history instead; this
+  is the accepted stale-ownership safety policy: never signal an unverified process.
 - `[C-7]` A background child is scoped to its owning Pi session, not to the tool call that admitted it.
   Closing that session performs bounded identity-verified termination without affecting another session;
   if the OS refuses termination, the stable service retains the process and durable lease for retry and

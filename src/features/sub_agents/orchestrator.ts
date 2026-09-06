@@ -1766,8 +1766,35 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
       return store.delete(agentId).pipe(Effect.as('settled' as const))
     }
     if (stopped.some((result) => result === 'exited' || result === 'signalled')) {
-      const discard = run.lease?.preserveRecord === true && run.record?.status !== 'running' ? store.removeLease(agentId) : store.delete(agentId)
-      return discard.pipe(Effect.as('settled' as const))
+      const { record } = run
+      if (record !== undefined && record.status !== 'running') {
+        return store.removeLease(agentId).pipe(Effect.as('settled' as const))
+      }
+      if (record !== undefined) {
+        return Effect.gen(function* () {
+          const interrupted: AgentResult = {
+            error: { code: 'interrupted', message: 'The parent exited while this turn was running.' },
+            status: 'interrupted',
+            task_name: record.taskName,
+            turn: record.turns.length + 1,
+          }
+          const settledAt = yield* Clock.currentTimeMillis
+          const settled: SubagentRecord = {
+            logPath: record.logPath,
+            profile: record.profile,
+            session: record.session,
+            sessionPath: record.sessionPath,
+            settledAt,
+            status: 'interrupted',
+            taskName: record.taskName,
+            turns: [...record.turns, { profile: record.profile, result: interrupted }],
+          }
+          yield* store.replaceRecord(agentId, settled)
+          yield* store.removeLease(agentId)
+          return 'settled' as const
+        })
+      }
+      return store.delete(agentId).pipe(Effect.as('settled' as const))
     }
     return Effect.succeed('live' as const)
   }

@@ -86,10 +86,12 @@ interface HarnessOptions {
   readonly gateNotifications?: boolean
   readonly liveOwners?: readonly ProcessIdentity[]
   readonly maxOutputTokens?: number
+  readonly mutablePersistedState?: boolean
   readonly initializeFailures?: number
   readonly notificationFails?: boolean
   readonly profiles?: readonly ProfileKey[]
   readonly removeLeaseFails?: boolean
+  readonly removeLeaseFailures?: number
   readonly readArtifactError?: ArtifactTooLargeError | StoreError
   readonly records?: readonly { readonly agentId: string; readonly record: SubagentRecord }[]
   readonly replaceRecordFails?: boolean
@@ -103,7 +105,12 @@ const harness = (root: string, options: HarnessOptions = {}) =>
     const children: ChildControl[] = []
     const publishedActivity: RunningAgent[] = []
     const records: SubagentRecord[] = []
-    const recordsByAgent = new Map<string, SubagentRecord>()
+    const recordsByAgent = new Map<string, SubagentRecord>(
+      options.mutablePersistedState === true ? options.records?.map(({ agentId, record }) => [agentId, record]) : []
+    )
+    const leasesByAgent = new Map<string, LaunchLease>(
+      options.mutablePersistedState === true ? options.leases?.map(({ agentId, lease }) => [agentId, lease]) : []
+    )
     const replaceGate = yield* Deferred.make<void>()
     const terminationGate = yield* Deferred.make<void>()
     const spawnCompletionGate = yield* Deferred.make<void>()
@@ -117,6 +124,7 @@ const harness = (root: string, options: HarnessOptions = {}) =>
     let initializes = 0
     let leaseCreates = 0
     let leaseRemovals = 0
+    let leaseRemovalFailures = options.removeLeaseFailures ?? 0
     const notifications: (readonly string[])[] = []
     let availableProfiles = options.profiles ?? []
     const notificationGate = yield* Deferred.make<void>()
@@ -154,6 +162,7 @@ const harness = (root: string, options: HarnessOptions = {}) =>
         Effect.sync(() => {
           deletes += 1
           recordsByAgent.delete(_agentId)
+          leasesByAgent.delete(_agentId)
         }).pipe(
           Effect.andThen(
             options.deleteFails === true ? Effect.fail(new StoreError({ cause: 'delete unavailable', message: 'delete unavailable' })) : Effect.void
@@ -167,8 +176,14 @@ const harness = (root: string, options: HarnessOptions = {}) =>
         initializeFailures -= 1
         return Effect.fail(new StoreError({ cause: 'initialize unavailable', message: 'initialize unavailable' }))
       }),
-      listLeases: Effect.succeed(options.leases ?? []),
-      listRecords: Effect.succeed(options.records ?? []),
+      listLeases:
+        options.mutablePersistedState === true
+          ? Effect.sync(() => [...leasesByAgent].map(([agentId, lease]) => ({ agentId, lease })))
+          : Effect.succeed(options.leases ?? []),
+      listRecords:
+        options.mutablePersistedState === true
+          ? Effect.sync(() => [...recordsByAgent].map(([agentId, record]) => ({ agentId, record })))
+          : Effect.succeed(options.records ?? []),
       prune: (_now: number) =>
         Effect.sync(() => {
           pruneCalls += 1
@@ -179,11 +194,15 @@ const harness = (root: string, options: HarnessOptions = {}) =>
       removeLease: (_agentId: string) =>
         Effect.sync(() => {
           leaseRemovals += 1
+          if (options.removeLeaseFails === true || leaseRemovalFailures > 0) {
+            leaseRemovalFailures -= 1
+            return false
+          }
+          leasesByAgent.delete(_agentId)
+          return true
         }).pipe(
-          Effect.andThen(
-            options.removeLeaseFails === true
-              ? Effect.fail(new StoreError({ cause: 'lease unavailable', message: 'lease unavailable' }))
-              : Effect.void
+          Effect.flatMap((removed) =>
+            removed ? Effect.void : Effect.fail(new StoreError({ cause: 'lease unavailable', message: 'lease unavailable' }))
           )
         ),
       removeLog: (_agentId: string, _path: string) =>
@@ -1380,7 +1399,7 @@ describe('SubagentOrchestrator', () => {
     })
   )
 
-  it.scoped('reaps live orphans and deletes exited, mismatched, record-only, and lease-only artifact sets', () =>
+  it.scoped('reaps lease-only orphans, preserves admitted live and completed turns, and deletes mismatched artifacts', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-reap-' }).pipe(Effect.flatMap(fs.realPath))
@@ -1409,7 +1428,13 @@ describe('SubagentOrchestrator', () => {
         ],
         records: [
           { agentId: 'live', record: running(live, 'live') },
-          { agentId: 'record-only', record: running(exited, 'record-only') },
+          {
+            agentId: 'record-only',
+            record: {
+              ...running(exited, 'record-only'),
+              turns: [{ profile: profile('scout'), result: { conclusion: 'finished', status: 'completed', task_name: 'record-only', turn: 1 } }],
+            },
+          },
           { agentId: 'mismatch', record: running(mismatchRecord, 'mismatch') },
         ],
         termination: ['signalled', 'exited', 'exited', 'mismatch', 'mismatch'],
@@ -1419,8 +1444,82 @@ describe('SubagentOrchestrator', () => {
           const orchestrator = yield* SubagentOrchestrator
           yield* orchestrator.initialize
           expect(fake.forceCalls()).toBe(3)
-          expect(fake.deletes()).toBe(4)
+          expect(fake.deletes()).toBe(2)
+          expect(fake.records().find((record) => record.taskName === 'live')?.status).toBe('interrupted')
+          expect(fake.records().at(-1)).toEqual({
+            logPath: 'record-only.log',
+            profile: profile('scout'),
+            session: 'reap',
+            sessionPath: 'record-only.json',
+            settledAt: expect.any(Number),
+            status: 'interrupted',
+            taskName: 'record-only',
+            turns: [
+              { profile: profile('scout'), result: { conclusion: 'finished', status: 'completed', task_name: 'record-only', turn: 1 } },
+              {
+                profile: profile('scout'),
+                result: {
+                  error: { code: 'interrupted', message: 'The parent exited while this turn was running.' },
+                  status: 'interrupted',
+                  task_name: 'record-only',
+                  turn: 2,
+                },
+              },
+            ],
+          })
           expect(fake.pruneCalls()).toBe(1)
+        }),
+        fake.layer
+      )
+    })
+  )
+
+  it.scoped('does not append another interrupted turn when lease cleanup retries after record commit', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-retry-settlement-' }).pipe(Effect.flatMap(fs.realPath))
+      const identity = { birthMarker: 'child', pid: 12 }
+      const owner = { birthMarker: 'dead-parent', pid: 90 }
+      const record: SubagentRecord = {
+        identity,
+        logPath: 'child.log',
+        owner,
+        profile: profile('scout'),
+        session: 'retry',
+        sessionPath: 'child.json',
+        status: 'running',
+        taskName: 'child',
+        turns: [{ profile: profile('scout'), result: { conclusion: 'finished', status: 'completed', task_name: 'child', turn: 1 } }],
+      }
+      const fake = yield* harness(root, {
+        leases: [{ agentId: 'child', lease: { identity, owner, session: 'retry', taskName: 'child' } }],
+        mutablePersistedState: true,
+        records: [{ agentId: 'child', record }],
+        removeLeaseFailures: 1,
+        termination: ['exited', 'exited'],
+      })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          expect((yield* Effect.exit(orchestrator.initialize))._tag).toBe('Failure')
+          const first = fake.records().at(-1)
+          expect(first?.status).toBe('interrupted')
+          const firstSettledAt = first?.status === 'interrupted' ? first.settledAt : undefined
+          yield* TestClock.adjust('1 millis')
+          yield* orchestrator.initialize
+          expect(fake.records()).toHaveLength(1)
+          const [retained] = fake.records()
+          expect(retained?.status).toBe('interrupted')
+          expect(retained?.status === 'interrupted' ? retained.settledAt : undefined).toBe(firstSettledAt)
+          expect(fake.records()[0]?.turns.map((entry) => entry.result)).toEqual([
+            { conclusion: 'finished', status: 'completed', task_name: 'child', turn: 1 },
+            {
+              error: { code: 'interrupted', message: 'The parent exited while this turn was running.' },
+              status: 'interrupted',
+              task_name: 'child',
+              turn: 2,
+            },
+          ])
         }),
         fake.layer
       )
