@@ -232,8 +232,9 @@ state the limitation rather than guessing.\n`,
     thinkingLevel: 'low',
     turnDeadlineMillis: 15 * 60 * 1000,
   },
+  // Ponytail: Prompt-enforced read-only; bash is unsandboxed. Enforce at the tool boundary if a read-only child is observed mutating.
   reviewer: {
-    description: 'Read-only plan and implementation review',
+    description: 'Prompt-enforced read-only plan and implementation review; bash is unsandboxed',
     key: 'reviewer',
     prompt: `You are a read-only code reviewer. Inspect the requested change and only the
 context needed to assess it. Prioritize correctness, security, data loss, and
@@ -245,8 +246,9 @@ findings, say so explicitly.\n`,
     thinkingLevel: 'high',
     turnDeadlineMillis: 20 * 60 * 1000,
   },
+  // Ponytail: Prompt-enforced read-only; bash is unsandboxed. Enforce at the tool boundary if a read-only child is observed mutating.
   scout: {
-    description: 'Quick codebase exploration and focused implementation reconnaissance — read-only by policy',
+    description: 'Quick codebase exploration and focused implementation reconnaissance — prompt-enforced read-only; bash is unsandboxed',
     key: 'scout',
     prompt: `You are a fast codebase exploration agent. Investigate only the delegated task.
 Use local read, search, and shell tools to inspect; do not modify files or external

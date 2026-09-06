@@ -87,8 +87,8 @@ If the task requires a product decision or mutation, explain the blocker instead
 const descriptions = {
   implementer: 'Scoped code implementation and verification — write-capable',
   librarian: 'Cited web and remote-system research — read-only by policy',
-  reviewer: 'Read-only plan and implementation review',
-  scout: 'Quick codebase exploration and focused implementation reconnaissance — read-only by policy',
+  reviewer: 'Prompt-enforced read-only plan and implementation review; bash is unsandboxed',
+  scout: 'Quick codebase exploration and focused implementation reconnaissance — prompt-enforced read-only; bash is unsandboxed',
 } as const
 
 const resolvedProfile = (key: keyof typeof prompts) => {

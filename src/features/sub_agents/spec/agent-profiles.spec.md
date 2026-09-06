@@ -47,12 +47,11 @@ Goals are owned by the umbrella.
   tool allow-list carries capability meaning.
 - `[C-2]` Adding a profile or changing its allow-list or maintainer classification is a product and
   security change reviewed as one; read-only profiles deny every tool not explicitly listed.
-  `PI_SUBAGENT_READONLY=1` is injected for `scout`, `librarian`, and `reviewer` as defense in depth,
-  not as a sandbox. Their read-only restrictions remain prompt/policy only and technically unenforced
-  by this feature: the standing prompt and each tool's implementation must be trusted to preserve
-  them. In particular, the reviewer prompt's explicit prohibition is only on file edits; its
-  unrestricted `bash` access does not prevent broader process or network mutation, consistent with
-  this policy-only caveat.
+  `PI_SUBAGENT_READONLY=1` is injected for `scout`, `librarian`, and `reviewer`. The MCP gateway
+  honors it, but it does not constrain the child's own tools. `scout` and `reviewer` are
+  prompt-enforced read-only profiles with unsandboxed `bash`; their prompts must be trusted to
+  prevent mutation. In particular, the reviewer prompt's explicit prohibition is only on file edits;
+  its unrestricted `bash` access does not prevent broader process or network mutation.
 - `[C-4]` A configured provider/model may require additional credentials.
 - `[C-5.1]` The child resolves credentials from the inherited environment and configured shared `agentDir`,
   like an ordinary Pi process. A key supplied only through the parent's `--api-key`,
@@ -123,12 +122,12 @@ type ProfileResolution =
     }
 ```
 
-| Profile       | Description                                                                                | Model setting           | Effort | Turn deadline | Color    |
-| ------------- | ------------------------------------------------------------------------------------------ | ----------------------- | ------ | ------------- | -------- |
-| `scout`       | Quick codebase exploration and focused implementation reconnaissance — read-only by policy | `subagents.scout`       | low    | 10 minutes    | `blue`   |
-| `librarian`   | Cited web and remote-system research — read-only by policy                                 | `subagents.librarian`   | low    | 15 minutes    | `purple` |
-| `reviewer`    | Read-only plan and implementation review                                                   | `subagents.reviewer`    | high   | 20 minutes    | `orange` |
-| `implementer` | Scoped code implementation and verification — write-capable                                | `subagents.implementer` | medium | 30 minutes    | `green`  |
+| Profile       | Description                                                                                                             | Model setting           | Effort | Turn deadline | Color    |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------- | ----------------------- | ------ | ------------- | -------- |
+| `scout`       | Quick codebase exploration and focused implementation reconnaissance — prompt-enforced read-only; `bash` is unsandboxed | `subagents.scout`       | low    | 10 minutes    | `blue`   |
+| `librarian`   | Cited web and remote-system research — read-only by policy                                                              | `subagents.librarian`   | low    | 15 minutes    | `purple` |
+| `reviewer`    | Prompt-enforced read-only plan and implementation review; `bash` is unsandboxed                                         | `subagents.reviewer`    | high   | 20 minutes    | `orange` |
+| `implementer` | Scoped code implementation and verification — write-capable                                                             | `subagents.implementer` | medium | 30 minutes    | `green`  |
 
 Settings are read from `<agentDir>/settings.json` and trusted project `.pi/settings.json` at
 session activation and model selection. Project entries replace global entries per profile, and each
@@ -190,11 +189,10 @@ optional: an unavailable one is omitted rather than refusing the delegation.
 Unknown or unclassified tools, and every async-process, operator, or delegation tool, are denied even
 to `implementer`; no profile receives a tool merely because it was newly registered.
 
-The first three profiles are read-only by policy. `scout` and `reviewer` receive `bash`, and
-`librarian` receives `mcp`; their read-only restrictions are prompt/policy only and technically
-enforced by neither this feature nor a sandbox. Every other tool not explicitly listed for those
-profiles is absent. Delegation-tool suppression remains an independent flat-topology rule for every
-profile.
+`scout` and `reviewer` are prompt-enforced read-only profiles and receive unsandboxed `bash`.
+`librarian` receives `mcp`, for which `PI_SUBAGENT_READONLY=1` is honored by the MCP gateway.
+Every other tool not explicitly listed for those profiles is absent. Delegation-tool suppression
+remains an independent flat-topology rule for every profile.
 
 If a configured provider is unavailable, resolution returns `missing_provider` rather than trying
 another provider. The effective ceiling is the lower bound:
