@@ -35,7 +35,6 @@ export interface AgentTurnRecord {
 export interface LaunchLease {
   readonly identity: ProcessIdentity
   readonly owner?: ProcessIdentity
-  readonly preserveRecord?: boolean
   readonly session: string
   readonly taskName: string
 }
@@ -121,6 +120,7 @@ const LeaseSchema = Type.Object(
   {
     identity: ProcessIdentitySchema,
     owner: Type.Optional(ProcessIdentitySchema),
+    // Accept leases persisted by versions that wrote this field, without producing it in new leases.
     preserveRecord: Type.Optional(Type.Boolean()),
     session: Type.String(),
     taskName: Type.String(),

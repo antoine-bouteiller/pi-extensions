@@ -157,7 +157,6 @@ describe('SubagentStore', () => {
           yield* store.createLease('lease-only', { identity: { birthMarker: 'birth', pid: 1 }, session: 'session', taskName: 'task' })
           yield* store.createLease('record-with-lease', {
             identity: { birthMarker: 'birth', pid: 2 },
-            preserveRecord: true,
             session: 'session',
             taskName: 'task',
           })

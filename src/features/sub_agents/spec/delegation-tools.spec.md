@@ -228,9 +228,10 @@ The parent guidance is exactly:
 Delegate narrow, self-contained errands whose intermediate context need not remain
 in the parent conversation. Foreground is the default. Use background execution
 only for clearly independent work, and never duplicate work assigned to a pending
-child. A session may have at most three live children and one live implementer.
-Each child accepts up to five follow-up messages across its lifetime and each turn ends after 30
-minutes. Prefer a fresh child for distinct work. Only the child’s conclusion is
+child. A session may have at most four live children, with no implementer cap.
+Each child accepts up to five follow-up messages across its lifetime. Each turn ends after its
+profile deadline: scout 10 minutes, librarian 15 minutes, reviewer 20 minutes, and implementer 30 minutes.
+Prefer a fresh child for distinct work. Only the child’s conclusion is
 returned; use the inspection tools for durable results and conversations. When the
 controller emits more than one `spawn_agent` call in a single block, it must name
 every `task_name` in the visible turn text, because each acceptance returns only
@@ -253,7 +254,7 @@ the child returns a matching `steer_ack`, or a correlated `CommandError`: `queue
 while result-first returns `turn_settled` with its actual terminal status. Only a positive acknowledgement consumes one budget unit. Missing/mismatched acknowledgement or process failure settles and returns failed
 `AgentResult` (`protocol_error` or `agent_failed`), never `CommandError` or a refusal. Ack-first consumes
 even when the result is immediately available. A positive acceptance neither claims nor settles the active
-turn and does not reset its 30-minute deadline. An existing foreground waiter remains owner; otherwise the
+turn and does not reset its profile-specific deadline. An existing foreground waiter remains owner; otherwise the
 eventual settlement is notification-eligible and claimable. `completed` freshly
 resolves the profile against the parent's current model (a removed profile is `unknown_profile`; no
 selected model is canonical `missing_model`), checks capacity and projected context including the message

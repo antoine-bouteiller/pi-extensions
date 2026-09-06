@@ -187,6 +187,12 @@ export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
         if (toolRuntime === undefined) {
           throw new Error('Sub-agent feature requires an application runtime.')
         }
+        if (pi !== registeredPi) {
+          delegationToolsEnabled = false
+          delegationToolsRegistered = false
+          registeredProfileKeys = []
+          lastPreflight = undefined
+        }
         pi = registeredPi
         if (isSubagent()) {
           return

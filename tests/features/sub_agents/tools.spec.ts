@@ -277,9 +277,10 @@ describe('delegation tool boundary', () => {
 Delegate narrow, self-contained errands whose intermediate context need not remain
 in the parent conversation. Foreground is the default. Use background execution
 only for clearly independent work, and never duplicate work assigned to a pending
-child. A session may have at most three live children and one live implementer.
-Each child accepts up to five follow-up messages across its lifetime and each turn ends after 30
-minutes. Prefer a fresh child for distinct work. Only the child’s conclusion is
+child. A session may have at most four live children, with no implementer cap.
+Each child accepts up to five follow-up messages across its lifetime. Each turn ends after its
+profile deadline: scout 10 minutes, librarian 15 minutes, reviewer 20 minutes, and implementer 30 minutes.
+Prefer a fresh child for distinct work. Only the child’s conclusion is
 returned; use the inspection tools for durable results and conversations. When the
 controller emits more than one \`spawn_agent\` call in a single block, it must name
 every \`task_name\` in the visible turn text, because each acceptance returns only
@@ -293,6 +294,48 @@ otherwise ties an acceptance back to the brief that was sent.`,
         expect(child.state.tools).toHaveLength(0)
         const childPrompts = yield* Effect.promise(() => child.emit('before_agent_start', { systemPrompt: 'child' }))
         expect(childPrompts).toEqual([])
+      }).pipe(Effect.provide(Layer.merge(BunFileSystem.layer, BunPath.layer)))
+    ))
+
+  it('registers every delegation tool and guidance handler on a replacement registry', () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const first = createFakePi()
+        const replacement = createFakePi()
+        const snapshots: AdmissionSnapshot[] = []
+        registerProfileTools(first.pi)
+        registerProfileTools(replacement.pi)
+        const plugin = makeFeature({
+          ...dependencies(first.pi, snapshots),
+          childModelView: configuredChildModelView,
+          isSubagent: () => false,
+          subagents: {
+            implementer: 'configured-provider/configured-model',
+            librarian: 'configured-provider/configured-model',
+            reviewer: 'configured-provider/configured-model',
+            scout: 'configured-provider/configured-model',
+          },
+        })
+        const ctx = asExtensionContext({ ...context(), ui: { getEditorComponent: () => undefined, setEditorComponent: () => undefined } })
+        plugin.implementation.register(first.pi)
+        yield* plugin.implementation.activate({ reason: 'startup', type: 'session_start' }, ctx)
+
+        plugin.implementation.register(replacement.pi)
+        yield* plugin.implementation.activate({ reason: 'startup', type: 'session_start' }, ctx)
+
+        const delegationToolNames = [
+          'spawn_agent',
+          'wait_agent',
+          'wait_all_agents',
+          'list_agents',
+          'read_agent_response',
+          'send_message',
+          'interrupt_agent',
+        ]
+        expect([...replacement.state.tools.keys()].filter((name) => delegationToolNames.includes(name))).toEqual(delegationToolNames)
+        expect(yield* Effect.promise(() => replacement.emit('before_agent_start', { systemPrompt: 'parent' }))).toEqual([
+          { systemPrompt: `parent\n\n${PARENT_GUIDANCE}` },
+        ])
       }).pipe(Effect.provide(Layer.merge(BunFileSystem.layer, BunPath.layer)))
     ))
 

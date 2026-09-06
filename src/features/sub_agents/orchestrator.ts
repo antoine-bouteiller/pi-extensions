@@ -229,7 +229,6 @@ interface Cleanup {
   readonly generation: number
   readonly identity: ProcessIdentity
   readonly logPath?: string
-  readonly preserveRecord?: boolean
   readonly predecessor?: Turn
   readonly removeArtifacts?: boolean
   readonly release?: Effect.Effect<void, ProcessError>
@@ -589,7 +588,6 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
           ? store.createLease(agentId, {
               identity: item.identity,
               owner: ownerIdentity,
-              preserveRecord: item.preserveRecord,
               session: item.session,
               taskName: item.taskName,
             })
@@ -668,7 +666,6 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
     const handoffProvisional = (removeArtifacts = false) =>
       handoff(provisional.agentId, {
         ...item,
-        preserveRecord: !provisional.deleteArtifacts,
         release: releaseProvisional(provisional),
         removeArtifacts,
       })
@@ -723,7 +720,6 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                   Effect.catch(() =>
                     handoff(provisional.agentId, {
                       ...ownedItem,
-                      preserveRecord: !provisional.deleteArtifacts,
                       release: releaseProvisional(provisional),
                       removeArtifacts: true,
                     }).pipe(Effect.ignore)
@@ -1130,7 +1126,6 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
         child: turn.child,
         generation: turn.generation,
         identity: turn.child.identity,
-        preserveRecord: turn.turn > 1,
         release: releaseProcess(turn),
         session: key,
         taskName: turn.taskName,
@@ -1862,7 +1857,6 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
                       agentId,
                       generation: 0,
                       identity,
-                      preserveRecord: run.lease?.preserveRecord,
                       session: source.session,
                       taskName: source.taskName,
                       turn: 0,
@@ -2021,7 +2015,6 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
           yield* store.createLease(reservation.agentId, {
             identity: child.identity,
             owner: ownerIdentity,
-            preserveRecord: resume !== undefined,
             session: key,
             taskName: request.task_name,
           })
