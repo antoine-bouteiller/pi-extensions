@@ -129,12 +129,12 @@ export const makeKeepAwake = (dependencies: CaffeinateDependencies): KeepAwake =
      * Bounded so `agent_settled` and `session_shutdown` always return: an unresolved spawn or a
      * child that never reports exit would otherwise block the handler forever.
      */
-    return Effect.raceFirst(
+    return Effect.timeoutOrElse(
       Effect.gen(function* () {
         yield* Effect.forkDetach(killCaffeinate(current))
         yield* Deferred.await(current.completion)
       }),
-      Effect.sleep(STOP_TIMEOUT_MS)
+      { duration: STOP_TIMEOUT_MS, orElse: () => Effect.void }
     )
   })
 
