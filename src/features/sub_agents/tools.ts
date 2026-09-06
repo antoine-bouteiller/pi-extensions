@@ -238,7 +238,11 @@ only for clearly independent work, and never duplicate work assigned to a pendin
 child. A session may have at most three live children and one live implementer.
 Each child accepts at most one follow-up message and each turn ends after 30
 minutes. Prefer a fresh child for distinct work. Only the child’s conclusion is
-returned; use the inspection tools for durable results and conversations.`
+returned; use the inspection tools for durable results and conversations. When the
+controller emits more than one \`spawn_agent\` call in a single block, it must name
+every \`task_name\` in the visible turn text, because each acceptance returns only
+\`{ profile, status, task_name, turn }\` and arrives in a later turn, so nothing
+otherwise ties an acceptance back to the brief that was sent.`
 
 export interface PiNotificationSink {
   readonly bind: (session: string, generation: number, ctx: ExtensionContext) => void
