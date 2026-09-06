@@ -350,7 +350,7 @@ const correlatedLifecycle = (frame: unknown, agentId: string, turn: number): fra
   childLifecycleFrame(frame) && correlatedInitial(frame, agentId, turn)
 const validBeforeReady = (frame: unknown, sessionPath: string | undefined): boolean =>
   sessionPath !== undefined || Value.Check(ChildProgressFrameSchema, frame)
-const outcome = (taskName: string, status: 'failed' | 'interrupted', code: ToolErrorCode, message: string, turn = 1): AgentResult => ({
+const outcome = (taskName: string, status: 'failed' | 'interrupted', code: ToolErrorCode, message: string, turn: number): AgentResult => ({
   error: { code, message },
   status,
   task_name: taskName,
@@ -1569,7 +1569,8 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
               turn.taskName,
               'failed',
               error instanceof ArtifactTooLargeError ? 'result_too_large' : 'agent_failed',
-              error instanceof ArtifactTooLargeError ? 'The full result exceeds 10 MiB.' : error.message
+              error instanceof ArtifactTooLargeError ? 'The full result exceeds 10 MiB.' : error.message,
+              turn.turn
             ),
             'result'
           ),
@@ -1585,9 +1586,9 @@ const make = ({ activity, cleanup, notifications, pathService, process, resolver
               'result'
             )
           }
-          return store.writeFullResult(turn.agentId, content).pipe(
+          return store.writeFullResult(turn.agentId, content, turn.turn).pipe(
             Effect.matchEffect({
-              onFailure: (error) => settle(session, turn, outcome(turn.taskName, 'failed', 'agent_failed', error.message), 'result'),
+              onFailure: (error) => settle(session, turn, outcome(turn.taskName, 'failed', 'agent_failed', error.message, turn.turn), 'result'),
               onSuccess: (fullResultPath) =>
                 settle(
                   session,

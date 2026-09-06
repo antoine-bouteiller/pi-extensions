@@ -37,7 +37,7 @@ describe('SubagentStore', () => {
           const log = yield* store.createLog('agent', 1)
           const resumedLog = yield* store.createLog('agent', 2)
           const session = yield* store.createSession('agent')
-          const result = yield* store.writeFullResult('agent', new TextEncoder().encode('result'))
+          const result = yield* store.writeFullResult('agent', new TextEncoder().encode('result'), 1)
           yield* store.replaceRecord('agent', record(1))
           yield* store.replaceRecord('agent', record(2))
           const run = join(root, 'pi-codex-subagents', 'owner', 'runs', 'agent')
@@ -56,6 +56,27 @@ describe('SubagentStore', () => {
           yield* store.prune(2 + 7 * 24 * 60 * 60 * 1000)
           expect(yield* store.readRecord('agent')).toBeUndefined()
           expect((yield* store.readRecord('live'))?.status).toBe('running')
+        }),
+        makeSubagentStoreLive({ tempDirectory: root, username: 'owner' })
+      )
+    })
+  )
+
+  it.effect('writes immutable full-result artifacts for successive turns', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'subagent-full-results-' })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const store = yield* SubagentStore
+          yield* store.initialize
+          const first = yield* store.writeFullResult('agent', new TextEncoder().encode('first result'), 1)
+          const second = yield* store.writeFullResult('agent', new TextEncoder().encode('second result'), 2)
+          expect(first).not.toBe(second)
+          expect(new TextDecoder().decode(yield* fs.readFile(first))).toBe('first result')
+          expect(new TextDecoder().decode(yield* fs.readFile(second))).toBe('second result')
+          expect(first).toMatch(/full-result-1-[A-Za-z0-9-]+\.txt$/)
+          expect(second).toMatch(/full-result-2-[A-Za-z0-9-]+\.txt$/)
         }),
         makeSubagentStoreLive({ tempDirectory: root, username: 'owner' })
       )
@@ -191,7 +212,7 @@ describe('SubagentStore', () => {
           const target = yield* store.artifactPath('agent', 'record.json')
           yield* fs.chmod(target, 0o644)
           expect(Result.isFailure(yield* Effect.result(store.readRecord('agent')))).toBe(true)
-          expect(Result.isFailure(yield* Effect.result(store.writeFullResult('agent', new Uint8Array(10 * 1024 * 1024 + 1))))).toBe(true)
+          expect(Result.isFailure(yield* Effect.result(store.writeFullResult('agent', new Uint8Array(10 * 1024 * 1024 + 1), 1)))).toBe(true)
         }),
         makeSubagentStoreLive({ tempDirectory: root, username: 'owner' })
       )

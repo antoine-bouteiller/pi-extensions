@@ -104,7 +104,7 @@ export interface SubagentStoreApi {
   readonly removeLease: (agentId: string, identity?: ProcessIdentity) => Effect.Effect<void, StoreError>
   readonly removeLog: (agentId: string, path: string) => Effect.Effect<void, StoreError>
   readonly replaceRecord: (agentId: string, record: SubagentRecord) => Effect.Effect<void, StoreError>
-  readonly writeFullResult: (agentId: string, content: Uint8Array) => Effect.Effect<string, StoreError>
+  readonly writeFullResult: (agentId: string, content: Uint8Array, turn: number) => Effect.Effect<string, StoreError>
 }
 export class SubagentStore extends Context.Service<SubagentStore, SubagentStoreApi>()('pi-extensions/features/sub_agents/store/SubagentStore') {}
 export interface SubagentStoreConfig {
@@ -351,15 +351,20 @@ const makeStore = (config: SubagentStoreConfig, services: StoreServices): Subage
         yield* writePrivateFile(file(agentId, 'record.json'), encode(record))
         yield* removeHostPath(file(agentId, 'launch.lease'))
       }).pipe(Effect.mapError(fail)),
-    writeFullResult: (agentId, content) =>
-      content.byteLength > MAX_ARTIFACT_BYTES
-        ? Effect.fail(fail(new Error('Full result exceeds 10 MiB')))
-        : Effect.gen(function* () {
-            const target = file(agentId, 'full-result.txt')
-            yield* ensurePrivateDirectory(agentDirectory(agentId))
-            yield* writePrivateFile(target, content)
-            return target
-          }).pipe(Effect.mapError(fail)),
+    writeFullResult: (agentId, content, turn) => {
+      if (content.byteLength > MAX_ARTIFACT_BYTES) {
+        return Effect.fail(fail(new Error('Full result exceeds 10 MiB')))
+      }
+      if (!Number.isSafeInteger(turn) || turn <= 0) {
+        return Effect.fail(fail(new Error('Invalid turn')))
+      }
+      return Effect.gen(function* () {
+        const target = file(agentId, `full-result-${turn}-${Bun.randomUUIDv7()}.txt`)
+        yield* ensurePrivateDirectory(agentDirectory(agentId))
+        yield* writePrivateFile(target, content)
+        return target
+      }).pipe(Effect.mapError(fail))
+    },
   }
 }
 export const makeSubagentStoreLive = (config: SubagentStoreConfig = {}): Layer.Layer<SubagentStore, never, FileSystem.FileSystem | Path.Path> =>

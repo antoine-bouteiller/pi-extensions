@@ -1427,6 +1427,44 @@ describe('SubagentOrchestrator', () => {
     })
   )
 
+  it.scoped('reports artifact failures for resumed turn 2 as turn 2', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const root = yield* fs.makeTempDirectory({ prefix: 'orchestrator-artifact-turn-' }).pipe(Effect.flatMap(fs.realPath))
+      const artifactFailure = new StoreError({ cause: 'artifact unavailable', message: 'artifact unavailable' })
+      const fake = yield* harness(root, { contextCeiling: 10_000, profiles: ['scout'], readArtifactError: artifactFailure })
+      yield* Effect.provide(
+        Effect.gen(function* () {
+          const orchestrator = yield* SubagentOrchestrator
+          yield* orchestrator.openSession('artifact-turn')
+          const initial = yield* Effect.forkChild(orchestrator.spawn('artifact-turn', admission, request('worker', 'scout', false)))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[0], 'agent-1', join(root, 'session.json'))
+          yield* completed(fake.children[0], 'agent-1')
+          yield* Fiber.join(initial)
+          yield* fake.children[0].exit
+          const resumed = yield* Effect.forkChild(orchestrator.send('artifact-turn', admission, 'worker', 'next'))
+          yield* TestClock.adjust('1 millis')
+          yield* ready(fake.children[1], 'agent-1', join(root, 'session.json'), 2)
+          yield* fake.children[1].emit(
+            bytes({
+              agent_id: 'agent-1',
+              command_id: 'initial',
+              conclusion_artifact: 'result.txt',
+              conclusion_bytes: 50_001,
+              conclusion_preview: 'preview',
+              status: 'completed',
+              turn: 2,
+              type: 'result',
+            })
+          )
+          expect((yield* Fiber.join(resumed)).turn).toBe(2)
+        }),
+        fake.layer
+      )
+    })
+  )
+
   it.scoped('uses a real absolute worker entrypoint and classifies oversized artifacts', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
