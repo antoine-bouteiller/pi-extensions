@@ -79,6 +79,9 @@ const setup = (customError?: Error) => {
     get customCalls() {
       return customCalls
     },
+    get emittedEvents() {
+      return fakePi.state.emittedEvents
+    },
     nonTuiContext: { mode: 'rpc', ui },
     tool,
     tuiContext: { mode: 'tui', ui },
@@ -118,6 +121,19 @@ describe('ask_user tool behavior', () => {
         cancelled: false,
         wasCustom: false,
       })
+    })
+  )
+
+  it.effect('flags herdr as blocked while the question is open', () =>
+    Effect.gen(function* () {
+      const fixture = setup()
+      const pending = fixture.tool.execute('call-1b', params, undefined, undefined, fixture.tuiContext)
+
+      expect(fixture.emittedEvents).toEqual([{ data: { active: true, label: params.question }, name: 'herdr:blocked' }])
+      fixture.component.handleInput?.('\x1b')
+      yield* Effect.promise(() => pending)
+
+      expect(fixture.emittedEvents.at(-1)).toEqual({ data: { active: false }, name: 'herdr:blocked' })
     })
   )
 

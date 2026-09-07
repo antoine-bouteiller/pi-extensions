@@ -29,7 +29,7 @@ export const feature = ((_options: FeatureOptions<undefined> = {}) => ({
          * "Cancelled" as a normal result; letting `runPromise` interrupt the fiber on the same signal
          * would instead reject the tool call, which is exactly what "neither path may fail" rules out.
          */
-        execute: makeToolExecutor(runtime)(({ params, signal }) => askUserEffect(params, signal), { interruptOnAbort: false }),
+        execute: makeToolExecutor(runtime)(({ params, signal }) => askUserEffect(pi.events, params, signal), { interruptOnAbort: false }),
         label: 'Ask User',
         name: 'ask_user',
         parameters: AskUserParams,

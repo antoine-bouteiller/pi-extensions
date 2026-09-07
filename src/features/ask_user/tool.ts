@@ -1,4 +1,4 @@
-import { type AgentToolResult, type ExtensionContext, type Theme } from '@earendil-works/pi-coding-agent'
+import { type AgentToolResult, type ExtensionAPI, type ExtensionContext, type Theme } from '@earendil-works/pi-coding-agent'
 import {
   Editor,
   Key,
@@ -327,7 +327,11 @@ const recoverAskUserParams = (params: Static<typeof AskUserParams>): Static<type
   }
 }
 
-export const askUserEffect = (rawParams: Static<typeof AskUserParams>, signal: AbortSignal | undefined) =>
+export const askUserEffect = (
+  events: ExtensionAPI['events'],
+  rawParams: Static<typeof AskUserParams>,
+  signal: AbortSignal | undefined
+) =>
   Effect.gen(function* () {
     const params = recoverAskUserParams(rawParams)
     const { options } = params
@@ -365,7 +369,13 @@ export const askUserEffect = (rawParams: Static<typeof AskUserParams>, signal: A
 
     const allOptions: DisplayOption[] = [...options, { isOther: true, label: 'Write my own answer…' }]
 
-    const result = yield* showQuestion(ctx, params.question, allOptions, signal)
+    // Herdr's pi integration (~/.pi/agent/extensions/herdr-agent-state.ts) listens for this event
+    // To flag the pane as blocked while the question is waiting for an answer.
+    const result = yield* Effect.acquireUseRelease(
+      Effect.sync(() => events.emit('herdr:blocked', { active: true, label: params.question })),
+      () => showQuestion(ctx, params.question, allOptions, signal),
+      () => Effect.sync(() => events.emit('herdr:blocked', { active: false }))
+    )
 
     if (result === undefined) {
       const kind = signal !== undefined && signal.aborted ? 'cancelled' : 'dismissed'
