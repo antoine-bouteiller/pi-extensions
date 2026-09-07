@@ -1,6 +1,13 @@
 import { homedir } from 'node:os'
 
-import { type AgentToolResult, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from '@earendil-works/pi-coding-agent'
+import {
+  type AgentToolResult,
+  type ExtensionAPI,
+  type ExtensionCommandContext,
+  type ExtensionContext,
+  type Theme,
+} from '@earendil-works/pi-coding-agent'
+import { Text } from '@earendil-works/pi-tui'
 import { Context, Data, Deferred, Effect, Match, Option, Ref, Schema } from 'effect'
 import { type FileSystem } from 'effect/FileSystem'
 import { type Path } from 'effect/Path'
@@ -11,7 +18,7 @@ import { type EnvApi, processEnvironment } from '#shared/effect/env'
 import { ToolFailure } from '#shared/effect/errors'
 import { withAbortSignal } from '#shared/effect/runtime'
 import { createStatusChannel } from '#shared/state/status_bar'
-import { type JsonObject, type JsonValue, jsonText } from '#shared/utils/json'
+import { type JsonObject, type JsonValue, jsonText, parseJsonText } from '#shared/utils/json'
 import { join } from '#shared/utils/path'
 import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '#shared/utils/predicates'
 import { isRecord } from '#shared/utils/records'
@@ -307,6 +314,57 @@ const classifySelector = (params: McpGatewayInput): Effect.Effect<McpSelector, T
     }
     return { _tag: 'Status' as const }
   })
+
+const CALL_ARG_VALUE_LIMIT = 60
+
+const compactArgValue = (value: unknown): string => {
+  const text = typeof value === 'string' ? value : jsonText(value)
+  return text.length > CALL_ARG_VALUE_LIMIT ? `${text.slice(0, CALL_ARG_VALUE_LIMIT - 1)}…` : text
+}
+
+const summarizeArgs = (rawArgs: McpGatewayInput['args']): string => {
+  if (rawArgs === undefined) {
+    return ''
+  }
+  let args: unknown = rawArgs
+  if (typeof rawArgs === 'string') {
+    try {
+      args = parseJsonText(rawArgs)
+    } catch {
+      return compactArgValue(rawArgs)
+    }
+  }
+  return isRecord(args)
+    ? Object.entries(args)
+        .map(([key, value]) => `${key}=${compactArgValue(value)}`)
+        .join(' ')
+    : compactArgValue(args)
+}
+
+export const renderMcpCall = (params: Partial<McpGatewayInput>, theme: Theme): Text => {
+  const on = isNotNullOrUndefined(params.server) ? theme.fg('muted', ` on ${params.server}`) : ''
+  const line = (verb: string, target = '', details = ''): string =>
+    theme.fg('toolTitle', theme.bold(`mcp ${verb}`)) +
+    (isEmptyString(target) ? '' : ` ${theme.fg('text', target)}`) +
+    (isEmptyString(details) ? '' : ` ${theme.fg('dim', details)}`)
+
+  if (params.tool !== undefined) {
+    return new Text(line('call', params.tool, summarizeArgs(params.args)) + on, 0, 0)
+  }
+  if (params.connect !== undefined) {
+    return new Text(line('connect', params.connect), 0, 0)
+  }
+  if (params.describe !== undefined) {
+    return new Text(line('describe', params.describe) + on, 0, 0)
+  }
+  if (params.search !== undefined) {
+    return new Text(line('search', jsonText(params.search), isTrue(params.regex) ? '[regex]' : '') + on, 0, 0)
+  }
+  if (params.server !== undefined) {
+    return new Text(line('list', params.server), 0, 0)
+  }
+  return new Text(line('status'), 0, 0)
+}
 
 interface McpGatewayStateFields {
   readonly generation: Ref.Ref<number>

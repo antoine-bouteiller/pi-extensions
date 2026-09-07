@@ -2,7 +2,7 @@ import { afterEach } from 'bun:test'
 
 import { type AgentToolResult } from '@earendil-works/pi-coding-agent'
 import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asCommand, asExtensionContext, asTool } from '@tests/utils/casts.js'
+import { asCommand, asExtensionContext, asTheme, asTool } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { testRuntime } from '@tests/utils/runtime.js'
@@ -12,6 +12,7 @@ import { FetchHttpClient } from 'effect/unstable/http'
 import {
   mcpPolicyFromEnvironment,
   readonlyMcpPolicy,
+  renderMcpCall,
   unrestrictedMcpPolicy,
   type McpGatewayManager,
   type McpGatewayApi,
@@ -604,4 +605,23 @@ describe('MCP gateway registration and lifecycle', () => {
       expect(statuses.at(-1)).toEqual({ key: 'mcp', value: undefined })
     })
   )
+})
+
+describe('MCP gateway call rendering', () => {
+  const theme = asTheme({ bold: (value: string) => value, fg: (_color: string, value: string) => value })
+  const render = (params: Parameters<typeof renderMcpCall>[0]) => renderMcpCall(params, theme).render(200).join('\n').trimEnd()
+
+  it('summarizes each operation without raw JSON', () => {
+    expect(render({})).toBe('mcp status')
+    expect(render({ server: 'dbx' })).toBe('mcp list dbx')
+    expect(render({ connect: 'dbx' })).toBe('mcp connect dbx')
+    expect(render({ describe: 'dbx_query', server: 'dbx' })).toBe('mcp describe dbx_query on dbx')
+    expect(render({ regex: true, search: 'sql.*' })).toBe('mcp search "sql.*" [regex]')
+    expect(render({ args: { limit: 5, sql: 'select 1' }, tool: 'dbx_query' })).toBe('mcp call dbx_query limit=5 sql=select 1')
+    expect(render({ args: '{"sql":"select 1"}', tool: 'dbx_query' })).toBe('mcp call dbx_query sql=select 1')
+  })
+
+  it('truncates long argument values', () => {
+    expect(render({ args: { sql: 'x'.repeat(100) }, tool: 'dbx_query' })).toBe(`mcp call dbx_query sql=${'x'.repeat(59)}…`)
+  })
 })
