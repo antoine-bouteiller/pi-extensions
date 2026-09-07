@@ -3,7 +3,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 
 import { type AsyncEntry as AsyncEntryType } from '@napi-rs/keyring'
-import { Effect, Option, Result, Schema } from 'effect'
+import { Effect, Option, Result, Schema, Semaphore } from 'effect'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
@@ -12,6 +12,12 @@ import { isEmptyString } from '#shared/utils/predicates'
 import { isRecord } from '#shared/utils/records'
 
 export const MCP_OAUTH_KEYCHAIN_SERVICE = 'pi-mcp.oauth'
+
+/**
+ * Every server shares one keychain item: macOS binds "Always Allow" to an item's ACL, so one item
+ * means one authorization prompt per session instead of one per configured OAuth server.
+ */
+export const MCP_OAUTH_KEYCHAIN_ACCOUNT = 'oauth'
 
 /** A bounded, redacted message that is safe to surface to the user/model. */
 export class KeychainCredentialError extends Schema.TaggedError<KeychainCredentialError>()('KeychainCredentialError', {
@@ -196,6 +202,8 @@ const operationError = (operation: string, serverName: string): Error =>
 export class KeychainCredentialStore implements CredentialStore {
   readonly serviceName: string
   private readonly createEntry: EntryFactory
+  /** The shared item is read-modify-written, so concurrent server writes must not interleave. */
+  private readonly mutation = Semaphore.makeUnsafe(1)
 
   constructor(options: KeychainCredentialStoreOptions = {}) {
     this.serviceName = options.serviceName ?? MCP_OAUTH_KEYCHAIN_SERVICE
@@ -211,47 +219,90 @@ export class KeychainCredentialStore implements CredentialStore {
       })
   }
 
-  private entry(serverName: string): KeyringEntry {
-    return this.createEntry(this.serviceName, keychainAccount(serverName))
+  private entry(): KeyringEntry {
+    return this.createEntry(this.serviceName, MCP_OAUTH_KEYCHAIN_ACCOUNT)
+  }
+
+  /** Reads the shared item; an unreadable document is discarded rather than blocking every server. */
+  private read(serverName: string): Effect.Effect<JsonObject, KeychainCredentialError> {
+    return Effect.gen({ self: this }, function* () {
+      const serialized = yield* Effect.tryPromise({
+        catch: (error: unknown) => (isMissingCredential(error) ? MissingKeychainEntry.make({}) : keychainError(operationError('lookup', serverName))),
+        try: (signal) => this.entry().getPassword(signal),
+      })
+      if (serialized === undefined) {
+        return {}
+      }
+      const parsed = yield* Effect.result(
+        Effect.try(() => {
+          const document = parseJsonText(serialized)
+          if (!isObject(document)) {
+            throw malformed(serverName)
+          }
+          return document
+        })
+      )
+      if (Result.isFailure(parsed)) {
+        yield* this.write(serverName, {})
+        return {}
+      }
+      return parsed.success
+    }).pipe(Effect.catchTag('MissingKeychainEntry', () => Effect.succeed<JsonObject>({})))
+  }
+
+  private write(serverName: string, document: JsonObject): Effect.Effect<void, KeychainCredentialError> {
+    if (Object.keys(document).length === 0) {
+      return Effect.tryPromise({
+        catch: (error: unknown) =>
+          isMissingCredential(error) ? MissingKeychainEntry.make({}) : keychainError(operationError('deletion', serverName)),
+        try: (signal) => this.entry().deletePassword(signal),
+      }).pipe(
+        Effect.asVoid,
+        Effect.catchTag('MissingKeychainEntry', () => Effect.void)
+      )
+    }
+    return Effect.tryPromise({
+      catch: () => keychainError(operationError('write', serverName)),
+      try: (signal) => this.entry().setPassword(jsonText(document), signal),
+    }).pipe(Effect.asVoid)
   }
 
   get(serverName: string, serverUrl: string): Effect.Effect<Option.Option<OAuthCredentialPayload>, KeychainCredentialError> {
     return Effect.gen({ self: this }, function* () {
-      const serialized = yield* Effect.tryPromise({
-        catch: (error: unknown) => (isMissingCredential(error) ? MissingKeychainEntry.make({}) : keychainError(operationError('lookup', serverName))),
-        try: (signal) => this.entry(serverName).getPassword(signal),
-      })
-      if (serialized === undefined) {
+      const document = yield* this.read(serverName)
+      const stored = document[keychainAccount(serverName)]
+      if (stored === undefined) {
         return Option.none<OAuthCredentialPayload>()
       }
-      const parsed = yield* Effect.result(Effect.try(() => validateCredentialPayload(parseJsonText(serialized), serverName)))
+      const parsed = yield* Effect.result(Effect.try(() => validateCredentialPayload(stored, serverName)))
       if (Result.isFailure(parsed)) {
-        yield* this.delete(serverName)
+        const { [keychainAccount(serverName)]: _discarded, ...remaining } = document
+        yield* this.write(serverName, remaining)
         return Option.none<OAuthCredentialPayload>()
       }
       return parsed.success.serverUrl === serverUrl ? Option.some(parsed.success) : Option.none()
-    }).pipe(Effect.catchTag('MissingKeychainEntry', () => Effect.succeed(Option.none<OAuthCredentialPayload>())))
+    })
   }
 
   set(serverName: string, credential: OAuthCredentialPayload): Effect.Effect<void, KeychainCredentialError> {
     return Effect.try({ catch: keychainError, try: () => validateCredentialPayload(credential, serverName) }).pipe(
       Effect.flatMap((validated) =>
-        Effect.tryPromise({
-          catch: () => keychainError(operationError('write', serverName)),
-          try: (signal) => this.entry(serverName).setPassword(jsonText(validated), signal),
-        })
-      ),
-      Effect.asVoid
+        this.mutation.withPermits(1)(
+          Effect.gen({ self: this }, function* () {
+            const document = yield* this.read(serverName)
+            yield* this.write(serverName, { ...document, [keychainAccount(serverName)]: { ...validated } })
+          })
+        )
+      )
     )
   }
 
   delete(serverName: string): Effect.Effect<void, KeychainCredentialError> {
-    return Effect.tryPromise({
-      catch: (error: unknown) => (isMissingCredential(error) ? MissingKeychainEntry.make({}) : keychainError(operationError('deletion', serverName))),
-      try: (signal) => this.entry(serverName).deletePassword(signal),
-    }).pipe(
-      Effect.asVoid,
-      Effect.catchTag('MissingKeychainEntry', () => Effect.void)
+    return this.mutation.withPermits(1)(
+      Effect.gen({ self: this }, function* () {
+        const { [keychainAccount(serverName)]: _removed, ...remaining } = yield* this.read(serverName)
+        yield* this.write(serverName, remaining)
+      })
     )
   }
 }

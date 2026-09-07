@@ -4,6 +4,7 @@ import { Effect, Fiber, Option } from 'effect'
 
 import {
   KeychainCredentialStore,
+  MCP_OAUTH_KEYCHAIN_ACCOUNT,
   MCP_OAUTH_KEYCHAIN_SERVICE,
   keychainAccount,
   nativeKeyringPackage,
@@ -117,23 +118,16 @@ describe('Keychain OAuth credential store', () => {
       yield* store.set('slack', credential)
       expect(yield* store.get('slack', credential.serverUrl)).toEqual(Option.some(credential))
       expect(keyring.calls).toEqual([
-        {
-          account: keychainAccount('slack'),
-          operation: 'set',
-          service: MCP_OAUTH_KEYCHAIN_SERVICE,
-        },
-        {
-          account: keychainAccount('slack'),
-          operation: 'get',
-          service: MCP_OAUTH_KEYCHAIN_SERVICE,
-        },
+        { account: MCP_OAUTH_KEYCHAIN_ACCOUNT, operation: 'get', service: MCP_OAUTH_KEYCHAIN_SERVICE },
+        { account: MCP_OAUTH_KEYCHAIN_ACCOUNT, operation: 'set', service: MCP_OAUTH_KEYCHAIN_SERVICE },
+        { account: MCP_OAUTH_KEYCHAIN_ACCOUNT, operation: 'get', service: MCP_OAUTH_KEYCHAIN_SERVICE },
       ])
 
-      const serialized = keyring.values.get(keychainAccount('slack'))
+      const serialized = keyring.values.get(MCP_OAUTH_KEYCHAIN_ACCOUNT)
       if (serialized === undefined) {
         throw new Error('expected a serialized credential')
       }
-      expect(parseJsonText(serialized)).toEqual(credential)
+      expect(parseJsonText(serialized)).toEqual({ [keychainAccount('slack')]: credential })
     })
   )
 
@@ -177,7 +171,7 @@ describe('Keychain OAuth credential store', () => {
       yield* store.set('slack', credential)
 
       expect(yield* store.get('slack', 'https://attacker.example/mcp')).toEqual(Option.none())
-      expect(keyring.values.has(keychainAccount('slack'))).toBeTrue()
+      expect(keyring.values.has(MCP_OAUTH_KEYCHAIN_ACCOUNT)).toBeTrue()
     })
   )
 
@@ -191,6 +185,7 @@ describe('Keychain OAuth credential store', () => {
       yield* store.set('slack', credential)
       yield* store.delete('slack')
       expect(yield* store.get('slack', credential.serverUrl)).toEqual(Option.none())
+      expect(keyring.values.has(MCP_OAUTH_KEYCHAIN_ACCOUNT)).toBeFalse()
     })
   )
 
@@ -198,26 +193,33 @@ describe('Keychain OAuth credential store', () => {
     Effect.gen(function* () {
       for (const serialized of [
         '{ nope',
-        jsonText({ serverUrl: credential.serverUrl }),
+        jsonText([]),
+        jsonText({ [keychainAccount('slack')]: { serverUrl: credential.serverUrl } }),
         jsonText({
-          serverUrl: credential.serverUrl,
-          tokens: { access_token: 'secret', token_type: 3 },
+          [keychainAccount('slack')]: {
+            serverUrl: credential.serverUrl,
+            tokens: { access_token: 'secret', token_type: 3 },
+          },
         }),
         jsonText({
-          clientInformation: { client_id: '' },
-          serverUrl: credential.serverUrl,
+          [keychainAccount('slack')]: {
+            clientInformation: { client_id: '' },
+            serverUrl: credential.serverUrl,
+          },
         }),
         jsonText({
-          plaintextFallback: true,
-          serverUrl: credential.serverUrl,
-          tokens: { access_token: 'secret', token_type: 'Bearer' },
+          [keychainAccount('slack')]: {
+            plaintextFallback: true,
+            serverUrl: credential.serverUrl,
+            tokens: { access_token: 'secret', token_type: 'Bearer' },
+          },
         }),
       ]) {
-        const keyring = inMemoryKeyring({ [keychainAccount('slack')]: serialized })
+        const keyring = inMemoryKeyring({ [MCP_OAUTH_KEYCHAIN_ACCOUNT]: serialized })
         const store = new KeychainCredentialStore({ createEntry: keyring.createEntry })
 
         expect(yield* store.get('slack', credential.serverUrl)).toEqual(Option.none())
-        expect(keyring.values.has(keychainAccount('slack'))).toBeFalse()
+        expect(keyring.values.has(MCP_OAUTH_KEYCHAIN_ACCOUNT)).toBeFalse()
         expect(keyring.calls.map(({ operation }) => operation)).toEqual(['get', 'delete'])
       }
     })
@@ -271,6 +273,10 @@ describe('Keychain OAuth credential store', () => {
       const beta = yield* store.get('beta', credential.serverUrl)
       expect(Option.getOrUndefined(alpha)?.tokens?.access_token).toBe('access-secret')
       expect(Option.getOrUndefined(beta)?.tokens?.access_token).toBe('beta-token')
+      expect([...keyring.values.keys()]).toEqual([MCP_OAUTH_KEYCHAIN_ACCOUNT])
+
+      yield* store.delete('alpha')
+      expect(yield* store.get('beta', credential.serverUrl)).not.toEqual(Option.none())
     })
   )
 })
