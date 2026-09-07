@@ -198,13 +198,13 @@ describe('sub-agent transcript projection', () => {
     const collapsed = view.component.render(100).join('\n')
     expect(collapsed).toContain('Visible reasoning')
     expect(collapsed).toContain('read')
-    expect(collapsed).toContain('"pattern": "hit"')
+    expect(collapsed).toContain('{"pattern":"hit"}')
     expect(collapsed).toContain('bash output 1')
-    expect(collapsed).toContain('bash output 10')
-    expect(collapsed).not.toContain('bash output 11')
-    expect(collapsed).toContain('grep hit 10')
-    expect(collapsed).toContain('5 more lines')
-    expect(collapsed).not.toContain('grep hit 11')
+    expect(collapsed).toContain('bash output 3')
+    expect(collapsed).not.toContain('bash output 4')
+    expect(collapsed).toContain('grep hit 03')
+    expect(collapsed).toContain('12 more lines')
+    expect(collapsed).not.toContain('grep hit 04')
     expect(collapsed).toContain('write')
     expect(collapsed).toContain('Stopped by user')
     expect(collapsed).toContain('── context compacted (100 tokens) ──')
@@ -215,7 +215,7 @@ describe('sub-agent transcript projection', () => {
     view.toggleExpanded()
     const expanded = view.component.render(100).join('\n')
     expect(expanded).toContain('file contents')
-    expect(expanded).toContain('"pattern": "hit"')
+    expect(expanded).toContain('{"pattern":"hit"}')
     expect(expanded).toContain('grep hit 15')
     expect(expanded).not.toContain('more lines')
 
@@ -224,9 +224,9 @@ describe('sub-agent transcript projection', () => {
 
     view.toggleExpanded()
     const collapsedAgain = view.component.render(100).join('\n')
-    expect(collapsedAgain).toContain('grep hit 10')
-    expect(collapsedAgain).toContain('5 more lines')
-    expect(collapsedAgain).not.toContain('grep hit 11')
+    expect(collapsedAgain).toContain('grep hit 03')
+    expect(collapsedAgain).toContain('12 more lines')
+    expect(collapsedAgain).not.toContain('grep hit 04')
   })
 
   it('only rebuilds when handed new transcript content', () => {
@@ -306,15 +306,17 @@ describe('sub-agent transcript projection', () => {
     overlay.refresh()
     const collapsed = overlay.render(100)
     expect(collapsed).toHaveLength(32)
-    expect(collapsed[0]).toStartWith('╭─ Agent transcript')
-    expect(stripTerminalSequences(collapsed[0])).toEndWith('╮')
+    expect(collapsed[0]).toStartWith('┌─ Agent transcript')
+    expect(stripTerminalSequences(collapsed[0])).toEndWith('┐')
+    expect(stripTerminalSequences(collapsed[1])).toBe(`│${' '.repeat(98)}│`)
+    expect(stripTerminalSequences(collapsed.at(-2) ?? '')).toBe(`│${' '.repeat(98)}│`)
     expect(collapsed.at(-1)).toContain('expand tools')
     expect(collapsed.at(-1)).toContain('close')
-    expect(stripTerminalSequences(collapsed.at(-1) ?? '')).toEndWith('╯')
-    expect(collapsed.every((line) => line.startsWith('│') || line.startsWith('╭') || line.startsWith('╰'))).toBeTrue()
-    expect(collapsed.every((line) => visibleWidth(line) <= 100)).toBeTrue()
-    expect(collapsed.join('\n')).toContain('5 more lines')
-    expect(collapsed.join('\n')).not.toContain('grep hit 11')
+    expect(stripTerminalSequences(collapsed.at(-1) ?? '')).toEndWith('esc close ─┘')
+    expect(collapsed.every((line) => line.startsWith('│') || line.startsWith('┌') || line.startsWith('└'))).toBeTrue()
+    expect(collapsed.every((line) => visibleWidth(line) === 100)).toBeTrue()
+    expect(collapsed.join('\n')).toContain('12 more lines')
+    expect(collapsed.join('\n')).not.toContain('grep hit 4')
 
     overlay.handleInput?.('\u000f')
     expect(overlay.render(100).join('\n')).toContain('grep hit 15')
@@ -342,8 +344,8 @@ describe('sub-agent transcript projection', () => {
     const lines = overlay.render(12)
     expect(lines).toHaveLength(3)
     expect(lines.every((line) => visibleWidth(line) <= 12)).toBeTrue()
-    expect(lines[0]).toStartWith('╭')
-    expect(lines.at(-1)).toStartWith('╰')
+    expect(lines[0]).toStartWith('┌')
+    expect(lines.at(-1)).toStartWith('└')
 
     for (const [rows, expectedHeight] of [
       [1, 1],
@@ -419,7 +421,7 @@ describe('sub-agent transcript projection', () => {
       onClose: () => undefined,
       theme: { bold: (text) => text, fg: (_color, text) => text },
       title: 'Agent transcript',
-      tui: asTui({ requestRender: () => undefined, terminal: { columns: 100, rows: 5 } }),
+      tui: asTui({ requestRender: () => undefined, terminal: { columns: 100, rows: 10 } }),
     })
 
     overlay.refresh()

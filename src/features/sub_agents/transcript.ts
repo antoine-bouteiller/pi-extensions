@@ -56,13 +56,35 @@ export interface TranscriptView {
 // oxlint-disable-next-line capitalized-comments
 // ponytail: every tool renders generically; pi 0.85.1 moved built-in renderers behind an unexported
 // `withBuiltInRenderers`. Restore per-tool fidelity if pi ever exports them from its package root.
+const ARGS_PREVIEW_CHARS = 160
+const COLLAPSED_RESULT_LINES = 3
+const FRAME_PADDING = 2
+
 const displayOnlyDefinition = (name: string): ToolDefinition => ({
   description: '',
   execute: () => Promise.reject(new Error('Transcript tools are display-only.')),
   label: name,
   name,
   parameters: Type.Object({}),
-  renderCall: (args, theme) => new Text(`${theme.fg('toolTitle', theme.bold(name))}\n\n${JSON.stringify(args, undefined, 2)}`),
+  renderCall: (args, theme) => {
+    const compact = JSON.stringify(args)
+    const preview = compact.length > ARGS_PREVIEW_CHARS ? `${compact.slice(0, ARGS_PREVIEW_CHARS - 1)}…` : compact
+    return new Text(`${theme.fg('toolTitle', theme.bold(name))} ${theme.fg('muted', preview)}`)
+  },
+  renderResult: (result, { expanded }, theme) => {
+    const lines = result.content
+      .flatMap((part) => (part.type === 'text' && typeof part.text === 'string' ? [part.text] : []))
+      .join('\n')
+      .split('\n')
+    const shown = expanded ? lines : lines.slice(0, COLLAPSED_RESULT_LINES)
+    const remaining = lines.length - shown.length
+    const text = shown.map((line) => theme.fg('toolOutput', line)).join('\n')
+    return new Text(
+      remaining > 0
+        ? `${text}\n${theme.fg('muted', `… (${remaining} more lines, `)}${keyHint('app.tools.expand', 'to expand')}${theme.fg('muted', ')')}`
+        : text
+    )
+  },
 })
 
 const userText = (message: Extract<AgentMessage, { readonly role: 'user' }>): string => {
@@ -149,31 +171,35 @@ export const createTranscriptOverlay = (options: {
   const view = createTranscriptView(options)
   const scroll = new ScrollView(view.component, { follow: 'none', scrollbar: 'auto' })
   const height = (): number => Math.min(options.tui.terminal.rows, Math.max(3, Math.floor(options.tui.terminal.rows * 0.8)))
+  const innerWidthFor = (width: number): number => Math.max(1, width - 2 - FRAME_PADDING * 2)
+  const bodyRowsFor = (): number => Math.max(0, height() - 4)
   const frame = (width: number, body: readonly string[]): string[] => {
-    const innerWidth = Math.max(1, width - 4)
-    const safeTitle = truncateToWidth(options.title, Math.max(0, innerWidth - 2), '…')
+    const innerWidth = innerWidthFor(width)
+    const edge = (text: string): string => options.theme.fg('accent', text)
+    const safeTitle = truncateToWidth(options.title, Math.max(0, innerWidth), '…')
     const title = options.theme.bold(options.theme.fg('accent', safeTitle))
-    const top = `${options.theme.fg('border', '╭─ ')}${title}${options.theme.fg('border', ` ${'─'.repeat(Math.max(0, innerWidth - visibleWidth(safeTitle) - 1))}╮`)}`
+    const top = `${edge('┌─ ')}${title}${edge(` ${'─'.repeat(Math.max(0, innerWidth + FRAME_PADDING * 2 - visibleWidth(safeTitle) - 3))}┐`)}`
     const fullHints = `${rawKeyHint('↑↓', 'scroll')}  ${rawKeyHint('pgup/pgdn', 'page')}  ${keyHint('app.tools.expand', 'expand tools')}  ${rawKeyHint('esc', 'close')}`
     const closeHint = rawKeyHint('esc', 'close')
     let hints = ''
-    if (visibleWidth(fullHints) <= innerWidth - 2) {
+    if (visibleWidth(fullHints) <= innerWidth) {
       hints = fullHints
-    } else if (visibleWidth(closeHint) <= innerWidth - 2) {
+    } else if (visibleWidth(closeHint) <= innerWidth) {
       hints = closeHint
     }
     const bottom =
       hints.length === 0
-        ? options.theme.fg('border', `╰${'─'.repeat(innerWidth + 2)}╯`)
-        : `${options.theme.fg('border', '╰─ ')}${hints}${options.theme.fg('border', ` ${'─'.repeat(Math.max(0, innerWidth - visibleWidth(hints) - 1))}╯`)}`
-    const rows = body.map((row) => `${options.theme.fg('border', '│')} ${pad(row, innerWidth)} ${options.theme.fg('border', '│')}`)
+        ? edge(`└${'─'.repeat(innerWidth + FRAME_PADDING * 2)}┘`)
+        : `${edge(`└${'─'.repeat(Math.max(0, innerWidth + FRAME_PADDING * 2 - visibleWidth(hints) - 3))} `)}${hints}${edge(' ─┘')}`
+    const gap = ' '.repeat(FRAME_PADDING)
+    const rows = ['', ...body, ''].slice(0, Math.max(0, height() - 2)).map((row) => `${edge('│')}${gap}${pad(row, innerWidth)}${gap}${edge('│')}`)
 
     return [top, ...rows, bottom].slice(0, height()).map((line) => truncateToWidth(line, Math.max(0, width), ''))
   }
 
   return {
     handleInput: (data) => {
-      const bodyRows = Math.max(0, height() - 2)
+      const bodyRows = bodyRowsFor()
       if (options.keybindings.matches(data, 'app.tools.expand')) {
         view.toggleExpanded()
         options.tui.requestRender()
@@ -195,8 +221,8 @@ export const createTranscriptOverlay = (options: {
       options.tui.requestRender()
     },
     render: (width) => {
-      const bodyRows = Math.max(0, height() - 2)
-      const innerWidth = Math.max(1, width - 4)
+      const bodyRows = bodyRowsFor()
+      const innerWidth = innerWidthFor(width)
       scroll.updateLayout(view.component.render(innerWidth).length, bodyRows, () => options.tui.requestRender())
       const body = scroll.render(innerWidth).slice(scroll.scrollTop, scroll.scrollTop + bodyRows)
       while (body.length < bodyRows) {
