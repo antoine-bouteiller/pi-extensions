@@ -208,7 +208,7 @@ describe('sidebar rendering', () => {
     })
   )
 
-  it.effect('shows subagent activity with elapsed runtime instead of idle time', () =>
+  it.effect('shows only subagent names and elapsed runtimes from a shared clock', () =>
     Effect.sync(() => {
       const activeAgent: SidebarState = {
         ...state,
@@ -216,8 +216,15 @@ describe('sidebar rendering', () => {
           {
             activity: 'tool',
             color: 'accent',
-            name: '/tool-agent',
+            lastActivityAt: 64_000,
+            name: '/first',
             startedAt: 0,
+          },
+          {
+            activity: 'thinking',
+            color: 'accent',
+            name: '/second',
+            startedAt: 5000,
           },
         ],
       }
@@ -225,9 +232,11 @@ describe('sidebar rendering', () => {
       const hourText = stripAnsi(renderSidebarLines({ height: 36, now: 3_661_000, state: activeAgent, theme, width: 44 }).join('\n'))
       const subagentRows = minuteText.slice(minuteText.indexOf('SUBAGENTS'))
 
-      expect(minuteText).toContain('tool 1:05')
-      expect(hourText).toContain('tool 1:01:01')
-      expect(subagentRows).not.toContain('idle')
+      expect(minuteText).toMatch(/▸ \/first +1:05/)
+      expect(minuteText).toMatch(/▸ \/second +1:00/)
+      expect(hourText).toMatch(/▸ \/first +1:01:01/)
+      expect(hourText).toMatch(/▸ \/second +1:00:56/)
+      expect(subagentRows).not.toMatch(/tool|thinking|running|idle/)
     })
   )
 

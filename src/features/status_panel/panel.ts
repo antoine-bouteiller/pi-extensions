@@ -242,7 +242,6 @@ export const makePanelController = ({ dependencies, pi }: PanelControllerOptions
       }),
     agentSettled: (_event, ctx) =>
       Effect.gen(function* () {
-        yield* stopRedraw
         yield* updateState((state) => ({ ...state, activity: 'ready' }))
         yield* refreshModel(ctx)
       }),
@@ -250,11 +249,6 @@ export const makePanelController = ({ dependencies, pi }: PanelControllerOptions
       Effect.gen(function* () {
         yield* updateState((state) => ({ ...state, activity: 'working' }))
         requestRender?.()
-        const scope = sessionScope
-        if (scope === undefined || redrawFiber !== undefined) {
-          return
-        }
-        redrawFiber = yield* Effect.forkIn(Effect.forever(Effect.sleep(REDRAW_MS).pipe(Effect.andThen(Effect.sync(() => requestRender?.())))), scope)
       }),
     modelSelect: (event, ctx) =>
       Effect.gen(function* () {
@@ -315,7 +309,26 @@ export const makePanelController = ({ dependencies, pi }: PanelControllerOptions
         yield* Effect.forkIn(Effect.forever(Queue.take(requests).pipe(Effect.andThen(refreshGit()))), sessionScope)
         const env = yield* Env
         yield* install(ctx, path, agentActivity, env.get('NO_COLOR') !== undefined)
-        if (ctx.mode !== 'tui') {
+        if (ctx.mode === 'tui') {
+          const sessionId = ctx.sessionManager?.getSessionId()
+          redrawFiber = yield* Effect.forkIn(
+            Effect.forever(
+              Effect.sleep(REDRAW_MS).pipe(
+                Effect.andThen(
+                  Effect.sync(() => {
+                    if (
+                      getState().activity === 'working' ||
+                      agentActivity.list().some((agent) => sessionId === undefined || agent.sessionId === sessionId)
+                    ) {
+                      requestRender?.()
+                    }
+                  })
+                )
+              )
+            ),
+            sessionScope
+          )
+        } else {
           yield* refreshModel(ctx)
         }
         yield* startAnthropicQuota(ctx)

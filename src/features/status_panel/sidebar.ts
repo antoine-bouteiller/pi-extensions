@@ -172,19 +172,14 @@ const runTime = (ms: number): string => {
   return hours > 0 ? `${hours}:${pad2(minutes % 60)}:${pad2(seconds % 60)}` : `${minutes}:${pad2(seconds % 60)}`
 }
 
-const activityLabel = (agent: RunningAgent, now: number): string => {
-  const elapsed = Math.max(0, now - (agent.startedAt ?? agent.lastActivityAt ?? now))
-  return `${agent.activity ?? 'running'} ${runTime(elapsed)}`
-}
-
 const subagentRow = (agent: RunningAgent, width: number, theme: SidebarTheme, now: number) => {
   const marker = '▸ '
-  const activity = activityLabel(agent, now)
-  const nameWidth = width - visibleWidth(marker) - visibleWidth(activity) - 1
+  const elapsed = runTime(Math.max(0, now - (agent.startedAt ?? agent.lastActivityAt ?? now)))
+  const nameWidth = width - visibleWidth(marker) - visibleWidth(elapsed) - 1
   const name = truncateToWidth(sanitize(agent.name), Math.max(0, nameWidth), '…')
-  const gap = ' '.repeat(Math.max(1, width - visibleWidth(marker) - visibleWidth(name) - visibleWidth(activity)))
+  const gap = ' '.repeat(Math.max(1, width - visibleWidth(marker) - visibleWidth(name) - visibleWidth(elapsed)))
   const coloredName = paint(theme, profileColor(agent.profile), name)
-  return truncateToWidth(`${paint(theme, 'gray', marker)}${coloredName}${gap}${activity}`, width, '')
+  return truncateToWidth(`${paint(theme, 'gray', marker)}${coloredName}${gap}${elapsed}`, width, '')
 }
 
 const subagentRows = (agents: readonly RunningAgent[], width: number, theme: SidebarTheme, now: number) => {

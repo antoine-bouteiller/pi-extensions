@@ -16,7 +16,7 @@ import { parseJsonText } from '@/shared/utils/json.js'
 const BunPlatformLayer = BunChildProcessSpawner.layer.pipe(Layer.provideMerge(Layer.mergeAll(BunFileSystem.layer, BunPath.layer)))
 
 const sharedActivityScript = (paths: { aggregate: string; activity: string; runtime: string; statusPanel: string }): string => `
-  const { Effect, Scope } = await import('effect');
+  const { Effect, Exit, Scope } = await import('effect');
   const { feature: statusPanel } = await import(${JSON.stringify(paths.statusPanel)});
   const { AgentActivity } = await import(${JSON.stringify(paths.activity)});
   const { getOrCreateProcessRuntime } = await import(${JSON.stringify(paths.runtime)});
@@ -65,6 +65,8 @@ const sharedActivityScript = (paths: { aggregate: string; activity: string; runt
   const runtime = getOrCreateProcessRuntime();
   await runtime.runPromise(AgentActivity.pipe(Effect.flatMap(activity => activity.publish([{ color: 'accent', name: 'shared-agent', profile: 'scout' }]))));
   console.log(JSON.stringify({ explicit: explicitPanel.render() }));
+  await runtime.runPromise(descriptor.implementation.deactivate(explicitPanel.ctx, 'shutdown'));
+  await runtime.runPromise(Scope.close(panelScope, Exit.void));
 `
 
 describe('process-wide runtime', () => {

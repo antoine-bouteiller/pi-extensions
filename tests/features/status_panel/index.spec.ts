@@ -481,7 +481,7 @@ const panelSessionLayer = Layer.mergeAll(AgentActivityLive, StatusBarLive, Fetch
 const fakeTheme = { bold: (value: string) => value, fg: (_color: string, value: string) => value }
 
 describe('status panel session fibers', () => {
-  it.effect('ticks a redraw only while the agent is working and stops when the session ends', () =>
+  it.effect('shares redraw ticks across parent and background agents until the session ends', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const { pi } = createFakePi()
@@ -521,6 +521,7 @@ describe('status panel session fibers', () => {
           getContextUsage: () => undefined,
           mode: 'tui',
           model: { contextWindow: 100_000, id: 'model', provider: 'openai' },
+          sessionManager: { getSessionId: () => 'session' },
           ui,
         })
         const handlers = makePanelController({ dependencies: {}, pi })
@@ -541,10 +542,31 @@ describe('status panel session fibers', () => {
         yield* TestClock.adjust('1200 millis')
         expect(renders).toBe(afterSettle)
 
-        yield* handlers.agentStart(agentStart, ctx)
+        runningAgents.publish([
+          { color: 'accent', name: '/first', sessionId: 'session', startedAt: 0 },
+          { color: 'accent', name: '/second', sessionId: 'session', startedAt: 1000 },
+        ])
+        renders = 0
         yield* TestClock.adjust('400 millis')
-        expect(renders).toBeGreaterThan(afterSettle)
+        expect(renders).toBe(1)
 
+        yield* handlers.agentStart(agentStart, ctx)
+        yield* handlers.agentStart(agentStart, ctx)
+        renders = 0
+        yield* TestClock.adjust('400 millis')
+        expect(renders).toBe(1)
+
+        yield* handlers.agentSettled(agentSettled, ctx)
+        renders = 0
+        yield* TestClock.adjust('400 millis')
+        expect(renders).toBe(1)
+
+        runningAgents.publish([{ color: 'accent', name: '/foreign', sessionId: 'other' }])
+        renders = 0
+        yield* TestClock.adjust('1200 millis')
+        expect(renders).toBe(0)
+
+        runningAgents.publish([{ color: 'accent', name: '/first', sessionId: 'session' }])
         yield* handlers.sessionShutdown({ reason: 'quit', type: 'session_shutdown' }, ctx)
         const afterShutdown = renders
         yield* TestClock.adjust('1200 millis')
