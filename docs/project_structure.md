@@ -14,7 +14,7 @@ src/
 ├── index.ts                         # the only Pi extension entrypoint/default export
 ├── config/
 │   ├── feature_coordinator.ts       # session lifecycle, bootstrap, and feature health owner
-│   ├── features.ts                  # explicit ordered FeaturePlugin registry
+│   ├── features.ts                  # explicit ordered FeatureDescriptor registry
 │   └── runtime.ts                   # process-wide shared AppRuntime composition
 ├── features/
 │   ├── ask_user/{index,prompt,tool}.ts
@@ -60,11 +60,12 @@ src/index.ts
 
 - `src/config/` is composition only. `runtime.ts` builds the process-wide shared `AppRuntime`; it
   does not import a feature or initialize feature resources. `features.ts` holds the explicit,
-  ordered `FeaturePlugin` registry, and `feature_coordinator.ts` owns mixed eager/background
+  ordered `FeatureDescriptor` registry, and `feature_coordinator.ts` owns mixed eager/background
   bootstrap, feature health, and the complete session lifecycle. In particular, it alone registers
   `session_start` and `session_shutdown`.
-- Every `src/features/<snake_case_name>/index.ts` exports one `feature: FeaturePlugin` descriptor.
-  Its status identity has an `id` and `{ icon, name }`. An eager descriptor supplies
+- Every `src/features/<snake_case_name>/index.ts` exports one `feature: FeaturePlugin` factory.
+  Its descriptor identity has an `id`, `{ icon, name }`, and optional intrinsic `suppressInChild`.
+  The registry is a bare ordered list of factory calls. An eager descriptor supplies
   `implementation: { register(pi, runtime), activate?, deactivate? }`; a background descriptor
   instead supplies `prepare: Effect<FeatureImplementation, FeaturePreflightError, AppServices>`.
   Eager implementations register synchronously in registry order at extension load; background
@@ -121,9 +122,9 @@ mirroring rule.
    descriptor, plus the implementation modules it delegates to in the same folder. Choose eager
    `implementation` or background `prepare` as the descriptor contract requires.
 2. Create the mirrored `tests/features/<snake_case_name>/` test folder.
-3. In `src/config/features.ts`, add one descriptor import and one ordered array entry.
+3. In `src/config/features.ts`, add one factory import and one ordered factory call.
 
-This is a two-line, config-only enablement surface: adding a feature means one descriptor plus one
+This is a two-line, config-only enablement surface: adding a feature means one factory plus one
 import and one array entry; disabling means commenting both those lines and no other production
 edit. `src/index.ts` delegates the complete registry to the coordinator through one shared runtime.
 

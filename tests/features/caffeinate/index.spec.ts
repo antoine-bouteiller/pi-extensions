@@ -4,7 +4,7 @@ import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect } from 'effect'
 
-import { makeFeature } from '@/features/caffeinate/index.js'
+import { feature } from '@/features/caffeinate/index.js'
 import { CaffeinateError } from '@/features/caffeinate/keep_awake.js'
 
 interface FakeChild {
@@ -20,38 +20,40 @@ const createHarness = (platform: NodeJS.Platform = 'darwin', exitOnKill = true, 
   const spawnGate = deferSpawn ? Promise.withResolvers<void>() : undefined
   let remainingFailures = failSpawns
 
-  const feature = makeFeature({
-    isSubagent,
-    pid: 1234,
-    platform,
-    spawn: (command, args) => {
-      spawns.push({ args, command })
-      if (remainingFailures > 0) {
-        remainingFailures -= 1
-        return Effect.fail(new CaffeinateError({ cause: new Error('spawn failed') }))
-      }
-      const child: FakeChild = { exit: Promise.withResolvers<void>(), killCalls: 0, unrefCalls: 0 }
-      children.push(child)
-      return Effect.promise(() => spawnGate?.promise ?? Promise.resolve()).pipe(
-        Effect.as({
-          exited: Effect.promise(() => child.exit.promise),
-          kill: Effect.sync(() => {
-            child.killCalls += 1
-            if (exitOnKill) {
-              child.exit.resolve()
-            }
-          }),
-          unref: Effect.sync(() => {
-            child.unrefCalls += 1
-          }),
-        })
-      )
+  const descriptor = feature({
+    dependencies: {
+      isSubagent,
+      pid: 1234,
+      platform,
+      spawn: (command, args) => {
+        spawns.push({ args, command })
+        if (remainingFailures > 0) {
+          remainingFailures -= 1
+          return Effect.fail(new CaffeinateError({ cause: new Error('spawn failed') }))
+        }
+        const child: FakeChild = { exit: Promise.withResolvers<void>(), killCalls: 0, unrefCalls: 0 }
+        children.push(child)
+        return Effect.promise(() => spawnGate?.promise ?? Promise.resolve()).pipe(
+          Effect.as({
+            exited: Effect.promise(() => child.exit.promise),
+            kill: Effect.sync(() => {
+              child.killCalls += 1
+              if (exitOnKill) {
+                child.exit.resolve()
+              }
+            }),
+            unref: Effect.sync(() => {
+              child.unrefCalls += 1
+            }),
+          })
+        )
+      },
     },
   })
-  feature.implementation.register(fixture.pi, runtime)
+  descriptor.implementation.register(fixture.pi, runtime)
 
   const settle = (isIdle = true) => fixture.emit('agent_settled', {}, { isIdle: () => isIdle })
-  return { children, feature, fixture, settle, spawnGate, spawns }
+  return { children, feature: descriptor, fixture, settle, spawnGate, spawns }
 }
 
 describe('caffeinate feature', () => {

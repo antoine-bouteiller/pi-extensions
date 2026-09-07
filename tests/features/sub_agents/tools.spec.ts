@@ -9,7 +9,7 @@ import { FileSystem } from 'effect/FileSystem'
 import { Type } from 'typebox'
 import { Value } from 'typebox/value'
 
-import { makeFeature } from '@/features/sub_agents/index.js'
+import { feature } from '@/features/sub_agents/index.js'
 import {
   type AdmissionSnapshot,
   type AgentResult,
@@ -243,15 +243,17 @@ describe('delegation tool boundary', () => {
         const fixture = createFakePi()
         const snapshots: AdmissionSnapshot[] = []
         registerProfileTools(fixture.pi)
-        const plugin = makeFeature({
-          ...dependencies(fixture.pi, snapshots),
-          childModelView: configuredChildModelView,
-          isSubagent: () => false,
-          subagents: {
-            implementer: 'configured-provider/configured-model',
-            librarian: 'configured-provider/configured-model',
-            reviewer: 'configured-provider/configured-model',
-            scout: 'configured-provider/configured-model',
+        const plugin = feature({
+          dependencies: {
+            ...dependencies(fixture.pi, snapshots),
+            childModelView: configuredChildModelView,
+            isSubagent: () => false,
+            subagents: {
+              implementer: 'configured-provider/configured-model',
+              librarian: 'configured-provider/configured-model',
+              reviewer: 'configured-provider/configured-model',
+              scout: 'configured-provider/configured-model',
+            },
           },
         })
         plugin.implementation.register(fixture.pi)
@@ -290,7 +292,7 @@ otherwise ties an acceptance back to the brief that was sent.`,
         ])
 
         const child = createFakePi()
-        makeFeature({ ...dependencies(child.pi, []), isSubagent: () => true }).implementation.register(child.pi)
+        feature({ dependencies: { ...dependencies(child.pi, []), isSubagent: () => true } }).implementation.register(child.pi)
         expect(child.state.tools).toHaveLength(0)
         const childPrompts = yield* Effect.promise(() => child.emit('before_agent_start', { systemPrompt: 'child' }))
         expect(childPrompts).toEqual([])
@@ -305,15 +307,17 @@ otherwise ties an acceptance back to the brief that was sent.`,
         const snapshots: AdmissionSnapshot[] = []
         registerProfileTools(first.pi)
         registerProfileTools(replacement.pi)
-        const plugin = makeFeature({
-          ...dependencies(first.pi, snapshots),
-          childModelView: configuredChildModelView,
-          isSubagent: () => false,
-          subagents: {
-            implementer: 'configured-provider/configured-model',
-            librarian: 'configured-provider/configured-model',
-            reviewer: 'configured-provider/configured-model',
-            scout: 'configured-provider/configured-model',
+        const plugin = feature({
+          dependencies: {
+            ...dependencies(first.pi, snapshots),
+            childModelView: configuredChildModelView,
+            isSubagent: () => false,
+            subagents: {
+              implementer: 'configured-provider/configured-model',
+              librarian: 'configured-provider/configured-model',
+              reviewer: 'configured-provider/configured-model',
+              scout: 'configured-provider/configured-model',
+            },
           },
         })
         const ctx = asExtensionContext({ ...context(), ui: { getEditorComponent: () => undefined, setEditorComponent: () => undefined } })
@@ -345,15 +349,17 @@ otherwise ties an acceptance back to the brief that was sent.`,
         const fixture = createFakePi()
         const snapshots: AdmissionSnapshot[] = []
         registerProfileTools(fixture.pi)
-        const plugin = makeFeature({
-          ...dependencies(fixture.pi, snapshots),
-          childModelView: configuredChildModelView,
-          isSubagent: () => false,
-          subagents: {
-            implementer: 'configured-provider/configured-model',
-            librarian: 'configured-provider/missing-model',
-            reviewer: 'configured-provider/configured-model',
-            scout: 'configured-provider/configured-model',
+        const plugin = feature({
+          dependencies: {
+            ...dependencies(fixture.pi, snapshots),
+            childModelView: configuredChildModelView,
+            isSubagent: () => false,
+            subagents: {
+              implementer: 'configured-provider/configured-model',
+              librarian: 'configured-provider/missing-model',
+              reviewer: 'configured-provider/configured-model',
+              scout: 'configured-provider/configured-model',
+            },
           },
         })
         plugin.implementation.register(fixture.pi, appRuntime)
@@ -399,15 +405,17 @@ otherwise ties an acceptance back to the brief that was sent.`,
         }
         registerProfileTools(fixture.pi)
         const activeTools = makeActiveToolsStateful(fixture)
-        const plugin = makeFeature({
-          ...dependencies(fixture.pi, snapshots),
-          childModelViewFor: () => modelView,
-          isSubagent: () => false,
-          subagents: {
-            implementer: 'recovered-provider/recovered-model',
-            librarian: 'configured-provider/configured-model',
-            reviewer: 'recovered-provider/recovered-model',
-            scout: 'configured-provider/configured-model',
+        const plugin = feature({
+          dependencies: {
+            ...dependencies(fixture.pi, snapshots),
+            childModelViewFor: () => modelView,
+            isSubagent: () => false,
+            subagents: {
+              implementer: 'recovered-provider/recovered-model',
+              librarian: 'configured-provider/configured-model',
+              reviewer: 'recovered-provider/recovered-model',
+              scout: 'configured-provider/configured-model',
+            },
           },
         })
         plugin.implementation.register(fixture.pi, appRuntime)
@@ -459,15 +467,17 @@ otherwise ties an acceptance back to the brief that was sent.`,
         const fixture = createFakePi()
         const snapshots: AdmissionSnapshot[] = []
         registerProfileTools(fixture.pi)
-        const plugin = makeFeature({
-          ...dependencies(fixture.pi, snapshots),
-          childModelViewFor: () => Promise.reject('x'.repeat(5000)),
-          isSubagent: () => false,
-          subagents: {
-            implementer: 'configured-provider/configured-model',
-            librarian: 'configured-provider/configured-model',
-            reviewer: 'configured-provider/configured-model',
-            scout: 'configured-provider/configured-model',
+        const plugin = feature({
+          dependencies: {
+            ...dependencies(fixture.pi, snapshots),
+            childModelViewFor: () => Promise.reject('x'.repeat(5000)),
+            isSubagent: () => false,
+            subagents: {
+              implementer: 'configured-provider/configured-model',
+              librarian: 'configured-provider/configured-model',
+              reviewer: 'configured-provider/configured-model',
+              scout: 'configured-provider/configured-model',
+            },
           },
         })
         plugin.implementation.register(fixture.pi)
@@ -488,16 +498,18 @@ otherwise ties an acceptance back to the brief that was sent.`,
         const fixture = createFakePi()
         const snapshots: AdmissionSnapshot[] = []
         registerProfileTools(fixture.pi)
-        const plugin = makeFeature({
-          ...dependencies(fixture.pi, snapshots),
-          childModelViewFor: () => neverChildModelView.promise,
-          childModelViewTimeoutMillis: 1,
-          isSubagent: () => false,
-          subagents: {
-            implementer: 'configured-provider/configured-model',
-            librarian: 'configured-provider/configured-model',
-            reviewer: 'configured-provider/configured-model',
-            scout: 'configured-provider/configured-model',
+        const plugin = feature({
+          dependencies: {
+            ...dependencies(fixture.pi, snapshots),
+            childModelViewFor: () => neverChildModelView.promise,
+            childModelViewTimeoutMillis: 1,
+            isSubagent: () => false,
+            subagents: {
+              implementer: 'configured-provider/configured-model',
+              librarian: 'configured-provider/configured-model',
+              reviewer: 'configured-provider/configured-model',
+              scout: 'configured-provider/configured-model',
+            },
           },
         })
         plugin.implementation.register(fixture.pi, appRuntime)
@@ -529,13 +541,15 @@ otherwise ties an acceptance back to the brief that was sent.`,
       const runtime = ManagedRuntime.make(Layer.mergeAll(ports, BunFileSystem.layer, BunPath.layer))
       yield* Effect.addFinalizer(() => Effect.promise(() => runtime.dispose()))
       registerProfileTools(fixture.pi)
-      const plugin = makeFeature({
-        ...dependencies(fixture.pi, snapshots),
-        agentDir: root,
-        childModelView: configuredChildModelView,
-        isSubagent: () => false,
-        runtime,
-        subagents: undefined,
+      const plugin = feature({
+        dependencies: {
+          ...dependencies(fixture.pi, snapshots),
+          agentDir: root,
+          childModelView: configuredChildModelView,
+          isSubagent: () => false,
+          runtime,
+          subagents: undefined,
+        },
       })
       plugin.implementation.register(fixture.pi, asResult<AppRuntime>(runtime))
       const ctx = asExtensionContext({

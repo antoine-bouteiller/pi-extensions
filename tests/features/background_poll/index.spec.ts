@@ -5,7 +5,7 @@ import { runtime } from '@tests/utils/runtime.js'
 import { Effect, Fiber } from 'effect'
 import { TestClock } from 'effect/testing'
 
-import { makeFeature } from '@/features/background_poll/index.js'
+import { feature } from '@/features/background_poll/index.js'
 import { formatPollOutput, runPollLoop, type PollExec } from '@/features/background_poll/poll.js'
 import { ToolFailure } from '@/shared/effect/errors.js'
 import { type JsonObject } from '@/shared/utils/json.js'
@@ -53,8 +53,8 @@ const setup = (exec: Exec) => {
   const statuses: unknown[] = []
   const messageSent = deferred<void>()
 
-  const feature = makeFeature(asPollExec(exec))
-  feature.implementation.register(
+  const descriptor = feature({ dependencies: asPollExec(exec) })
+  descriptor.implementation.register(
     asExtensionApi({
       on: (event: string, handler: Handler) => handlers.set(event, handler),
       registerTool: (definition: Tool) => {
@@ -82,8 +82,8 @@ const setup = (exec: Exec) => {
   }
 
   const activate = () =>
-    runtime.runPromise(feature.implementation.activate?.({ reason: 'startup', type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void)
-  const deactivate = () => runtime.runPromise(feature.implementation.deactivate?.(asExtensionContext(ctx), 'shutdown') ?? Effect.void)
+    runtime.runPromise(descriptor.implementation.activate?.({ reason: 'startup', type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void)
+  const deactivate = () => runtime.runPromise(descriptor.implementation.deactivate?.(asExtensionContext(ctx), 'shutdown') ?? Effect.void)
   return { activate, ctx, deactivate, handlers, messages, notifications, sent: messageSent.promise, statuses, tool }
 }
 

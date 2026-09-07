@@ -53,7 +53,7 @@ interface HashlineTools {
 
 const setup = (): HashlineTools => {
   const { pi, state } = createFakePi()
-  feature.implementation.register(pi, runtime)
+  feature().implementation.register(pi, runtime)
   return {
     read: asTool<Tool>(state.tools.get('read')),
     write: asTool<Tool>(state.tools.get('write')),
@@ -80,8 +80,8 @@ describe('hashline feature', () => {
     Effect.sync(() => {
       const fixture = createFakePi()
 
-      expect(feature).toMatchObject({ bootstrap: 'eager', id: 'hashline', status: { icon: '#️⃣', name: 'hashline' } })
-      feature.implementation.register(fixture.pi, runtime)
+      expect(feature()).toMatchObject({ bootstrap: 'eager', id: 'hashline', status: { icon: '#️⃣', name: 'hashline' } })
+      feature().implementation.register(fixture.pi, runtime)
       expect([...fixture.state.tools.keys()]).toEqual(['read', 'write'])
     })
   )
@@ -110,7 +110,7 @@ describe('hashline extension', () => {
   it.effect('keeps image reads and does not install a context-history rewriter', () =>
     Effect.gen(function* () {
       const { pi, state } = createFakePi()
-      feature.implementation.register(pi, runtime)
+      feature().implementation.register(pi, runtime)
       expect([...state.tools.keys()]).toEqual(['read', 'write'])
       expect(state.handlers.has('context')).toBe(false)
 

@@ -2,14 +2,13 @@ import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Effect } from 'effect'
 
 import { type AppRuntime } from '#shared/effect/app_services'
-import { type FeaturePlugin } from '#shared/effect/feature'
+import { type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 import { makeToolExecutor } from '#shared/effect/runtime'
 
 import { BackgroundPollParams, makePollHandlers, type PollExec } from './poll.js'
 
-type EagerFeaturePlugin = Extract<FeaturePlugin, { readonly bootstrap: 'eager' }>
-
-export const makeFeature = (exec?: PollExec) => {
+export const feature = ((options: FeatureOptions<PollExec> = {}) => {
+  const exec = options.dependencies ?? undefined
   let handlers: ReturnType<typeof makePollHandlers> | undefined
   return {
     bootstrap: 'eager',
@@ -38,6 +37,6 @@ export const makeFeature = (exec?: PollExec) => {
       },
     },
     status: { icon: '⏳', name: 'background-poll' },
-  } satisfies EagerFeaturePlugin
-}
-export const feature = makeFeature()
+    suppressInChild: true,
+  }
+}) satisfies FeaturePlugin<PollExec>

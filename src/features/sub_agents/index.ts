@@ -2,7 +2,7 @@ import { getAgentDir, ModelRuntime, type ExtensionAPI, type ExtensionContext } f
 import { Context, Effect, Layer } from 'effect'
 
 import { AgentActivity, type AppRuntime } from '#shared/effect/app_services'
-import { type FeatureActivationError, type FeaturePlugin } from '#shared/effect/feature'
+import { type FeatureActivationError, type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 import { makeCommandHandler, makeEventHandler, makeToolExecutor, runManagedEffect, runManagedRepeatingEffect } from '#shared/effect/runtime'
 
 import { PROFILE_ORDER, PROFILE_REGISTRY, resolveProfileWithRegistry, type ProfileKey, type ProfileResolution, toChildModel } from './model.js'
@@ -22,12 +22,10 @@ import {
 } from './tools.js'
 import { createTranscriptOverlay } from './transcript.js'
 
-export interface SubagentFeatureDependencies extends Omit<DelegationToolDependencies, 'pi' | 'runtime'> {
+interface SubagentFeatureDependencies extends Omit<DelegationToolDependencies, 'pi' | 'runtime'> {
   readonly isSubagent?: () => boolean
   readonly runtime?: DelegationToolDependencies['runtime']
 }
-
-type EagerFeaturePlugin = Extract<FeaturePlugin, { readonly bootstrap: 'eager' }>
 
 const hasMessage = (value: unknown): value is { readonly message: string } =>
   typeof value === 'object' && value !== null && 'message' in value && typeof value.message === 'string'
@@ -71,7 +69,8 @@ const preflightNotice = (unresolved: readonly (readonly [ProfileKey, Extract<Pro
   return [heading, ...unresolved.map(([, error], index) => `${prefixes[index]}${truncate(error.message, messageShare)}`)].join('\n')
 }
 
-export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
+export const feature = ((options: FeatureOptions<SubagentFeatureDependencies> = {}) => {
+  const dependencies = options.dependencies ?? defaultDependencies
   const isSubagent = dependencies.isSubagent ?? (() => Bun.env.PI_SUBAGENT === '1')
   const toolDependencies = { ...dependencies, subagents: dependencies.subagents ?? {} }
   const loadSettings = (ctx: ExtensionContext) =>
@@ -293,8 +292,9 @@ export const makeFeature = (dependencies: SubagentFeatureDependencies) => {
       },
     },
     status: { icon: '🧑‍🤝‍🧑', name: 'sub-agents' },
-  } satisfies EagerFeaturePlugin
-}
+    suppressInChild: true,
+  }
+}) satisfies FeaturePlugin<SubagentFeatureDependencies>
 
 const defaultDependencies: SubagentFeatureDependencies = {
   agentDir: getAgentDir(),
@@ -316,5 +316,3 @@ const defaultDependencies: SubagentFeatureDependencies = {
   },
   environment: () => process.env,
 }
-
-export const feature = makeFeature(defaultDependencies)

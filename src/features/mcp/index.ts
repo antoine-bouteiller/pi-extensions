@@ -2,15 +2,16 @@ import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Effect } from 'effect'
 
 import { type AppRuntime } from '#shared/effect/app_services'
-import { type FeaturePlugin } from '#shared/effect/feature'
+import { type FeatureDescriptor, type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 import { makeCommandHandler, makeToolExecutor } from '#shared/effect/runtime'
 
 import { makeGatewaySession, makeMcpGateway, McpGateway, McpGatewayParameters, type McpGatewayApi } from './gateway.js'
 
-type EagerFeaturePlugin = Extract<FeaturePlugin, { readonly bootstrap: 'eager' }>
-export type McpGatewayFactory = () => McpGatewayApi
+type EagerFeaturePlugin = Extract<FeatureDescriptor, { readonly bootstrap: 'eager' }>
+type McpGatewayFactory = () => McpGatewayApi
 
-export const makeFeature = (makeGateway: McpGatewayFactory = makeMcpGateway) => {
+export const feature = ((options: FeatureOptions<McpGatewayFactory> = {}) => {
+  const makeGateway = options.dependencies ?? makeMcpGateway
   // Feature ownership deliberately creates exactly one gateway for this enabled process.
   const gateway = makeGateway()
   let session: ReturnType<typeof makeGatewaySession> | undefined
@@ -64,7 +65,5 @@ export const makeFeature = (makeGateway: McpGatewayFactory = makeMcpGateway) => 
       },
     },
     status: { icon: '🔌', name: 'mcp' },
-  } satisfies EagerFeaturePlugin
-}
-
-export const feature = makeFeature()
+  }
+}) satisfies FeaturePlugin<McpGatewayFactory>

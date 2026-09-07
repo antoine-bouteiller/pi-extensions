@@ -6,7 +6,7 @@ import { Cause, Effect, Exit, Fiber } from 'effect'
 import { TestClock } from 'effect/testing'
 import { HttpClient, HttpClientResponse } from 'effect/unstable/http'
 
-import { implementation, makeFeature } from '@/features/meridian_session_affinity/index.js'
+import { implementation, feature } from '@/features/meridian_session_affinity/index.js'
 
 interface ProviderHeaderEvent {
   headers: Record<string, string>
@@ -32,15 +32,15 @@ const healthClient = (status: number, observe: (request: { method: string; url: 
   })
 
 const preparedWith = (baseUrl: string, client: HttpClient.HttpClient) =>
-  makeFeature({ baseUrl, httpClient: client }).prepare.pipe(Effect.provideService(HttpClient.HttpClient, client))
+  feature({ dependencies: { baseUrl, httpClient: client } }).prepare.pipe(Effect.provideService(HttpClient.HttpClient, client))
 
 describe('meridian session affinity', () => {
   it.effect('preserves request-scoped lifecycle behavior after background preparation', () =>
     Effect.sync(() => {
       const fixture = createHarness()
-      const feature = makeFeature()
+      const descriptor = feature()
 
-      expect(feature).toMatchObject({
+      expect(descriptor).toMatchObject({
         bootstrap: 'background',
         id: 'meridian-session-affinity',
         status: { icon: '🧭', name: 'meridian' },
@@ -98,7 +98,7 @@ describe('meridian session affinity', () => {
     Effect.gen(function* () {
       const defect = HttpClient.make(() => Effect.die('private defect detail'))
       const retryClient = healthClient(204)
-      const descriptor = makeFeature({ baseUrl: 'https://meridian.example.test', httpClient: retryClient })
+      const descriptor = feature({ dependencies: { baseUrl: 'https://meridian.example.test', httpClient: retryClient } })
 
       const defectFailure = yield* Effect.flip(preparedWith('https://meridian.example.test', defect))
       const first = yield* descriptor.prepare.pipe(Effect.provideService(HttpClient.HttpClient, retryClient))

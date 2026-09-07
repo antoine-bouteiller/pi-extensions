@@ -5,7 +5,7 @@ import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime as appRuntime } from '@tests/utils/runtime.js'
 import { Context, Effect, Layer, ManagedRuntime } from 'effect'
 
-import { feature, makeFeature } from '@/features/sub_agents/index.js'
+import { feature } from '@/features/sub_agents/index.js'
 import { SubagentOrchestrator, type SubagentOrchestratorApi } from '@/features/sub_agents/orchestrator.js'
 import { type SubagentRuntime } from '@/features/sub_agents/runtime.js'
 import { NotificationSink, SubagentStore, SubagentStoreLive, type SubagentRecord } from '@/features/sub_agents/store.js'
@@ -69,13 +69,15 @@ const escapeGuard = (idle: boolean, live: boolean) =>
         },
       },
     })
-    const plugin = makeFeature({
-      agentDir: '/agents',
-      childModelView: { authenticated_providers: [], models: [] },
-      environment: () => ({}),
-      isSubagent: () => false,
-      runtime: featureRuntime,
-      subagents: {},
+    const plugin = feature({
+      dependencies: {
+        agentDir: '/agents',
+        childModelView: { authenticated_providers: [], models: [] },
+        environment: () => ({}),
+        isSubagent: () => false,
+        runtime: featureRuntime,
+        subagents: {},
+      },
     })
     plugin.implementation.register(fixture.pi, asResult<AppRuntime>(runtime))
     yield* plugin.implementation
@@ -91,8 +93,8 @@ const escapeGuard = (idle: boolean, live: boolean) =>
 
 describe('sub-agent feature registration', () => {
   it('is an eager parent-only feature', () => {
-    expect(feature.bootstrap).toBe('eager')
-    expect(feature.id).toBe('sub-agents')
+    expect(feature().bootstrap).toBe('eager')
+    expect(feature().id).toBe('sub-agents')
   })
 
   it.effect('consumes idle Escape only for a live current-session child through the feature editor', () =>
@@ -133,13 +135,15 @@ describe('sub-agent feature registration', () => {
         waitOne: () => Effect.void,
       })
       const runtime = ManagedRuntime.make(Layer.succeed(SubagentOrchestrator)(orchestrator))
-      const plugin = makeFeature({
-        agentDir: '/agents',
-        childModelView: { authenticated_providers: [], models: [] },
-        environment: () => ({}),
-        isSubagent: () => false,
-        runtime: asResult<SubagentRuntime>(runtime),
-        subagents: {},
+      const plugin = feature({
+        dependencies: {
+          agentDir: '/agents',
+          childModelView: { authenticated_providers: [], models: [] },
+          environment: () => ({}),
+          isSubagent: () => false,
+          runtime: asResult<SubagentRuntime>(runtime),
+          subagents: {},
+        },
       })
       plugin.implementation.register(fixture.pi, asResult<AppRuntime>(runtime))
       let oldEditor: unknown
@@ -220,12 +224,14 @@ describe('sub-agent feature registration', () => {
           select: () => Promise.resolve('scroll task (completed)'),
         },
       })
-      const plugin = makeFeature({
-        agentDir: '/agents',
-        childModelView: { authenticated_providers: [], models: [] },
-        environment: () => ({}),
-        isSubagent: () => false,
-        subagents: {},
+      const plugin = feature({
+        dependencies: {
+          agentDir: '/agents',
+          childModelView: { authenticated_providers: [], models: [] },
+          environment: () => ({}),
+          isSubagent: () => false,
+          subagents: {},
+        },
       })
       plugin.implementation.register(fixture.pi, appRuntime)
       const command = asResult<{ readonly handler: (args: string, commandCtx: typeof ctx) => Promise<void> }>(fixture.state.commands.get('subagents'))

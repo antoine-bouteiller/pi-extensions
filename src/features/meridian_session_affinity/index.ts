@@ -3,7 +3,7 @@ import { Cause, Effect, Stream } from 'effect'
 import { FetchHttpClient, HttpClient, HttpClientRequest } from 'effect/unstable/http'
 
 import { type AppRuntime } from '#shared/effect/app_services'
-import { type FeaturePlugin, type FeaturePreflightError } from '#shared/effect/feature'
+import { type FeatureOptions, type FeaturePlugin, type FeaturePreflightError } from '#shared/effect/feature'
 import { makeEventHandler } from '#shared/effect/runtime'
 
 import { applySessionAffinity, scrubbedSystemPrompt } from './affinity.js'
@@ -14,8 +14,6 @@ export interface MeridianSessionAffinityDependencies {
   readonly baseUrl?: string
   readonly httpClient?: HttpClient.HttpClient
 }
-
-type BackgroundFeaturePlugin = Extract<FeaturePlugin, { readonly bootstrap: 'background' }>
 
 type PreflightFailure = FeaturePreflightError & {
   readonly _tag: 'MeridianHealthInvalidUrl' | 'MeridianHealthUnavailable' | 'MeridianHealthTimeout' | 'MeridianHealthDefect'
@@ -75,12 +73,12 @@ const prepare = (dependencies: MeridianSessionAffinityDependencies) =>
     )
   })
 
-export const makeFeature = (dependencies: MeridianSessionAffinityDependencies = {}) =>
-  ({
+export const feature = ((options: FeatureOptions<MeridianSessionAffinityDependencies> = {}) => {
+  const dependencies = options.dependencies ?? { baseUrl: Bun.env.MERIDIAN_BASE_URL ?? DEFAULT_MERIDIAN_BASE_URL }
+  return {
     bootstrap: 'background',
     id: 'meridian-session-affinity',
     prepare: prepare(dependencies),
     status: { icon: '🧭', name: 'meridian' },
-  }) satisfies BackgroundFeaturePlugin
-
-export const feature = makeFeature({ baseUrl: Bun.env.MERIDIAN_BASE_URL ?? DEFAULT_MERIDIAN_BASE_URL })
+  }
+}) satisfies FeaturePlugin<MeridianSessionAffinityDependencies>

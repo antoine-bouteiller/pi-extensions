@@ -48,7 +48,7 @@ defines one boundary and one independently enabled feature contract.
 | `[KD-13]` Existing divergences       | Record them in a conformance table; do not migrate them in this spec.                                                                                                                                                                                             | Visible exceptions cannot be cited as normal practice.                                                                                                                                                                                              |
 | `[KD-14]` Enforcement                | **Amended by `[KD-14a]`.** An oxlint rule bans unsupported registration, bridge, runtime construction, and runtime entry locations.                                                                                                                               | The boundary must fail at author time, not in later review.                                                                                                                                                                                         |
 | `[KD-14a]` Enforcement owners        | The rule allows lifecycle `pi.on` only in the coordinator; descriptor registration and bridge calls only in a feature index; managed-runtime entry only in shared bridge implementations; `ManagedRuntime.make` only in config runtime or the sub-agents runtime. | This matches `[KD-2a]` and has no broad “feature directory” exception.                                                                                                                                                                              |
-| `[KD-15]` Feature contract           | `FeaturePlugin` is a discriminated union: eager descriptors expose an implementation; background preparation returns one.                                                                                                                                         | Prepared artifacts flow into registration/callback closures without shared-to-config types.                                                                                                                                                         |
+| `[KD-15]` Feature contract           | `FeatureDescriptor` is a discriminated union; `FeaturePlugin` is the factory returning one descriptor.                                                                                                                                                            | Prepared artifacts flow into registration/callback closures without shared-to-config types.                                                                                                                                                         |
 | `[KD-16]` Explicit enablement        | `src/config/features.ts` has one explicit import and one stable ordered registry entry per enabled feature. Commenting **both** lines disables it.                                                                                                                | There is no auto-discovery or side-effect enablement.                                                                                                                                                                                               |
 | `[KD-17]` Mixed bootstrap            | Eager descriptors validate/register synchronously in registry order at extension load. Only comment-checker and Meridian background-prepare and late-register; eager activation is awaited in registry order per session.                                         | One-shot handlers cannot be missed; only external checks are nonblocking.                                                                                                                                                                           |
 | `[KD-18]` Feature health             | The coordinator owns one `FeatureHealth` enum (`checking`, `healthy`, `error`) and persistently publishes it for every enabled descriptor using §8.12 metadata.                                                                                                   | Generic, distinct status makes independent failures observable without a second poisoned health state.                                                                                                                                              |
@@ -111,7 +111,7 @@ defines one boundary and one independently enabled feature contract.
 ```text
 Pi callbacks ── feature index/coordinator ── shared bridges ── AppRuntime
                     │                             │
-                    └── FeaturePlugin ── feature-owned prepare/resources
+                    └── FeatureDescriptor ── feature-owned prepare/resources
                                       (no shared -> config or shared -> feature dependency)
 ```
 
@@ -123,7 +123,7 @@ Pi callbacks ── feature index/coordinator ── shared bridges ── AppRu
 | Outbound services    | `src/shared/effect/pi_services.ts` / `runtime.ts` | `PiCtx`, `Ui`, `makeUi`; generic `withAbortSignal` remains in `runtime.ts:46-51`. `PiCtx` is invocation-local at `pi_services.ts:4`.  |
 | Feature contract     | `src/shared/effect/feature.ts`                    | Generic descriptor types only. It imports shared types/Pi SDK types, never config types.                                              |
 | Coordinator          | `src/config/feature_coordinator.ts`               | Validate, register, maintain state, publish statuses, own session scopes/lifecycle.                                                   |
-| Registry             | `src/config/features.ts`                          | Explicit descriptor imports and ordered `features`; `registerFeatures` delegates to coordinator.                                      |
+| Registry             | `src/config/features.ts`                          | Explicit factory imports and ordered descriptor `features`; `registerFeatures` delegates to coordinator.                              |
 | Feature index        | `src/features/*/index.ts`                         | Export `feature`; own callback registrations and feature-owned preparation/resources.                                                 |
 
 ## 8. Detailed Design
@@ -209,20 +209,26 @@ interface FeatureImplementation {
 
 interface FeatureIdentity {
   readonly id: string
+  readonly suppressInChild?: boolean
   readonly status: FeatureStatusMetadata
 }
 
-interface EagerFeaturePlugin extends FeatureIdentity {
+interface EagerFeatureDescriptor extends FeatureIdentity {
   readonly bootstrap: 'eager'
   readonly implementation: FeatureImplementation
 }
 
-interface BackgroundFeaturePlugin extends FeatureIdentity {
+interface BackgroundFeatureDescriptor extends FeatureIdentity {
   readonly bootstrap: 'background'
   readonly prepare: Effect.Effect<FeatureImplementation, FeaturePreflightError, AppServices>
 }
 
-type FeaturePlugin = EagerFeaturePlugin | BackgroundFeaturePlugin
+type FeatureDescriptor = EagerFeatureDescriptor | BackgroundFeatureDescriptor
+
+interface FeatureOptions<Dependencies> {
+  readonly dependencies?: Dependencies
+}
+type FeaturePlugin<Dependencies = never> = (options?: FeatureOptions<Dependencies>) => FeatureDescriptor
 ```
 
 Eager descriptors have no `prepare`: validation and `implementation.register` happen synchronously
@@ -248,7 +254,7 @@ never silently skipped. Validation has no I/O and follows registry order.
 
 ### 8.5 Registry, deterministic bootstrap, and one-shot lifecycle
 
-`src/config/features.ts` is the sole enabled-feature list. It imports descriptor exports, not old
+`src/config/features.ts` is the sole enabled-feature list. It imports feature factories, not old
 `register` functions, and contains one ordered entry for each import:
 
 ```ts
@@ -256,9 +262,9 @@ import { feature as commentChecker } from '#features/comment_checker/index'
 // import { feature as meridian } from '#features/meridian_session_affinity/index'
 
 export const features = [
-  commentChecker,
-  // meridian,
-] satisfies readonly FeaturePlugin[]
+  commentChecker(),
+  // meridian(),
+] satisfies readonly FeatureDescriptor[]
 ```
 
 Commenting both matching lines disables that feature. In particular, the MCP import and its array
@@ -284,7 +290,7 @@ The public coordinator factory and registration entry point are exact:
 export const makeFeatureCoordinator = (input: {
   readonly pi: ExtensionAPI
   readonly runtime: AppRuntime
-  readonly features: readonly FeaturePlugin[]
+  readonly features: readonly FeatureDescriptor[]
 }): FeatureCoordinator
 
 export const registerFeatures = (pi: ExtensionAPI, runtime: AppRuntime): void =>
@@ -419,7 +425,7 @@ lines; the symbol is durable when a line drifts (`[C-4]`).
 
 ### 8.10 Checklist for a new feature
 
-1. Export one discriminated `feature: FeaturePlugin` from its index. Eager features expose an
+1. Export one `feature: FeaturePlugin` factory from its index; it returns one discriminated `FeatureDescriptor`. Eager features expose an
    implementation; only comment-checker/Meridian prepare and return one.
 2. Give it the unique §8.12 ID, icon, and display name; use safe tagged failures.
 3. Use bridge helpers; migrate lifecycle behavior into `implementation.activate`/`deactivate` and

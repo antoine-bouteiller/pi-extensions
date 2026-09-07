@@ -10,15 +10,13 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
 import { type AppRuntime } from '#shared/effect/app_services'
-import { type FeaturePlugin } from '#shared/effect/feature'
+import { type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 import { makeToolExecutor } from '#shared/effect/runtime'
 
 import { ASK_USER_PROMPT_GUIDELINES, ASK_USER_PROMPT_SNIPPET, ASK_USER_TOOL_DESCRIPTION } from './prompt.js'
 import { askUserEffect, AskUserParams, renderAskUserCall, renderAskUserResult } from './tool.js'
 
-type EagerFeaturePlugin = Extract<FeaturePlugin, { readonly bootstrap: 'eager' }>
-
-export const feature = {
+export const feature = ((_options: FeatureOptions<undefined> = {}) => ({
   bootstrap: 'eager',
   id: 'ask-user',
   implementation: {
@@ -43,4 +41,5 @@ export const feature = {
     },
   },
   status: { icon: '❓', name: 'ask-user' },
-} satisfies EagerFeaturePlugin
+  suppressInChild: true,
+})) satisfies FeaturePlugin<undefined>

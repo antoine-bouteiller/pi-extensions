@@ -8,7 +8,7 @@ import { runtime } from '@tests/utils/runtime.js'
 import { Effect, FileSystem, Path } from 'effect'
 
 import { parseCommandFrontmatter } from '@/features/claude_code/discovery.js'
-import { makeFeature } from '@/features/claude_code/index.js'
+import { feature } from '@/features/claude_code/index.js'
 
 const pathService = runtime.runSync(Path.Path)
 const { dirname, join } = pathService
@@ -56,8 +56,8 @@ const createFixture = Effect.gen(function* () {
   )
 
   const fakePi = createFakePi()
-  const feature = makeFeature({ homeDirectory, temporaryDirectory })
-  feature.implementation.register(fakePi.pi, runtime)
+  const descriptor = feature({ dependencies: { homeDirectory, temporaryDirectory } })
+  descriptor.implementation.register(fakePi.pi, runtime)
 
   const context = (trusted: boolean) => ({
     cwd: projectDirectory,
@@ -67,7 +67,7 @@ const createFixture = Effect.gen(function* () {
     promiseFromEffect(Effect.promise(() => fakePi.emit(name, event, eventContext)).pipe(Effect.map((results) => asResult<Result>(results[0]))))
 
   const deactivate = (ctx: ReturnType<typeof context>, reason: 'replaced' | 'shutdown' = 'shutdown') =>
-    runtime.runPromise(feature.implementation.deactivate?.(asExtensionContext(ctx), reason) ?? Effect.void)
+    runtime.runPromise(descriptor.implementation.deactivate?.(asExtensionContext(ctx), reason) ?? Effect.void)
   return { context, deactivate, homeDirectory, invoke, projectDirectory, temporaryDirectory }
 })
 

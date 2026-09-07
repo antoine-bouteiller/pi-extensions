@@ -5,7 +5,7 @@ import { Effect, FileSystem, Path } from 'effect'
 import { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner'
 
 import { makeCommentCheckerRunner, type CheckerRunner } from '@/features/comment_checker/checker.js'
-import { makeFeature } from '@/features/comment_checker/index.js'
+import { feature } from '@/features/comment_checker/index.js'
 import { jsonText } from '@/shared/utils/json.js'
 
 const context = {
@@ -22,11 +22,11 @@ const checkerInput: Parameters<CheckerRunner>[0] = {
 }
 
 const preparedFeature = (runner: CheckerRunner, executable = '/tools/comment-checker') =>
-  makeFeature({ makeRunner: (path) => (expect(path).toBe(executable), runner), which: () => executable }).prepare
+  feature({ dependencies: { makeRunner: (path) => (expect(path).toBe(executable), runner), which: () => executable } }).prepare
 
 describe('comment checker', () => {
   it('retains the ChildProcessSpawner requirement when dependencies omit makeRunner', () => {
-    const { prepare } = makeFeature({ which: () => '/tools/comment-checker' })
+    const { prepare } = feature({ dependencies: { which: () => '/tools/comment-checker' } })
 
     type Requirements = typeof prepare extends Effect.Effect<unknown, unknown, infer Value> ? Value : never
     type IsExactMatch<Left, Right> = [Left, Right] extends [Right, Left] ? true : false
@@ -54,12 +54,14 @@ describe('comment checker', () => {
         const fixture = createFakePi()
         let runnerCreated = 0
         const error = yield* Effect.flip(
-          makeFeature({
-            makeRunner: () => {
-              runnerCreated += 1
-              return () => Effect.succeed({ exitCode: 0, stderr: '', stdout: '' })
+          feature({
+            dependencies: {
+              makeRunner: () => {
+                runnerCreated += 1
+                return () => Effect.succeed({ exitCode: 0, stderr: '', stdout: '' })
+              },
+              which: () => resolved,
             },
-            which: () => resolved,
           }).prepare
         )
 
@@ -74,12 +76,14 @@ describe('comment checker', () => {
     Effect.gen(function* () {
       let processCalls = 0
       const error = yield* Effect.flip(
-        makeFeature({
-          makeRunner: () => () => {
-            processCalls += 1
-            return Effect.succeed({ exitCode: 0, stderr: '', stdout: '' })
+        feature({
+          dependencies: {
+            makeRunner: () => () => {
+              processCalls += 1
+              return Effect.succeed({ exitCode: 0, stderr: '', stdout: '' })
+            },
+            which: () => undefined,
           },
-          which: () => undefined,
         }).prepare
       )
 

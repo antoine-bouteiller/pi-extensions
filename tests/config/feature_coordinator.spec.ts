@@ -8,16 +8,16 @@ import { runtime } from '@tests/utils/runtime.js'
 import { Deferred, Effect, Fiber, Scope } from 'effect'
 
 import { type FeatureHealth, makeFeatureCoordinator, registerFeatures } from '@/config/feature_coordinator.js'
-import { type FeatureImplementation, type FeaturePlugin, type FeaturePreflightError } from '@/shared/effect/feature.js'
+import { type FeatureImplementation, type FeatureDescriptor, type FeaturePreflightError } from '@/shared/effect/feature.js'
 import { publishStatus, statusBar } from '@/shared/state/status_bar.js'
 
-const eager = (id: string, implementation: FeatureImplementation): FeaturePlugin => ({
+const eager = (id: string, implementation: FeatureImplementation): FeatureDescriptor => ({
   bootstrap: 'eager',
   id,
   implementation,
   status: { icon: '✓', name: id },
 })
-const background = (prepare: Effect.Effect<FeatureImplementation, FeaturePreflightError>, id = 'comment-checker'): FeaturePlugin => ({
+const background = (prepare: Effect.Effect<FeatureImplementation, FeaturePreflightError>, id = 'comment-checker'): FeatureDescriptor => ({
   bootstrap: 'background',
   id,
   prepare,
@@ -113,7 +113,7 @@ describe('feature coordinator', () => {
       ]
       for (const features of cases) {
         const fixture = createFakePi()
-        expect(() => makeFeatureCoordinator({ features: asResult<FeaturePlugin[]>(features), pi: fixture.pi, runtime })).toThrow()
+        expect(() => makeFeatureCoordinator({ features: asResult<FeatureDescriptor[]>(features), pi: fixture.pi, runtime })).toThrow()
         expect([fixture.state.handlers.size, fixture.state.tools.size]).toEqual([0, 0])
       }
     })

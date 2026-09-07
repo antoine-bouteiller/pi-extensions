@@ -20,7 +20,7 @@ import {
   type McpSearchOptions,
   type McpToolDescription,
 } from '@/features/mcp/gateway.js'
-import { makeFeature } from '@/features/mcp/index.js'
+import { feature } from '@/features/mcp/index.js'
 import { type McpServerMap } from '@/features/mcp/types.js'
 import { publishStatus } from '@/shared/state/status_bar.js'
 import { type JsonObject, parseJsonText } from '@/shared/utils/json.js'
@@ -142,9 +142,11 @@ const createHarness = (overrides: Partial<McpGatewayManager> = {}, gateway: (man
     ...gateway(manager),
   }
   const fixture = createFakePi()
-  const { implementation } = makeFeature(() => {
-    gatewayFactoryCalls += 1
-    return gatewayValue
+  const { implementation } = feature({
+    dependencies: () => {
+      gatewayFactoryCalls += 1
+      return gatewayValue
+    },
   })
   const runtime = testRuntime(FetchHttpClient.layer)
   implementation.register(fixture.pi, runtime)

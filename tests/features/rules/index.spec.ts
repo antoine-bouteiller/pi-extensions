@@ -8,7 +8,7 @@ import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect, FileSystem, Path } from 'effect'
 
-import { makeFeature } from '@/features/rules/index.js'
+import { feature } from '@/features/rules/index.js'
 import { extractToolPaths, parseRuleFrontmatter } from '@/features/rules/rules.js'
 
 const pathService = runtime.runSync(Path.Path)
@@ -53,15 +53,15 @@ const createFixture = Effect.gen(function* () {
   yield* Effect.all([mkdir(homeDirectory, { recursive: true }), mkdir(projectDirectory, { recursive: true })], { concurrency: 'unbounded' })
 
   const fakePi = createFakePi()
-  const feature = makeFeature({ homeDirectory })
-  feature.implementation.register(fakePi.pi, runtime)
+  const descriptor = feature({ dependencies: { homeDirectory } })
+  descriptor.implementation.register(fakePi.pi, runtime)
   const context = (trusted: boolean) => ({
     cwd: projectDirectory,
     isProjectTrusted: () => trusted,
   })
   const activate = (trusted = true) =>
     runtime.runPromise(
-      feature.implementation.activate?.({ reason: 'startup', type: 'session_start' }, asExtensionContext(context(trusted))) ?? Effect.void
+      descriptor.implementation.activate?.({ reason: 'startup', type: 'session_start' }, asExtensionContext(context(trusted))) ?? Effect.void
     )
   const invoke = <Result>(name: string, event: unknown, trusted = true): Promise<Result | undefined> =>
     promiseFromEffect(

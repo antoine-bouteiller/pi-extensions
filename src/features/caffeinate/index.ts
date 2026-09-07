@@ -2,14 +2,13 @@ import { type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-cod
 import { Effect } from 'effect'
 
 import { type AppRuntime } from '#shared/effect/app_services'
-import { type FeaturePlugin } from '#shared/effect/feature'
+import { type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 import { makeEventHandler } from '#shared/effect/runtime'
 
 import { makeKeepAwake, productionDependencies, type CaffeinateDependencies } from './keep_awake.js'
 
-type EagerFeaturePlugin = Extract<FeaturePlugin, { readonly bootstrap: 'eager' }>
-
-export const makeFeature = (dependencies: CaffeinateDependencies = productionDependencies) => {
+export const feature = ((options: FeatureOptions<CaffeinateDependencies> = {}) => {
+  const dependencies = options.dependencies ?? productionDependencies
   const keepAwake = makeKeepAwake(dependencies)
 
   return {
@@ -33,7 +32,6 @@ export const makeFeature = (dependencies: CaffeinateDependencies = productionDep
       },
     },
     status: { icon: '☕', name: 'caffeinate' },
-  } satisfies EagerFeaturePlugin
-}
-
-export const feature = makeFeature()
+    suppressInChild: true,
+  }
+}) satisfies FeaturePlugin<CaffeinateDependencies>

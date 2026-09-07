@@ -4,14 +4,10 @@ import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Deferred, Effect, Option } from 'effect'
 
-import { makeFeature, type AutoThemeDependencies } from '@/features/auto_theme/index.js'
+import { feature, type AutoThemeDependencies } from '@/features/auto_theme/index.js'
 import { type SystemTheme } from '@/features/auto_theme/theme.js'
 
-const createHarness = (
-  themes: Effect.Effect<Option.Option<SystemTheme>>[],
-  isSubagent = false,
-  themeSetting = 'catppuccin-latte/catppuccin-mocha'
-) => {
+const createHarness = (themes: Effect.Effect<Option.Option<SystemTheme>>[], themeSetting = 'catppuccin-latte/catppuccin-mocha') => {
   const fixture = createFakePi()
   const sleepers: (() => void)[] = []
   const applied: unknown[] = []
@@ -19,15 +15,14 @@ const createHarness = (
   let index = 0
   const dependencies: AutoThemeDependencies = {
     detect: Effect.suspend(() => themes[index++] ?? Effect.succeedNone),
-    isSubagent,
     sleep: Effect.callback<void>((resume) => {
       sleepers.push(() => resume(Effect.void))
       sleeperRegistered.resolve()
     }),
     themeSetting,
   }
-  const feature = makeFeature(dependencies)
-  feature.implementation.register(fixture.pi, runtime)
+  const descriptor = feature({ dependencies })
+  descriptor.implementation.register(fixture.pi, runtime)
   const context = {
     mode: 'tui',
     ui: {
@@ -43,8 +38,8 @@ const createHarness = (
       sleeperRegistered = Promise.withResolvers<void>()
     })
   const activate = (ctx = context) =>
-    runtime.runPromise(feature.implementation.activate?.({ reason: 'startup', type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void)
-  const deactivate = () => runtime.runPromise(feature.implementation.deactivate?.(asExtensionContext(context), 'shutdown') ?? Effect.void)
+    runtime.runPromise(descriptor.implementation.activate?.({ reason: 'startup', type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void)
+  const deactivate = () => runtime.runPromise(descriptor.implementation.deactivate?.(asExtensionContext(context), 'shutdown') ?? Effect.void)
   return { activate, applied, context, deactivate, fixture, sleepers, waitForSleeper }
 }
 
@@ -67,7 +62,7 @@ describe('auto theme', () => {
 
   it.effect('does nothing when the theme setting is not a light/dark pair', () =>
     Effect.gen(function* () {
-      const harness = createHarness([Effect.succeedSome('dark')], false, 'catppuccin-mocha')
+      const harness = createHarness([Effect.succeedSome('dark')], 'catppuccin-mocha')
       yield* Effect.promise(() => harness.activate())
       expect(harness.applied).toEqual([])
       yield* Effect.promise(harness.deactivate)
@@ -98,18 +93,11 @@ describe('auto theme', () => {
     })
   )
 
-  it.effect('runs only in the main TUI session', () =>
+  it.effect('runs only in a TUI session', () =>
     Effect.gen(function* () {
       const harness = createHarness([Effect.succeedSome('dark')])
       yield* Effect.promise(() => harness.activate({ ...harness.context, mode: 'print' }))
       expect(harness.applied).toEqual([])
-
-      const subagent = createHarness([Effect.succeedSome('dark')], true)
-      yield* Effect.promise(() => subagent.activate())
-      expect(subagent.fixture.state.handlers.size).toBe(0)
-      expect(subagent.applied).toEqual([])
-      expect(subagent.sleepers).toEqual([])
-      yield* Effect.promise(subagent.deactivate)
     })
   )
 })

@@ -4,12 +4,12 @@ import { Effect } from 'effect'
 import {
   type FeatureActivationError,
   type FeatureIdentity,
-  type FeaturePlugin,
+  type FeatureDescriptor,
   type FeaturePreflightError,
   type FeatureStatusMetadata,
 } from '@/shared/effect/feature.js'
 
-describe('FeaturePlugin', () => {
+describe('FeatureDescriptor', () => {
   it.effect('discriminates eager and background descriptors', () =>
     Effect.sync(() => {
       const eager = {
@@ -17,13 +17,13 @@ describe('FeaturePlugin', () => {
         id: 'eager',
         implementation: { register: () => undefined },
         status: { icon: '✓', name: 'eager' },
-      } satisfies FeaturePlugin
+      } satisfies FeatureDescriptor
       const background = {
         bootstrap: 'background' as const,
         id: 'comment-checker',
         prepare: Effect.succeed({ register: () => undefined }),
         status: { icon: '💬', name: 'comment-checker' },
-      } satisfies FeaturePlugin
+      } satisfies FeatureDescriptor
       const identity: FeatureIdentity = eager
       const status: FeatureStatusMetadata = identity.status
       const preflight: FeaturePreflightError = { _tag: 'Preflight' }

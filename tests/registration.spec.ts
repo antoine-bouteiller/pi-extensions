@@ -87,17 +87,18 @@ const reportScript = (directories: string[]): string => `
   for (const directory of ${JSON.stringify(directories)}) {
     const module = await import(${JSON.stringify(PATHS.featuresDir)} + '/' + directory + '/index.js');
     const fixture = createFakePi();
+    const descriptor = typeof module.feature === 'function' ? module.feature() : undefined;
     const exportsRegister = typeof module.register === 'function';
-    const exportsFeature = module.feature?.bootstrap === 'eager' || module.feature?.bootstrap === 'background';
+    const exportsFeature = descriptor?.bootstrap === 'eager' || descriptor?.bootstrap === 'background';
     if (exportsRegister === exportsFeature) {
       throw new Error('Feature ' + directory + ' must export exactly one registration entrypoint');
     }
-    const register = exportsRegister ? module.register : module.feature?.bootstrap === 'eager' ? module.feature.implementation.register : undefined;
+    const register = exportsRegister ? module.register : descriptor?.bootstrap === 'eager' ? descriptor.implementation.register : undefined;
     if (typeof register === 'function') {
       register(fixture.pi, runtime);
     }
     report.features[directory] = {
-      descriptor: exportsFeature ? { bootstrap: module.feature.bootstrap, id: module.feature.id, status: module.feature.status } : undefined,
+      descriptor: exportsFeature ? { bootstrap: descriptor.bootstrap, id: descriptor.id, status: descriptor.status } : undefined,
       exportsDefault: module.default !== undefined,
       exportsFeature,
       exportsRegister,
@@ -117,7 +118,7 @@ const reportScript = (directories: string[]): string => `
 const collectReport = (): Promise<RegistrationReport> =>
   Effect.runPromise(
     Effect.gen(function* () {
-      const { PI_SUBAGENT_OWNER_TOKEN: _ownerToken, ...env } = process.env
+      const { PI_SUBAGENT: _subagent, PI_SUBAGENT_OWNER_TOKEN: _ownerToken, ...env } = process.env
       const script = reportScript(yield* Effect.promise(featureDirectories))
       const child = Bun.spawn([process.execPath, '--eval', script], { env, stderr: 'pipe', stdout: 'pipe' })
       return yield* Effect.all(
@@ -157,12 +158,12 @@ const registryImports = (source: string) =>
   })
 
 const registryEntries = (source: string) =>
-  /export const features = \[(?<entries>[\s\S]*?)\] satisfies readonly FeaturePlugin\[\]/
+  /export const features = \[(?<entries>[\s\S]*?)\] satisfies readonly FeatureDescriptor\[\]/
     .exec(source)
     ?.groups?.entries?.split('\n')
     .map((line) => line.trim())
     .filter((line) => line.length > 0 && !line.startsWith('//'))
-    .map((line) => /^(?:\{\s*\.\.\.)?(?<name>\w+)/.exec(line.replace(/,$/, ''))?.groups?.name)
+    .map((line) => /^(?<name>\w+)\(/.exec(line.replace(/,$/, ''))?.groups?.name)
     .filter((name): name is string => name !== undefined)
 
 describe('registration', () => {
@@ -192,9 +193,9 @@ describe('registration', () => {
 // import { feature as disabled } from '#features/disabled/index'
 
 export const features = [
-  enabled,
-  // disabled,
-] satisfies readonly FeaturePlugin[]`
+  enabled(),
+  // disabled(),
+] satisfies readonly FeatureDescriptor[]`
 
     expect(registryImports(fixture)).toEqual([{ directory: 'enabled', name: 'enabled' }])
     expect(registryEntries(fixture)).toEqual(['enabled'])

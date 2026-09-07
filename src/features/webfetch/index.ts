@@ -1,14 +1,12 @@
 import { type ExtensionAPI, formatSize } from '@earendil-works/pi-coding-agent'
 
 import { type AppRuntime } from '#shared/effect/app_services'
-import { type FeaturePlugin } from '#shared/effect/feature'
+import { type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 import { makeToolExecutor } from '#shared/effect/runtime'
 
 import { MAX_DOWNLOAD_BYTES, MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES, renderWebfetchResult, webfetchEffect, WebfetchParams } from './fetch.js'
 
-type EagerFeaturePlugin = Extract<FeaturePlugin, { readonly bootstrap: 'eager' }>
-
-export const feature = {
+export const feature = ((_options: FeatureOptions<undefined> = {}) => ({
   bootstrap: 'eager',
   id: 'webfetch',
   implementation: {
@@ -28,4 +26,4 @@ export const feature = {
     },
   },
   status: { icon: '🌐', name: 'webfetch' },
-} satisfies EagerFeaturePlugin
+})) satisfies FeaturePlugin<undefined>

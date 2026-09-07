@@ -2,25 +2,21 @@ import { type ExtensionAPI, type ExtensionContext, SettingsManager } from '@eare
 import { Effect, Exit, Option, Scope } from 'effect'
 
 import { type AppRuntime } from '#shared/effect/app_services'
-import { type FeaturePlugin } from '#shared/effect/feature'
+import { type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 
 import { detectSystemTheme, type SystemTheme } from './theme.js'
 
 export interface AutoThemeDependencies {
   readonly detect: Effect.Effect<Option.Option<SystemTheme>>
-  readonly isSubagent: boolean
   readonly sleep: Effect.Effect<void>
   readonly themeSetting: string | undefined
 }
 
 const productionDependencies = (pi: ExtensionAPI): AutoThemeDependencies => ({
   detect: detectSystemTheme(pi.exec.bind(pi), process.platform),
-  isSubagent: process.env.PI_SUBAGENT_OWNER_TOKEN !== undefined,
   sleep: Effect.sleep('5 seconds'),
   themeSetting: SettingsManager.create(process.cwd()).getThemeSetting(),
 })
-
-type EagerFeaturePlugin = Extract<FeaturePlugin, { readonly bootstrap: 'eager' }>
 
 const themeLoop = (ctx: ExtensionContext, dependencies: AutoThemeDependencies): Effect.Effect<never> => {
   const themes = dependencies.themeSetting?.split('/').map((theme) => theme.trim())
@@ -46,7 +42,8 @@ const themeLoop = (ctx: ExtensionContext, dependencies: AutoThemeDependencies): 
   return check.pipe(Effect.andThen(dependencies.sleep), Effect.forever)
 }
 
-export const makeFeature = (dependencies?: AutoThemeDependencies) => {
+export const feature = ((options: FeatureOptions<AutoThemeDependencies> = {}) => {
+  let { dependencies } = options
   let sessionScope: Scope.Closeable | undefined
   return {
     bootstrap: 'eager',
@@ -54,7 +51,7 @@ export const makeFeature = (dependencies?: AutoThemeDependencies) => {
     implementation: {
       activate: (_event, ctx) => {
         const resolved = dependencies
-        if (resolved === undefined || resolved.isSubagent || ctx.mode !== 'tui') {
+        if (resolved === undefined || ctx.mode !== 'tui') {
           return Effect.void
         }
         return Effect.gen(function* () {
@@ -82,7 +79,6 @@ export const makeFeature = (dependencies?: AutoThemeDependencies) => {
       },
     },
     status: { icon: '🎨', name: 'auto-theme' },
-  } satisfies EagerFeaturePlugin
-}
-
-export const feature = makeFeature()
+    suppressInChild: true,
+  }
+}) satisfies FeaturePlugin<AutoThemeDependencies>

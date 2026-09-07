@@ -2,14 +2,13 @@ import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Effect } from 'effect'
 
 import { type AppRuntime } from '#shared/effect/app_services'
-import { type FeaturePlugin } from '#shared/effect/feature'
+import { type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 import { makeEventHandler } from '#shared/effect/runtime'
 
 import { makePanelController, recordSubagentQuota, type StatusPanelDependencies } from './panel.js'
 
-type EagerFeaturePlugin = Extract<FeaturePlugin, { readonly bootstrap: 'eager' }>
-
-export const makeFeature = (dependencies: StatusPanelDependencies = {}) => {
+export const feature = ((options: FeatureOptions<StatusPanelDependencies> = {}) => {
+  const dependencies = options.dependencies ?? {}
   let handlers: ReturnType<typeof makePanelController> | undefined
   let isSubagent = false
   return {
@@ -36,7 +35,5 @@ export const makeFeature = (dependencies: StatusPanelDependencies = {}) => {
       },
     },
     status: { icon: '📊', name: 'status-panel' },
-  } satisfies EagerFeaturePlugin
-}
-
-export const feature = makeFeature()
+  }
+}) satisfies FeaturePlugin<StatusPanelDependencies>

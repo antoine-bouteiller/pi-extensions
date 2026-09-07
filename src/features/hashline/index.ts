@@ -2,14 +2,12 @@ import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { type Effect } from 'effect'
 
 import { type AppServices, type AppRuntime } from '#shared/effect/app_services'
-import { type FeaturePlugin } from '#shared/effect/feature'
+import { type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 import { makeToolExecutor, type HandlerServices, type ToolInvocation } from '#shared/effect/runtime'
 
 import { makeHashlineTools, readSchema, renderHashlineRead, writeSchema, type HashlineToolError } from './tools.js'
 
-type EagerFeaturePlugin = Extract<FeaturePlugin, { readonly bootstrap: 'eager' }>
-
-export const feature = {
+export const feature = ((_options: FeatureOptions<undefined> = {}) => ({
   bootstrap: 'eager',
   id: 'hashline',
   implementation: {
@@ -51,4 +49,4 @@ export const feature = {
     },
   },
   status: { icon: '#️⃣', name: 'hashline' },
-} satisfies EagerFeaturePlugin
+})) satisfies FeaturePlugin<undefined>

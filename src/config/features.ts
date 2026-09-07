@@ -16,23 +16,23 @@ import { feature as rules } from '#features/rules/index'
 import { feature as statusPanel } from '#features/status_panel/index'
 import { feature as subAgents } from '#features/sub_agents/index'
 import { feature as webfetch } from '#features/webfetch/index'
-import { type FeaturePlugin } from '#shared/effect/feature'
+import { type FeatureDescriptor } from '#shared/effect/feature'
 
 export const features = [
-  { ...askUser, suppressInChild: true },
-  autoTheme,
-  { ...backgroundPoll, suppressInChild: true },
-  { ...caffeinate, suppressInChild: true },
-  { ...claudeCode, suppressInChild: true },
-  commentChecker,
-  hashline,
-  mcp,
-  meridianSessionAffinity,
-  { ...promptRewind, suppressInChild: true },
-  { ...rules, suppressInChild: true },
-  statusPanel,
-  { ...subAgents, suppressInChild: true },
-  webfetch,
-] satisfies readonly FeaturePlugin[]
+  askUser(),
+  autoTheme(),
+  backgroundPoll(),
+  caffeinate(),
+  claudeCode(),
+  commentChecker(),
+  hashline(),
+  mcp(),
+  meridianSessionAffinity(),
+  promptRewind(),
+  rules(),
+  statusPanel(),
+  subAgents(),
+  webfetch(),
+] satisfies readonly FeatureDescriptor[]
 
 export const registerFeatures = (pi: ExtensionAPI, runtime: ProcessRuntime): void => registerWithCoordinator(pi, runtime, features)

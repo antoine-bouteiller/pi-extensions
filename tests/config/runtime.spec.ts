@@ -50,12 +50,13 @@ const sharedActivityScript = (paths: { aggregate: string; activity: string; runt
   };
 
   const explicit = createPi();
-  statusPanel.implementation.register(explicit.pi, getOrCreateProcessRuntime());
+  const descriptor = statusPanel();
+  descriptor.implementation.register(explicit.pi, getOrCreateProcessRuntime());
   const explicitPanel = panelContext();
   const panelScope = Scope.makeUnsafe();
   await getOrCreateProcessRuntime().runPromise(
     Effect.provideService(
-      statusPanel.implementation.activate({ reason: 'startup', type: 'session_start' }, explicitPanel.ctx),
+      descriptor.implementation.activate({ reason: 'startup', type: 'session_start' }, explicitPanel.ctx),
       Scope.Scope,
       panelScope
     )
@@ -117,7 +118,8 @@ describe('process-wide runtime', () => {
       )
       yield* withProcessEnv('PI_SUBAGENT_OWNER_TOKEN', undefined, () =>
         Effect.gen(function* () {
-          statusPanel.implementation.register(createFakePi().pi, runtime)
+          const descriptor = statusPanel()
+          descriptor.implementation.register(createFakePi().pi, runtime)
           const scope = Scope.makeUnsafe()
           const ctx = asExtensionContext({
             cwd: '/project',
@@ -127,7 +129,7 @@ describe('process-wide runtime', () => {
           })
           yield* Effect.promise(() =>
             runtime.runPromise(
-              Effect.provideService(statusPanel.implementation.activate({ reason: 'startup', type: 'session_start' }, ctx), Scope.Scope, scope)
+              Effect.provideService(descriptor.implementation.activate({ reason: 'startup', type: 'session_start' }, ctx), Scope.Scope, scope)
             )
           )
           expect(subscriptions).toBe(1)
@@ -145,7 +147,7 @@ describe('process-wide runtime', () => {
         runtime: fileURLToPath(new URL('../../src/config/runtime.ts', import.meta.url)),
         statusPanel: fileURLToPath(new URL('../../src/features/status_panel/index.ts', import.meta.url)),
       })
-      const { PI_SUBAGENT_OWNER_TOKEN: _ownerToken, ...env } = process.env
+      const { PI_SUBAGENT: _subagent, PI_SUBAGENT_OWNER_TOKEN: _ownerToken, ...env } = process.env
       const child = Bun.spawn([process.execPath, '--eval', script], { env, stderr: 'pipe', stdout: 'pipe' })
       const [stdout, stderr, exitCode] = yield* Effect.promise(() =>
         Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])

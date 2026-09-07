@@ -66,7 +66,7 @@ const setup = (customError?: Error) => {
   }
 
   const fakePi = createFakePi()
-  feature.implementation.register(fakePi.pi, runtime)
+  feature().implementation.register(fakePi.pi, runtime)
   const tool = asTool<AskUserTool>(fakePi.state.tools.get('ask_user'))
 
   return {
@@ -96,8 +96,8 @@ describe('ask_user feature', () => {
     Effect.sync(() => {
       const fixture = createFakePi()
 
-      expect(feature).toMatchObject({ bootstrap: 'eager', id: 'ask-user', status: { icon: '❓', name: 'ask-user' } })
-      feature.implementation.register(fixture.pi, runtime)
+      expect(feature()).toMatchObject({ bootstrap: 'eager', id: 'ask-user', status: { icon: '❓', name: 'ask-user' } })
+      feature().implementation.register(fixture.pi, runtime)
       expect(fixture.state.tools.has('ask_user')).toBe(true)
     })
   )

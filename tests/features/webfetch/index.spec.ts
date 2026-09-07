@@ -32,7 +32,7 @@ const pendingFetch = (signal: AbortSignal | null | undefined, onStart?: () => vo
 const createHarness = (fetchImpl: WebfetchFetch, clock?: Clock.Clock) => {
   const fixture = createFakePi()
   const stubs = clock === undefined ? stubHttpClient(fetchImpl) : Layer.mergeAll(stubHttpClient(fetchImpl), Layer.succeed(Clock.Clock)(clock))
-  feature.implementation.register(fixture.pi, testRuntime(stubs))
+  feature().implementation.register(fixture.pi, testRuntime(stubs))
   const tool = fixture.state.tools.get('webfetch')
 
   const execute = (
@@ -91,8 +91,8 @@ describe('webfetch feature', () => {
     Effect.sync(() => {
       const fixture = createFakePi()
 
-      expect(feature).toMatchObject({ bootstrap: 'eager', id: 'webfetch', status: { icon: '🌐', name: 'webfetch' } })
-      feature.implementation.register(fixture.pi, testRuntime(stubHttpClient(() => Promise.resolve(new Response('ok')))))
+      expect(feature()).toMatchObject({ bootstrap: 'eager', id: 'webfetch', status: { icon: '🌐', name: 'webfetch' } })
+      feature().implementation.register(fixture.pi, testRuntime(stubHttpClient(() => Promise.resolve(new Response('ok')))))
       expect(fixture.state.tools.has('webfetch')).toBe(true)
     })
   )

@@ -2,14 +2,13 @@ import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Effect } from 'effect'
 
 import { type AppRuntime } from '#shared/effect/app_services'
-import { type FeaturePlugin } from '#shared/effect/feature'
+import { type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 import { makeEventHandler } from '#shared/effect/runtime'
 
 import { defaultRulesEnvironment, makeRulesHandlers, type RulesEnvironment } from './rules.js'
 
-type EagerFeaturePlugin = Extract<FeaturePlugin, { readonly bootstrap: 'eager' }>
-
-export const makeFeature = (environment: RulesEnvironment = defaultRulesEnvironment()) => {
+export const feature = ((options: FeatureOptions<RulesEnvironment> = {}) => {
+  const environment = options.dependencies ?? defaultRulesEnvironment()
   const handlers = makeRulesHandlers(environment)
   return {
     bootstrap: 'eager',
@@ -26,7 +25,6 @@ export const makeFeature = (environment: RulesEnvironment = defaultRulesEnvironm
       },
     },
     status: { icon: '📜', name: 'rules' },
-  } satisfies EagerFeaturePlugin
-}
-
-export const feature = makeFeature()
+    suppressInChild: true,
+  }
+}) satisfies FeaturePlugin<RulesEnvironment>

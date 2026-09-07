@@ -2,14 +2,13 @@ import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Effect } from 'effect'
 
 import { type AppRuntime } from '#shared/effect/app_services'
-import { type FeaturePlugin } from '#shared/effect/feature'
+import { type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 import { makeEventHandler } from '#shared/effect/runtime'
 
 import { defaultEnvironment, makeDiscoveryHandlers, type ClaudeCodeEnvironment } from './discovery.js'
 
-type EagerFeaturePlugin = Extract<FeaturePlugin, { readonly bootstrap: 'eager' }>
-
-export const makeFeature = (environment: ClaudeCodeEnvironment = defaultEnvironment()) => {
+export const feature = ((options: FeatureOptions<ClaudeCodeEnvironment> = {}) => {
+  const environment = options.dependencies ?? defaultEnvironment()
   const handlers = makeDiscoveryHandlers(environment)
   return {
     bootstrap: 'eager',
@@ -21,7 +20,6 @@ export const makeFeature = (environment: ClaudeCodeEnvironment = defaultEnvironm
       },
     },
     status: { icon: '🤖', name: 'claude-code' },
-  } satisfies EagerFeaturePlugin
-}
-
-export const feature = makeFeature()
+    suppressInChild: true,
+  }
+}) satisfies FeaturePlugin<ClaudeCodeEnvironment>

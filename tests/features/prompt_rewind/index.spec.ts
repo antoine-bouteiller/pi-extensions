@@ -31,7 +31,8 @@ interface InputSubmission {
 
 const createHarness = (dispatchSubmittedCommands = false) => {
   const fixture = createFakePi()
-  feature.implementation.register(fixture.pi, runtime)
+  const descriptor = feature()
+  descriptor.implementation.register(fixture.pi, runtime)
 
   let terminalHandler: TerminalHandler | undefined
   let terminalUnsubscribed = false
@@ -126,7 +127,7 @@ const createHarness = (dispatchSubmittedCommands = false) => {
   })
 
   const startSession = (mode: 'tui' | 'rpc' = 'tui'): Promise<void> =>
-    runtime.runPromise(feature.implementation.activate?.({ reason: 'startup', type: 'session_start' }, { ...ctx, mode }) ?? Effect.void)
+    runtime.runPromise(descriptor.implementation.activate?.({ reason: 'startup', type: 'session_start' }, { ...ctx, mode }) ?? Effect.void)
 
   const submit = (input: InputSubmission): Promise<void> =>
     Effect.runPromise(
@@ -155,6 +156,7 @@ const createHarness = (dispatchSubmittedCommands = false) => {
     addUserEntry: (id: string, parentId: string | null, content: string) => addEntry(id, parentId, 'user', content),
     command,
     ctx,
+    descriptor,
     dispatch,
     editorText: () => editorText,
     escape,
@@ -488,7 +490,7 @@ describe('prompt rewind', () => {
       yield* Effect.promise(() => harness.submitAndArm())
       harness.escape()
 
-      yield* Effect.promise(() => runtime.runPromise(feature.implementation.deactivate?.(harness.ctx, 'shutdown') ?? Effect.void))
+      yield* Effect.promise(() => runtime.runPromise(harness.descriptor.implementation.deactivate?.(harness.ctx, 'shutdown') ?? Effect.void))
 
       expect(harness.terminalUnsubscribed()).toBeTrue()
       yield* Effect.promise(() => harness.command().handler('', harness.ctx))

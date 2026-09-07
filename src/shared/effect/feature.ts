@@ -36,9 +36,15 @@ export interface FeatureImplementation {
   readonly deactivate?: (ctx: ExtensionContext, reason: StopReason) => Effect.Effect<void, FeatureActivationError, AppServices | HandlerServices>
 }
 
-export type FeaturePlugin =
+export type FeatureDescriptor =
   | (FeatureIdentity & { readonly bootstrap: 'eager'; readonly implementation: FeatureImplementation })
   | (FeatureIdentity & {
       readonly bootstrap: 'background'
       readonly prepare: Effect.Effect<FeatureImplementation, FeaturePreflightError, AppServices>
     })
+
+export interface FeatureOptions<Dependencies> {
+  readonly dependencies?: Dependencies
+}
+
+export type FeaturePlugin<Dependencies = never> = (options?: FeatureOptions<Dependencies>) => FeatureDescriptor

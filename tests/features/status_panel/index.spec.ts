@@ -12,7 +12,7 @@ import { TestClock } from 'effect/testing'
 import { FetchHttpClient } from 'effect/unstable/http'
 
 import { join } from '#shared/utils/path'
-import { feature, makeFeature } from '@/features/status_panel/index.js'
+import { feature } from '@/features/status_panel/index.js'
 import { makePanelController } from '@/features/status_panel/panel.js'
 import { columns, formatTokens, progressBar } from '@/features/status_panel/render.js'
 import { emptyGitInfoState, emptyModelInfoState } from '@/features/status_panel/state.js'
@@ -31,7 +31,7 @@ const inMainSession = <Success, Failure, Requirements>(
   use: () => Effect.Effect<Success, Failure, Requirements>
 ): Effect.Effect<Success, Failure, Requirements> => withProcessEnv('PI_SUBAGENT_OWNER_TOKEN', undefined, use)
 
-type PanelImplementation = typeof feature.implementation
+type PanelImplementation = ReturnType<typeof feature>['implementation']
 
 const GIT_READS_PER_REFRESH = 3
 
@@ -79,7 +79,7 @@ describe('status panel registration', () => {
           },
         }
 
-        makeFeature(dependencies).implementation.register(pi, runtime)
+        feature({ dependencies }).implementation.register(pi, runtime)
         yield* Effect.promise(() =>
           emit(
             'after_provider_response',
@@ -135,7 +135,8 @@ describe('status panel registration', () => {
       Effect.sync(() => {
         const { pi, state } = createFakePi()
 
-        feature.implementation.register(pi, runtime)
+        const descriptor = feature()
+        descriptor.implementation.register(pi, runtime)
 
         expect([...state.handlers.keys()]).toEqual([
           'model_select',
@@ -233,8 +234,9 @@ describe('status panel formatting', () => {
           model: { contextWindow: 200_000, id: 'a-very-long-model-name', provider: 'openai' },
           ui,
         }
-        feature.implementation.register(pi, runtime)
-        yield* activateSession(feature.implementation, ctx, 'startup')
+        const descriptor = feature()
+        descriptor.implementation.register(pi, runtime)
+        yield* activateSession(descriptor.implementation, ctx, 'startup')
 
         expect(renderFooter?.(80)).toEqual([])
         tui.terminal.columns = 80
@@ -250,7 +252,7 @@ describe('status panel formatting', () => {
         }
         expect(renderSidebar(44).join('\n')).toContain('AGENT')
         expect(renderSidebar(44).join('\n')).toContain('CONTEXT')
-        yield* deactivateSession(feature.implementation, ctx, 'shutdown')
+        yield* deactivateSession(descriptor.implementation, ctx, 'shutdown')
         expect(hiddenOverlays).toBe(1)
       })
     )
@@ -296,12 +298,14 @@ describe('status panel quota lifecycle', () => {
       Effect.gen(function* () {
         const { pi, emit } = createFakePi()
         const signals: AbortSignal[] = []
-        const panel = makeFeature({
-          fetchAnthropicQuota: () =>
-            Effect.promise((signal) => {
-              signals.push(signal)
-              return promiseFromEffect(Effect.never)
-            }),
+        const panel = feature({
+          dependencies: {
+            fetchAnthropicQuota: () =>
+              Effect.promise((signal) => {
+                signals.push(signal)
+                return promiseFromEffect(Effect.never)
+              }),
+          },
         })
         panel.implementation.register(pi, runtime)
         const ctx = quotaLifecycleContext('rpc')
@@ -320,13 +324,15 @@ describe('status panel quota lifecycle', () => {
         const { pi, emit } = createFakePi()
         const baseUrls: string[] = []
         const signals: AbortSignal[] = []
-        const panel = makeFeature({
-          fetchAnthropicQuota: (baseUrl) =>
-            Effect.promise((signal) => {
-              baseUrls.push(baseUrl)
-              signals.push(signal)
-              return promiseFromEffect(Effect.never)
-            }),
+        const panel = feature({
+          dependencies: {
+            fetchAnthropicQuota: (baseUrl) =>
+              Effect.promise((signal) => {
+                baseUrls.push(baseUrl)
+                signals.push(signal)
+                return promiseFromEffect(Effect.never)
+              }),
+          },
         })
         panel.implementation.register(pi, runtime)
         const ctx = quotaLifecycleContext('tui', 'azure-openai-responses')
@@ -402,15 +408,16 @@ describe('status panel cross-feature sharing', () => {
           ui,
         }
 
-        feature.implementation.register(pi, runtime)
-        yield* activateSession(feature.implementation, ctx, 'startup')
+        const descriptor = feature()
+        descriptor.implementation.register(pi, runtime)
+        yield* activateSession(descriptor.implementation, ctx, 'startup')
 
         if (renderSidebar === undefined) {
           throw new Error('expected a sidebar renderer')
         }
         expect(renderSidebar(44).join('\n')).toContain('/scout-shared')
 
-        yield* deactivateSession(feature.implementation, ctx, 'shutdown')
+        yield* deactivateSession(descriptor.implementation, ctx, 'shutdown')
       })
     )
   )
@@ -462,23 +469,24 @@ describe('status panel cross-feature sharing', () => {
           ui,
         }
 
-        feature.implementation.register(pi, runtime)
-        yield* activateSession(feature.implementation, ctx, 'startup')
+        const descriptor = feature()
+        descriptor.implementation.register(pi, runtime)
+        yield* activateSession(descriptor.implementation, ctx, 'startup')
         renders = 0
         runningAgents.publish([{ color: 'accent', name: '/first', profile: 'scout' }])
         expect(renders).toBeGreaterThan(0)
 
-        yield* deactivateSession(feature.implementation, ctx, 'replaced')
+        yield* deactivateSession(descriptor.implementation, ctx, 'replaced')
         renders = 0
         runningAgents.publish([{ color: 'accent', name: '/stale', profile: 'scout' }])
         expect(renders).toBe(0)
 
-        yield* activateSession(feature.implementation, ctx, 'resume')
+        yield* activateSession(descriptor.implementation, ctx, 'resume')
         renders = 0
         runningAgents.publish([{ color: 'accent', name: '/second', profile: 'scout' }])
         expect(renders).toBeGreaterThan(0)
 
-        yield* deactivateSession(feature.implementation, ctx, 'shutdown')
+        yield* deactivateSession(descriptor.implementation, ctx, 'shutdown')
       })
     )
   )

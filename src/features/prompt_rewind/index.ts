@@ -3,14 +3,12 @@ import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Effect } from 'effect'
 
 import { type AppRuntime } from '#shared/effect/app_services'
-import { type FeaturePlugin } from '#shared/effect/feature'
+import { type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 import { makeCommandHandler } from '#shared/effect/runtime'
 
 import { makeRewindController, REWIND_COMMAND } from './rewind.js'
 
-type EagerFeaturePlugin = Extract<FeaturePlugin, { readonly bootstrap: 'eager' }>
-
-export const feature = (() => {
+export const feature = ((_options: FeatureOptions<undefined> = {}) => {
   const controller = makeRewindController()
   return {
     bootstrap: 'eager',
@@ -32,5 +30,6 @@ export const feature = (() => {
       },
     },
     status: { icon: '↩️', name: 'prompt-rewind' },
-  } satisfies EagerFeaturePlugin
-})()
+    suppressInChild: true,
+  }
+}) satisfies FeaturePlugin<undefined>

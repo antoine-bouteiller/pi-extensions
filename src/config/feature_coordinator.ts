@@ -2,7 +2,7 @@ import { type ExtensionAPI, type ExtensionContext, type SessionStartEvent, type 
 import { Cause, Effect, Exit, Fiber, Result, Schema, Scope, Semaphore } from 'effect'
 
 import { type AppRuntime, type AppServices, StatusBar } from '#shared/effect/app_services'
-import { type FeatureImplementation, type FeaturePlugin } from '#shared/effect/feature'
+import { type FeatureDescriptor, type FeatureImplementation } from '#shared/effect/feature'
 import { type HandlerServices, makeEventHandler } from '#shared/effect/runtime'
 
 type SafeReason =
@@ -16,7 +16,7 @@ type SafeReason =
 export type FeatureHealth = { readonly _tag: 'checking' } | { readonly _tag: 'healthy' } | { readonly _tag: 'error'; readonly reason: SafeReason }
 type Registration = 'unregistered' | 'registered' | 'poisoned'
 interface FeatureRecord {
-  readonly plugin: FeaturePlugin
+  readonly plugin: FeatureDescriptor
   implementation?: FeatureImplementation
   registration: Registration
   health: FeatureHealth
@@ -170,7 +170,7 @@ const publish = (record: FeatureRecord): Effect.Effect<void, never, AppServices 
 export const makeFeatureCoordinator = (input: {
   readonly pi: ExtensionAPI
   readonly runtime: AppRuntime
-  readonly features: readonly FeaturePlugin[]
+  readonly features: readonly FeatureDescriptor[]
 }): FeatureCoordinator => {
   const enabled = Bun.env.PI_SUBAGENT === '1' ? input.features.filter((plugin) => plugin.suppressInChild !== true) : input.features
   validate(enabled)
@@ -391,5 +391,5 @@ export const makeFeatureCoordinator = (input: {
   }
 }
 
-export const registerFeatures = (pi: ExtensionAPI, runtime: AppRuntime, features: readonly FeaturePlugin[]): void =>
+export const registerFeatures = (pi: ExtensionAPI, runtime: AppRuntime, features: readonly FeatureDescriptor[]): void =>
   makeFeatureCoordinator({ features, pi, runtime }).install()
