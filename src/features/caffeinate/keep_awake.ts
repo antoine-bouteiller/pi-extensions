@@ -2,6 +2,8 @@ import { Data, Deferred, Effect, Exit, Scope } from 'effect'
 import { ChildProcess } from 'effect/unstable/process'
 import { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner'
 
+import { type EnvApi } from '#shared/effect/env'
+
 export class CaffeinateError extends Data.TaggedError('CaffeinateError')<{ readonly cause: unknown }> {}
 
 interface CaffeinateProcess {
@@ -53,12 +55,12 @@ const spawnCaffeinate = (command: string, args: readonly string[]): Effect.Effec
     }
   })
 
-export const productionDependencies: CaffeinateDependencies = {
-  isSubagent: process.env.PI_SUBAGENT_OWNER_TOKEN !== undefined,
+export const productionDependencies = (environment: EnvApi): CaffeinateDependencies => ({
+  isSubagent: environment.get('PI_SUBAGENT_OWNER_TOKEN') !== undefined,
   pid: process.pid,
   platform: process.platform,
   spawn: spawnCaffeinate,
-}
+})
 
 interface RunningCaffeinate {
   readonly completion: Deferred.Deferred<void>

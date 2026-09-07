@@ -1,9 +1,13 @@
 import { type AgentToolUpdateCallback, type ExtensionCommandContext, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { type Cause, Context, type Duration, Effect, Fiber, type ManagedRuntime, Schedule } from 'effect'
 
+import { Env, type EnvApi } from './env.js'
 import { makeUi, PiCtx, Ui } from './pi_services.js'
 
 export type HandlerServices = PiCtx | Ui
+
+/** Registration runs synchronously inside Pi's callbacks, so features resolve the environment snapshot off the runtime instead of yielding `Env`. */
+export const runtimeEnvironment = (runtime: ManagedRuntime.ManagedRuntime<Env, never>): EnvApi => runtime.runSync(Effect.service(Env))
 
 /** One record rather than positional arguments because every body needs a different subset of it. */
 export interface ToolInvocation<Params> {

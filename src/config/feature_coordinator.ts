@@ -3,7 +3,7 @@ import { Cause, Effect, Exit, Fiber, Result, Schema, Scope, Semaphore } from 'ef
 
 import { type AppRuntime, type AppServices, StatusBar } from '#shared/effect/app_services'
 import { type FeatureDescriptor, type FeatureImplementation } from '#shared/effect/feature'
-import { type HandlerServices, makeEventHandler } from '#shared/effect/runtime'
+import { type HandlerServices, makeEventHandler, runtimeEnvironment } from '#shared/effect/runtime'
 
 type SafeReason =
   | 'activation failed'
@@ -172,7 +172,8 @@ export const makeFeatureCoordinator = (input: {
   readonly runtime: AppRuntime
   readonly features: readonly FeatureDescriptor[]
 }): FeatureCoordinator => {
-  const enabled = Bun.env.PI_SUBAGENT === '1' ? input.features.filter((plugin) => plugin.suppressInChild !== true) : input.features
+  const enabled =
+    runtimeEnvironment(input.runtime).get('PI_SUBAGENT') === '1' ? input.features.filter((plugin) => plugin.suppressInChild !== true) : input.features
   validate(enabled)
   const records: FeatureRecord[] = enabled.map((plugin) => ({
     health: { _tag: 'checking' },

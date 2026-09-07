@@ -19,6 +19,7 @@ import { KeychainCredentialError, type CredentialStore } from '@/features/mcp/ke
 import { McpManager, McpManagerService, mcpManagerLayer } from '@/features/mcp/manager.js'
 import { type OpenUrl } from '@/features/mcp/oauth.js'
 import { type McpGatewayPolicy, type McpServerMap } from '@/features/mcp/types.js'
+import { processEnvironment } from '@/shared/effect/env.js'
 import { type JsonObject, jsonText } from '@/shared/utils/json.js'
 
 class FakeTransport {
@@ -179,6 +180,7 @@ const harness = (
         }),
       set: () => Effect.void,
     },
+    environment: processEnvironment,
     openUrl: options.openUrl ?? (() => Effect.void),
     policy: options.policy,
   })
@@ -779,7 +781,7 @@ describe('MCP manager', () => {
                     type: 'stdio',
                   },
                 },
-                { openUrl: () => Effect.void }
+                { environment: processEnvironment, openUrl: () => Effect.void }
               )
             )
           ),
@@ -886,7 +888,7 @@ describe('MCP manager', () => {
         Effect.gen(function* () {
           const manager = yield* McpManagerService
           return manager.status()
-        }).pipe(Effect.provide(mcpManagerLayer({}, { openUrl: () => Effect.void })))
+        }).pipe(Effect.provide(mcpManagerLayer({}, { environment: processEnvironment, openUrl: () => Effect.void })))
       )
       expect(statuses).toEqual([])
     })

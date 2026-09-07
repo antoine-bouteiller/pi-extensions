@@ -5,6 +5,7 @@ import { type Path } from 'effect/Path'
 import { type HttpClient } from 'effect/unstable/http'
 
 import { AgentActivity, StatusBar, type AgentActivityApi, type StatusBarApi } from '#shared/effect/app_services'
+import { Env } from '#shared/effect/env'
 import { azureQuota, writeSubagentAzureQuota } from '#shared/state/azure_quota'
 import { isEmptyString, isNullOrUndefined, isTrue } from '#shared/utils/predicates'
 
@@ -40,7 +41,7 @@ export interface PanelHandlers {
   readonly sessionStart: (
     event: PiEvent<'session_start'>,
     ctx: ExtensionContext
-  ) => Effect.Effect<void, never, HttpClient.HttpClient | AgentActivity | StatusBar | Path | Scope.Scope>
+  ) => Effect.Effect<void, never, HttpClient.HttpClient | AgentActivity | StatusBar | Path | Scope.Scope | Env>
   readonly modelSelect: (event: PiEvent<'model_select'>, ctx: ExtensionContext) => Effect.Effect<void, never, HttpClient.HttpClient>
   readonly thinkingLevelSelect: (event: PiEvent<'thinking_level_select'>, ctx: ExtensionContext) => Effect.Effect<void>
   readonly agentStart: (event: PiEvent<'agent_start'>, ctx: ExtensionContext) => Effect.Effect<void>
@@ -53,9 +54,14 @@ export interface PanelHandlers {
 export const recordSubagentQuota = (
   event: PiEvent<'after_provider_response'>,
   ctx: ExtensionContext
-): Effect.Effect<void, never, FileSystem | Path> => {
+): Effect.Effect<void, never, FileSystem | Path | Env> => {
   const quota = quotaFromHeaders(ctx.model?.provider ?? '', event.headers)
-  return quota === undefined ? Effect.void : writeSubagentAzureQuota(process.env.PI_SUBAGENT_OWNER_TOKEN ?? '', quota.percent)
+  return quota === undefined
+    ? Effect.void
+    : Effect.gen(function* () {
+        const env = yield* Env
+        yield* writeSubagentAzureQuota(env.get('PI_SUBAGENT_OWNER_TOKEN') ?? '', quota.percent)
+      })
 }
 
 export const makePanelController = ({ dependencies, pi }: PanelControllerOptions): PanelHandlers => {
@@ -153,7 +159,7 @@ export const makePanelController = ({ dependencies, pi }: PanelControllerOptions
       requestRender?.()
     })
 
-  const install = (ctx: ExtensionContext, path: Path, agentActivity: AgentActivityApi): Effect.Effect<void> =>
+  const install = (ctx: ExtensionContext, path: Path, agentActivity: AgentActivityApi, noColor: boolean): Effect.Effect<void> =>
     Effect.gen(function* () {
       if (ctx.mode !== 'tui') {
         return
@@ -214,6 +220,7 @@ export const makePanelController = ({ dependencies, pi }: PanelControllerOptions
               sessionId: ctx.sessionManager?.getSessionId() ?? undefined,
             }
           },
+          noColor,
           onError: () => undefined,
           path,
         })
@@ -306,7 +313,8 @@ export const makePanelController = ({ dependencies, pi }: PanelControllerOptions
         const requests = yield* Queue.sliding<void>(1)
         gitRefreshRequests = requests
         yield* Effect.forkIn(Effect.forever(Queue.take(requests).pipe(Effect.andThen(refreshGit()))), sessionScope)
-        yield* install(ctx, path, agentActivity)
+        const env = yield* Env
+        yield* install(ctx, path, agentActivity, env.get('NO_COLOR') !== undefined)
         if (ctx.mode !== 'tui') {
           yield* refreshModel(ctx)
         }

@@ -7,6 +7,7 @@ import { type ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSp
 import { type AgentActivityStore, type RunningAgent, runningAgents } from '#shared/state/agent_activity'
 import { formatStatusText, publishStatus, type StatusEntry, type StatusItem, statusBar } from '#shared/state/status_bar'
 
+import { type Env } from './env.js'
 import { Ui } from './pi_services.js'
 
 interface StatusChannel {
@@ -79,6 +80,6 @@ export const StatusBarLive: Layer.Layer<StatusBar> = Layer.succeed(StatusBar)({
 
 export const AgentActivityLive: Layer.Layer<AgentActivity> = Layer.succeed(AgentActivity)(agentActivityApi(runningAgents))
 
-export type AppServices = FileSystem | Path | HttpClient.HttpClient | StatusBar | AgentActivity | ChildProcessSpawner
+export type AppServices = FileSystem | Path | HttpClient.HttpClient | StatusBar | AgentActivity | ChildProcessSpawner | Env
 
 export type AppRuntime = ManagedRuntime.ManagedRuntime<AppServices, never>

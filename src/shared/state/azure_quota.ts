@@ -5,26 +5,29 @@ import { Effect, Path } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
 import { type Path as PathService } from 'effect/Path'
 
+import { Env, type EnvApi } from '#shared/effect/env'
 import { jsonText, parseJsonText } from '#shared/utils/json'
 
 import { createObservableStore } from './store.js'
 
 const TOKEN_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-const quotaDir = (path: PathService) => path.join(process.env.PI_SUBAGENT_TEMP_DIR || tmpdir(), 'pi-codex-subagents', userInfo().username, 'quota')
-const quotaPath = (path: PathService, token: string) => path.join(quotaDir(path), `${token}.json`)
+const quotaDir = (path: PathService, env: EnvApi) =>
+  path.join(env.get('PI_SUBAGENT_TEMP_DIR') || tmpdir(), 'pi-codex-subagents', userInfo().username, 'quota')
+const quotaPath = (path: PathService, env: EnvApi, token: string) => path.join(quotaDir(path, env), `${token}.json`)
 
 export const azureQuota = createObservableStore<number | undefined>(undefined)
 
-export const writeSubagentAzureQuota = (token: string, percent: number): Effect.Effect<void, never, FileSystem | PathService> => {
+export const writeSubagentAzureQuota = (token: string, percent: number): Effect.Effect<void, never, FileSystem | PathService | Env> => {
   if (!TOKEN_PATTERN.test(token) || !Number.isFinite(percent)) {
     return Effect.void
   }
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem
     const path = yield* Path.Path
-    const target = quotaPath(path, token)
+    const env = yield* Env
+    const target = quotaPath(path, env, token)
     const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`
-    const directory = quotaDir(path)
+    const directory = quotaDir(path, env)
     /*
      * Mode at creation as well as after: a later chmod alone leaves a umask-width window during
      * which the handoff directory is world-readable in shared tmp.
@@ -40,7 +43,7 @@ export const writeSubagentAzureQuota = (token: string, percent: number): Effect.
   }).pipe(Effect.ignore)
 }
 
-export const consumeSubagentAzureQuota = (token: string): Effect.Effect<number | undefined, never, FileSystem | PathService> => {
+export const consumeSubagentAzureQuota = (token: string): Effect.Effect<number | undefined, never, FileSystem | PathService | Env> => {
   if (!TOKEN_PATTERN.test(token)) {
     // `effecttsgo/effect-succeed-with-void` rejects `Effect.succeed(undefined)`, so widen `Effect.void` instead.
     return Effect.void.pipe(Effect.as<number | undefined>(undefined))
@@ -48,7 +51,8 @@ export const consumeSubagentAzureQuota = (token: string): Effect.Effect<number |
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem
     const path = yield* Path.Path
-    const target = quotaPath(path, token)
+    const env = yield* Env
+    const target = quotaPath(path, env, token)
     const claimed = `${target}.${process.pid}.${randomUUID()}.consume`
     return yield* Effect.gen(function* () {
       yield* fileSystem.rename(target, claimed)

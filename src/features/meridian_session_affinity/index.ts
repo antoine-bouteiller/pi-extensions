@@ -3,6 +3,7 @@ import { Cause, Effect, Stream } from 'effect'
 import { FetchHttpClient, HttpClient, HttpClientRequest } from 'effect/unstable/http'
 
 import { type AppRuntime } from '#shared/effect/app_services'
+import { processEnvironment } from '#shared/effect/env'
 import { type FeatureOptions, type FeaturePlugin, type FeaturePreflightError } from '#shared/effect/feature'
 import { makeEventHandler } from '#shared/effect/runtime'
 
@@ -74,7 +75,8 @@ const prepare = (dependencies: MeridianSessionAffinityDependencies) =>
   })
 
 export const feature = ((options: FeatureOptions<MeridianSessionAffinityDependencies> = {}) => {
-  const dependencies = options.dependencies ?? { baseUrl: Bun.env.MERIDIAN_BASE_URL ?? DEFAULT_MERIDIAN_BASE_URL }
+  const environment = options.environment ?? processEnvironment
+  const dependencies = options.dependencies ?? { baseUrl: environment.get('MERIDIAN_BASE_URL') ?? DEFAULT_MERIDIAN_BASE_URL }
   return {
     bootstrap: 'background',
     id: 'meridian-session-affinity',

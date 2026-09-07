@@ -45,23 +45,8 @@ export default defineConfig({
       },
     },
     {
-      /*
-       * The only sanctioned ambient environment reads: module-level constants resolved at import
-       * time, synchronous Pi/TUI callbacks, and the child-process environment `sub_agents` builds.
-       * `Config` can only be read from an Effect context, so these cannot go through it. Every
-       * other module must keep environment access inside an Effect.
-       */
-      files: [
-        'src/features/auto_theme/index.ts',
-        'src/features/caffeinate/keep_awake.ts',
-        'src/features/mcp/gateway.ts',
-        'src/features/mcp/manager.ts',
-        'src/features/meridian_session_affinity/affinity.ts',
-        'src/features/status_panel/index.ts',
-        'src/features/status_panel/panel.ts',
-        'src/features/status_panel/sidebar.ts',
-        'src/shared/state/azure_quota.ts',
-      ],
+      // This module is the one sanctioned ambient read; everything else goes through the Env service.
+      files: ['src/shared/effect/env.ts'],
       rules: {
         'effecttsgo/process-env': 'off',
       },

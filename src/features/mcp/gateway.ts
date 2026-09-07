@@ -7,6 +7,7 @@ import { type Path } from 'effect/Path'
 import { Type, type Static } from 'typebox'
 
 import { type AppServices } from '#shared/effect/app_services'
+import { type EnvApi, processEnvironment } from '#shared/effect/env'
 import { ToolFailure } from '#shared/effect/errors'
 import { withAbortSignal } from '#shared/effect/runtime'
 import { createStatusChannel } from '#shared/state/status_bar'
@@ -50,8 +51,8 @@ export const readonlyMcpPolicy: McpGatewayPolicy = {
   name: 'read-only',
 }
 
-export const mcpPolicyFromEnvironment = (environment: Readonly<Record<string, string | undefined>> = process.env): McpGatewayPolicy =>
-  environment.PI_SUBAGENT_READONLY === '1' ? readonlyMcpPolicy : unrestrictedMcpPolicy
+export const mcpPolicyFromEnvironment = (environment: EnvApi = processEnvironment): McpGatewayPolicy =>
+  environment.get('PI_SUBAGENT_READONLY') === '1' ? readonlyMcpPolicy : unrestrictedMcpPolicy
 
 export const McpGatewayParameters = Type.Object({
   args: Type.Optional(Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.String({ description: 'A JSON object encoded as a string.' })])),
@@ -590,6 +591,7 @@ export const makeMcpGateway = (): McpGatewayApi => ({
     import('./manager.js').then(
       ({ McpManager: Manager }) =>
         new Manager(config, {
+          environment: processEnvironment,
           onStatusChange: callbacks.onStatusChange,
           openUrl: (url: string) =>
             // Re-checked at the process boundary: `open` dispatches any scheme the OS has registered.

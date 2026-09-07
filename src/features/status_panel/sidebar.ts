@@ -41,12 +41,7 @@ const THEME_COLORS = {
   white: 'text',
 } satisfies Record<PaletteColor, ThemeColor>
 
-const paint = (theme: SidebarTheme, color: PaletteColor, text: string) => {
-  if (process.env.NO_COLOR !== undefined) {
-    return text
-  }
-  return theme.fg(THEME_COLORS[color], text)
-}
+const paint = (theme: SidebarTheme, color: PaletteColor, text: string) => theme.fg(THEME_COLORS[color], text)
 
 const bold = (theme: SidebarTheme, text: string) => theme.bold?.(text) ?? text
 
@@ -438,6 +433,7 @@ export interface SidebarController {
 
 interface SidebarControllerOptions {
   ctx: ExtensionContext
+  noColor: boolean
   getState: () => SidebarState
   path: Path
   onError?: (error: unknown) => void
@@ -476,6 +472,7 @@ export const createSidebarController = (options: SidebarControllerOptions): Side
     try {
       const pending = options.ctx.ui.custom<void>(
         (tui, theme) => {
+          const sidebarTheme: SidebarTheme = options.noColor ? { fg: (_color, text) => text } : theme
           const component = {
             invalidate() {
               /* Empty */
@@ -485,7 +482,7 @@ export const createSidebarController = (options: SidebarControllerOptions): Side
                 height: tui.terminal.rows,
                 path: options.path,
                 state: options.getState(),
-                theme,
+                theme: sidebarTheme,
                 width: sidebarWidth,
               }),
           } satisfies Component

@@ -2,6 +2,7 @@ import { type ExtensionAPI, type ExtensionContext, type SessionStartEvent } from
 import { type Effect, type Scope } from 'effect'
 
 import { type AppRuntime, type AppServices } from './app_services.js'
+import { type EnvApi } from './env.js'
 import { type HandlerServices } from './runtime.js'
 
 export interface FeaturePreflightError {
@@ -45,6 +46,7 @@ export type FeatureDescriptor =
 
 export interface FeatureOptions<Dependencies> {
   readonly dependencies?: Dependencies
+  readonly environment?: EnvApi
 }
 
 export type FeaturePlugin<Dependencies = never> = (options?: FeatureOptions<Dependencies>) => FeatureDescriptor

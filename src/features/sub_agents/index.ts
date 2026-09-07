@@ -2,6 +2,7 @@ import { getAgentDir, ModelRuntime, type ExtensionAPI, type ExtensionContext } f
 import { Context, Effect, Layer } from 'effect'
 
 import { AgentActivity, type AppRuntime } from '#shared/effect/app_services'
+import { type EnvApi, processEnvironment } from '#shared/effect/env'
 import { type FeatureActivationError, type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 import { makeCommandHandler, makeEventHandler, makeToolExecutor, runManagedEffect, runManagedRepeatingEffect } from '#shared/effect/runtime'
 
@@ -70,8 +71,9 @@ const preflightNotice = (unresolved: readonly (readonly [ProfileKey, Extract<Pro
 }
 
 export const feature = ((options: FeatureOptions<SubagentFeatureDependencies> = {}) => {
-  const dependencies = options.dependencies ?? defaultDependencies
-  const isSubagent = dependencies.isSubagent ?? (() => Bun.env.PI_SUBAGENT === '1')
+  const environment = options.environment ?? processEnvironment
+  const dependencies = options.dependencies ?? defaultDependencies(environment)
+  const isSubagent = dependencies.isSubagent ?? (() => environment.get('PI_SUBAGENT') === '1')
   const toolDependencies = { ...dependencies, subagents: dependencies.subagents ?? {} }
   const loadSettings = (ctx: ExtensionContext) =>
     dependencies.subagents === undefined
@@ -296,7 +298,7 @@ export const feature = ((options: FeatureOptions<SubagentFeatureDependencies> = 
   }
 }) satisfies FeaturePlugin<SubagentFeatureDependencies>
 
-const defaultDependencies: SubagentFeatureDependencies = {
+const defaultDependencies = (env: EnvApi): SubagentFeatureDependencies => ({
   agentDir: getAgentDir(),
   childModelView: { authenticated_providers: [], models: [] },
   childModelViewFor: (_ctx, environment) => {
@@ -314,5 +316,5 @@ const defaultDependencies: SubagentFeatureDependencies = {
       }))
     })
   },
-  environment: () => process.env,
-}
+  environment: () => env.all,
+})

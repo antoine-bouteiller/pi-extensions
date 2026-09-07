@@ -4,14 +4,16 @@ import { BunFileSystem, BunPath } from '@effect/platform-bun'
 import { Data, Effect, Layer, type FileSystem, type Path, type Scope } from 'effect'
 import { TestClock } from 'effect/testing'
 
+import { type Env, EnvLive } from '@/shared/effect/env.js'
+
 export { describe, expect } from 'bun:test'
 
 type Options = number | { timeout?: number }
 const timeoutOf = (opts?: Options) => (typeof opts === 'number' ? opts : opts?.timeout)
 
 /** Virtual time and the real Bun platform by default. */
-type TestServices = FileSystem.FileSystem | Path.Path | TestClock.TestClock
-const testEnv: Layer.Layer<TestServices> = Layer.mergeAll(BunFileSystem.layer, BunPath.layer, TestClock.layer())
+type TestServices = FileSystem.FileSystem | Path.Path | TestClock.TestClock | Env
+const testEnv: Layer.Layer<TestServices> = Layer.mergeAll(BunFileSystem.layer, BunPath.layer, TestClock.layer(), EnvLive)
 
 const run = <Success, Failure>(eff: Effect.Effect<Success, Failure, TestServices>) => Effect.runPromise(Effect.provide(eff, testEnv))
 

@@ -1,7 +1,6 @@
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
-import { withProcessEnv } from '@tests/utils/process_env.js'
-import { runtime } from '@tests/utils/runtime.js'
+import { runtime, runtimeWithEnvironment } from '@tests/utils/runtime.js'
 import { Cause, Effect, Exit, Fiber } from 'effect'
 import { TestClock } from 'effect/testing'
 import { HttpClient, HttpClientResponse } from 'effect/unstable/http'
@@ -12,9 +11,9 @@ interface ProviderHeaderEvent {
   headers: Record<string, string>
 }
 
-const createHarness = () => {
+const createHarness = (harnessRuntime = runtime) => {
   const fixture = createFakePi()
-  implementation.register(fixture.pi, runtime)
+  implementation.register(fixture.pi, harnessRuntime)
   return fixture
 }
 
@@ -208,16 +207,14 @@ Current working directory: /repo`,
   )
 
   it.effect('recognizes the configured Meridian base URL without relying on static headers', () =>
-    withProcessEnv('MERIDIAN_BASE_URL', 'https://meridian.example.test/proxy/', () =>
-      Effect.gen(function* () {
-        const fixture = createHarness()
-        const event: ProviderHeaderEvent = { headers: {} }
+    Effect.gen(function* () {
+      const fixture = createHarness(runtimeWithEnvironment({ ...process.env, MERIDIAN_BASE_URL: 'https://meridian.example.test/proxy/' }))
+      const event: ProviderHeaderEvent = { headers: {} }
 
-        yield* Effect.promise(() => fixture.emit('before_provider_headers', event, context('session-b', 'https://meridian.example.test/proxy')))
+      yield* Effect.promise(() => fixture.emit('before_provider_headers', event, context('session-b', 'https://meridian.example.test/proxy')))
 
-        expect(event.headers['x-session-affinity']).toBe('session-b')
-      })
-    )
+      expect(event.headers['x-session-affinity']).toBe('session-b')
+    })
   )
 
   it.effect('does not leak session affinity to non-Meridian providers', () =>

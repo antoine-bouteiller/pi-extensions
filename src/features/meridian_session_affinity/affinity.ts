@@ -1,6 +1,7 @@
 import { type BeforeAgentStartEvent, type BeforeProviderHeadersEvent, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { Effect } from 'effect'
 
+import { Env, type EnvApi, processEnvironment } from '#shared/effect/env'
 import { isEmptyString, isNullOrUndefined } from '#shared/utils/predicates'
 
 import { scrubPiFingerprints } from './scrub.js'
@@ -26,17 +27,17 @@ const normalizedUrl = (value: string | undefined): string | undefined => {
 const hasHeader = (headers: BeforeProviderHeadersEvent['headers'], expectedName: string): boolean =>
   Object.entries(headers).some(([name, value]) => name.toLowerCase() === expectedName && typeof value === 'string')
 
-const isMeridianModel = (ctx: ExtensionContext): boolean => {
+const isMeridianModel = (ctx: ExtensionContext, env: EnvApi = processEnvironment): boolean => {
   if (!isNullOrUndefined(ctx.model) && hasHeader(ctx.model.headers ?? {}, MERIDIAN_AGENT_HEADER)) {
     return true
   }
 
-  const configuredBaseUrl = Bun.env.MERIDIAN_BASE_URL ?? DEFAULT_MERIDIAN_BASE_URL
+  const configuredBaseUrl = env.get('MERIDIAN_BASE_URL') ?? DEFAULT_MERIDIAN_BASE_URL
   return normalizedUrl(ctx.model?.baseUrl) === normalizedUrl(configuredBaseUrl)
 }
 
-const isMeridianRequest = (event: BeforeProviderHeadersEvent, ctx: ExtensionContext): boolean =>
-  hasHeader(event.headers, MERIDIAN_AGENT_HEADER) || isMeridianModel(ctx)
+const isMeridianRequest = (event: BeforeProviderHeadersEvent, ctx: ExtensionContext, env: EnvApi): boolean =>
+  hasHeader(event.headers, MERIDIAN_AGENT_HEADER) || isMeridianModel(ctx, env)
 
 const setCanonicalHeader = (headers: BeforeProviderHeadersEvent['headers'], name: string, value: string): void => {
   for (const existingName of Object.keys(headers)) {
@@ -47,9 +48,10 @@ const setCanonicalHeader = (headers: BeforeProviderHeadersEvent['headers'], name
   headers[name] = value
 }
 
-export const applySessionAffinity = (event: BeforeProviderHeadersEvent, ctx: ExtensionContext): Effect.Effect<void> =>
-  Effect.sync(() => {
-    if (!isMeridianRequest(event, ctx)) {
+export const applySessionAffinity = (event: BeforeProviderHeadersEvent, ctx: ExtensionContext): Effect.Effect<void, never, Env> =>
+  Effect.gen(function* () {
+    const env = yield* Env
+    if (!isMeridianRequest(event, ctx, env)) {
       return
     }
 
@@ -66,8 +68,8 @@ export interface ScrubRequest {
   readonly event: BeforeAgentStartEvent
 }
 
-export const scrubbedSystemPrompt = ({ ctx, event }: ScrubRequest): { systemPrompt: string } | undefined => {
-  if (!isMeridianModel(ctx)) {
+export const scrubbedSystemPrompt = ({ ctx, event }: ScrubRequest, env: EnvApi = processEnvironment): { systemPrompt: string } | undefined => {
+  if (!isMeridianModel(ctx, env)) {
     return undefined
   }
 

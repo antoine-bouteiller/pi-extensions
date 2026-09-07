@@ -2,6 +2,7 @@ import { BunFileSystem, BunPath } from '@effect/platform-bun'
 import { Effect, Layer, ManagedRuntime } from 'effect'
 
 import { AgentActivityLive } from '#shared/effect/app_services'
+import { EnvLive } from '#shared/effect/env'
 
 import { resolveProfile } from './model.js'
 import { type SubagentOrchestrator, SubagentOrchestratorLive } from './orchestrator.js'
@@ -15,7 +16,7 @@ const SubagentPortsLive = Layer.mergeAll(
   ProductionNotificationSinkLive,
   Layer.succeed(ProfileResolver)({ resolve: (key, snapshot) => Effect.succeed(resolveProfile(key, snapshot)) }),
   SubagentStoreLive
-).pipe(Layer.provideMerge(Layer.mergeAll(BunFileSystem.layer, BunPath.layer)))
+).pipe(Layer.provideMerge(Layer.mergeAll(BunFileSystem.layer, BunPath.layer, EnvLive)))
 
 const SubagentOrchestratorProductionLive = Layer.suspend(() => SubagentOrchestratorLive.pipe(Layer.provide(SubagentPortsLive)))
 

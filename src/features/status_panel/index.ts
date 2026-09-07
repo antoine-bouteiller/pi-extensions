@@ -3,7 +3,7 @@ import { Effect } from 'effect'
 
 import { type AppRuntime } from '#shared/effect/app_services'
 import { type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
-import { makeEventHandler } from '#shared/effect/runtime'
+import { makeEventHandler, runtimeEnvironment } from '#shared/effect/runtime'
 
 import { makePanelController, recordSubagentQuota, type StatusPanelDependencies } from './panel.js'
 
@@ -20,7 +20,7 @@ export const feature = ((options: FeatureOptions<StatusPanelDependencies> = {}) 
         handlers === undefined ? Effect.void : handlers.sessionShutdown({ reason: 'quit', type: 'session_shutdown' }, ctx),
       register: (pi: ExtensionAPI, runtime: AppRuntime): void => {
         const onEvent = makeEventHandler(runtime)
-        isSubagent = process.env.PI_SUBAGENT_OWNER_TOKEN !== undefined
+        isSubagent = runtimeEnvironment(runtime).get('PI_SUBAGENT_OWNER_TOKEN') !== undefined
         if (isSubagent) {
           pi.on('after_provider_response', onEvent(recordSubagentQuota))
           return

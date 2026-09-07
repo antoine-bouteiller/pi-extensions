@@ -9,6 +9,7 @@ import { Context, Data, Deferred, Effect, Fiber, Layer, Result, Schema } from 'e
 import { type FileSystem } from 'effect/FileSystem'
 import { type Path } from 'effect/Path'
 
+import { type EnvApi } from '#shared/effect/env'
 import { type JsonObject } from '#shared/utils/json'
 import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isTrue } from '#shared/utils/predicates'
 import { isRecord } from '#shared/utils/records'
@@ -111,6 +112,7 @@ export interface McpManagerOptions {
   onStatusChange?: (statuses: readonly { name: string; status: McpServerStatus; error?: string }[]) => void
   openUrl: OpenUrl
   credentialStore?: CredentialStore
+  environment: EnvApi
   createClient?: (serverName: string) => ClientLike
   createTransport?: (serverName: string, config: Exclude<ServerConfig, { type?: undefined }>, options: TransportOptions) => Transport
   connectTimeoutMs?: number
@@ -267,9 +269,9 @@ const normalizeAnnotations = (
 
 type Environment = Record<string, string>
 
-const inheritedEnvironment = (configured: Environment | undefined) => {
+const inheritedEnvironment = (environment: EnvApi, configured: Environment | undefined) => {
   const inherited: Environment = {}
-  for (const [name, value] of Object.entries(process.env)) {
+  for (const [name, value] of Object.entries(environment.all)) {
     if (value !== undefined) {
       inherited[name] = value
     }
@@ -1184,7 +1186,7 @@ export class McpManager {
         args: config.args,
         command: config.command,
         cwd: config.cwd,
-        env: inheritedEnvironment(config.env),
+        env: inheritedEnvironment(this.options.environment, config.env),
         stderr: 'ignore',
       })
     }

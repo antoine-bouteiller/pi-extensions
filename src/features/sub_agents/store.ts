@@ -14,6 +14,7 @@ import {
   withHeldFile,
   writePrivateFile,
 } from '#shared/effect/bun_host_file_system'
+import { Env, type EnvApi } from '#shared/effect/env'
 
 import {
   AgentResultSchema,
@@ -188,13 +189,14 @@ const decodeRecord = (content: Uint8Array): SubagentRecord | undefined => {
 const encode = (value: unknown): string => JSON.stringify(value)
 
 interface StoreServices {
+  readonly env: EnvApi
   readonly fs: FileSystem.FileSystem
   readonly path: Path.Path
 }
 
 const makeStore = (config: SubagentStoreConfig, services: StoreServices): SubagentStoreApi => {
-  const { fs, path } = services
-  const temporaryDirectory = config.tempDirectory ?? Bun.env.PI_SUBAGENT_TEMP_DIR ?? os.tmpdir()
+  const { env, fs, path } = services
+  const temporaryDirectory = config.tempDirectory ?? env.get('PI_SUBAGENT_TEMP_DIR') ?? os.tmpdir()
   const username = config.username ?? os.userInfo().username
   const privateRoot = path.join(temporaryDirectory, 'pi-codex-subagents', username)
   const root = path.join(privateRoot, 'runs')
@@ -367,10 +369,10 @@ const makeStore = (config: SubagentStoreConfig, services: StoreServices): Subage
     },
   }
 }
-export const makeSubagentStoreLive = (config: SubagentStoreConfig = {}): Layer.Layer<SubagentStore, never, FileSystem.FileSystem | Path.Path> =>
+export const makeSubagentStoreLive = (config: SubagentStoreConfig = {}): Layer.Layer<SubagentStore, never, FileSystem.FileSystem | Path.Path | Env> =>
   Layer.effect(SubagentStore)(
     Effect.gen(function* () {
-      return makeStore(config, { fs: yield* FileSystem.FileSystem, path: yield* Path.Path })
+      return makeStore(config, { env: yield* Env, fs: yield* FileSystem.FileSystem, path: yield* Path.Path })
     })
   )
-export const SubagentStoreLive: Layer.Layer<SubagentStore, never, FileSystem.FileSystem | Path.Path> = makeSubagentStoreLive()
+export const SubagentStoreLive: Layer.Layer<SubagentStore, never, FileSystem.FileSystem | Path.Path | Env> = makeSubagentStoreLive()

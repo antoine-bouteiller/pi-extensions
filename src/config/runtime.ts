@@ -3,6 +3,7 @@ import { Layer, ManagedRuntime } from 'effect'
 import { FetchHttpClient } from 'effect/unstable/http'
 
 import { AgentActivityLive, type AppServices, StatusBarLive } from '#shared/effect/app_services'
+import { EnvLive } from '#shared/effect/env'
 
 export type ProcessServices = AppServices
 export type ProcessRuntime = ManagedRuntime.ManagedRuntime<ProcessServices, never>
@@ -16,7 +17,9 @@ export type ProcessRuntime = ManagedRuntime.ManagedRuntime<ProcessServices, neve
  */
 const BunPlatformLayer = BunChildProcessSpawner.layer.pipe(Layer.provideMerge(Layer.mergeAll(BunFileSystem.layer, BunPath.layer)))
 
-const AppLayer: Layer.Layer<ProcessServices> = Layer.mergeAll(BunPlatformLayer, FetchHttpClient.layer, StatusBarLive, AgentActivityLive)
+const AppLayer: Layer.Layer<ProcessServices> = Layer.mergeAll(BunPlatformLayer, FetchHttpClient.layer, StatusBarLive, AgentActivityLive).pipe(
+  Layer.provideMerge(EnvLive)
+)
 
 let processRuntime: ProcessRuntime | undefined
 

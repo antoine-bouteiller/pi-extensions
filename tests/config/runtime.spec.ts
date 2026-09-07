@@ -4,13 +4,13 @@ import { BunChildProcessSpawner, BunFileSystem, BunPath } from '@effect/platform
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asExtensionContext, asResult } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
-import { withProcessEnv } from '@tests/utils/process_env.js'
 import { Effect, Exit, Layer, ManagedRuntime, Scope } from 'effect'
 import { FetchHttpClient } from 'effect/unstable/http'
 
 import { getOrCreateProcessRuntime } from '@/config/runtime.js'
 import { feature as statusPanel } from '@/features/status_panel/index.js'
 import { AgentActivity, type AgentActivityApi, type AppRuntime, StatusBarLive } from '@/shared/effect/app_services.js'
+import { envLayer } from '@/shared/effect/env.js'
 import { parseJsonText } from '@/shared/utils/json.js'
 
 const BunPlatformLayer = BunChildProcessSpawner.layer.pipe(Layer.provideMerge(Layer.mergeAll(BunFileSystem.layer, BunPath.layer)))
@@ -114,28 +114,32 @@ describe('process-wide runtime', () => {
         },
       }
       const runtime: AppRuntime = ManagedRuntime.make(
-        Layer.mergeAll(BunPlatformLayer, FetchHttpClient.layer, StatusBarLive, Layer.succeed(AgentActivity)(sentinelActivity))
+        Layer.mergeAll(
+          BunPlatformLayer,
+          FetchHttpClient.layer,
+          StatusBarLive,
+          envLayer({ ...process.env, PI_SUBAGENT_OWNER_TOKEN: undefined }),
+          Layer.succeed(AgentActivity)(sentinelActivity)
+        )
       )
-      yield* withProcessEnv('PI_SUBAGENT_OWNER_TOKEN', undefined, () =>
-        Effect.gen(function* () {
-          const descriptor = statusPanel()
-          descriptor.implementation.register(createFakePi().pi, runtime)
-          const scope = Scope.makeUnsafe()
-          const ctx = asExtensionContext({
-            cwd: '/project',
-            getContextUsage: () => undefined,
-            mode: 'rpc',
-            model: { contextWindow: 100_000, id: 'model', provider: 'openai' },
-          })
-          yield* Effect.promise(() =>
-            runtime.runPromise(
-              Effect.provideService(descriptor.implementation.activate({ reason: 'startup', type: 'session_start' }, ctx), Scope.Scope, scope)
-            )
-          )
-          expect(subscriptions).toBe(1)
-          yield* Effect.promise(() => runtime.runPromise(Scope.close(scope, Exit.void)))
+      yield* Effect.gen(function* () {
+        const descriptor = statusPanel()
+        descriptor.implementation.register(createFakePi().pi, runtime)
+        const scope = Scope.makeUnsafe()
+        const ctx = asExtensionContext({
+          cwd: '/project',
+          getContextUsage: () => undefined,
+          mode: 'rpc',
+          model: { contextWindow: 100_000, id: 'model', provider: 'openai' },
         })
-      ).pipe(Effect.ensuring(Effect.promise(() => runtime.dispose())))
+        yield* Effect.promise(() =>
+          runtime.runPromise(
+            Effect.provideService(descriptor.implementation.activate({ reason: 'startup', type: 'session_start' }, ctx), Scope.Scope, scope)
+          )
+        )
+        expect(subscriptions).toBe(1)
+        yield* Effect.promise(() => runtime.runPromise(Scope.close(scope, Exit.void)))
+      }).pipe(Effect.ensuring(Effect.promise(() => runtime.dispose())))
     })
   )
 

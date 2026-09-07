@@ -22,6 +22,7 @@ import {
 } from '@/features/mcp/gateway.js'
 import { feature } from '@/features/mcp/index.js'
 import { type McpServerMap } from '@/features/mcp/types.js'
+import { makeEnvironment } from '@/shared/effect/env.js'
 import { publishStatus } from '@/shared/state/status_bar.js'
 import { type JsonObject, parseJsonText } from '@/shared/utils/json.js'
 
@@ -215,10 +216,10 @@ const signalOf = (value: unknown): unknown => (typeof value === 'object' && valu
 describe('MCP gateway policy selection', () => {
   it.effect('enables read-only policy only for PI_SUBAGENT_READONLY=1', () =>
     Effect.sync(() => {
-      expect(mcpPolicyFromEnvironment({ PI_SUBAGENT_READONLY: '1' })).toBe(readonlyMcpPolicy)
-      expect(mcpPolicyFromEnvironment({ PI_SUBAGENT_READONLY: '0' })).toBe(unrestrictedMcpPolicy)
-      expect(mcpPolicyFromEnvironment({})).toBe(unrestrictedMcpPolicy)
-      expect(mcpPolicyFromEnvironment({ PI_SUBAGENT_READONLY: 'true' })).toBe(unrestrictedMcpPolicy)
+      expect(mcpPolicyFromEnvironment(makeEnvironment({ PI_SUBAGENT_READONLY: '1' }))).toBe(readonlyMcpPolicy)
+      expect(mcpPolicyFromEnvironment(makeEnvironment({ PI_SUBAGENT_READONLY: '0' }))).toBe(unrestrictedMcpPolicy)
+      expect(mcpPolicyFromEnvironment(makeEnvironment({}))).toBe(unrestrictedMcpPolicy)
+      expect(mcpPolicyFromEnvironment(makeEnvironment({ PI_SUBAGENT_READONLY: 'true' }))).toBe(unrestrictedMcpPolicy)
     })
   )
 

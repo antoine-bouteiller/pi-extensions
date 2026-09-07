@@ -2,7 +2,6 @@ import { visibleWidth } from '@earendil-works/pi-tui'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asExtensionContext } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
-import { withProcessEnv } from '@tests/utils/process_env.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect, Path } from 'effect'
 
@@ -93,50 +92,58 @@ describe('sidebar rendering', () => {
   )
 
   it.effect('uses semantic theme colors instead of a fixed RGB palette', () =>
-    withProcessEnv('NO_COLOR', undefined, () =>
-      Effect.sync(() => {
-        const colors = new Set<string>()
-        const lines = renderSidebarLines({
-          height: 36,
-          now: 0,
-          state,
-          theme: {
-            bold: (text: string) => text,
-            fg: (color: string, text: string) => {
-              colors.add(color)
-              return text
-            },
+    Effect.sync(() => {
+      const colors = new Set<string>()
+      const lines = renderSidebarLines({
+        height: 36,
+        now: 0,
+        state,
+        theme: {
+          bold: (text: string) => text,
+          fg: (color: string, text: string) => {
+            colors.add(color)
+            return text
           },
-          width: 44,
-        })
-
-        expect(colors).toEqual(new Set(['warning', 'text', 'muted', 'thinkingLow', 'accent']))
-        expect(lines.join('\n')).not.toContain('\x1b[38;2;')
+        },
+        width: 44,
       })
-    )
+
+      expect(colors).toEqual(new Set(['warning', 'text', 'muted', 'thinkingLow', 'accent']))
+      expect(lines.join('\n')).not.toContain('\x1b[38;2;')
+    })
   )
 
-  it.effect('does not apply palette or theme colors when NO_COLOR is set', () =>
-    withProcessEnv('NO_COLOR', '1', () =>
-      Effect.sync(() => {
-        let colorCalls = 0
-        const lines = renderSidebarLines({
-          height: 36,
-          state: withAgents(1),
-          theme: {
-            bold: (text: string) => `\x1b[1m${text}\x1b[22m`,
-            fg: (_color: string, text: string) => {
-              colorCalls += 1
-              return `\x1b[31m${text}\x1b[39m`
-            },
+  it.effect('strips theme colors when noColor is enabled', () =>
+    Effect.sync(() => {
+      let colorCalls = 0
+      let factory: CustomCall['factory'] | undefined
+      const ctx = asExtensionContext({
+        mode: 'tui',
+        ui: {
+          custom: (candidate: CustomCall['factory']) => {
+            factory = candidate
+            return Promise.resolve()
           },
-          width: 44,
-        })
-
-        expect(colorCalls).toBe(0)
-        expect(lines.join('\n')).not.toContain('\x1b[38;2;')
+        },
       })
-    )
+      const sidebar = createSidebarController({ ctx, getState: () => withAgents(1), noColor: true, path })
+      sidebar.show()
+      if (factory === undefined) {
+        throw new Error('expected sidebar factory')
+      }
+      factory(
+        fakeTui(),
+        {
+          fg: (_color: string, text: string) => {
+            colorCalls += 1
+            return `\x1b[31m${text}\x1b[39m`
+          },
+        },
+        {},
+        () => undefined
+      ).render(44)
+      expect(colorCalls).toBe(0)
+    })
   )
 
   it.effect('renders session and weekly quota as matching bars with their time left', () =>
@@ -383,7 +390,7 @@ describe('sidebar controller overlay race', () => {
         },
       })
 
-      const sidebar = createSidebarController({ ctx, getState: () => state, path })
+      const sidebar = createSidebarController({ ctx, getState: () => state, noColor: false, path })
 
       sidebar.show()
       expect(calls).toHaveLength(1)
