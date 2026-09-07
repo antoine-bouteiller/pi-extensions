@@ -1,8 +1,10 @@
+/* oxlint-disable no-template-curly-in-string -- Fixtures intentionally contain literal MCP environment placeholders. */
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Effect, FileSystem, Path } from 'effect'
 
 import { loadMcpConfigFile, parseMcpConfig, parseMcpConfigEffect, parseMcpConfigText } from '@/features/mcp/config.js'
-import { parseJsonText } from '@/shared/utils/json.js'
+import { envLayer } from '@/shared/effect/env.js'
+import { jsonText, parseJsonText } from '@/shared/utils/json.js'
 
 const temporaryPath = (name: string) =>
   Effect.gen(function* () {
@@ -94,6 +96,74 @@ describe('global MCP config parsing', () => {
           url: 'https://example.test/mcp',
         },
       })
+    })
+  )
+
+  it.effect('substitutes environment variables in string values without expanding keys or replacements', () =>
+    Effect.sync(() => {
+      const input = {
+        mcpServers: {
+          '${SERVER}': {
+            headers: { Authorization: 'Bearer ${TOKEN}', 'X-${HEADER}': '${TOKEN}/${TOKEN}' },
+            oauth: { client_id: '${CLIENT}', client_secret: '${TOKEN}' },
+            url: 'https://${HOST}/mcp',
+          },
+          local: {
+            args: ['${TOKEN}', '${EMPTY}', '$TOKEN', '${TOKEN:-fallback}'],
+            command: '${BIN}/server',
+            cwd: '${BIN}',
+            env: { EMPTY: '${EMPTY}', TOKEN: '${TOKEN}' },
+          },
+        },
+      }
+      const token = 'quoted"\\\n$&${NESTED}'
+      const parsed = parseMcpConfigText(jsonText(input), 'fixture.json', {
+        BIN: '/opt/bin',
+        CLIENT: 'client-id',
+        EMPTY: '',
+        HOST: 'example.test',
+        TOKEN: token,
+      })
+      expect(parsed).toEqual({
+        '${SERVER}': {
+          headers: { Authorization: `Bearer ${token}`, 'X-${HEADER}': `${token}/${token}` },
+          oauth: { clientId: 'client-id', clientSecret: token },
+          type: 'http',
+          url: 'https://example.test/mcp',
+        },
+        local: {
+          args: [token, '', '$TOKEN', '${TOKEN:-fallback}'],
+          command: '/opt/bin/server',
+          cwd: '/opt/bin',
+          env: { EMPTY: '', TOKEN: token },
+          type: 'stdio',
+        },
+      })
+      expect(input.mcpServers['${SERVER}'].headers.Authorization).toBe('Bearer ${TOKEN}')
+    })
+  )
+
+  it.effect('isolates missing variables and validates substituted values', () =>
+    Effect.gen(function* () {
+      const input = {
+        mcpServers: {
+          credentials: { url: '${CREDENTIAL_URL}' },
+          empty: { command: '${EMPTY}' },
+          missing: { headers: { Authorization: 'Bearer ${MISSING}' }, url: 'https://example.test' },
+          prototype: { command: '${toString}' },
+          valid: { command: 'server' },
+        },
+      }
+      const environment = { CREDENTIAL_URL: 'https://user:secret@example.test', EMPTY: '' }
+      const expected = {
+        credentials: { invalid: true },
+        empty: { invalid: true },
+        missing: { invalid: true },
+        prototype: { invalid: true },
+        valid: { command: 'server', type: 'stdio' },
+      } as const
+      expect(parseMcpConfig(input, environment)).toEqual(expected)
+      expect(yield* parseMcpConfigEffect(input).pipe(Effect.provide(envLayer(environment)))).toEqual(expected)
     })
   )
 
@@ -274,8 +344,8 @@ describe('global MCP config parsing', () => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
         const path = yield* temporaryPath('mcp.json')
-        yield* fs.writeFileString(path, '{"mcpServers":{"local":{"command":"server"}}}')
-        expect(yield* loadMcpConfigFile(path)).toEqual({
+        yield* fs.writeFileString(path, '{"mcpServers":{"local":{"command":"${MCP_COMMAND}"}}}')
+        expect(yield* loadMcpConfigFile(path).pipe(Effect.provide(envLayer({ MCP_COMMAND: 'server' })))).toEqual({
           local: { command: 'server', type: 'stdio' },
         })
       })

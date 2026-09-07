@@ -5,6 +5,7 @@ import { FileSystem } from 'effect/FileSystem'
 import { Path } from 'effect/Path'
 import { type PlatformError } from 'effect/PlatformError'
 
+import { Env, type EnvApi, processEnvironment } from '#shared/effect/env'
 import { type JsonObject } from '#shared/utils/json'
 import { isEmptyString, isNullOrUndefined, isTrue } from '#shared/utils/predicates'
 
@@ -83,6 +84,22 @@ const isObject = (value: unknown): value is JsonObject => {
 
 const fail = (path: string, message: string): never => {
   throw McpConfigError.from(path, message)
+}
+
+const substituteEnvironment = (value: unknown, path: string, environment: EnvApi['all']): unknown => {
+  if (typeof value === 'string') {
+    return value.replaceAll(/\$\{(?<name>[A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, name: string) => {
+      const replacement = Object.hasOwn(environment, name) ? environment[name] : undefined
+      return replacement === undefined ? fail(path, `environment variable ${name} is not set`) : replacement
+    })
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry: unknown, index) => substituteEnvironment(entry, `${path}.${index}`, environment))
+  }
+  if (isObject(value)) {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, substituteEnvironment(entry, `${path}.${key}`, environment)]))
+  }
+  return value
 }
 
 /** Rejected here so a bad URL is an isolated `invalid-config` entry, not a server that fails at connect time. */
@@ -322,7 +339,7 @@ const parseServer = (name: string, value: unknown): McpServerConfig => {
 }
 
 /** Validate a parsed standard MCP configuration while isolating malformed server entries. */
-export const parseMcpConfig = (value: unknown): McpServerMap => {
+export const parseMcpConfig = (value: unknown, environment: EnvApi['all'] = processEnvironment.all): McpServerMap => {
   if (!isObject(value)) {
     return fail('mcpServers', 'configuration root must be an object')
   }
@@ -336,7 +353,7 @@ export const parseMcpConfig = (value: unknown): McpServerMap => {
         if (isEmptyString(name)) {
           fail('mcpServers', 'server names must not be empty')
         }
-        return [name, parseServer(name, server)]
+        return [name, parseServer(name, substituteEnvironment(server, `mcpServers.${name}`, environment))]
       } catch (error) {
         if (Schema.is(McpConfigError)(error)) {
           return [name, { invalid: true } satisfies InvalidServerConfig]
@@ -348,12 +365,13 @@ export const parseMcpConfig = (value: unknown): McpServerMap => {
 }
 
 /** Effect boundary for callers that want typed configuration failures without changing legacy error text. */
-export const parseMcpConfigEffect = (value: unknown): Effect.Effect<McpServerMap, McpConfigError> =>
+export const parseMcpConfigEffect = (value: unknown): Effect.Effect<McpServerMap, McpConfigError, Env> =>
   Effect.gen(function* () {
+    const environment = yield* Env
     const parsed = yield* Effect.try({
       catch: (cause) =>
         Schema.is(McpConfigError)(cause) ? cause : McpConfigError.from('mcpServers', cause instanceof Error ? cause.message : String(cause)),
-      try: () => parseMcpConfig(value),
+      try: () => parseMcpConfig(value, environment.all),
     })
     yield* Schema.decodeEffect(McpServerMapSchema, { onExcessProperty: 'error' })(parsed).pipe(
       Effect.mapError((cause) => McpConfigError.from('mcpServers', String(cause)))
@@ -361,15 +379,15 @@ export const parseMcpConfigEffect = (value: unknown): Effect.Effect<McpServerMap
     return parsed
   })
 
-/** Parse JSON text without adding JSONC or interpolation semantics. */
-export const parseMcpConfigText = (text: string, source = 'MCP config'): McpServerMap => {
+/** Parse JSON before substituting string values so environment contents remain literal data. */
+export const parseMcpConfigText = (text: string, source = 'MCP config', environment: EnvApi['all'] = processEnvironment.all): McpServerMap => {
   let value: unknown
   try {
     value = JSON.parse(text) as unknown
   } catch {
     throw McpConfigError.from(source, 'contains malformed JSON')
   }
-  return parseMcpConfig(value)
+  return parseMcpConfig(value, environment)
 }
 
 const missingConfig: McpServerMap = {}
@@ -381,7 +399,7 @@ const missingConfig: McpServerMap = {}
 const isMissingFile = (error: PlatformError): boolean => error.reason._tag === 'NotFound'
 
 /** Load an MCP file. This helper exists so tests never need to access the real home directory. */
-export const loadMcpConfigFile = (path: string): Effect.Effect<McpServerMap, McpConfigError | PlatformError, FileSystem> =>
+export const loadMcpConfigFile = (path: string): Effect.Effect<McpServerMap, McpConfigError | PlatformError, FileSystem | Env> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem
     const text = yield* fs.readFileString(path).pipe(
@@ -391,15 +409,16 @@ export const loadMcpConfigFile = (path: string): Effect.Effect<McpServerMap, Mcp
     if (text === undefined) {
       return { ...missingConfig }
     }
+    const environment = yield* Env
     return yield* Effect.try({
       catch: (cause) =>
         Schema.is(McpConfigError)(cause) ? cause : McpConfigError.from(path, cause instanceof Error ? cause.message : String(cause)),
-      try: () => parseMcpConfigText(text, path),
+      try: () => parseMcpConfigText(text, path, environment.all),
     })
   })
 
 /** Load only the standard user-global MCP configuration. */
-export const loadGlobalMcpConfig: Effect.Effect<McpServerMap, McpConfigError | PlatformError, FileSystem | Path> = Effect.gen(function* () {
+export const loadGlobalMcpConfig: Effect.Effect<McpServerMap, McpConfigError | PlatformError, FileSystem | Path | Env> = Effect.gen(function* () {
   const path = yield* Path
   return yield* loadMcpConfigFile(path.join(homedir(), '.config', 'mcp', 'mcp.json'))
 })
