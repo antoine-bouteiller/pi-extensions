@@ -327,11 +327,7 @@ const recoverAskUserParams = (params: Static<typeof AskUserParams>): Static<type
   }
 }
 
-export const askUserEffect = (
-  events: ExtensionAPI['events'],
-  rawParams: Static<typeof AskUserParams>,
-  signal: AbortSignal | undefined
-) =>
+export const askUserEffect = (events: ExtensionAPI['events'], rawParams: Static<typeof AskUserParams>, signal: AbortSignal | undefined) =>
   Effect.gen(function* () {
     const params = recoverAskUserParams(rawParams)
     const { options } = params

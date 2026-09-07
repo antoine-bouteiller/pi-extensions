@@ -14,7 +14,7 @@ import { type Path } from 'effect/Path'
 import { Type, type Static } from 'typebox'
 
 import { type AppServices } from '#shared/effect/app_services'
-import { type EnvApi, processEnvironment } from '#shared/effect/env'
+import { type Env, type EnvApi, processEnvironment } from '#shared/effect/env'
 import { ToolFailure } from '#shared/effect/errors'
 import { withAbortSignal } from '#shared/effect/runtime'
 import { createStatusChannel } from '#shared/state/status_bar'
@@ -127,7 +127,7 @@ interface McpManagerContext {
 
 export interface McpGatewayApi {
   readonly configPath: string
-  readonly loadConfig: Effect.Effect<McpServerMap, Error, FileSystem | Path>
+  readonly loadConfig: Effect.Effect<McpServerMap, Error, FileSystem | Path | Env>
   readonly createManager: (config: McpServerMap, context: McpManagerContext) => McpGatewayManager | Promise<McpGatewayManager>
   readonly policy: McpGatewayPolicy
 }
