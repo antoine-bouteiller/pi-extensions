@@ -1,5 +1,7 @@
+import { initTheme, type Theme } from '@earendil-works/pi-coding-agent'
+import { type Component, visibleWidth } from '@earendil-works/pi-tui'
 import { promiseFromEffect, tryEffect, tryPromiseEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asExtensionApi, asExtensionContext } from '@tests/utils/casts.js'
+import { asExtensionApi, asExtensionContext, asTheme } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect, Fiber } from 'effect'
@@ -27,6 +29,8 @@ interface TestContext {
 
 interface Tool {
   execute: (toolCallId: string, params: JsonObject, signal: AbortSignal | undefined, onUpdate: undefined, ctx: TestContext) => Promise<ToolResult>
+  renderCall: (args: JsonObject, theme: Theme, context: { expanded: boolean }) => Component
+  renderResult: (result: ToolResult, options: { expanded: boolean; isPartial: boolean }, theme: Theme, context: { isError: boolean }) => Component
 }
 
 type Handler = (event: JsonObject, ctx: TestContext) => Promise<void> | void
@@ -99,7 +103,43 @@ const rejectionMessage = (promise: Promise<unknown>): Promise<string> =>
     )
   )
 
+initTheme()
+const theme = asTheme({ bold: (text: string) => text, fg: (_color: string, text: string) => text })
+const renderText = (component: Component) =>
+  component
+    .render(160)
+    .map((line) => line.trimEnd())
+    .join('\n')
+    .trim()
+
 describe('background poll', () => {
+  it('renders partial calls, labels, and commands with bounded collapsed previews', () => {
+    const { tool } = setup(() => Promise.resolve({ code: 0, stderr: '', stdout: '' }))
+    expect(renderText(tool.renderCall({}, theme, { expanded: false }))).toBe('background_poll ?')
+    const args = { command: 'check-status\ncheck-result', label: ' deployment ' }
+    expect(renderText(tool.renderCall(args, theme, { expanded: false }))).toBe('background_poll deployment')
+    expect(renderText(tool.renderCall(args, theme, { expanded: true }))).toContain('check-status\ncheck-result')
+    expect(renderText(tool.renderCall({ ...args, label: ' ' }, theme, { expanded: false }))).toBe('background_poll check-status check-result')
+    const longCommand = `check ${'long-argument '.repeat(100)}`
+    const collapsed = tool.renderCall({ command: longCommand }, theme, { expanded: false })
+    expect(renderText(collapsed)).toContain('...')
+    expect(collapsed.render(20).every((line) => visibleWidth(line) <= 20)).toBeTrue()
+    expect(renderText(tool.renderCall({ command: longCommand }, theme, { expanded: true })).replaceAll(/\s+/g, ' ')).toContain(longCommand.trim())
+  })
+
+  it('renders registration errors, progress, and results without details', () => {
+    const { tool } = setup(() => Promise.resolve({ code: 0, stderr: '', stdout: '' }))
+    const result = { content: [{ text: 'Session closed', type: 'text' }] }
+    const options = { expanded: false, isPartial: false }
+    expect(renderText(tool.renderResult(result, options, theme, { isError: true }))).toBe('✗ Session closed')
+    expect(renderText(tool.renderResult({ content: [] }, options, theme, { isError: true }))).toBe('✗ Poll registration failed')
+    expect(renderText(tool.renderResult({ content: [] }, { ...options, isPartial: true }, theme, { isError: false }))).toBe(
+      'Registering background poll…'
+    )
+    expect(renderText(tool.renderResult(result, options, theme, { isError: false }))).toBe('Session closed')
+    expect(renderText(tool.renderResult({ content: [] }, options, theme, { isError: false }))).toBe('No poll registration details')
+  })
+
   it.effect('returns immediately, bounds command time, publishes status, and wakes the agent', () =>
     Effect.gen(function* () {
       const commandTimeouts: number[] = []
@@ -126,6 +166,13 @@ describe('background poll', () => {
 
       expect(result.terminate).toBeTrue()
       expect(result.content[0].text).toContain('Stop now')
+      const collapsed = renderText(fixture.tool.renderResult(result, { expanded: false, isPartial: false }, theme, { isError: false }))
+      expect(collapsed).toContain('✓ Registered · every 1s · timeout 10s')
+      expect(collapsed).toContain('to expand')
+      expect(collapsed).not.toContain('Stop now')
+      const expanded = renderText(fixture.tool.renderResult(result, { expanded: true, isPartial: false }, theme, { isError: false }))
+      expect(expanded).toContain('Task: poll-call-1')
+      expect(expanded).toContain('Stop now')
       expect(fixture.statuses).toContain('⏳ 1 background poll')
 
       yield* Effect.promise(() => fixture.sent)

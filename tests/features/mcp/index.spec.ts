@@ -1,6 +1,6 @@
 import { afterEach } from 'bun:test'
 
-import { type AgentToolResult } from '@earendil-works/pi-coding-agent'
+import { initTheme, type AgentToolResult } from '@earendil-works/pi-coding-agent'
 import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asCommand, asExtensionContext, asTheme, asTool } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
@@ -13,6 +13,7 @@ import {
   mcpPolicyFromEnvironment,
   readonlyMcpPolicy,
   renderMcpCall,
+  renderMcpResult,
   unrestrictedMcpPolicy,
   type McpGatewayManager,
   type McpGatewayApi,
@@ -26,6 +27,8 @@ import { type McpServerMap } from '@/features/mcp/types.js'
 import { makeEnvironment } from '@/shared/effect/env.js'
 import { publishStatus } from '@/shared/state/status_bar.js'
 import { type JsonObject, parseJsonText } from '@/shared/utils/json.js'
+
+initTheme()
 
 afterEach(() => publishStatus('mcp', undefined))
 interface RecordedCall {
@@ -283,6 +286,7 @@ describe('MCP gateway registration and lifecycle', () => {
       const harness = createHarness()
 
       expect([...harness.fixture.state.tools.keys()]).toEqual(['mcp'])
+      expect(harness.fixture.state.tools.get('mcp')).toMatchObject({ renderCall: renderMcpCall, renderResult: renderMcpResult })
       expect([...harness.fixture.state.commands.keys()]).toEqual(['mcp-auth'])
       expect(harness.fixture.state.handlers.has('session_start')).toBeFalse()
       expect(harness.fixture.state.handlers.has('session_shutdown')).toBeFalse()
@@ -623,5 +627,78 @@ describe('MCP gateway call rendering', () => {
 
   it('truncates long argument values', () => {
     expect(render({ args: { sql: 'x'.repeat(100) }, tool: 'dbx_query' })).toBe(`mcp call dbx_query sql=${'x'.repeat(59)}…`)
+  })
+
+  it('keeps MCP results compact, then renders complete text and output indications on expansion', () => {
+    const result: AgentToolResult<unknown> = {
+      content: [
+        { text: 'one\ntwo\nthree\nfour', type: 'text' },
+        { data: 'AA==', mimeType: 'image/png', type: 'image' },
+      ],
+      details: { fullOutputPath: '/private/mcp-output.txt', truncated: true },
+    }
+    const renderContext = { isError: false, showImages: false }
+
+    const collapsed = renderMcpResult(result, { expanded: false, isPartial: false }, theme, renderContext).render(200).join('\n').trimEnd()
+    const expanded = renderMcpResult(result, { expanded: true, isPartial: false }, theme, renderContext).render(200).join('\n').trimEnd()
+
+    expect(collapsed).toContain('three')
+    expect(collapsed).not.toContain('four')
+    expect(collapsed).toContain('1 image hidden')
+    expect(collapsed).toContain('[output truncated]')
+    expect(collapsed).toContain('to expand')
+    expect(expanded).toContain('four')
+    expect(expanded).toContain('Full output: /private/mcp-output.txt')
+    expect(expanded).toContain('1 image hidden')
+  })
+
+  it('bounds wrapped MCP previews and leaves image rendering to the host', () => {
+    const renderContext = { isError: false, showImages: true }
+    const result = { content: [{ text: 'x'.repeat(1000), type: 'text' as const }], details: {} }
+    const collapsed = renderMcpResult(result, { expanded: false, isPartial: false }, theme, renderContext).render(80)
+    const expanded = renderMcpResult(result, { expanded: true, isPartial: false }, theme, renderContext).render(80)
+    expect(collapsed).toHaveLength(4)
+    expect(collapsed.join('\n')).toContain('to expand')
+    expect(expanded.length).toBeGreaterThan(collapsed.length)
+    const image = renderMcpResult(
+      { content: [{ data: 'AA==', mimeType: 'image/png', type: 'image' }], details: {} },
+      { expanded: true, isPartial: false },
+      theme,
+      renderContext
+    )
+    expect(image.render(80).join('\n').trim()).toBe('1 image')
+    expect(
+      renderMcpResult({ content: [], details: undefined }, { expanded: false, isPartial: false }, theme, renderContext).render(80).join('\n').trim()
+    ).toBe('(no output)')
+  })
+
+  it('preserves literal MCP output when expanded rather than interpreting it as Markdown', () => {
+    const text = JSON.stringify({ label: '__private__', path: 'C:\\temp\\file', pattern: 'a*b*c' })
+    const result = { content: [{ text, type: 'text' as const }], details: {} }
+    for (const expanded of [false, true]) {
+      const output = renderMcpResult(result, { expanded, isPartial: false }, theme, { isError: false, showImages: true })
+      expect(output.render(200).join('\n').trimEnd()).toBe(text)
+    }
+  })
+
+  it('renders partial and failed MCP results distinctly', () => {
+    const partialContext = { isError: false, showImages: true }
+    const errorContext = { isError: true, showImages: true }
+    const partial = renderMcpResult({ content: [], details: {} }, { expanded: false, isPartial: true }, theme, partialContext)
+      .render(200)
+      .join('\n')
+      .trimEnd()
+    const failed = renderMcpResult(
+      { content: [{ text: 'remote refused', type: 'text' }], details: {} },
+      { expanded: false, isPartial: false },
+      theme,
+      errorContext
+    )
+      .render(200)
+      .join('\n')
+      .trimEnd()
+
+    expect(partial).toBe('MCP working…')
+    expect(failed).toBe('✗ remote refused')
   })
 })

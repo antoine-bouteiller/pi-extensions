@@ -37,11 +37,21 @@ import {
   type WaitAllInput,
 } from './model.js'
 import { type OrchestrationError, type PublicRefusalError, profileColor, SubagentOrchestrator, type SubagentOrchestratorApi } from './orchestrator.js'
+import {
+  type DelegationDetails,
+  renderDelegationResult,
+  renderInterruptAgentCall,
+  renderListAgentsCall,
+  renderReadAgentResponseCall,
+  renderSendMessageCall,
+  renderWaitAgentCall,
+  renderWaitAllAgentsCall,
+} from './render.js'
 import { NotificationSink, type NotificationToken } from './store.js'
 
-const json = <Value>(value: Value) => ({
-  content: [{ text: JSON.stringify(value), type: 'text' as const }],
-  details: value,
+const json = <Details>(details: Details): AgentToolResult<Details> => ({
+  content: [{ text: JSON.stringify(details), type: 'text' }],
+  details,
 })
 const refusal = (error: PublicRefusalError) => ({ error: { code: error.code, message: error.message } })
 const failure = (error: unknown) => ToolFailure.make({ cause: error, message: error instanceof Error ? error.message : String(error) })
@@ -128,12 +138,12 @@ type SpawnDetails = AgentResult | RunningAcceptance | { readonly error: { readon
 type SpawnToolDefinition = ToolDefinition<typeof SpawnAgentInputSchema, SpawnDetails>
 type DelegationTools = readonly [
   SpawnToolDefinition,
-  ToolDefinition<typeof WaitAgentInputSchema>,
-  ToolDefinition<typeof WaitAllInputSchema>,
-  ToolDefinition<typeof ListAgentsInputSchema>,
-  ToolDefinition<typeof ReadAgentResponseInputSchema>,
-  ToolDefinition<typeof SendMessageInputSchema>,
-  ToolDefinition<typeof InterruptAgentInputSchema>,
+  ToolDefinition<typeof WaitAgentInputSchema, DelegationDetails>,
+  ToolDefinition<typeof WaitAllInputSchema, DelegationDetails>,
+  ToolDefinition<typeof ListAgentsInputSchema, DelegationDetails>,
+  ToolDefinition<typeof ReadAgentResponseInputSchema, DelegationDetails>,
+  ToolDefinition<typeof SendMessageInputSchema, DelegationDetails>,
+  ToolDefinition<typeof InterruptAgentInputSchema, DelegationDetails>,
 ]
 type SpawnRenderContext = Parameters<NonNullable<SpawnToolDefinition['renderResult']>>[3]
 
@@ -204,7 +214,7 @@ export const makeDelegationTools = (
     },
     {
       description: 'Wait for the next eligible sub-agent conclusion, optionally restricted to named targets.',
-      execute: execute<WaitAgentInput, ReturnType<typeof json>>(({ params: input }) =>
+      execute: execute<WaitAgentInput, AgentToolResult<DelegationDetails>>(({ params: input }) =>
         Effect.service(PiCtx).pipe(
           Effect.flatMap((ctx) => withOrchestrator((orchestrator) => orchestrator.waitOne(session(ctx), input.targets)).pipe(Effect.map(json)))
         )
@@ -212,10 +222,12 @@ export const makeDelegationTools = (
       label: 'Wait Agent',
       name: 'wait_agent',
       parameters: WaitAgentInputSchema,
+      renderCall: renderWaitAgentCall,
+      renderResult: renderDelegationResult,
     },
     {
       description: 'Wait for all eligible sub-agent conclusions, optionally restricted to named targets.',
-      execute: execute<WaitAllInput, ReturnType<typeof json>>(({ params: input }) =>
+      execute: execute<WaitAllInput, AgentToolResult<DelegationDetails>>(({ params: input }) =>
         Effect.service(PiCtx).pipe(
           Effect.flatMap((ctx) =>
             withOrchestrator((orchestrator) => orchestrator.waitAll(session(ctx), input.targets).pipe(Effect.map((results) => ({ results })))).pipe(
@@ -227,10 +239,12 @@ export const makeDelegationTools = (
       label: 'Wait All Agents',
       name: 'wait_all_agents',
       parameters: WaitAllInputSchema,
+      renderCall: renderWaitAllAgentsCall,
+      renderResult: renderDelegationResult,
     },
     {
       description: 'List sub-agents in the current session and their current status.',
-      execute: execute<Record<string, never>, ReturnType<typeof json>>(() =>
+      execute: execute<Record<string, never>, AgentToolResult<DelegationDetails>>(() =>
         Effect.service(PiCtx).pipe(
           Effect.flatMap((ctx) =>
             withOrchestrator((orchestrator) => orchestrator.list(session(ctx)).pipe(Effect.map((agents) => ({ agents })))).pipe(Effect.map(json))
@@ -240,10 +254,12 @@ export const makeDelegationTools = (
       label: 'List Agents',
       name: 'list_agents',
       parameters: ListAgentsInputSchema,
+      renderCall: renderListAgentsCall,
+      renderResult: renderDelegationResult,
     },
     {
       description: 'Read durable conclusions for one sub-agent in the current session.',
-      execute: execute<ReadAgentResponseInput, ReturnType<typeof json>>(({ params: input }) =>
+      execute: execute<ReadAgentResponseInput, AgentToolResult<DelegationDetails>>(({ params: input }) =>
         Effect.service(PiCtx).pipe(
           Effect.flatMap((ctx) => withOrchestrator((orchestrator) => orchestrator.read(session(ctx), input.target)).pipe(Effect.map(json)))
         )
@@ -251,10 +267,12 @@ export const makeDelegationTools = (
       label: 'Read Agent Response',
       name: 'read_agent_response',
       parameters: ReadAgentResponseInputSchema,
+      renderCall: renderReadAgentResponseCall,
+      renderResult: renderDelegationResult,
     },
     {
       description: 'Send one of up to five permitted follow-up messages to a sub-agent in the current session.',
-      execute: execute<SendMessageInput, ReturnType<typeof json>>(({ params: input }) =>
+      execute: execute<SendMessageInput, AgentToolResult<DelegationDetails>>(({ params: input }) =>
         Effect.service(PiCtx).pipe(
           Effect.flatMap((ctx) =>
             admission(ctx, dependencies).pipe(
@@ -270,10 +288,12 @@ export const makeDelegationTools = (
       label: 'Send Message',
       name: 'send_message',
       parameters: SendMessageInputSchema,
+      renderCall: renderSendMessageCall,
+      renderResult: renderDelegationResult,
     },
     {
       description: 'Interrupt a running sub-agent in the current session and return its durable outcome.',
-      execute: execute<InterruptAgentInput, ReturnType<typeof json>>(({ params: input }) =>
+      execute: execute<InterruptAgentInput, AgentToolResult<DelegationDetails>>(({ params: input }) =>
         Effect.service(PiCtx).pipe(
           Effect.flatMap((ctx) => withOrchestrator((orchestrator) => orchestrator.interrupt(session(ctx), input.target)).pipe(Effect.map(json)))
         )
@@ -281,6 +301,8 @@ export const makeDelegationTools = (
       label: 'Interrupt Agent',
       name: 'interrupt_agent',
       parameters: InterruptAgentInputSchema,
+      renderCall: renderInterruptAgentCall,
+      renderResult: renderDelegationResult,
     },
   ]
 }

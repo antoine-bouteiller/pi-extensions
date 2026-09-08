@@ -324,7 +324,7 @@ const registerPoll = (
     )
   })
 
-interface PollRegistration {
+export interface PollRegistration {
   readonly content: { type: 'text'; text: string }[]
   readonly details: {
     command: string

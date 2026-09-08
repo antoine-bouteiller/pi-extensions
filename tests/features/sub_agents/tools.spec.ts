@@ -1,4 +1,5 @@
-import { type AgentToolUpdateCallback, type Theme, type ToolDefinition } from '@earendil-works/pi-coding-agent'
+import { type AgentToolResult, type AgentToolUpdateCallback, initTheme, type Theme, type ToolDefinition } from '@earendil-works/pi-coding-agent'
+import { stripTerminalSequences } from '@earendil-works/pi-tui'
 import { BunFileSystem, BunPath } from '@effect/platform-bun'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asExtensionContext, asResult, asTheme, asTool } from '@tests/utils/casts.js'
@@ -29,6 +30,16 @@ import {
   WaitAllInputSchema,
 } from '@/features/sub_agents/model.js'
 import { LifecycleError, PublicRefusalError, SubagentOrchestrator, type SubagentOrchestratorApi } from '@/features/sub_agents/orchestrator.js'
+import {
+  type DelegationDetails,
+  renderDelegationResult,
+  renderInterruptAgentCall,
+  renderListAgentsCall,
+  renderReadAgentResponseCall,
+  renderSendMessageCall,
+  renderWaitAgentCall,
+  renderWaitAllAgentsCall,
+} from '@/features/sub_agents/render.js'
 import { NotificationSink } from '@/features/sub_agents/store.js'
 import {
   bindProductionNotificationSink,
@@ -42,6 +53,8 @@ import { type AppRuntime } from '@/shared/effect/app_services.js'
 import { type ToolFailure } from '@/shared/effect/errors.js'
 import { PiCtx, Ui } from '@/shared/effect/pi_services.js'
 import { type HandlerServices, type ToolInvocation } from '@/shared/effect/runtime.js'
+
+initTheme()
 
 interface ToolResult {
   readonly content: readonly { readonly text: string; readonly type: 'text' }[]
@@ -94,6 +107,13 @@ const truncated: AgentResult = {
   turn: 1,
 }
 const refusal = () => PublicRefusalError.make({ code: 'unknown_agent', message: 'unknown' })
+const renderText = (component: { readonly render: (width: number) => string[] }) =>
+  component
+    .render(240)
+    .map((line) => stripTerminalSequences(line).trimEnd())
+    .join('\n')
+    .trimEnd()
+const renderedResult = <Details>(details: Details, text = 'fallback'): AgentToolResult<Details> => ({ content: [{ text, type: 'text' }], details })
 const selectedResult = (target: string): AgentResult => {
   if (target === 'failed') {
     return failed(target)
@@ -610,6 +630,61 @@ otherwise ties an acceptance back to the brief that was sent.`,
     expect(renderResult({ profile: 'scout', status: 'running', task_name: 'task', turn: 1 })).toBe('✓ task background')
     expect(renderResult({ error: { code: 'unknown_agent', message: 'unknown' } })).toBe('✗ unknown')
     expect(renderResult({ error: { code: 'host_error', message: 'ignored' } }, true, 'host failed')).toBe('✗ host failed')
+  })
+
+  it('renders delegation calls and known outcomes without JSON', () => {
+    const theme = asTheme({ bold: (value: string) => value, fg: (_color: string, value: string) => value })
+    for (const tool of adapterTools(createFakePi().pi, []).slice(1)) {
+      expect(tool.renderCall).toBeFunction()
+      expect(tool.renderResult).toBe(renderDelegationResult)
+    }
+    expect(renderText(renderWaitAgentCall({ targets: ['one', 'two'] }, theme))).toBe('wait_agent one, two')
+    expect(renderText(renderWaitAllAgentsCall({}, theme))).toBe('wait_all_agents any eligible agent')
+    expect(renderText(renderListAgentsCall({}, theme))).toBe('list_agents')
+    expect(renderText(renderReadAgentResponseCall({ target: 'one' }, theme))).toBe('read_agent_response one')
+    expect(renderText(renderReadAgentResponseCall({}, theme))).toBe('read_agent_response ?')
+    expect(renderText(renderSendMessageCall({}, theme))).toBe('send_message ? — empty message')
+    expect(renderText(renderInterruptAgentCall({}, theme))).toBe('interrupt_agent ?')
+    const message = 'first line\nsecond line'
+    expect(renderText(renderSendMessageCall({ message, target: 'one' }, theme))).toContain('to expand')
+    expect(renderText(renderSendMessageCall({ message, target: 'one' }, theme, { expanded: true }))).toBe(`send_message one — ${message}`)
+    expect(renderText(renderInterruptAgentCall({ target: 'one' }, theme))).toBe('interrupt_agent one')
+
+    const render = (details: DelegationDetails | undefined, expanded = false) =>
+      renderText(renderDelegationResult(renderedResult(details), { expanded }, theme, {}))
+    const outcome: AgentResult = { conclusion: 'full conclusion\nwith evidence', status: 'completed', task_name: 'one', turn: 1 }
+    expect(render(outcome)).toContain('✓ one completed\nfull conclusion')
+    expect(render(outcome)).toContain('to expand')
+    expect(render(outcome)).not.toContain('with evidence')
+    expect(render(outcome, true)).toBe('✓ one completed\nfull conclusion\nwith evidence')
+    expect(render(failed('one'))).toBe('✗ one failed: failed')
+    expect(render(interrupted('one'))).toBe('✗ one interrupted: stopped')
+    expect(render(truncated)).toContain('Full result: /private/result.json')
+    expect(render({ results: [] })).toBe('No agent conclusions')
+    expect(render({ results: [completed('one'), failed('two')] })).toContain('✓ 1/2 conclusions, 1 unsuccessful')
+    expect(render({ results: [outcome, failed('two')] }, true)).toContain('with evidence\n✗ two failed: failed')
+    expect(render({ agents: [] })).toBe('No agents in this session')
+    const agents: DelegationDetails = {
+      agents: [{ current_turn: 2, follow_up_available: true, profile: 'scout', status: 'running', task_name: 'one' }],
+    }
+    expect(render(agents)).toContain('1 agent: running')
+    expect(render(agents)).toContain('to expand')
+    expect(render(agents, true)).toBe('running one [scout, turn 2]')
+    const record: DelegationDetails = { profile: 'scout', status: 'completed', task_name: 'one', turns: [completed('one')] }
+    expect(render(record)).toContain('one completed (1 turn)')
+    expect(render(record)).toContain('to expand')
+    expect(render(record, true)).toBe('one completed (1 turn)\n✓ one completed\ndone')
+    expect(render({ accepted: true, status: 'running', task_name: 'one', turn: 1 })).toBe('✓ Message sent to one')
+    expect(render({ accepted: false, error: { code: 'queue_rejected', message: 'full' }, status: 'running', task_name: 'one', turn: 1 })).toBe(
+      '✗ one full'
+    )
+    expect(render({ interrupted: false, status: 'completed', task_name: 'one', turn: 1 })).toBe('one was already completed')
+    expect(render({ error: { code: 'unknown_agent', message: 'unknown' } })).toBe('✗ unknown')
+    expect(renderText(renderDelegationResult(renderedResult(completed(), 'host failed'), {}, theme, { isError: true }))).toBe('✗ host failed')
+    expect(renderText(renderDelegationResult(renderedResult(undefined), { isPartial: true }, theme, {}))).toBe('… working')
+    const fallback = renderedResult(undefined, 'first\nsecond')
+    expect(renderText(renderDelegationResult(fallback, {}, theme, {}))).toContain('to expand')
+    expect(renderText(renderDelegationResult(fallback, { expanded: true }, theme, {}))).toBe('first\nsecond')
   })
 
   it('uses exact closed snake_case schemas and task-name boundaries', () => {

@@ -109,6 +109,20 @@ describe('webfetch', () => {
     })
   )
 
+  it.effect('renders the URL, format, and explicit timeout in the call header', () =>
+    Effect.sync(() => {
+      const harness = createHarness(() => promiseFromEffect(Effect.succeed(new Response('ok'))))
+      const tool = asTool<{ renderCall: (params: Partial<WebfetchInput>, theme: Theme) => { render: (width: number) => string[] } }>(harness.tool)
+      const theme = asTheme({ bold: (value: string) => value, fg: (_color: string, value: string) => value })
+
+      expect(tool.renderCall({ format: 'text', timeout: 12, url: 'https://example.com/data' }, theme).render(120).join('\n').trimEnd()).toBe(
+        'webfetch https://example.com/data as text (12s timeout)'
+      )
+      expect(tool.renderCall({}, theme).render(120).join('\n').trimEnd()).toBe('webfetch ? as markdown')
+      expect(tool.renderCall({ timeout: 200 }, theme).render(120).join('\n').trimEnd()).toBe('webfetch ? as markdown (120s timeout)')
+    })
+  )
+
   it.effect('shows a short preview until tool output is expanded', () =>
     Effect.gen(function* () {
       const complete = Array.from({ length: 25 }, (_value, index) => `line ${index + 1}`).join('\n')

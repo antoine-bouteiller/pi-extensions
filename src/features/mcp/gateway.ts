@@ -4,10 +4,12 @@ import {
   type AgentToolResult,
   type ExtensionAPI,
   type ExtensionCommandContext,
+  keyHint,
   type ExtensionContext,
   type Theme,
+  type ToolRenderResultOptions,
 } from '@earendil-works/pi-coding-agent'
-import { Text } from '@earendil-works/pi-tui'
+import { Container, Text, type Component } from '@earendil-works/pi-tui'
 import { Context, Data, Deferred, Effect, Match, Option, Ref, Schema } from 'effect'
 import { type FileSystem } from 'effect/FileSystem'
 import { type Path } from 'effect/Path'
@@ -364,6 +366,63 @@ export const renderMcpCall = (params: Partial<McpGatewayInput>, theme: Theme): T
     return new Text(line('list', params.server), 0, 0)
   }
   return new Text(line('status'), 0, 0)
+}
+
+const MCP_COLLAPSED_RESULT_LINES = 3
+
+interface McpResultContext {
+  readonly isError: boolean
+  readonly showImages: boolean
+}
+
+const renderMcpBody = (text: string, options: ToolRenderResultOptions, theme: Theme, isError: boolean): Component => {
+  const body = isError ? new Text(theme.fg('error', `✗ ${text || 'MCP operation failed'}`), 0, 0) : new Text(theme.fg('toolOutput', text), 0, 0)
+  return {
+    invalidate: () => body.invalidate(),
+    render: (width) => {
+      const lines = body.render(width)
+      if (options.expanded || lines.length <= MCP_COLLAPSED_RESULT_LINES) {
+        return lines
+      }
+      const hint = new Text(keyHint('app.tools.expand', 'to expand'), 0, 0)
+      return [...lines.slice(0, MCP_COLLAPSED_RESULT_LINES), ...hint.render(width)]
+    },
+  }
+}
+
+export const renderMcpResult = (
+  result: AgentToolResult<unknown>,
+  options: ToolRenderResultOptions,
+  theme: Theme,
+  context: McpResultContext
+): Component => {
+  if (options.isPartial && !context.isError) {
+    return new Text(theme.fg('warning', 'MCP working…'), 0, 0)
+  }
+  const text = result.content
+    .filter((block) => block.type === 'text')
+    .map((block) => block.text)
+    .join('\n')
+  const imageCount = result.content.filter((block) => block.type === 'image').length
+  const details = isRecord(result.details) ? result.details : {}
+  const output = new Container()
+  if (text.length > 0 || context.isError) {
+    output.addChild(renderMcpBody(text, options, theme, context.isError))
+  }
+  if (details.truncated === true || details.outputTruncated === true) {
+    output.addChild(new Text(theme.fg('warning', '[output truncated]'), 0, 0))
+    if (typeof details.fullOutputPath === 'string') {
+      output.addChild(new Text(theme.fg('dim', `Full output: ${details.fullOutputPath}`), 0, 0))
+    }
+  }
+  // Pi's tool shell renders image blocks, including terminal format conversion.
+  if (imageCount > 0) {
+    output.addChild(new Text(theme.fg('muted', `${imageCount} image${imageCount === 1 ? '' : 's'}${context.showImages ? '' : ' hidden'}`), 0, 0))
+  }
+  if (text.length === 0 && imageCount === 0 && !context.isError) {
+    output.addChild(new Text(theme.fg('dim', '(no output)'), 0, 0))
+  }
+  return output
 }
 
 interface McpGatewayStateFields {

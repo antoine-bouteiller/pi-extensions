@@ -42,6 +42,16 @@ export const WebfetchParams = Type.Object({
 
 export type WebfetchInput = Static<typeof WebfetchParams>
 
+export const renderWebfetchCall = (params: Partial<WebfetchInput>, theme: Theme): Text => {
+  const format = params.format ?? DEFAULT_FORMAT
+  const timeout = params.timeout === undefined ? '' : theme.fg('dim', ` (${normalizeTimeout(params.timeout)}s timeout)`)
+  return new Text(
+    theme.fg('toolTitle', theme.bold('webfetch ')) + theme.fg('accent', params.url || '?') + theme.fg('muted', ` as ${format}`) + timeout,
+    0,
+    0
+  )
+}
+
 const WebfetchFormatSchema = Schema.Literals(['markdown', 'text', 'html'] as const)
 type WebfetchFormat = typeof WebfetchFormatSchema.Type
 const DEFAULT_FORMAT: WebfetchFormat = 'markdown'

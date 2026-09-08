@@ -4,7 +4,15 @@ import { type AppRuntime } from '#shared/effect/app_services'
 import { type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 import { makeToolExecutor } from '#shared/effect/runtime'
 
-import { MAX_DOWNLOAD_BYTES, MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES, renderWebfetchResult, webfetchEffect, WebfetchParams } from './fetch.js'
+import {
+  MAX_DOWNLOAD_BYTES,
+  MAX_OUTPUT_BYTES,
+  MAX_OUTPUT_LINES,
+  renderWebfetchCall,
+  renderWebfetchResult,
+  webfetchEffect,
+  WebfetchParams,
+} from './fetch.js'
 
 export const feature = ((_options: FeatureOptions<undefined> = {}) => ({
   bootstrap: 'eager',
@@ -21,6 +29,7 @@ export const feature = ((_options: FeatureOptions<undefined> = {}) => ({
           'Use webfetch to read a known static web page or HTTP endpoint. Use agent-browser instead when the task requires interaction, authentication, screenshots, or JavaScript-rendered content.',
         ],
         promptSnippet: 'Fetch and read static web pages or HTTP endpoints',
+        renderCall: renderWebfetchCall,
         renderResult: renderWebfetchResult,
       })
     },

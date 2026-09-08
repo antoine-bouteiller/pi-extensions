@@ -5,7 +5,15 @@ import { type AppRuntime } from '#shared/effect/app_services'
 import { type FeatureDescriptor, type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 import { makeCommandHandler, makeToolExecutor } from '#shared/effect/runtime'
 
-import { makeGatewaySession, makeMcpGateway, McpGateway, McpGatewayParameters, renderMcpCall, type McpGatewayApi } from './gateway.js'
+import {
+  makeGatewaySession,
+  makeMcpGateway,
+  McpGateway,
+  McpGatewayParameters,
+  renderMcpCall,
+  renderMcpResult,
+  type McpGatewayApi,
+} from './gateway.js'
 
 type EagerFeaturePlugin = Extract<FeatureDescriptor, { readonly bootstrap: 'eager' }>
 type McpGatewayFactory = () => McpGatewayApi
@@ -53,6 +61,7 @@ export const feature = ((options: FeatureOptions<McpGatewayFactory> = {}) => {
           ],
           promptSnippet: 'Search and call configured remote MCP capabilities on demand',
           renderCall: renderMcpCall,
+          renderResult: renderMcpResult,
         })
 
         pi.registerCommand('mcp-auth', {
