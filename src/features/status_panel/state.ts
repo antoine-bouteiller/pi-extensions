@@ -23,6 +23,22 @@ export interface ModelInfoState {
   contextTokens: number | undefined
   contextWindow: number
   contextPercent: number | undefined
+  cacheHitPercent: number | undefined
+  tokensPerSecond: number | undefined
+}
+
+interface TurnMetricsInput {
+  usage: { input: number; output: number; cacheRead: number; cacheWrite: number }
+  timestamp: number
+}
+
+export const turnMetrics = ({ usage, timestamp }: TurnMetricsInput, now: number): Pick<ModelInfoState, 'cacheHitPercent' | 'tokensPerSecond'> => {
+  const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite
+  const seconds = (now - timestamp) / 1000
+  return {
+    cacheHitPercent: promptTokens > 0 ? (usage.cacheRead / promptTokens) * 100 : undefined,
+    tokensPerSecond: seconds > 0 && usage.output > 0 ? usage.output / seconds : undefined,
+  }
 }
 
 interface PullRequestInfo {
@@ -37,12 +53,14 @@ export interface GitInfoState {
 }
 
 export const emptyModelInfoState = (): ModelInfoState => ({
+  cacheHitPercent: undefined,
   contextPercent: undefined,
   contextTokens: undefined,
   contextWindow: 0,
   modelId: 'no-model',
   provider: '',
   thinking: 'off',
+  tokensPerSecond: undefined,
 })
 
 export const emptyGitInfoState = (): GitInfoState => ({

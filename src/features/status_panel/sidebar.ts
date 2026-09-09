@@ -126,9 +126,14 @@ const agentRows = (state: SidebarState, width: number, theme: SidebarTheme) => {
 }
 
 const contextRows = (state: SidebarState, width: number, theme: SidebarTheme) => {
-  const { contextPercent, contextTokens, contextWindow } = state.model
+  const { cacheHitPercent, contextPercent, contextTokens, contextWindow, tokensPerSecond } = state.model
+  const metrics = [
+    cacheHitPercent === undefined ? undefined : `Cache hit ${cacheHitPercent.toFixed(1)}%`,
+    tokensPerSecond === undefined ? undefined : `${Math.round(tokensPerSecond)} tok/s`,
+  ].filter((value) => value !== undefined)
+  const metricsRows = metrics.length === 0 ? [] : [paint(theme, 'gray', metrics.join(' · '))]
   if (contextPercent === undefined || contextTokens === undefined) {
-    return [paint(theme, 'gray', 'Context unavailable')]
+    return [paint(theme, 'gray', 'Context unavailable'), ...metricsRows]
   }
   const color = contextColor(contextPercent)
   const usage = `${formatTokens(contextTokens)} / ${contextWindow > 0 ? formatTokens(contextWindow) : '—'}`
@@ -140,7 +145,7 @@ const contextRows = (state: SidebarState, width: number, theme: SidebarTheme) =>
     'gray',
     '·'.repeat(meterWidth - filled)
   )}${paint(theme, 'gray', ']')}`
-  return [spaced(paint(theme, color, usage), paint(theme, color, percent), width), meter]
+  return [spaced(paint(theme, color, usage), paint(theme, color, percent), width), meter, ...metricsRows]
 }
 
 const profileColor = (profile: string | undefined): PaletteColor => {

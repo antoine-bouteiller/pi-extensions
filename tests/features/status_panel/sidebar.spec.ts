@@ -30,12 +30,14 @@ const state: SidebarState = {
     pullRequest: undefined,
   },
   model: {
+    cacheHitPercent: 87.25,
     contextPercent: 11.5,
     contextTokens: 31_000,
     contextWindow: 272_000,
     modelId: 'gpt-5.6-sol',
     provider: 'openai-codex',
     thinking: 'medium',
+    tokensPerSecond: 42.4,
   },
   quotas: {
     anthropic: {
@@ -326,6 +328,15 @@ describe('sidebar rendering', () => {
       const text = stripAnsi(renderSidebarLines({ height: 20, state: unavailable, theme, width: 44 }).join('\n'))
 
       expect(text).toContain('Context unavailable')
+      expect(text).toContain('Cache hit 87.3% · 42 tok/s')
+    })
+  )
+
+  it.effect('renders cache hit and throughput under the context meter', () =>
+    Effect.sync(() => {
+      const text = stripAnsi(renderSidebarLines({ height: 20, state, theme, width: 44 }).join('\n'))
+
+      expect(text).toContain('Cache hit 87.3% · 42 tok/s')
     })
   )
 })

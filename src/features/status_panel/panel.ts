@@ -1,5 +1,5 @@
 import { type ExtensionAPI, type ExtensionContext, type ExtensionEvent, type ReadonlyFooterDataProvider } from '@earendil-works/pi-coding-agent'
-import { Effect, Fiber, MutableRef, Path as PathService, Queue, type Scope } from 'effect'
+import { Clock, Effect, Fiber, MutableRef, Path as PathService, Queue, type Scope } from 'effect'
 import { type FileSystem } from 'effect/FileSystem'
 import { type Path } from 'effect/Path'
 import { type HttpClient } from 'effect/unstable/http'
@@ -15,7 +15,7 @@ import { makeQuotaPoller, quotaFromHeaders, type QuotaFetcher, type QuotaPoller 
 import { formatDirectory } from './render.js'
 import { createSidebarController, type SidebarController } from './sidebar.js'
 import { MIN_MAIN_WIDTH, MIN_SIDEBAR_WIDTH } from './split_pane.js'
-import { emptyPanelState, type ModelInfoState, type PanelState, type ProviderQuota } from './state.js'
+import { emptyPanelState, turnMetrics, type ModelInfoState, type PanelState, type ProviderQuota } from './state.js'
 import { collectStatuses } from './statuses.js'
 
 const ANTHROPIC_QUOTA_REFRESH_MS = 15_000
@@ -45,6 +45,7 @@ export interface PanelHandlers {
   readonly modelSelect: (event: PiEvent<'model_select'>, ctx: ExtensionContext) => Effect.Effect<void, never, HttpClient.HttpClient>
   readonly thinkingLevelSelect: (event: PiEvent<'thinking_level_select'>, ctx: ExtensionContext) => Effect.Effect<void>
   readonly agentStart: (event: PiEvent<'agent_start'>, ctx: ExtensionContext) => Effect.Effect<void>
+  readonly messageEnd: (event: PiEvent<'message_end'>, ctx: ExtensionContext) => Effect.Effect<void>
   readonly turnEnd: (event: PiEvent<'turn_end'>, ctx: ExtensionContext) => Effect.Effect<void>
   readonly agentSettled: (event: PiEvent<'agent_settled'>, ctx: ExtensionContext) => Effect.Effect<void>
   readonly afterProviderResponse: (event: PiEvent<'after_provider_response'>, ctx: ExtensionContext) => Effect.Effect<void>
@@ -248,6 +249,15 @@ export const makePanelController = ({ dependencies, pi }: PanelControllerOptions
     agentStart: () =>
       Effect.gen(function* () {
         yield* updateState((state) => ({ ...state, activity: 'working' }))
+        requestRender?.()
+      }),
+    messageEnd: (event) =>
+      Effect.gen(function* () {
+        if (event.message.role !== 'assistant') {
+          return
+        }
+        const metrics = turnMetrics(event.message, yield* Clock.currentTimeMillis)
+        yield* updateState((state) => ({ ...state, model: { ...state.model, ...metrics } }))
         requestRender?.()
       }),
     modelSelect: (event, ctx) =>

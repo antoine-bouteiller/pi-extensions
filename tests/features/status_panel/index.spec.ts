@@ -137,6 +137,7 @@ describe('status panel registration', () => {
         'model_select',
         'thinking_level_select',
         'agent_start',
+        'message_end',
         'turn_end',
         'agent_settled',
         'after_provider_response',
