@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url'
 
-import { BunChildProcessSpawner, BunFileSystem, BunPath } from '@effect/platform-bun'
+import { BunChildProcessSpawner, BunCrypto, BunFileSystem, BunPath } from '@effect/platform-bun'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asExtensionContext, asResult } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
@@ -13,7 +13,7 @@ import { AgentActivity, type AgentActivityApi, type AppRuntime, StatusBarLive } 
 import { envLayer } from '@/shared/effect/env.js'
 import { parseJsonText } from '@/shared/utils/json.js'
 
-const BunPlatformLayer = BunChildProcessSpawner.layer.pipe(Layer.provideMerge(Layer.mergeAll(BunFileSystem.layer, BunPath.layer)))
+const BunPlatformLayer = BunChildProcessSpawner.layer.pipe(Layer.provideMerge(Layer.mergeAll(BunCrypto.layer, BunFileSystem.layer, BunPath.layer)))
 
 const sharedActivityScript = (paths: { aggregate: string; activity: string; runtime: string; statusPanel: string }): string => `
   const { Effect, Exit, Scope } = await import('effect');

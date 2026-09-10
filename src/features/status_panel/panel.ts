@@ -1,5 +1,6 @@
 import { type ExtensionAPI, type ExtensionContext, type ExtensionEvent, type ReadonlyFooterDataProvider } from '@earendil-works/pi-coding-agent'
 import { Clock, Effect, Fiber, MutableRef, Path as PathService, Queue, type Scope } from 'effect'
+import { type Crypto } from 'effect/Crypto'
 import { type FileSystem } from 'effect/FileSystem'
 import { type Path } from 'effect/Path'
 import { type HttpClient } from 'effect/unstable/http'
@@ -55,7 +56,7 @@ export interface PanelHandlers {
 export const recordSubagentQuota = (
   event: PiEvent<'after_provider_response'>,
   ctx: ExtensionContext
-): Effect.Effect<void, never, FileSystem | Path | Env> => {
+): Effect.Effect<void, never, FileSystem | Path | Crypto | Env> => {
   const quota = quotaFromHeaders(ctx.model?.provider ?? '', event.headers)
   return quota === undefined
     ? Effect.void

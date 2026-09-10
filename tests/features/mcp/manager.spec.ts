@@ -187,9 +187,16 @@ const harness = (
   return { calls, manager: promised(manager), raw: manager }
 }
 
+const unusedCredentialStore: CredentialStore = {
+  delete: () => Effect.void,
+  get: () => Effect.succeedNone,
+  set: () => Effect.void,
+}
+
 /** The manager is Effect-native; these behavioural tests drive it through one promise facade. */
 const promised = (manager: McpManager) => ({
-  authenticate: (server: string, options?: McpOperationOptions) => promiseFromEffect(manager.authenticate(server, options)),
+  authenticate: (server: string, options?: McpOperationOptions) =>
+    promiseFromEffect(manager.authenticate(server, options).pipe(Effect.provide(BunServices.layer))),
   call: (tool: string, args: JsonObject, options?: McpOperationOptions) =>
     promiseFromEffect(manager.call(tool, args, options).pipe(Effect.provide(BunServices.layer))),
   close: () => promiseFromEffect(manager.close),
@@ -781,7 +788,7 @@ describe('MCP manager', () => {
                     type: 'stdio',
                   },
                 },
-                { environment: processEnvironment, openUrl: () => Effect.void }
+                { credentialStore: unusedCredentialStore, environment: processEnvironment, openUrl: () => Effect.void }
               )
             )
           ),
@@ -888,7 +895,9 @@ describe('MCP manager', () => {
         Effect.gen(function* () {
           const manager = yield* McpManagerService
           return manager.status()
-        }).pipe(Effect.provide(mcpManagerLayer({}, { environment: processEnvironment, openUrl: () => Effect.void })))
+        }).pipe(
+          Effect.provide(mcpManagerLayer({}, { credentialStore: unusedCredentialStore, environment: processEnvironment, openUrl: () => Effect.void }))
+        )
       )
       expect(statuses).toEqual([])
     })

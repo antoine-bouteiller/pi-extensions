@@ -11,6 +11,7 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import { Container, Text, type Component } from '@earendil-works/pi-tui'
 import { Context, Data, Deferred, Effect, Match, Option, Ref, Schema } from 'effect'
+import { Crypto } from 'effect/Crypto'
 import { type FileSystem } from 'effect/FileSystem'
 import { type Path } from 'effect/Path'
 import { Type, type Static } from 'typebox'
@@ -26,6 +27,7 @@ import { isEmptyString, isFalse, isNotEmptyString, isNotNullOrUndefined, isNullO
 import { isRecord } from '#shared/utils/records'
 
 import { loadGlobalMcpConfig } from './config.js'
+import { createKeychainCredentialStore } from './keychain.js'
 import { boundGatewayOutput } from './output.js'
 import {
   assertOpenableAuthorizationUrl,
@@ -111,7 +113,7 @@ export interface McpGatewayManager {
   search: (query: string, options?: McpSearchOptions) => Effect.Effect<readonly McpToolSummary[], Error>
   describe: (tool: string, options?: McpOperationOptions) => Effect.Effect<McpToolDescription, Error>
   call: (tool: string, args: JsonObject, options?: McpOperationOptions) => Effect.Effect<AgentToolResult<unknown>, Error, FileSystem | Path>
-  authenticate: (server: string, options?: McpOperationOptions) => Effect.Effect<unknown, Error>
+  authenticate: (server: string, options?: McpOperationOptions) => Effect.Effect<unknown, Error, Crypto>
   close: Effect.Effect<void>
 }
 
@@ -123,6 +125,7 @@ export interface McpManagerCallbacks {
 
 interface McpManagerContext {
   callbacks: McpManagerCallbacks
+  crypto: Crypto
   pi: ExtensionAPI
   policy: McpGatewayPolicy
 }
@@ -545,7 +548,7 @@ const dispatchGateway = (
   })
 
 export interface GatewaySession {
-  readonly authenticate: (args: string, ctx: ExtensionCommandContext) => Effect.Effect<void>
+  readonly authenticate: (args: string, ctx: ExtensionCommandContext) => Effect.Effect<void, never, Crypto>
   readonly dispatch: (
     params: McpGatewayInput,
     signal: AbortSignal | undefined
@@ -572,6 +575,7 @@ export const makeGatewaySession = (pi: ExtensionAPI): GatewaySession => {
           yield* previousManager.value.close
         }
         const config = yield* fromManager(gateway.loadConfig)
+        const crypto = yield* Crypto
         const managerCreation = Promise.resolve().then(() =>
           gateway.createManager(config, {
             callbacks: {
@@ -581,6 +585,7 @@ export const makeGatewaySession = (pi: ExtensionAPI): GatewaySession => {
                 }
               },
             },
+            crypto,
             pi,
             policy: gateway.policy,
           })
@@ -648,7 +653,7 @@ export const makeGatewaySession = (pi: ExtensionAPI): GatewaySession => {
       .map((server) => ({ label: server, value: server }))
   }
 
-  const authenticate = (args: string, ctx: ExtensionCommandContext): Effect.Effect<void> =>
+  const authenticate = (args: string, ctx: ExtensionCommandContext): Effect.Effect<void, never, Crypto> =>
     Effect.gen(function* () {
       const manager = yield* requireManager(state)
       let server = args.trim()
@@ -704,10 +709,11 @@ export const makeMcpGateway = (): McpGatewayApi => ({
    * Keep the manager behind the session lifecycle boundary: importing this entrypoint and
    * registering the gateway must not initialize MCP SDK transports or native OAuth storage.
    */
-  createManager: (config, { callbacks, pi, policy }) =>
+  createManager: (config, { callbacks, crypto, pi, policy }) =>
     import('./manager.js').then(
       ({ McpManager: Manager }) =>
         new Manager(config, {
+          credentialStore: createKeychainCredentialStore({ crypto }),
           environment: processEnvironment,
           onStatusChange: callbacks.onStatusChange,
           openUrl: (url: string) =>

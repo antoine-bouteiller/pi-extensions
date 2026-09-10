@@ -1,4 +1,4 @@
-import { BunChildProcessSpawner, BunFileSystem, BunPath } from '@effect/platform-bun'
+import { BunChildProcessSpawner, BunCrypto, BunFileSystem, BunPath } from '@effect/platform-bun'
 import { Layer, ManagedRuntime } from 'effect'
 import { FetchHttpClient } from 'effect/unstable/http'
 
@@ -15,7 +15,7 @@ export type ProcessRuntime = ManagedRuntime.ManagedRuntime<ProcessServices, neve
  * remain synchronously constructible because status-panel resolves its paint-loop stores with
  * `runtime.runSync` during registration.
  */
-const BunPlatformLayer = BunChildProcessSpawner.layer.pipe(Layer.provideMerge(Layer.mergeAll(BunFileSystem.layer, BunPath.layer)))
+const BunPlatformLayer = BunChildProcessSpawner.layer.pipe(Layer.provideMerge(Layer.mergeAll(BunCrypto.layer, BunFileSystem.layer, BunPath.layer)))
 
 const AppLayer: Layer.Layer<ProcessServices> = Layer.mergeAll(BunPlatformLayer, FetchHttpClient.layer, StatusBarLive, AgentActivityLive).pipe(
   Layer.provideMerge(EnvLive)

@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto'
 import { tmpdir, userInfo } from 'node:os'
 
 import { Effect, Path } from 'effect'
+import { Crypto } from 'effect/Crypto'
 import { FileSystem } from 'effect/FileSystem'
 import { type Path as PathService } from 'effect/Path'
 
@@ -17,7 +17,7 @@ const quotaPath = (path: PathService, env: EnvApi, token: string) => path.join(q
 
 export const azureQuota = createObservableStore<number | undefined>(undefined)
 
-export const writeSubagentAzureQuota = (token: string, percent: number): Effect.Effect<void, never, FileSystem | PathService | Env> => {
+export const writeSubagentAzureQuota = (token: string, percent: number): Effect.Effect<void, never, FileSystem | PathService | Crypto | Env> => {
   if (!TOKEN_PATTERN.test(token) || !Number.isFinite(percent)) {
     return Effect.void
   }
@@ -25,8 +25,9 @@ export const writeSubagentAzureQuota = (token: string, percent: number): Effect.
     const fileSystem = yield* FileSystem
     const path = yield* Path.Path
     const env = yield* Env
+    const crypto = yield* Crypto
     const target = quotaPath(path, env, token)
-    const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`
+    const temporary = `${target}.${process.pid}.${yield* crypto.randomUUIDv4}.tmp`
     const directory = quotaDir(path, env)
     /*
      * Mode at creation as well as after: a later chmod alone leaves a umask-width window during
@@ -43,7 +44,7 @@ export const writeSubagentAzureQuota = (token: string, percent: number): Effect.
   }).pipe(Effect.ignore)
 }
 
-export const consumeSubagentAzureQuota = (token: string): Effect.Effect<number | undefined, never, FileSystem | PathService | Env> => {
+export const consumeSubagentAzureQuota = (token: string): Effect.Effect<number | undefined, never, FileSystem | PathService | Crypto | Env> => {
   if (!TOKEN_PATTERN.test(token)) {
     // `effecttsgo/effect-succeed-with-void` rejects `Effect.succeed(undefined)`, so widen `Effect.void` instead.
     return Effect.void.pipe(Effect.as<number | undefined>(undefined))
@@ -52,8 +53,9 @@ export const consumeSubagentAzureQuota = (token: string): Effect.Effect<number |
     const fileSystem = yield* FileSystem
     const path = yield* Path.Path
     const env = yield* Env
+    const crypto = yield* Crypto
     const target = quotaPath(path, env, token)
-    const claimed = `${target}.${process.pid}.${randomUUID()}.consume`
+    const claimed = `${target}.${process.pid}.${yield* crypto.randomUUIDv4.pipe(Effect.orDie)}.consume`
     return yield* Effect.gen(function* () {
       yield* fileSystem.rename(target, claimed)
       const text = yield* fileSystem.readFileString(claimed)
