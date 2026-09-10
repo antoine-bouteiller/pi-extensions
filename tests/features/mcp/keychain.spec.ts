@@ -1,6 +1,7 @@
 import { promiseFromEffect, tryEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asNarrowed } from '@tests/utils/casts.js'
 import { Effect, Fiber, Option } from 'effect'
+import { Crypto } from 'effect/Crypto'
 
 import {
   KeychainCredentialStore,
@@ -9,11 +10,15 @@ import {
   keychainAccount,
   nativeKeyringPackage,
   type KeychainCredentialError,
+  type KeychainCredentialStoreOptions,
   type OAuthCredentialPayload,
 } from '@/features/mcp/keychain.js'
 import { jsonText, parseJsonText } from '@/shared/utils/json.js'
 
 type FailureMode = 'get' | 'set' | 'delete' | undefined
+
+const makeStore = (options: Omit<KeychainCredentialStoreOptions, 'crypto'>) =>
+  Effect.map(Crypto, (crypto) => new KeychainCredentialStore({ ...options, crypto }))
 
 const inMemoryKeyring = (initial: Record<string, string> = {}, failure?: FailureMode) => {
   const values = new Map(Object.entries(initial))
@@ -113,7 +118,8 @@ describe('Keychain OAuth credential store', () => {
   it.effect('round trips one validated URL-bound credential payload', () =>
     Effect.gen(function* () {
       const keyring = inMemoryKeyring()
-      const store = new KeychainCredentialStore({ createEntry: keyring.createEntry })
+      const store = yield* makeStore({ createEntry: keyring.createEntry })
+      const slackAccount = yield* keychainAccount('slack')
 
       yield* store.set('slack', credential)
       expect(yield* store.get('slack', credential.serverUrl)).toEqual(Option.some(credential))
@@ -127,7 +133,7 @@ describe('Keychain OAuth credential store', () => {
       if (serialized === undefined) {
         throw new Error('expected a serialized credential')
       }
-      expect(parseJsonText(serialized)).toEqual({ [keychainAccount('slack')]: credential })
+      expect(parseJsonText(serialized)).toEqual({ [slackAccount]: credential })
     })
   )
 
@@ -138,7 +144,7 @@ describe('Keychain OAuth credential store', () => {
         signals.push(signal ?? undefined)
         return promiseFromEffect(Effect.never)
       }
-      const store = new KeychainCredentialStore({
+      const store = yield* makeStore({
         createEntry: () => ({
           deletePassword: (signal) => pending<boolean>(signal),
           getPassword: (signal) => pending<string>(signal),
@@ -156,18 +162,19 @@ describe('Keychain OAuth credential store', () => {
   )
 
   it.effect('uses a stable SHA-256 account without exposing the server name', () =>
-    Effect.sync(() => {
-      expect(keychainAccount('slack')).toMatch(/^[0-9a-f]{64}$/)
-      expect(keychainAccount('slack')).not.toContain('slack')
-      expect(keychainAccount('slack')).toBe(keychainAccount('slack'))
-      expect(keychainAccount('linear')).not.toBe(keychainAccount('slack'))
+    Effect.gen(function* () {
+      const slackAccount = yield* keychainAccount('slack')
+      expect(slackAccount).toMatch(/^[0-9a-f]{64}$/)
+      expect(slackAccount).not.toContain('slack')
+      expect(yield* keychainAccount('slack')).toBe(slackAccount)
+      expect(yield* keychainAccount('linear')).not.toBe(slackAccount)
     })
   )
 
   it.effect('rejects a payload when the configured endpoint was repointed', () =>
     Effect.gen(function* () {
       const keyring = inMemoryKeyring()
-      const store = new KeychainCredentialStore({ createEntry: keyring.createEntry })
+      const store = yield* makeStore({ createEntry: keyring.createEntry })
       yield* store.set('slack', credential)
 
       expect(yield* store.get('slack', 'https://attacker.example/mcp')).toEqual(Option.none())
@@ -178,7 +185,7 @@ describe('Keychain OAuth credential store', () => {
   it.effect('deletes credentials and treats absent entries as empty', () =>
     Effect.gen(function* () {
       const keyring = inMemoryKeyring()
-      const store = new KeychainCredentialStore({ createEntry: keyring.createEntry })
+      const store = yield* makeStore({ createEntry: keyring.createEntry })
 
       expect(yield* store.get('slack', credential.serverUrl)).toEqual(Option.none())
       yield* store.delete('slack')
@@ -191,24 +198,25 @@ describe('Keychain OAuth credential store', () => {
 
   it.effect('deletes malformed JSON and malformed credential members', () =>
     Effect.gen(function* () {
+      const slackAccount = yield* keychainAccount('slack')
       for (const serialized of [
         '{ nope',
         jsonText([]),
-        jsonText({ [keychainAccount('slack')]: { serverUrl: credential.serverUrl } }),
+        jsonText({ [slackAccount]: { serverUrl: credential.serverUrl } }),
         jsonText({
-          [keychainAccount('slack')]: {
+          [slackAccount]: {
             serverUrl: credential.serverUrl,
             tokens: { access_token: 'secret', token_type: 3 },
           },
         }),
         jsonText({
-          [keychainAccount('slack')]: {
+          [slackAccount]: {
             clientInformation: { client_id: '' },
             serverUrl: credential.serverUrl,
           },
         }),
         jsonText({
-          [keychainAccount('slack')]: {
+          [slackAccount]: {
             plaintextFallback: true,
             serverUrl: credential.serverUrl,
             tokens: { access_token: 'secret', token_type: 'Bearer' },
@@ -216,7 +224,7 @@ describe('Keychain OAuth credential store', () => {
         }),
       ]) {
         const keyring = inMemoryKeyring({ [MCP_OAUTH_KEYCHAIN_ACCOUNT]: serialized })
-        const store = new KeychainCredentialStore({ createEntry: keyring.createEntry })
+        const store = yield* makeStore({ createEntry: keyring.createEntry })
 
         expect(yield* store.get('slack', credential.serverUrl)).toEqual(Option.none())
         expect(keyring.values.has(MCP_OAUTH_KEYCHAIN_ACCOUNT)).toBeFalse()
@@ -228,7 +236,7 @@ describe('Keychain OAuth credential store', () => {
   it.effect('validates payloads before writing to Keychain', () =>
     Effect.gen(function* () {
       const keyring = inMemoryKeyring()
-      const store = new KeychainCredentialStore({ createEntry: keyring.createEntry })
+      const store = yield* makeStore({ createEntry: keyring.createEntry })
       const malformed = asNarrowed<OAuthCredentialPayload, { serverUrl: string; tokens: { access_token: string } }>({
         serverUrl: credential.serverUrl,
         tokens: { access_token: 'secret' },
@@ -243,7 +251,7 @@ describe('Keychain OAuth credential store', () => {
     Effect.gen(function* () {
       for (const operation of ['get', 'set', 'delete'] as const) {
         const keyring = inMemoryKeyring({}, operation)
-        const store = new KeychainCredentialStore({ createEntry: keyring.createEntry })
+        const store = yield* makeStore({ createEntry: keyring.createEntry })
         let request: Effect.Effect<void, KeychainCredentialError>
         if (operation === 'get') {
           request = Effect.asVoid(store.get('slack', credential.serverUrl))
@@ -265,7 +273,7 @@ describe('Keychain OAuth credential store', () => {
   it.effect('isolates server names that share one URL', () =>
     Effect.gen(function* () {
       const keyring = inMemoryKeyring()
-      const store = new KeychainCredentialStore({ createEntry: keyring.createEntry })
+      const store = yield* makeStore({ createEntry: keyring.createEntry })
       yield* store.set('alpha', credential)
       yield* store.set('beta', { ...credential, tokens: { access_token: 'beta-token', token_type: 'Bearer' } })
 

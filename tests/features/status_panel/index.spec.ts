@@ -1,5 +1,4 @@
 import { afterEach, beforeEach } from 'bun:test'
-import { randomUUID } from 'node:crypto'
 import { tmpdir, userInfo } from 'node:os'
 
 import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
@@ -7,6 +6,7 @@ import { asExtensionContext, asFooterDataProvider, asNarrowed } from '@tests/uti
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtimeWithEnvironment } from '@tests/utils/runtime.js'
 import { Effect, Exit, FileSystem, Layer, Scope } from 'effect'
+import { Crypto } from 'effect/Crypto'
 import { TestClock } from 'effect/testing'
 import { FetchHttpClient } from 'effect/unstable/http'
 
@@ -95,7 +95,7 @@ describe('status panel registration', () => {
     const temporaryRoot = process.env.PI_SUBAGENT_TEMP_DIR || tmpdir()
     return Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
-      const token = randomUUID()
+      const token = yield* (yield* Crypto).randomUUIDv4
       yield* writeSubagentAzureQuota(token, 150)
       const directory = join(temporaryRoot, 'pi-codex-subagents', userInfo().username, 'quota')
       const target = join(directory, `${token}.json`)
@@ -116,7 +116,7 @@ describe('status panel registration', () => {
     const temporaryRoot = process.env.PI_SUBAGENT_TEMP_DIR || tmpdir()
     return Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
-      const token = randomUUID()
+      const token = yield* (yield* Crypto).randomUUIDv4
       const directory = join(temporaryRoot, 'pi-codex-subagents', userInfo().username, 'quota')
       yield* fs.makeDirectory(directory, { recursive: true })
       yield* fs.writeFileString(join(directory, `${token}.json`), '{ not json')

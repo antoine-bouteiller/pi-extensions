@@ -1,9 +1,8 @@
-import { randomBytes } from 'node:crypto'
-
 import { BunHttpServer } from '@effect/platform-bun'
 import { UnauthorizedError, type OAuthClientProvider, type OAuthDiscoveryState } from '@modelcontextprotocol/sdk/client/auth.js'
 import { type OAuthClientInformationMixed, type OAuthClientMetadata, type OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js'
-import { Cause, Deferred, Effect, Exit, Option, Scope, Semaphore } from 'effect'
+import { Cause, Deferred, Effect, Encoding, Exit, Option, Scope, Semaphore } from 'effect'
+import { Crypto } from 'effect/Crypto'
 import { HttpServerRequest, HttpServerResponse } from 'effect/unstable/http'
 
 import { toPromiseMethod } from '#shared/effect/runtime'
@@ -383,6 +382,11 @@ export class KeychainOAuthProvider implements OAuthClientProvider {
   }
 }
 
-export const createOAuthState = (): string => randomBytes(32).toString('base64url')
+/** A fixed, valid size cannot fail `randomBytes`, so the platform error is a defect. */
+export const createOAuthState: Effect.Effect<string, never, Crypto> = Crypto.pipe(
+  Effect.flatMap((crypto) => crypto.randomBytes(32)),
+  Effect.map(Encoding.encodeBase64Url),
+  Effect.orDie
+)
 
 export const oauthCallbackPort = (config: OAuthConfig): number => config.callbackPort ?? DEFAULT_CALLBACK_PORT

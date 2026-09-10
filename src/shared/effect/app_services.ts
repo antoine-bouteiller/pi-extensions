@@ -1,4 +1,5 @@
 import { Context, Effect, Layer, type ManagedRuntime } from 'effect'
+import { type Crypto } from 'effect/Crypto'
 import { type FileSystem } from 'effect/FileSystem'
 import { type Path } from 'effect/Path'
 import { type HttpClient } from 'effect/unstable/http'
@@ -80,6 +81,6 @@ export const StatusBarLive: Layer.Layer<StatusBar> = Layer.succeed(StatusBar)({
 
 export const AgentActivityLive: Layer.Layer<AgentActivity> = Layer.succeed(AgentActivity)(agentActivityApi(runningAgents))
 
-export type AppServices = FileSystem | Path | HttpClient.HttpClient | StatusBar | AgentActivity | ChildProcessSpawner | Env
+export type AppServices = FileSystem | Path | Crypto | HttpClient.HttpClient | StatusBar | AgentActivity | ChildProcessSpawner | Env
 
 export type AppRuntime = ManagedRuntime.ManagedRuntime<AppServices, never>

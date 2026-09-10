@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 
 import {
@@ -11,9 +10,11 @@ import {
   type ToolResultEvent,
 } from '@earendil-works/pi-coding-agent'
 import { Context, Deferred, Effect, HashSet, Path, Ref } from 'effect'
+import { type Crypto } from 'effect/Crypto'
 import { FileSystem } from 'effect/FileSystem'
 import { type PlatformError } from 'effect/PlatformError'
 
+import { sha256Hex } from '#shared/effect/crypto'
 import { type JsonObject } from '#shared/utils/json'
 import { isEmptyString, isNotEmptyString, isNullOrUndefined } from '#shared/utils/predicates'
 import { isRecord } from '#shared/utils/records'
@@ -372,9 +373,11 @@ export const parseRuleFrontmatter = (content: string): RuleFrontmatter => {
   }
 }
 
-const contentHashEffect = (content: string): Effect.Effect<string> => Effect.sync(() => createHash('sha256').update(content).digest('hex'))
-
-const readRulesEffect = (root: string, displayRoot: string, containmentRoot?: string): Effect.Effect<Rule[], never, FileSystem | Path.Path> =>
+const readRulesEffect = (
+  root: string,
+  displayRoot: string,
+  containmentRoot?: string
+): Effect.Effect<Rule[], never, FileSystem | Path.Path | Crypto> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem
     const files = yield* discoverRuleFilesEffect(root, containmentRoot)
@@ -391,7 +394,7 @@ const readRulesEffect = (root: string, displayRoot: string, containmentRoot?: st
       rules.push({
         alwaysApply: parsed.alwaysApply,
         body: parsed.body.trim(),
-        contentHash: yield* contentHashEffect(content),
+        contentHash: yield* sha256Hex(content),
         displayPath: `${displayRoot}/${file.relativePath}`,
         paths: parsed.paths,
         realPath: file.realPath,
@@ -400,7 +403,7 @@ const readRulesEffect = (root: string, displayRoot: string, containmentRoot?: st
     return rules
   })
 
-const discoverRulesEffect = (cwd: string, trusted: boolean, homeDirectory: string): Effect.Effect<Rule[], never, FileSystem | Path.Path> =>
+const discoverRulesEffect = (cwd: string, trusted: boolean, homeDirectory: string): Effect.Effect<Rule[], never, FileSystem | Path.Path | Crypto> =>
   Effect.gen(function* () {
     const path = yield* Path.Path
     const groups: Rule[][] = []
@@ -582,7 +585,7 @@ class RulesState extends Context.Service<RulesState, RulesStateFields>()('pi-ext
  * and rehashes — editing a rule file makes it immediately eligible for reinjection under its new
  * hash, with no session lifecycle event required.
  */
-const refresh = (cwd: string, trusted: boolean, homeDirectory: string): Effect.Effect<Rule[], never, RulesState | FileSystem | Path.Path> =>
+const refresh = (cwd: string, trusted: boolean, homeDirectory: string): Effect.Effect<Rule[], never, RulesState | FileSystem | Path.Path | Crypto> =>
   Effect.gen(function* () {
     const state = yield* RulesState
     const key = `${cwd}\0${trusted}`
@@ -633,11 +636,11 @@ export interface RulesHandlers {
   readonly beforeAgentStart: (
     event: BeforeAgentStartEvent,
     ctx: ExtensionContext
-  ) => Effect.Effect<BeforeAgentStartEventResult | undefined, never, FileSystem | Path.Path>
+  ) => Effect.Effect<BeforeAgentStartEventResult | undefined, never, FileSystem | Path.Path | Crypto>
   readonly toolResult: (
     event: ToolResultEvent,
     ctx: ExtensionContext
-  ) => Effect.Effect<{ content: ToolResultEvent['content'] } | undefined, never, FileSystem | Path.Path>
+  ) => Effect.Effect<{ content: ToolResultEvent['content'] } | undefined, never, FileSystem | Path.Path | Crypto>
 }
 
 export const makeRulesHandlers = (environment: RulesEnvironment): RulesHandlers => {
@@ -646,13 +649,13 @@ export const makeRulesHandlers = (environment: RulesEnvironment): RulesHandlers 
     dynamicInjections: Ref.makeUnsafe(HashSet.empty<string>()),
   }
   const withRulesState = <Success, Failure>(
-    effect: Effect.Effect<Success, Failure, RulesState | FileSystem | Path.Path>
-  ): Effect.Effect<Success, Failure, FileSystem | Path.Path> => effect.pipe(Effect.provideService(RulesState, rulesState))
+    effect: Effect.Effect<Success, Failure, RulesState | FileSystem | Path.Path | Crypto>
+  ): Effect.Effect<Success, Failure, FileSystem | Path.Path | Crypto> => effect.pipe(Effect.provideService(RulesState, rulesState))
 
   const beforeAgentStart = (
     event: BeforeAgentStartEvent,
     ctx: ExtensionContext
-  ): Effect.Effect<BeforeAgentStartEventResult | undefined, never, RulesState | FileSystem | Path.Path> =>
+  ): Effect.Effect<BeforeAgentStartEventResult | undefined, never, RulesState | FileSystem | Path.Path | Crypto> =>
     Effect.gen(function* () {
       const rules = yield* refresh(ctx.cwd, ctx.isProjectTrusted(), environment.homeDirectory)
       const staticRules = rules.filter((rule) => rule.alwaysApply || rule.paths.length === 0)
@@ -666,7 +669,7 @@ export const makeRulesHandlers = (environment: RulesEnvironment): RulesHandlers 
   const toolResult = (
     event: ToolResultEvent,
     ctx: ExtensionContext
-  ): Effect.Effect<{ content: ToolResultEvent['content'] } | undefined, never, RulesState | FileSystem | Path.Path> =>
+  ): Effect.Effect<{ content: ToolResultEvent['content'] } | undefined, never, RulesState | FileSystem | Path.Path | Crypto> =>
     Effect.gen(function* () {
       const path = yield* Path.Path
       const targetPaths = extractToolPaths(event, ctx.cwd, path)

@@ -69,6 +69,7 @@ describe('project structure', () => {
       expect((yield* namesByKind(join(SRC, 'shared', 'effect'))).files).toEqual([
         'app_services.ts',
         'bun_host_file_system.ts',
+        'crypto.ts',
         'env.ts',
         'errors.ts',
         'feature.ts',

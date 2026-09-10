@@ -263,7 +263,7 @@ describe('Keychain OAuth provider', () => {
       expect(refusal).toBeInstanceOf(UnauthorizedError)
       expect(asError(refusal).message).toContain('/mcp-auth')
 
-      const state = createOAuthState()
+      const state = yield* createOAuthState
       const interactive = new KeychainOAuthProvider({
         config: { callbackPort: 3120 },
         interactive: true,

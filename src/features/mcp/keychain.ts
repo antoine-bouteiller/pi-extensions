@@ -1,12 +1,13 @@
-import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 
 import { type AsyncEntry as AsyncEntryType } from '@napi-rs/keyring'
 import { Effect, Option, Result, Schema, Semaphore } from 'effect'
+import { Crypto } from 'effect/Crypto'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
+import { sha256Hex } from '#shared/effect/crypto'
 import { jsonText, parseJsonText, type JsonObject, type JsonValue } from '#shared/utils/json'
 import { isEmptyString } from '#shared/utils/predicates'
 import { isRecord } from '#shared/utils/records'
@@ -86,6 +87,8 @@ const isMusl = (): boolean => {
 }
 
 export interface KeychainCredentialStoreOptions {
+  /** Injected at construction because the OAuth provider bridge runs store effects without a context. */
+  crypto: Crypto
   serviceName?: string
   createEntry?: EntryFactory
 }
@@ -168,7 +171,7 @@ const validateCredentialPayload = (value: unknown, serverName: string): OAuthCre
   return credential
 }
 
-export const keychainAccount = (serverName: string): string => createHash('sha256').update(serverName, 'utf8').digest('hex')
+export const keychainAccount = (serverName: string): Effect.Effect<string, never, Crypto> => sha256Hex(serverName)
 
 const isMissingCredential = (error: unknown): boolean => {
   if (typeof error !== 'object' || error === null) {
@@ -201,11 +204,13 @@ const operationError = (operation: string, serverName: string): Error =>
 
 export class KeychainCredentialStore implements CredentialStore {
   readonly serviceName: string
+  private readonly crypto: Crypto
   private readonly createEntry: EntryFactory
   /** The shared item is read-modify-written, so concurrent server writes must not interleave. */
   private readonly mutation = Semaphore.makeUnsafe(1)
 
-  constructor(options: KeychainCredentialStoreOptions = {}) {
+  constructor(options: KeychainCredentialStoreOptions) {
+    this.crypto = options.crypto
     this.serviceName = options.serviceName ?? MCP_OAUTH_KEYCHAIN_SERVICE
     this.createEntry =
       options.createEntry ??
@@ -221,6 +226,10 @@ export class KeychainCredentialStore implements CredentialStore {
 
   private entry(): KeyringEntry {
     return this.createEntry(this.serviceName, MCP_OAUTH_KEYCHAIN_ACCOUNT)
+  }
+
+  private account(serverName: string): Effect.Effect<string> {
+    return keychainAccount(serverName).pipe(Effect.provideService(Crypto, this.crypto))
   }
 
   /** Reads the shared item; an unreadable document is discarded rather than blocking every server. */
@@ -269,14 +278,15 @@ export class KeychainCredentialStore implements CredentialStore {
 
   get(serverName: string, serverUrl: string): Effect.Effect<Option.Option<OAuthCredentialPayload>, KeychainCredentialError> {
     return Effect.gen({ self: this }, function* () {
+      const account = yield* this.account(serverName)
       const document = yield* this.read(serverName)
-      const stored = document[keychainAccount(serverName)]
+      const stored = document[account]
       if (stored === undefined) {
         return Option.none<OAuthCredentialPayload>()
       }
       const parsed = yield* Effect.result(Effect.try(() => validateCredentialPayload(stored, serverName)))
       if (Result.isFailure(parsed)) {
-        const { [keychainAccount(serverName)]: _discarded, ...remaining } = document
+        const { [account]: _discarded, ...remaining } = document
         yield* this.write(serverName, remaining)
         return Option.none<OAuthCredentialPayload>()
       }
@@ -290,7 +300,7 @@ export class KeychainCredentialStore implements CredentialStore {
         this.mutation.withPermits(1)(
           Effect.gen({ self: this }, function* () {
             const document = yield* this.read(serverName)
-            yield* this.write(serverName, { ...document, [keychainAccount(serverName)]: { ...validated } })
+            yield* this.write(serverName, { ...document, [yield* this.account(serverName)]: { ...validated } })
           })
         )
       )
@@ -300,11 +310,11 @@ export class KeychainCredentialStore implements CredentialStore {
   delete(serverName: string): Effect.Effect<void, KeychainCredentialError> {
     return this.mutation.withPermits(1)(
       Effect.gen({ self: this }, function* () {
-        const { [keychainAccount(serverName)]: _removed, ...remaining } = yield* this.read(serverName)
+        const { [yield* this.account(serverName)]: _removed, ...remaining } = yield* this.read(serverName)
         yield* this.write(serverName, remaining)
       })
     )
   }
 }
 
-export const createKeychainCredentialStore = (options: KeychainCredentialStoreOptions = {}): CredentialStore => new KeychainCredentialStore(options)
+export const createKeychainCredentialStore = (options: KeychainCredentialStoreOptions): CredentialStore => new KeychainCredentialStore(options)

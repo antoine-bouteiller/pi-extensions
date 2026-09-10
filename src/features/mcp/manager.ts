@@ -6,6 +6,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { type Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { Context, Data, Deferred, Effect, Fiber, Layer, Result, Schema } from 'effect'
+import { type Crypto } from 'effect/Crypto'
 import { type FileSystem } from 'effect/FileSystem'
 import { type Path } from 'effect/Path'
 
@@ -14,7 +15,7 @@ import { type JsonObject } from '#shared/utils/json'
 import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isTrue } from '#shared/utils/predicates'
 import { isRecord } from '#shared/utils/records'
 
-import { KeychainCredentialError, createKeychainCredentialStore, type CredentialStore } from './keychain.js'
+import { KeychainCredentialError, type CredentialStore } from './keychain.js'
 import { KeychainOAuthProvider, createOAuthState, oauthCallbackPort, startOAuthCallback, type OAuthCallback, type OpenUrl } from './oauth.js'
 import { boundGatewayOutput, type GatewayContent } from './output.js'
 import {
@@ -111,7 +112,7 @@ interface ServerRuntime {
 export interface McpManagerOptions {
   onStatusChange?: (statuses: readonly { name: string; status: McpServerStatus; error?: string }[]) => void
   openUrl: OpenUrl
-  credentialStore?: CredentialStore
+  credentialStore: CredentialStore
   environment: EnvApi
   createClient?: (serverName: string) => ClientLike
   createTransport?: (serverName: string, config: Exclude<ServerConfig, { type?: undefined }>, options: TransportOptions) => Transport
@@ -391,7 +392,7 @@ export class McpManager {
 
   constructor(config: McpServerMap, options: McpManagerOptions) {
     this.options = options
-    this.credentialStore = options.credentialStore ?? createKeychainCredentialStore()
+    this.credentialStore = options.credentialStore
     this.createClient =
       options.createClient ??
       (() => {
@@ -622,7 +623,7 @@ export class McpManager {
     })
   }
 
-  authenticate(server: string, options: { signal?: AbortSignal } = {}): Effect.Effect<void, McpFailure> {
+  authenticate(server: string, options: { signal?: AbortSignal } = {}): Effect.Effect<void, McpFailure, Crypto> {
     return Effect.gen({ self: this }, function* () {
       const existing = this.authenticationByServer.get(server)
       let authentication = existing
@@ -664,7 +665,7 @@ export class McpManager {
     })
   }
 
-  private authenticateServer(server: string, options: { signal?: AbortSignal } = {}): Effect.Effect<void, McpFailure> {
+  private authenticateServer(server: string, options: { signal?: AbortSignal } = {}): Effect.Effect<void, McpFailure, Crypto> {
     return Effect.gen({ self: this }, function* () {
       const runtime = yield* this.runtime(server)
       yield* this.awaitExistingConnectionAttempt(runtime, options.signal)
@@ -678,7 +679,7 @@ export class McpManager {
 
       const operation = makeAbortController()
       const signal = combineSignals(this.lifecycle.signal, operation.signal, options.signal)
-      const state = createOAuthState()
+      const state = yield* createOAuthState
       const serverUrl = runtime.config.url
 
       yield* Effect.scoped(

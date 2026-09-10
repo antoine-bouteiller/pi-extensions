@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto'
-
 import { createReadToolDefinition, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type AgentToolResult, type Theme } from '@earendil-works/pi-coding-agent'
 import { Text, type Component } from '@earendil-works/pi-tui'
 import {
@@ -13,9 +11,11 @@ import {
   Patcher,
 } from '@oh-my-pi/hashline'
 import { Context, Data, Effect, Path, type Scope } from 'effect'
+import { type Crypto } from 'effect/Crypto'
 import { type FileSystem } from 'effect/FileSystem'
 import { Type, type Static } from 'typebox'
 
+import { sha256Hex } from '#shared/effect/crypto'
 import { mutationQueueSlot } from '#shared/effect/mutation_queue'
 import { PiCtx } from '#shared/effect/pi_services'
 import { type HandlerServices } from '#shared/effect/runtime'
@@ -132,7 +132,7 @@ const mutationQueueSlots = (paths: readonly string[]): Effect.Effect<void, Hashl
     { discard: true }
   )
 
-const fingerprint = (text: string): string => createHash('sha256').update(text).digest('hex')
+const fingerprint = sha256Hex
 
 interface ReadHashlineFileOptions {
   cwd: string
@@ -150,7 +150,7 @@ const readHashlineFile = ({
   path,
   signal,
   snapshots,
-}: ReadHashlineFileOptions): Effect.Effect<ToolOutput, HashlineToolError, FileSystem | Path.Path> =>
+}: ReadHashlineFileOptions): Effect.Effect<ToolOutput, HashlineToolError, FileSystem | Path.Path | Crypto> =>
   Effect.gen(function* () {
     yield* abortCheck(signal)
     const pathService = yield* Path.Path
@@ -159,7 +159,7 @@ const readHashlineFile = ({
     const text = yield* Effect.tryPromise({ catch: hashlineToolError, try: () => fs.readText(resolution.absolutePath) })
     const normalized = normalizeToLF(text)
     const tag = computeFileHash(normalized)
-    const version = fingerprint(normalized)
+    const version = yield* fingerprint(normalized)
     const displayPath = pathService.relative(cwd, resolution.absolutePath) || '.'
     const lines = normalized.split('\n')
     const startLine = offset ?? 1
@@ -208,7 +208,7 @@ const writeHashlinePatch = ({
   patchText,
   signal,
   snapshots,
-}: WriteHashlinePatchOptions): Effect.Effect<ToolOutput, HashlineToolError, FileSystem | Path.Path> =>
+}: WriteHashlinePatchOptions): Effect.Effect<ToolOutput, HashlineToolError, FileSystem | Path.Path | Crypto> =>
   Effect.gen(function* () {
     yield* abortCheck(signal)
     const pathService = yield* Path.Path
@@ -253,22 +253,24 @@ const writeHashlinePatch = ({
       const fs = new CwdFilesystem(cwd, signal)
       const patcher = new Patcher({ fs, snapshots })
       const applied = yield* Effect.tryPromise({ catch: hashlineToolError, try: () => patcher.apply(parsed) })
-      const sections = applied.sections.map((section, index) => {
-        const path = pathService.relative(cwd, section.canonicalPath) || section.canonicalPath
-        const parsedSection = parsed.sections[index]
-        const sourceAbsolute = resolveToolPath(stripToolPathPrefix(parsedSection?.path ?? section.path), cwd)
-        const sourcePath = pathService.relative(cwd, sourceAbsolute) || sourceAbsolute
-        const sectionResult = {
-          hash: section.fileHash,
-          op: section.op,
-          path,
-          version: fingerprint(normalizeToLF(section.written)),
-        }
-        if (section.moveDest !== undefined) {
-          return { ...sectionResult, moveDest: path, sourcePath }
-        }
-        return sectionResult
-      })
+      const sections = yield* Effect.forEach(applied.sections, (section, index) =>
+        Effect.gen(function* () {
+          const path = pathService.relative(cwd, section.canonicalPath) || section.canonicalPath
+          const parsedSection = parsed.sections[index]
+          const sourceAbsolute = resolveToolPath(stripToolPathPrefix(parsedSection?.path ?? section.path), cwd)
+          const sourcePath = pathService.relative(cwd, sourceAbsolute) || sourceAbsolute
+          const sectionResult = {
+            hash: section.fileHash,
+            op: section.op,
+            path,
+            version: yield* fingerprint(normalizeToLF(section.written)),
+          }
+          if (section.moveDest !== undefined) {
+            return { ...sectionResult, moveDest: path, sourcePath }
+          }
+          return sectionResult
+        })
+      )
       const summary = sections.map((section) => `${section.op} ${section.path} [${section.hash}]`)
 
       return result(summary.join('\n'), { sections })
@@ -307,7 +309,7 @@ export const renderHashlineRead = (readResult: RenderableToolOutput, _options: u
   return new Text(theme.fg(isTrue(readResult.isError) ? 'error' : 'toolOutput', text), 0, 0)
 }
 
-type HashlineToolEffect = Effect.Effect<ToolOutput, HashlineToolError, HandlerServices | FileSystem | Path.Path>
+type HashlineToolEffect = Effect.Effect<ToolOutput, HashlineToolError, HandlerServices | FileSystem | Path.Path | Crypto>
 
 export interface HashlineTools {
   readonly read: (params: Static<typeof readSchema>, signal: AbortSignal | undefined) => HashlineToolEffect
