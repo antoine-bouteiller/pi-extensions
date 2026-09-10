@@ -467,7 +467,6 @@ Every enabled descriptor uses exactly this metadata and its `feature:<id>` key:
 | `ask-user`                  | ❓   | `ask-user`        |
 | `auto-theme`                | 🎨   | `auto-theme`      |
 | `background-poll`           | ⏳   | `background-poll` |
-| `caffeinate`                | ☕   | `caffeinate`      |
 | `claude-code`               | 🤖   | `claude-code`     |
 | `comment-checker`           | 💬   | `comment-checker` |
 | `hashline`                  | #️⃣   | `hashline`        |

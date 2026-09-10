@@ -20,7 +20,6 @@ src/
 │   ├── ask_user/{index,prompt,tool}.ts
 │   ├── auto_theme/{index,theme}.ts
 │   ├── background_poll/{index,poll}.ts
-│   ├── caffeinate/{index,keep_awake}.ts
 │   ├── claude_code/{index,discovery}.ts
 │   ├── comment_checker/{index,checker}.ts
 │   ├── hashline/{index,tools}.ts

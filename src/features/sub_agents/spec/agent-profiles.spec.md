@@ -273,9 +273,9 @@ templates, and context files; it never loads parent conversation state or import
 Configured extensions load normally inside the worker so lifecycle-dependent tools initialize through
 their supported hooks; only the resolved allow-list is model-visible, but non-tool extension hooks may run.
 This package checks `PI_SUBAGENT=1` during feature registration and skips parent-only features through an
-explicit per-descriptor policy: `ask_user`, `background_poll`, `caffeinate`, `claude_code`,
-`prompt_rewind`, `rules`, and `sub_agents` itself. `auto_theme` and `caffeinate` already self-suppress on
-`PI_SUBAGENT_OWNER_TOKEN`; synchronous tool, provider, and safety features (`comment_checker`, `hashline`,
+explicit per-descriptor policy: `ask_user`, `background_poll`, `claude_code`, `prompt_rewind`,
+`rules`, and `sub_agents` itself. `auto_theme` already self-suppresses on `PI_SUBAGENT_OWNER_TOKEN`;
+synchronous tool, provider, and safety features (`comment_checker`, `hashline`,
 `mcp`, `meridian_session_affinity`, `status_panel` quota forwarding, and `webfetch`) stay
 registered. Persisted authentication and model catalogs are read only from the
 configured shared `agentDir`, while provider keys, proxies, certificates, and related runtime settings use
@@ -289,7 +289,7 @@ resource policies.
 
 Environment construction copies the parent environment for ordinary Pi and tool compatibility, removes all
 reserved sub-agent control values, then injects fresh child identity. The fresh UUID owner token is used by
-the status_panel/caffeinate integration; read-only injection and environment inheritance are not sandbox
+the status_panel integration; read-only injection and environment inheritance are not sandbox
 guarantees:
 
 ```ts
