@@ -464,7 +464,7 @@ const dispatchGateway = (
     const selector = yield* classifySelector(params)
     const manager = yield* requireManager(state)
 
-    return yield* Match.valueTags(selector, {
+    return yield* Match.typeTags<McpSelector>()({
       Call: (op) =>
         Effect.gen(function* () {
           const args = yield* parseArgs(op.rawArgs)
@@ -544,7 +544,7 @@ const dispatchGateway = (
             servers: sorted.slice(0, 30).map((server) => ({ name: server.name.slice(0, 128), status: server.status })),
           })
         }),
-    })
+    })(selector)
   })
 
 export interface GatewaySession {
