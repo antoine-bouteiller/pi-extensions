@@ -4,6 +4,7 @@ import { type OAuthClientInformationMixed, type OAuthClientMetadata, type OAuthT
 import { Cause, Deferred, Effect, Encoding, Exit, Option, Scope, Semaphore } from 'effect'
 import { Crypto } from 'effect/Crypto'
 import { HttpServerRequest, HttpServerResponse } from 'effect/unstable/http'
+import { NetAddress } from 'effect/unstable/net'
 
 import { toPromiseMethod } from '#shared/effect/runtime'
 import { isEmptyString, isNotEmptyString, isNotNullOrUndefined, isNullOrUndefined, isTrue } from '#shared/utils/predicates'
@@ -174,7 +175,7 @@ export const startOAuthCallback = (options: OAuthCallbackOptions): Effect.Effect
       )
       .pipe(Effect.provideService(Scope.Scope, listenerScope))
 
-    if (server.address._tag !== 'TcpAddress') {
+    if (!NetAddress.isInetAddress(server.address)) {
       return yield* new McpError({ message: 'Could not determine the OAuth callback listener address' })
     }
 
