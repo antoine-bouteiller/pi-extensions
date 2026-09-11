@@ -14,8 +14,18 @@ const KEBAB_CASE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
 const SNAKE_CASE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/
 
 const MANIFEST_KEYS = ['commands', 'handlers', 'messageRenderers', 'tools'] as const
-const T009_FEATURES = new Set(['auto_theme', 'background_poll', 'claude_code', 'mcp', 'prompt_rewind', 'rules', 'status_panel', 'sub_agents'])
-const APPROVED_BACKGROUND_FEATURES = new Set(['comment_checker', 'meridian_session_affinity'])
+const T009_FEATURES = new Set([
+  'auto_theme',
+  'background_poll',
+  'claude_code',
+  'mcp',
+  'meridian_session_affinity',
+  'prompt_rewind',
+  'rules',
+  'status_panel',
+  'sub_agents',
+])
+const APPROVED_BACKGROUND_FEATURES = new Set(['comment_checker'])
 
 type Manifest = Record<(typeof MANIFEST_KEYS)[number], string[]>
 
@@ -250,7 +260,7 @@ export const features = [
         comment_checker: { bootstrap: 'background', id: 'comment-checker', status: { icon: '💬', name: 'comment-checker' } },
         mcp: { bootstrap: 'eager', id: 'mcp', status: { icon: '🔌', name: 'mcp' } },
         meridian_session_affinity: {
-          bootstrap: 'background',
+          bootstrap: 'eager',
           id: 'meridian-session-affinity',
           status: { icon: '🧭', name: 'meridian' },
         },

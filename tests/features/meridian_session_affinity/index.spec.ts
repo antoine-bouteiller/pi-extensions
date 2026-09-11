@@ -6,6 +6,7 @@ import { Cause, Effect, Exit, Fiber, Scope } from 'effect'
 import { TestClock } from 'effect/testing'
 import { HttpClient, HttpClientResponse } from 'effect/unstable/http'
 
+import { makeFeatureCoordinator } from '@/config/feature_coordinator.js'
 import { feature, healthWarning, implementation } from '@/features/meridian_session_affinity/index.js'
 import { perInvocation } from '@/shared/effect/runtime.js'
 import { statusBar } from '@/shared/state/status_bar.js'
@@ -36,12 +37,12 @@ const healthClient = (status: number, observe: (request: { method: string; url: 
 const probe = (baseUrl: string, client: HttpClient.HttpClient) =>
   healthWarning({ baseUrl, httpClient: client }).pipe(Effect.provideService(HttpClient.HttpClient, client))
 
-/** Stands in for the coordinator: prepare, then activate inside a session scope with handler services. */
+/** Stands in for the coordinator: activate inside a session scope with handler services. */
 const activateWith = (baseUrl: string, client: HttpClient.HttpClient, until: () => boolean): Effect.Effect<void> =>
   Effect.promise(() =>
     runtime.runPromise(
       Effect.gen(function* () {
-        const prepared = yield* feature({ dependencies: { baseUrl, httpClient: client } }).prepare
+        const prepared = feature({ dependencies: { baseUrl, httpClient: client } }).implementation
         const scope = yield* Scope.make()
         const ctx = asExtensionContext({ hasUI: false, ui: { setStatus: () => undefined } })
         yield* (prepared.activate?.({ reason: 'startup', type: 'session_start' }, ctx) ?? Effect.void).pipe(
@@ -58,18 +59,36 @@ const activateWith = (baseUrl: string, client: HttpClient.HttpClient, until: () 
   )
 
 describe('meridian session affinity', () => {
-  it.effect('preserves request-scoped lifecycle behavior after background preparation', () =>
+  it.effect('registers request-scoped handlers eagerly at extension load', () =>
     Effect.sync(() => {
       const fixture = createHarness()
       const descriptor = feature()
 
       expect(descriptor).toMatchObject({
-        bootstrap: 'background',
+        bootstrap: 'eager',
         id: 'meridian-session-affinity',
         status: { icon: '🧭', name: 'meridian' },
       })
       expect([...fixture.state.handlers.keys()]).toEqual(['before_agent_start', 'before_provider_headers'])
       expect(fixture.state.commands.size).toBe(0)
+    })
+  )
+
+  it.effect('scrubs the first prompt of a worker that starts before any session_start has been processed', () =>
+    Effect.gen(function* () {
+      const fixture = createFakePi()
+      makeFeatureCoordinator({ features: [feature()], pi: fixture.pi, runtime }).install()
+      const systemPrompt =
+        'You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.\n'
+
+      const results = yield* Effect.promise(() => fixture.emit('before_agent_start', { systemPrompt }, context('worker', 'http://127.0.0.1:3456')))
+
+      expect(results).toEqual([
+        {
+          systemPrompt:
+            'You are an expert coding assistant. You help users by reading files, executing commands, editing code, and writing new files.',
+        },
+      ])
     })
   )
 

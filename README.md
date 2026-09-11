@@ -51,21 +51,21 @@ This package uses a pre-release version of Effect v4. Because the API changes fr
 
 ## Features
 
-| Feature                     | Purpose                                                                                         |
-| --------------------------- | ----------------------------------------------------------------------------------------------- |
-| `ask_user`                  | Asks the user a multiple-choice question during a turn.                                         |
-| `auto_theme`                | Follows the system light/dark appearance on macOS, Windows, and Freedesktop desktops.           |
-| `background_poll`           | Runs a shell command in the background and alerts the agent when it succeeds.                   |
-| `claude_code`               | Turns `.claude/commands/` files in global or trusted projects into temporary Pi skills.         |
-| `comment_checker`           | Runs the `comment-checker` tool after file edits and adds any warnings to the result.           |
-| `hashline`                  | Replaces `read` and `write` with content-hash-anchored file operations that reject stale edits. |
-| `mcp`                       | A specific, limited MCP gateway (see details below).                                            |
-| `meridian_session_affinity` | Includes Pi's session ID in Meridian requests so sessions stay active across tool loops.        |
-| `prompt_rewind`             | Allows you to edit your original prompt if you cancel before the assistant responds.            |
-| `rules`                     | Loads `.md` and `.mdc` rules from `.claude/rules/` and `.agents/rules/`.                        |
-| `status_panel`              | A sidebar showing the model, context usage, git status, provider limits, and active subagents.  |
-| `sub_agents`                | Runs isolated, session-scoped agents for delegated research, review, and implementation.        |
-| `webfetch`                  | Fetches a URL and provides the content as markdown, plain text, or HTML.                        |
+| Feature                     | Purpose                                                                                                                   |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `ask_user`                  | Asks the user a multiple-choice question during a turn.                                                                   |
+| `auto_theme`                | Follows the system light/dark appearance on macOS, Windows, and Freedesktop desktops.                                     |
+| `background_poll`           | Runs a shell command in the background and alerts the agent when it succeeds.                                             |
+| `claude_code`               | Turns `.claude/commands/` files in global or trusted projects into temporary Pi skills.                                   |
+| `comment_checker`           | Runs the `comment-checker` tool after file edits and adds any warnings to the result.                                     |
+| `hashline`                  | Replaces `read` and `write` with content-hash-anchored file operations that reject stale edits.                           |
+| `mcp`                       | A specific, limited MCP gateway (see details below).                                                                      |
+| `meridian_session_affinity` | Includes Pi's session ID in Meridian requests and scrubs Pi's harness fingerprint, which Anthropic meters as Extra Usage. |
+| `prompt_rewind`             | Allows you to edit your original prompt if you cancel before the assistant responds.                                      |
+| `rules`                     | Loads `.md` and `.mdc` rules from `.claude/rules/` and `.agents/rules/`.                                                  |
+| `status_panel`              | A sidebar showing the model, context usage, git status, provider limits, and active subagents.                            |
+| `sub_agents`                | Runs isolated, session-scoped agents for delegated research, review, and implementation.                                  |
+| `webfetch`                  | Fetches a URL and provides the content as markdown, plain text, or HTML.                                                  |
 
 The `mcp` feature only reads `~/.config/mcp/mcp.json`. It supports tools via stdio and HTTP/SSE, uses the system keyring to store credentials, and does not open connections at startup. It also handles automatic OAuth through `/mcp-auth`. For HTTP servers like Linear (`https://mcp.linear.app/mcp`), OAuth is detected automatically after a 401 error, so no extra configuration is needed. Custom HTTP headers will stop this automatic detection unless `oauth` is manually set.
 

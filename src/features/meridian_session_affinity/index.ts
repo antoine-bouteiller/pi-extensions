@@ -84,13 +84,19 @@ const makeImplementation = (dependencies: MeridianSessionAffinityDependencies): 
   register: implementation.register,
 })
 
+/**
+ * Eager on purpose: sub-agent workers call `prompt()` right after `session_start`, so a background
+ * (forked) registration misses the first `before_agent_start` and the unscrubbed pi harness line
+ * reaches Meridian, where Anthropic meters it as Extra Usage. The only asynchronous work, the health
+ * probe, already runs inside `activate`.
+ */
 export const feature = ((options: FeatureOptions<MeridianSessionAffinityDependencies> = {}) => {
   const environment = options.environment ?? processEnvironment
   const dependencies = options.dependencies ?? { baseUrl: environment.get('MERIDIAN_BASE_URL') ?? DEFAULT_MERIDIAN_BASE_URL }
   return {
-    bootstrap: 'background',
+    bootstrap: 'eager',
     id: 'meridian-session-affinity',
-    prepare: Effect.succeed(makeImplementation(dependencies)),
+    implementation: makeImplementation(dependencies),
     status: { icon: '🧭', name: 'meridian' },
   }
 }) satisfies FeaturePlugin<MeridianSessionAffinityDependencies>
