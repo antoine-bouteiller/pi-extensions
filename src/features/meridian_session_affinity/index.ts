@@ -1,26 +1,23 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
-import { Cause, Effect, Stream } from 'effect'
+import { Cause, Effect, Scope, Stream } from 'effect'
 import { FetchHttpClient, HttpClient, HttpClientRequest } from 'effect/unstable/http'
 
-import { type AppRuntime } from '#shared/effect/app_services'
+import { type AppRuntime, StatusBar } from '#shared/effect/app_services'
 import { processEnvironment } from '#shared/effect/env'
-import { type FeatureOptions, type FeaturePlugin, type FeaturePreflightError } from '#shared/effect/feature'
+import { type FeatureImplementation, type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 import { makeEventHandler } from '#shared/effect/runtime'
 
 import { applySessionAffinity, scrubbedSystemPrompt } from './affinity.js'
 
 const DEFAULT_MERIDIAN_BASE_URL = 'http://127.0.0.1:3456'
+const HEALTH_STATUS_KEY = 'meridian:health'
 
 export interface MeridianSessionAffinityDependencies {
   readonly baseUrl?: string
   readonly httpClient?: HttpClient.HttpClient
 }
 
-type PreflightFailure = FeaturePreflightError & {
-  readonly _tag: 'MeridianHealthInvalidUrl' | 'MeridianHealthUnavailable' | 'MeridianHealthTimeout' | 'MeridianHealthDefect'
-}
-
-const preflightFailure = (tag: PreflightFailure['_tag']): PreflightFailure => ({ _tag: tag })
+export type MeridianHealthWarning = 'invalid url' | 'unavailable' | 'timeout' | 'defect'
 
 const healthUrl = (baseUrl: string): string | undefined => {
   try {
@@ -39,18 +36,14 @@ const healthUrl = (baseUrl: string): string | undefined => {
   }
 }
 
-export const implementation = {
-  register: (pi: ExtensionAPI, runtime: AppRuntime): void => {
-    pi.on('before_agent_start', (event, ctx) => scrubbedSystemPrompt({ ctx, event }))
-    pi.on('before_provider_headers', makeEventHandler(runtime)(applySessionAffinity))
-  },
-}
-
-const prepare = (dependencies: MeridianSessionAffinityDependencies) =>
+/** Probes Meridian's `/health`; never fails, resolves to a redacted warning when it is not reachable. */
+export const healthWarning = (
+  dependencies: MeridianSessionAffinityDependencies
+): Effect.Effect<MeridianHealthWarning | undefined, never, HttpClient.HttpClient> =>
   Effect.suspend(() => {
     const endpoint = healthUrl(dependencies.baseUrl ?? DEFAULT_MERIDIAN_BASE_URL)
     if (endpoint === undefined) {
-      return Effect.fail(preflightFailure('MeridianHealthInvalidUrl'))
+      return Effect.succeed<MeridianHealthWarning | undefined>('invalid url')
     }
 
     return Effect.gen(function* () {
@@ -62,17 +55,34 @@ const prepare = (dependencies: MeridianSessionAffinityDependencies) =>
           return healthResponse
         })
       )
-      if (response.status < 200 || response.status >= 300) {
-        return yield* Effect.fail(preflightFailure('MeridianHealthUnavailable'))
-      }
-      return implementation
+      return response.status >= 200 && response.status < 300 ? undefined : 'unavailable'
     }).pipe(
       Effect.provideService(FetchHttpClient.RequestInit, { credentials: 'omit', redirect: 'manual' }),
       Effect.timeout('3 seconds'),
-      Effect.mapError((error) => preflightFailure(error._tag === 'TimeoutError' ? 'MeridianHealthTimeout' : 'MeridianHealthUnavailable')),
-      Effect.catchCauseIf(Cause.hasDies, () => Effect.fail(preflightFailure('MeridianHealthDefect')))
+      Effect.catch((error) => Effect.succeed<MeridianHealthWarning | undefined>(error._tag === 'TimeoutError' ? 'timeout' : 'unavailable')),
+      Effect.catchCauseIf(Cause.hasDies, () => Effect.succeed<MeridianHealthWarning | undefined>('defect'))
     )
   })
+
+export const implementation = {
+  register: (pi: ExtensionAPI, runtime: AppRuntime): void => {
+    pi.on('before_agent_start', (event, ctx) => scrubbedSystemPrompt({ ctx, event }))
+    pi.on('before_provider_headers', makeEventHandler(runtime)(applySessionAffinity))
+  },
+}
+
+/** The probe is forked into the session scope so a slow or absent Meridian never delays activation. */
+const makeImplementation = (dependencies: MeridianSessionAffinityDependencies): FeatureImplementation => ({
+  activate: () =>
+    Effect.gen(function* () {
+      const channel = (yield* StatusBar).channel(HEALTH_STATUS_KEY, { icon: '🧭', tone: 'warning' })
+      const publish = healthWarning(dependencies).pipe(
+        Effect.flatMap((warning) => (warning === undefined ? channel.clear : channel.set({ text: `meridian: ${warning}` })))
+      )
+      yield* Effect.forkIn(publish, yield* Scope.Scope)
+    }),
+  register: implementation.register,
+})
 
 export const feature = ((options: FeatureOptions<MeridianSessionAffinityDependencies> = {}) => {
   const environment = options.environment ?? processEnvironment
@@ -80,7 +90,7 @@ export const feature = ((options: FeatureOptions<MeridianSessionAffinityDependen
   return {
     bootstrap: 'background',
     id: 'meridian-session-affinity',
-    prepare: prepare(dependencies),
+    prepare: Effect.succeed(makeImplementation(dependencies)),
     status: { icon: '🧭', name: 'meridian' },
   }
 }) satisfies FeaturePlugin<MeridianSessionAffinityDependencies>
