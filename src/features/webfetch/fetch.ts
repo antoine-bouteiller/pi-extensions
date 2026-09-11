@@ -380,8 +380,10 @@ const fetchResult = ({
     }).pipe(Effect.mapError(webfetchFailure))
 
     const withTimeout = main.pipe(
-      Effect.timeout(Duration.seconds(timeoutSeconds)),
-      Effect.catchTag('TimeoutError', () => ToolFailure.make({ message: `webfetch timed out after ${timeoutSeconds}s` }))
+      Effect.timeoutOrElse({
+        duration: Duration.seconds(timeoutSeconds),
+        orElse: () => ToolFailure.make({ message: `webfetch timed out after ${timeoutSeconds}s` }),
+      })
     )
 
     return yield* signal === undefined ? withTimeout : Effect.raceFirst(withTimeout, cancellationEffect(signal))

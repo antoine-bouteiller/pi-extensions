@@ -104,10 +104,11 @@ export const admission = (
       try: () => Promise.resolve(childModelViewFor(ctx, environment)),
     }).pipe(
       // Ponytail: This bounds asynchronous resolution only; isolate resolution behind a subprocess/worker boundary if a synchronous credential command is observed stalling activation.
-      Effect.timeout(timeoutMillis),
-      Effect.catchTag('TimeoutError', () =>
-        Effect.fail(new ChildModelViewResolutionTimeoutError({ message: `Child model view resolution timed out after ${timeoutMillis}ms.` }))
-      )
+      Effect.timeoutOrElse({
+        duration: timeoutMillis,
+        orElse: () =>
+          Effect.fail(new ChildModelViewResolutionTimeoutError({ message: `Child model view resolution timed out after ${timeoutMillis}ms.` })),
+      })
     )
   })
   return resolveChildModelView.pipe(
