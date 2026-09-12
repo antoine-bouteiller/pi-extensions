@@ -53,14 +53,14 @@ const FeatureDescriptorInput = Schema.Struct({
 })
 const decodeFeatureDescriptor = (input: unknown) => {
   try {
-    return Schema.decodeUnknownSync(FeatureDescriptorInput)(input)
+    return Result.getOrThrow(Schema.decodeUnknownResult(FeatureDescriptorInput)(input))
   } catch {
     return configurationError('feature must be an object')
   }
 }
 const decodeFeatureStatus = (input: unknown, id: string) => {
   try {
-    return Schema.decodeUnknownSync(FeatureStatusInput)(input)
+    return Result.getOrThrow(Schema.decodeUnknownResult(FeatureStatusInput)(input))
   } catch {
     return configurationError(`${id} status must contain string icon and name`)
   }

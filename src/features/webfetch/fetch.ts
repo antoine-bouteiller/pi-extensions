@@ -56,8 +56,8 @@ const WebfetchFormatSchema = Schema.Literals(['markdown', 'text', 'html'] as con
 type WebfetchFormat = typeof WebfetchFormatSchema.Type
 const DEFAULT_FORMAT: WebfetchFormat = 'markdown'
 
-const resolveFormat = (value: string | undefined): WebfetchFormat =>
-  value === undefined ? DEFAULT_FORMAT : Schema.decodeUnknownSync(WebfetchFormatSchema)(value)
+const resolveFormat = (value: string | undefined): Effect.Effect<WebfetchFormat> =>
+  Schema.decodeUnknownEffect(WebfetchFormatSchema)(value === undefined ? DEFAULT_FORMAT : value).pipe(Effect.orDie)
 
 export interface WebfetchDetails {
   url: string
@@ -357,7 +357,7 @@ const fetchResult = ({
 }: FetchResultOptions): Effect.Effect<AgentToolResult<WebfetchDetails>, ToolFailure, HttpClient.HttpClient | FileSystem | Path> =>
   Effect.gen(function* () {
     const url = yield* parseUrlEffect(params.url)
-    const format = resolveFormat(params.format)
+    const format = yield* resolveFormat(params.format)
     const timeoutSeconds = normalizeTimeout(params.timeout)
 
     onUpdate?.({
