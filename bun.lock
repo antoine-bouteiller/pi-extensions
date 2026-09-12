@@ -5,7 +5,7 @@
     "": {
       "name": "pi-extensions",
       "dependencies": {
-        "@effect/platform-bun": "4.0.0-rc.113",
+        "@effect/platform-bun": "4.0.0-rc.114",
         "@modelcontextprotocol/sdk": "1.30.0",
         "@napi-rs/keyring": "2.0.0",
         "@oh-my-pi/hashline": "18.1.5",
@@ -104,7 +104,7 @@
 
     "@effect/language-service": ["@effect/language-service@0.87.2", "", { "bin": { "effect-language-service": "cli.js" } }, "sha512-CfiSoaVQO8pZgaMZGw5VvMvRGybsJ2LaSDoLYaqiVGvo/YYPYVR2GzUKY0h1NtIweq/+SQ5XLrvtzPIttWQ0GQ=="],
 
-    "@effect/platform-bun": ["@effect/platform-bun@4.0.0-rc.113", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.0-rc.113" }, "peerDependencies": { "effect": "^4.0.0-rc.113" } }, "sha512-EOn8doDVaiizfTpdmtRS0SZLAAt19yyHFKg+aV8YXJreNDYqXQLEt+/ThiEOurDimApVYhn2NZW52OJrZlybQw=="],
+    "@effect/platform-bun": ["@effect/platform-bun@4.0.0-rc.114", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.0-rc.114" }, "peerDependencies": { "effect": "^4.0.0-rc.114" } }, "sha512-fz8B5xvVXRE+8kJO94mxjM61MUyQZJTyakbOFa8Erj8erUgCViECICwEH642tAUnWNazcvNKpUfWfk598s/fcA=="],
 
     "@effect/platform-node-shared": ["@effect/platform-node-shared@4.0.0-rc.114", "", { "dependencies": { "@types/ws": "^8.18.1", "ws": "^8.21.3" }, "peerDependencies": { "effect": "^4.0.0-rc.114" } }, "sha512-YVoL71bJpa8HmAZl63nvVgOI4UBg61Z+6U0qnNN2ZlUktxG7eu26Y/puRxEtMxivxEUHR5vKJsuqQ3PRK4fLQA=="],
 

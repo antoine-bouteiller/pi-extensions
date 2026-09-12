@@ -24,7 +24,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@effect/platform-bun": "4.0.0-rc.113",
+    "@effect/platform-bun": "4.0.0-rc.114",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@napi-rs/keyring": "2.0.0",
     "@oh-my-pi/hashline": "18.1.5",
