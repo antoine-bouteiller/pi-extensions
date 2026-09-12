@@ -10,7 +10,7 @@ import { parseJsonText } from '#shared/utils/json'
 
 import { SubagentSettingsSchema, type SubagentSettings } from './model.js'
 
-const settingsText = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown, { space: 2 }))
+const settingsText = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown, { space: 2 }))
 const SettingsSchema = Type.Object({ subagents: Type.Optional(SubagentSettingsSchema) }, { additionalProperties: true })
 
 const readSettings = (path: string) =>
@@ -64,6 +64,7 @@ export const loadSubagentSettings = (options: {
           )
       )
     )
-    yield* writePrivateFile(target, `${settingsText({ ...global, subagents })}\n`)
+    const text = yield* settingsText({ ...global, subagents })
+    yield* writePrivateFile(target, `${text}\n`)
     return subagents
   })

@@ -1,4 +1,4 @@
-import { Schema } from 'effect'
+import { Result, Schema } from 'effect'
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject
 export interface JsonObject {
@@ -6,6 +6,8 @@ export interface JsonObject {
 }
 
 // Unlike `JSON.stringify`, these reject non-serializable values instead of returning `undefined`.
-export const jsonText: (value: unknown) => string = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown))
+const JsonTextSchema = Schema.fromJsonString(Schema.Unknown)
 
-export const parseJsonText: (text: string) => unknown = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))
+export const jsonText = (value: unknown): string => Result.getOrThrow(Schema.encodeUnknownResult(JsonTextSchema)(value))
+
+export const parseJsonText = (text: string): unknown => Result.getOrThrow(Schema.decodeResult(JsonTextSchema)(text))
