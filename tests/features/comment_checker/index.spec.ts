@@ -189,6 +189,93 @@ describe('comment checker', () => {
     })
   )
 
+  it.scoped('checks hashline multi-file writes and move destinations, skips deletions, and appends all warnings', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const path = yield* Path.Path
+      const cwd = yield* fs.makeTempDirectoryScoped({ prefix: 'comment-checker-hashline-' })
+      const ctx = { ...context, cwd }
+      const inputs: Parameters<CheckerRunner>[0][] = []
+      const fixture = createFakePi()
+      const implementation = yield* preparedFeature((input) =>
+        Effect.sync(() => {
+          inputs.push(input)
+          return { exitCode: 2, stderr: `warning: ${input.tool_input.file_path}`, stdout: '' }
+        })
+      )
+      implementation.register(fixture.pi, runtime)
+      yield* fs.writeFileString(path.join(cwd, 'updated.ts'), '// updated\n')
+      yield* fs.writeFileString(path.join(cwd, 'renamed.ts'), '// original\n')
+      const input = { patch: '[updated.ts#ABCD]\nPUT 1.=1:\n+// updated\n[source.ts#ABCD]\nMV renamed.ts\n[deleted.ts#ABCD]\nREM' }
+      const output = {
+        content: [{ text: 'update updated.ts\nupdate renamed.ts\ndelete deleted.ts', type: 'text' }],
+        details: {
+          sections: [
+            { op: 'update', path: 'updated.ts' },
+            { moveDest: 'renamed.ts', op: 'update', path: 'renamed.ts', sourcePath: 'source.ts' },
+            { op: 'delete', path: 'deleted.ts' },
+          ],
+        },
+      }
+      const [result] = yield* Effect.promise(() => fixture.emit('tool_result', { ...output, input, isError: false, toolName: 'write' }, ctx))
+
+      expect(inputs.map(({ tool_input, tool_name }) => ({ tool_input, tool_name }))).toEqual([
+        { tool_input: { content: '// updated\n', file_path: 'updated.ts' }, tool_name: 'Write' },
+        { tool_input: { content: '// original\n', file_path: 'renamed.ts' }, tool_name: 'Write' },
+      ])
+      expect(inputs.every((hook) => hook.cwd === cwd && hook.session_id === 'session-1')).toBe(true)
+      expect(result).toEqual({
+        content: [...output.content, { text: '\n\nwarning: updated.ts', type: 'text' }, { text: '\n\nwarning: renamed.ts', type: 'text' }],
+      })
+    })
+  )
+
+  it.scoped('ignores failed or malformed hashline results and skips unavailable, protected, and unchanged files', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const path = yield* Path.Path
+      const cwd = yield* fs.makeTempDirectoryScoped({ prefix: 'comment-checker-filter-' })
+      yield* fs.writeFileString(path.join(cwd, 'valid.ts'), '// comment\n')
+      yield* fs.writeFileString(path.join(cwd, '.env'), 'SECRET=value')
+      yield* fs.symlink(path.join(cwd, '.env'), path.join(cwd, 'alias.ts'))
+      const inputs: Parameters<CheckerRunner>[0][] = []
+      const fixture = createFakePi()
+      const implementation = yield* preparedFeature((input) =>
+        Effect.sync(() => {
+          inputs.push(input)
+          return { exitCode: 0, stderr: '', stdout: '' }
+        })
+      )
+      implementation.register(fixture.pi, runtime)
+      const event = { content: [], input: { patch: 'patch' }, isError: false, toolName: 'write' }
+      for (const overrides of [
+        { details: { sections: [{ op: 'update', path: 'valid.ts' }] }, isError: true },
+        { details: { sections: [{ op: 'update', path: 'valid.ts' }] }, toolName: 'read' },
+        { details: {} },
+        { details: { sections: 'invalid' } },
+        {
+          details: {
+            sections: [
+              null,
+              { op: 'update', path: 123 },
+              { op: 'unknown', path: 'valid.ts' },
+              { op: 'noop', path: 'valid.ts' },
+              { op: 'delete', path: 'valid.ts' },
+              { op: 'update', path: 'missing.ts' },
+              { op: 'update', path: '.env' },
+              { op: 'update', path: 'alias.ts' },
+              { op: 'create', path: 'valid.ts' },
+            ],
+          },
+        },
+      ]) {
+        const [result] = yield* Effect.promise(() => fixture.emit('tool_result', { ...event, ...overrides }, { ...context, cwd }))
+        expect(result).toBeUndefined()
+      }
+      expect(inputs.map((input) => input.tool_input)).toEqual([{ content: '// comment\n', file_path: 'valid.ts' }])
+    })
+  )
+
   it.scoped('runs the Effect child process with bounded output and JSON stdin', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem

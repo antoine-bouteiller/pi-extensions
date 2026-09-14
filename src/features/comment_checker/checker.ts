@@ -1,10 +1,11 @@
 import { type ExtensionContext, type ToolResultEvent } from '@earendil-works/pi-coding-agent'
-import { Cause, Context, Effect, type Scope, Stream } from 'effect'
+import { Cause, Context, Effect, FileSystem, type Scope, Stream } from 'effect'
 import { type PlatformError } from 'effect/PlatformError'
 import { ChildProcess } from 'effect/unstable/process'
 
 import { jsonText, type JsonObject } from '#shared/utils/json'
 import { isEmptyString } from '#shared/utils/predicates'
+import { assertUnprotectedPathEffect } from '#shared/utils/protected_paths'
 import { isRecord } from '#shared/utils/records'
 
 const MAX_OUTPUT_BYTES = 64 * 1024
@@ -90,6 +91,39 @@ const hookInput = (event: ToolResultEvent, ctx: ExtensionContext): HookInput | u
   }
 }
 
+const hookInputs = (event: ToolResultEvent, ctx: ExtensionContext): Effect.Effect<HookInput[], never, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const input = hookInput(event, ctx)
+    if (input !== undefined) {
+      return [input]
+    }
+    const sections = record(event.details)?.sections
+    if (event.isError || event.toolName !== 'write' || typeof record(event.input)?.patch !== 'string' || !Array.isArray(sections)) {
+      return []
+    }
+
+    const fs = yield* FileSystem.FileSystem
+    const inputs: HookInput[] = []
+    for (const value of sections) {
+      const section = record(value)
+      if (typeof section?.path !== 'string' || (section.op !== 'create' && section.op !== 'update')) {
+        continue
+      }
+      const { path } = section
+      const content = yield* assertUnprotectedPathEffect(path, ctx.cwd, 'read').pipe(
+        Effect.flatMap(({ absolutePath }) => fs.readFileString(absolutePath)),
+        Effect.orElseSucceed(() => undefined)
+      )
+      if (content !== undefined) {
+        const converted = hookInput({ ...event, input: { content, path } }, ctx)
+        if (converted !== undefined) {
+          inputs.push(converted)
+        }
+      }
+    }
+    return inputs
+  })
+
 interface OutputChunks {
   readonly chunks: Uint8Array[]
   readonly size: number
@@ -154,32 +188,27 @@ export const makeCommentCheckerRunner =
 const checkerResult = (
   event: ToolResultEvent,
   ctx: ExtensionContext
-): Effect.Effect<{ content: ToolResultEvent['content'] } | undefined, Cause.UnknownError, CommandRunner> =>
+): Effect.Effect<{ content: ToolResultEvent['content'] } | undefined, Cause.UnknownError, CommandRunner | FileSystem.FileSystem> =>
   Effect.gen(function* () {
-    const input = hookInput(event, ctx)
-    if (input === undefined) {
-      return undefined
-    }
-
+    const inputs = yield* hookInputs(event, ctx)
     const runner = yield* CommandRunner
-    const result = yield* runner.run(input)
-    if (result.exitCode !== 2) {
-      return undefined
+    const warnings: ToolResultEvent['content'] = []
+    for (const input of inputs) {
+      const result = yield* runner.run(input)
+      const warning = (result.stderr || result.stdout).trim()
+      if (result.exitCode === 2 && !isEmptyString(warning)) {
+        warnings.push({ text: `\n\n${warning}`, type: 'text' })
+      }
     }
-
-    const warning = (result.stderr || result.stdout).trim()
-    if (isEmptyString(warning)) {
-      return undefined
-    }
-
-    return {
-      content: [...event.content, { text: `\n\n${warning}`, type: 'text' as const }],
-    }
+    return warnings.length === 0 ? undefined : { content: [...event.content, ...warnings] }
   })
 
 export const makeCheckerHandler = (
   runner: CheckerRunner
-): ((event: ToolResultEvent, ctx: ExtensionContext) => Effect.Effect<{ content: ToolResultEvent['content'] } | undefined, Cause.UnknownError>) => {
+): ((
+  event: ToolResultEvent,
+  ctx: ExtensionContext
+) => Effect.Effect<{ content: ToolResultEvent['content'] } | undefined, Cause.UnknownError, FileSystem.FileSystem>) => {
   const commandRunner: CommandRunnerApi = { run: runner }
 
   return (event, ctx) => checkerResult(event, ctx).pipe(Effect.provideService(CommandRunner, commandRunner))
