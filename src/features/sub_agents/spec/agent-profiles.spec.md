@@ -274,8 +274,7 @@ Configured extensions load normally inside the worker so lifecycle-dependent too
 their supported hooks; only the resolved allow-list is model-visible, but non-tool extension hooks may run.
 This package checks `PI_SUBAGENT=1` during feature registration and skips parent-only features through an
 explicit per-descriptor policy: `ask_user`, `background_poll`, `claude_code`, `prompt_rewind`,
-`rules`, and `sub_agents` itself. `auto_theme` already self-suppresses on `PI_SUBAGENT_OWNER_TOKEN`;
-synchronous tool, provider, and safety features (`comment_checker`, `hashline`,
+`rules`, and `sub_agents` itself. Synchronous tool, provider, and safety features (`comment_checker`, `hashline`,
 `mcp`, `meridian_session_affinity`, `status_panel` quota forwarding, and `webfetch`) stay
 registered. Persisted authentication and model catalogs are read only from the
 configured shared `agentDir`, while provider keys, proxies, certificates, and related runtime settings use
@@ -359,3 +358,4 @@ N/A.
 | 2026-08-25 | Record unproven byte-for-byte child loader isolation and private setup forwarding.                                                                                                                                     | 6                 | Keep the loader-verification gap beside the child-environment contract.                                                                 |
 | 2026-09-05 | Configure static profile models through Pi settings and initialize an absent block from the current model.                                                                                                             | 3, 6, 8           | Make model choice user-configurable without function-based routing.                                                                     |
 | 2026-09-05 | Store each configured model as one provider/model-id string, preserving slashes within model IDs.                                                                                                                      | 3, 8              | Match Pi's model-reference syntax.                                                                                                      |
+| 2026-09-15 | Remove automatic theme suppression from the child-environment contract                                                                                                                                                 | 8                 | The automatic theme feature was removed.                                                                                                |

@@ -18,7 +18,6 @@ src/
 │   └── runtime.ts                   # process-wide shared AppRuntime composition
 ├── features/
 │   ├── ask_user/{index,prompt,tool}.ts
-│   ├── auto_theme/{index,theme}.ts
 │   ├── background_poll/{index,poll}.ts
 │   ├── claude_code/{index,discovery}.ts
 │   ├── comment_checker/{index,checker}.ts

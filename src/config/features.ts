@@ -3,7 +3,6 @@ import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { registerFeatures as registerWithCoordinator } from '#config/feature_coordinator'
 import { type ProcessRuntime } from '#config/runtime'
 import { feature as askUser } from '#features/ask_user/index'
-import { feature as autoTheme } from '#features/auto_theme/index'
 import { feature as backgroundPoll } from '#features/background_poll/index'
 import { feature as claudeCode } from '#features/claude_code/index'
 import { feature as commentChecker } from '#features/comment_checker/index'
@@ -19,7 +18,6 @@ import { type FeatureDescriptor } from '#shared/effect/feature'
 
 export const features = [
   askUser(),
-  autoTheme(),
   backgroundPoll(),
   claudeCode(),
   commentChecker(),

@@ -54,7 +54,6 @@ This package uses a pre-release version of Effect v4. Because the API changes fr
 | Feature                     | Purpose                                                                                                                   |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | `ask_user`                  | Asks the user a multiple-choice question during a turn.                                                                   |
-| `auto_theme`                | Follows the system light/dark appearance on macOS, Windows, and Freedesktop desktops.                                     |
 | `background_poll`           | Runs a shell command in the background and alerts the agent when it succeeds.                                             |
 | `claude_code`               | Turns `.claude/commands/` files in global or trusted projects into temporary Pi skills.                                   |
 | `comment_checker`           | Runs the `comment-checker` tool after file edits and adds any warnings to the result.                                     |

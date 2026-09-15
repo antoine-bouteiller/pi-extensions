@@ -468,7 +468,6 @@ Every enabled descriptor uses exactly this metadata and its `feature:<id>` key:
 | ID                          | Icon | Display name      |
 | --------------------------- | ---- | ----------------- |
 | `ask-user`                  | ❓   | `ask-user`        |
-| `auto-theme`                | 🎨   | `auto-theme`      |
 | `background-poll`           | ⏳   | `background-poll` |
 | `claude-code`               | 🤖   | `claude-code`     |
 | `comment-checker`           | 💬   | `comment-checker` |
@@ -495,3 +494,4 @@ N/A
 | 2026-08-24 | Complete descriptor-only registry composition and remove completed lifecycle/runtime migrations from conformance                                                   | 8                 | Make configuration the sole enablement surface and retain only active divergence inventory.                                                                                                                                                                                                         |
 | 2026-09-03 | Close the `[KD-6]`, `[KD-7]`, and `[KD-14a]` divergences and name `toPromiseMethod` as the SDK-adapter bridge                                                      | 8.8, 8.11         | Unsafe constructors, `MutableRef`, session-scoped forks, and one bridge adapter replace every inline boundary disable.                                                                                                                                                                              |
 | 2026-09-11 | Make `meridian-session-affinity` eager                                                                                                                             | 3, 8.4, 8.5, 8.10 | Sub-agent workers prompt immediately after `session_start`; the forked background registration missed the first `before_agent_start`, so the unscrubbed pi harness line reached Meridian and Anthropic metered it as Extra Usage (`You've hit your individual spend limit`).                        |
+| 2026-09-15 | Remove automatic theme status metadata                                                                                                                             | 8.12              | The automatic theme feature was removed.                                                                                                                                                                                                                                                            |

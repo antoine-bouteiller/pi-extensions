@@ -15,7 +15,6 @@ const SNAKE_CASE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/
 
 const MANIFEST_KEYS = ['commands', 'handlers', 'messageRenderers', 'tools'] as const
 const T009_FEATURES = new Set([
-  'auto_theme',
   'background_poll',
   'claude_code',
   'mcp',
@@ -234,7 +233,7 @@ export const features = [
         if (APPROVED_BACKGROUND_FEATURES.has(directory)) {
           expect(feature.descriptor?.bootstrap, directory).toBe('background')
           expect(registrationCount(feature.manifest), directory).toBe(0)
-        } else if (directory !== 'auto_theme') {
+        } else {
           expect(registrationCount(feature.manifest), directory).toBeGreaterThan(0)
         }
       }
@@ -254,7 +253,6 @@ export const features = [
       )
 
       expect(descriptors).toEqual({
-        auto_theme: { bootstrap: 'eager', id: 'auto-theme', status: { icon: '🎨', name: 'auto-theme' } },
         background_poll: { bootstrap: 'eager', id: 'background-poll', status: { icon: '⏳', name: 'background-poll' } },
         claude_code: { bootstrap: 'eager', id: 'claude-code', status: { icon: '🤖', name: 'claude-code' } },
         comment_checker: { bootstrap: 'background', id: 'comment-checker', status: { icon: '💬', name: 'comment-checker' } },
