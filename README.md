@@ -66,9 +66,25 @@ This package uses a pre-release version of Effect v4. Because the API changes fr
 | `sub_agents`                | Runs isolated, session-scoped agents for delegated research, review, and implementation.                                  |
 | `webfetch`                  | Fetches a URL and provides the content as markdown, plain text, or HTML.                                                  |
 
-The `mcp` feature only reads `~/.config/mcp/mcp.json`. It supports tools via stdio and HTTP/SSE, uses the system keyring to store credentials, and does not open connections at startup. It also handles automatic OAuth through `/mcp-auth`. For HTTP servers like Linear (`https://mcp.linear.app/mcp`), OAuth is detected automatically after a 401 error, so no extra configuration is needed. Custom HTTP headers will stop this automatic detection unless `oauth` is manually set.
+The `mcp` feature reads server connections from `~/.config/mcp/mcp.json` and tool selections from the `mcp` block in Pi's `settings.json`. It supports tools via stdio and HTTP/SSE, uses the system keyring to store credentials, and connects enabled servers at session startup. It also handles automatic OAuth through `/mcp-auth`. For HTTP servers like Linear (`https://mcp.linear.app/mcp`), OAuth is detected automatically after a 401 error, so no extra configuration is needed. Custom HTTP headers will stop this automatic detection unless `oauth` is manually set.
 
 MCP configuration string values support `${VAR}` substitution from the environment inherited by Pi, including headers such as `"Authorization": "Bearer ${LINEAR_TOKEN}"`. Export the variable before starting Pi. Missing variables mark only that server as `invalid-config`; empty values are allowed where the field permits them. Substitution is single-pass and does not change object keys or evaluate shell syntax (`$VAR`, defaults, or commands).
+
+MCP keeps the complete enabled-server inventory (names only, not tool schemas) in the system prompt. By default, only the `mcp` gateway is exposed: use `mcp({ server: "linear" })` to list tools, `mcp({ search: "issue" })` to search, `mcp({ describe: "linear_get_issue" })` to inspect a schema, and `mcp({ tool: "linear_get_issue", args: { ... } })` to call it.
+
+Select always-loaded tools in `~/.pi/agent/settings.json` (or the configured Pi agent directory). Trusted project `.pi/settings.json` selections override global selections per server:
+
+```json
+{
+  "mcp": {
+    "directTools": {
+      "linear": ["get_issue", "list_issues"]
+    }
+  }
+}
+```
+
+The `mcp.directTools` keys are server names from `mcp.json`; values are exact remote tool names or exposed server-prefixed names. An omitted server, `false`, or `[]` keeps its tools behind the gateway; `true` loads all tools on that server. Keep `directTools` out of `mcp.json`. Startup waits for selected servers to connect (subject to the connection timeout) so their tools can be registered individually with schemas before the first prompt, while unselected tools remain discoverable and callable through `mcp` without being loaded into context up front. Read-only policies still apply. Unavailable or denied selections do not block other tools; authenticate with `/mcp-auth` or retry with `mcp({ connect: "linear" })` to load selections after a connection failure. Reload Pi after editing the configuration.
 
 The `rules` feature injects general rules immediately. Rules specific to a file path are injected after a tool's result matches a file.
 

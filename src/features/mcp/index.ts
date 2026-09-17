@@ -1,9 +1,12 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Effect } from 'effect'
+import { Type } from 'typebox'
 
 import { type AppRuntime } from '#shared/effect/app_services'
 import { type FeatureDescriptor, type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 import { makeCommandHandler, makeToolExecutor } from '#shared/effect/runtime'
+import { type JsonObject } from '#shared/utils/json'
+import { isRecord } from '#shared/utils/records'
 
 import {
   makeGatewaySession,
@@ -40,8 +43,31 @@ export const feature = ((options: FeatureOptions<McpGatewayFactory> = {}) => {
       activate,
       deactivate,
       register: (pi: ExtensionAPI, runtime: AppRuntime): void => {
-        const currentSession = makeGatewaySession(pi)
+        const currentSession = makeGatewaySession(pi, (tool, server) => {
+          if (!/^[A-Za-z0-9_-]{1,64}$/.test(tool.name)) {
+            throw new Error(`MCP tool ${tool.name} needs a provider-compatible name of at most 64 characters`)
+          }
+          if (!isRecord(tool.inputSchema) || tool.inputSchema.type !== 'object') {
+            throw new Error(`MCP tool ${tool.name} has no object input schema`)
+          }
+          pi.registerTool({
+            description: tool.description ?? `Call ${tool.name} on MCP server ${server}.`,
+            execute: makeToolExecutor(runtime)(({ params, signal }) =>
+              provideGateway(currentSession.dispatch({ args: params, server, tool: tool.name }, signal))
+            ),
+            label: tool.name,
+            name: tool.name,
+            parameters: Type.Unsafe<JsonObject>(tool.inputSchema),
+            renderCall: (params, theme) => renderMcpCall({ args: params, server, tool: tool.name }, theme),
+            renderResult: renderMcpResult,
+          })
+        })
         session = currentSession
+
+        pi.on('before_agent_start', (event) => {
+          const inventory = currentSession.serverInventory()
+          return inventory.length === 0 ? undefined : { systemPrompt: `${event.systemPrompt}\n\n${inventory}` }
+        })
 
         pi.registerTool({
           description:
@@ -57,7 +83,7 @@ export const feature = ((options: FeatureOptions<McpGatewayFactory> = {}) => {
           parameters: McpGatewayParameters,
           promptGuidelines: [
             'Use native Pi tools directly. Use mcp only for capabilities supplied by configured remote MCP servers.',
-            'MCP servers connect at session start; remote tool schemas stay out of model context until surfaced through this gateway.',
+            'Only MCP tools selected by mcp.directTools in Pi settings.json are loaded up front; use mcp to search, list, describe, and call the others on demand.',
           ],
           promptSnippet: 'Search and call configured remote MCP capabilities on demand',
           renderCall: renderMcpCall,

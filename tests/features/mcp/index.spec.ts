@@ -7,6 +7,7 @@ import { deferred } from '@tests/utils/deferred.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { testRuntime } from '@tests/utils/runtime.js'
 import { Effect, Fiber } from 'effect'
+import { FileSystem } from 'effect/FileSystem'
 import { FetchHttpClient } from 'effect/unstable/http'
 
 import {
@@ -23,7 +24,8 @@ import {
   type McpToolDescription,
 } from '@/features/mcp/gateway.js'
 import { feature } from '@/features/mcp/index.js'
-import { type McpServerMap } from '@/features/mcp/types.js'
+import { loadMcpSettings, type McpSettings } from '@/features/mcp/settings.js'
+import { McpError, type McpServerMap } from '@/features/mcp/types.js'
 import { makeEnvironment } from '@/shared/effect/env.js'
 import { publishStatus } from '@/shared/state/status_bar.js'
 import { type JsonObject, parseJsonText } from '@/shared/utils/json.js'
@@ -48,7 +50,12 @@ interface ExecuteInput {
 
 const testConfig: McpServerMap = { alpha: { command: 'noop', type: 'stdio' } }
 
-const createHarness = (overrides: Partial<McpGatewayManager> = {}, gateway: (manager: McpGatewayManager) => Partial<McpGatewayApi> = () => ({})) => {
+const createHarness = (
+  overrides: Partial<McpGatewayManager> = {},
+  gateway: (manager: McpGatewayManager) => Partial<McpGatewayApi> = () => ({}),
+  config: McpServerMap = testConfig,
+  settings: McpSettings = {}
+) => {
   const calls: RecordedCall[] = []
   let callbacks: McpManagerCallbacks | undefined
   let loadCount = 0
@@ -134,19 +141,24 @@ const createHarness = (overrides: Partial<McpGatewayManager> = {}, gateway: (man
   let gatewayFactoryCalls = 0
   const gatewayValue: McpGatewayApi = {
     configPath: '/test-home/.config/mcp/mcp.json',
-    createManager(config, { callbacks: managerCallbacks }) {
-      expect(config).toBe(testConfig)
+    createManager(loadedConfig, { callbacks: managerCallbacks }) {
+      expect(loadedConfig).toBe(config)
       callbacks = managerCallbacks
       return manager
     },
     loadConfig: Effect.sync(() => {
       loadCount += 1
-      return testConfig
+      return { servers: config, settings }
     }),
     policy: unrestrictedMcpPolicy,
     ...gateway(manager),
   }
   const fixture = createFakePi()
+  let activeTools = ['mcp', 'read']
+  fixture.pi.getActiveTools = () => [...activeTools]
+  fixture.pi.setActiveTools = (names) => {
+    activeTools = [...names]
+  }
   const { implementation } = feature({
     dependencies: () => {
       gatewayFactoryCalls += 1
@@ -276,6 +288,212 @@ describe('MCP gateway policy selection', () => {
           server: 'dbx',
         })
       ).toBeFalse()
+    })
+  )
+})
+
+describe('MCP direct tools and context inventory', () => {
+  it.scoped('reads selections from Pi settings again on each session activation', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem
+      const agentDir = yield* fs.makeTempDirectoryScoped({ prefix: 'mcp-pi-settings-' })
+      const settingsPath = `${agentDir}/settings.json`
+      yield* fs.writeFileString(settingsPath, '{"mcp":{"directTools":{"alpha":["alpha_find"]}}}')
+      const harness = createHarness({}, () => ({
+        loadConfig: loadMcpSettings({ agentDir, cwd: agentDir, projectTrusted: false }).pipe(
+          Effect.map((settings) => ({ servers: testConfig, settings }))
+        ),
+      }))
+      expect([...harness.fixture.state.tools.keys()]).toEqual(['mcp'])
+      yield* Effect.promise(() => harness.start())
+      expect(harness.fixture.pi.getActiveTools()).toEqual(['mcp', 'read', 'alpha_find'])
+      yield* Effect.promise(() => harness.stop())
+      yield* fs.writeFileString(settingsPath, '{"mcp":{"directTools":{"alpha":false}}}')
+      yield* Effect.promise(() => harness.start())
+      expect(harness.fixture.pi.getActiveTools()).toEqual(['mcp', 'read'])
+    })
+  )
+
+  it.effect('keeps every enabled server in each prompt without listing tools or credentials', () =>
+    Effect.gen(function* () {
+      const servers = Array.from({ length: 35 }, (_value, index) => ({ name: `server-${index}`, status: 'connected' as const }))
+      const harness = createHarness({
+        status: () => [
+          ...servers,
+          { error: 'secret-token', name: 'offline', status: 'failed' },
+          { name: 'auth', status: 'needs-auth' },
+          { name: 'disabled', status: 'disabled' },
+          { name: 'invalid', status: 'invalid-config' },
+        ],
+      })
+      yield* Effect.promise(() => harness.start())
+      for (let turn = 0; turn < 2; turn += 1) {
+        const results = yield* Effect.promise(() => harness.fixture.emit('before_agent_start', { systemPrompt: 'Base prompt' }))
+        const [prompt] = results
+        for (const server of servers) {
+          expect(prompt).toEqual({ systemPrompt: expect.stringContaining(`- "${server.name}"`) })
+        }
+        expect(prompt).toEqual({ systemPrompt: expect.stringContaining('Base prompt\n\nEnabled MCP servers:') })
+        expect(prompt).toEqual({ systemPrompt: expect.stringContaining('- "offline"') })
+        expect(prompt).toEqual({ systemPrompt: expect.stringContaining('- "auth"') })
+        for (const absent of ['secret-token', '"disabled"', '"invalid"', 'inputSchema', 'alpha_a']) {
+          expect(prompt).not.toEqual({ systemPrompt: expect.stringContaining(absent) })
+        }
+      }
+      expect(callsFor(harness, 'list')).toHaveLength(0)
+      expect(callsFor(harness, 'describe')).toHaveLength(0)
+      yield* Effect.promise(() => harness.stop())
+      expect(yield* Effect.promise(() => harness.fixture.emit('before_agent_start', { systemPrompt: 'Base prompt' }))).toEqual([undefined])
+    })
+  )
+
+  it.effect('loads only selected schemas before startup completes and dispatches through the manager', () =>
+    Effect.gen(function* () {
+      const inputSchema = { properties: { query: { type: 'string' } }, required: ['query'], type: 'object' }
+      const harness = createHarness(
+        { describe: () => Effect.succeed({ description: 'Find issues', inputSchema, name: 'alpha_find', server: 'alpha' }) },
+        () => ({}),
+        { alpha: { command: 'noop', type: 'stdio' }, beta: { command: 'noop', type: 'stdio' } },
+        { directTools: { alpha: ['find', 'find'] } }
+      )
+      yield* Effect.promise(() => harness.start())
+      expect([...harness.fixture.state.tools.keys()]).toEqual(['mcp', 'alpha_find'])
+      expect(harness.fixture.pi.getActiveTools()).toEqual(['mcp', 'read', 'alpha_find'])
+      const tool = asTool<{
+        execute: (id: string, params: JsonObject, signal?: AbortSignal) => Promise<AgentToolResult<unknown>>
+        parameters: unknown
+      }>(harness.fixture.state.tools.get('alpha_find'))
+      expect(tool.parameters).toEqual(inputSchema)
+      const signal = AbortSignal.any([])
+      expect(yield* Effect.promise(() => tool.execute('direct', { query: 'bug' }, signal))).toBe(harness.callResult)
+      expect(callsFor(harness, 'call').at(-1)?.values).toEqual(['alpha_find', { query: 'bug' }, { server: 'alpha', signal }])
+      yield* Effect.promise(() => harness.execute({ search: 'other' }))
+      yield* Effect.promise(() => harness.execute({ describe: 'beta_other', server: 'beta' }))
+      yield* Effect.promise(() => harness.execute({ tool: 'beta_other' }))
+      expect([...harness.fixture.state.tools.keys()]).toEqual(['mcp', 'alpha_find'])
+      yield* Effect.promise(() => harness.stop())
+      expect(harness.fixture.pi.getActiveTools()).toEqual(['mcp', 'read'])
+      yield* Effect.promise(() => harness.start())
+      expect(harness.fixture.pi.getActiveTools()).toEqual(['mcp', 'read', 'alpha_find'])
+    })
+  )
+
+  it.effect('supports all-tools selection and leaves false, empty, disabled, and invalid servers proxy-only', () =>
+    Effect.gen(function* () {
+      const harness = createHarness(
+        {},
+        () => ({}),
+        {
+          alpha: { command: 'noop', type: 'stdio' },
+          beta: { type: 'http', url: 'https://example.test' },
+          disabled: { command: 'noop', disabled: true, type: 'stdio' },
+          empty: { command: 'noop', type: 'stdio' },
+          invalid: { invalid: true },
+        },
+        { directTools: { alpha: true, beta: false, disabled: true, empty: [], invalid: true, unknown: true } }
+      )
+      yield* Effect.promise(() => harness.start())
+      expect([...harness.fixture.state.tools.keys()]).toEqual(['mcp', 'alpha_z', 'alpha_a'])
+      expect(callsFor(harness, 'list').map((call) => call.values[0])).toEqual(['alpha'])
+      expect(callsFor(harness, 'describe').map((call) => call.values[0])).toEqual(['alpha_z', 'alpha_a'])
+    })
+  )
+
+  it.effect('isolates missing or policy-denied selections and preserves call-time policy failures', () =>
+    Effect.gen(function* () {
+      const harness = createHarness(
+        {
+          call: () => Effect.fail(new McpError({ message: 'denied by read-only policy' })),
+          describe: (name) =>
+            name === 'allowed'
+              ? Effect.succeed({ inputSchema: { type: 'object' }, name: 'alpha_allowed' })
+              : Effect.fail(new McpError({ message: 'missing or denied by read-only policy' })),
+        },
+        () => ({ policy: readonlyMcpPolicy }),
+        testConfig,
+        { directTools: { alpha: ['denied', 'allowed', 'missing'] } }
+      )
+      yield* Effect.promise(() => harness.start())
+      expect([...harness.fixture.state.tools.keys()]).toEqual(['mcp', 'alpha_allowed'])
+      const tool = asTool<{ execute: (id: string, params: JsonObject) => Promise<AgentToolResult<unknown>> }>(
+        harness.fixture.state.tools.get('alpha_allowed')
+      )
+      expect(tool.execute('direct', {})).rejects.toThrow('denied by read-only policy')
+    })
+  )
+
+  it.effect('does not overwrite native tools or register unusable schemas', () =>
+    Effect.gen(function* () {
+      const harness = createHarness(
+        {
+          describe: (name) => Effect.succeed({ inputSchema: name === 'invalid' ? { type: 'string' } : { type: 'object' }, name }),
+        },
+        () => ({}),
+        testConfig,
+        { directTools: { alpha: ['mcp', 'invalid', 'x'.repeat(65)] } }
+      )
+      const gateway = harness.fixture.state.tools.get('mcp')
+      yield* Effect.promise(() => harness.start())
+      expect([...harness.fixture.state.tools.keys()]).toEqual(['mcp'])
+      expect(harness.fixture.state.tools.get('mcp')).toBe(gateway)
+    })
+  )
+
+  it.effect('closes transports even when Pi rejects tool deactivation', () =>
+    Effect.gen(function* () {
+      const harness = createHarness({}, () => ({}), testConfig, { directTools: { alpha: ['find'] } })
+      yield* Effect.promise(() => harness.start())
+      harness.fixture.pi.setActiveTools = () => {
+        throw new Error('stale Pi runtime')
+      }
+      yield* Effect.promise(() => harness.stop())
+      expect(callsFor(harness, 'close')).toHaveLength(1)
+    })
+  )
+
+  it.effect('attempts an unavailable server only once for its entire direct selection', () =>
+    Effect.gen(function* () {
+      let attempts = 0
+      const harness = createHarness(
+        {
+          connect: () =>
+            Effect.gen(function* () {
+              attempts += 1
+              return yield* new McpError({ message: 'authentication required' })
+            }),
+          status: () => [{ name: 'alpha', status: 'needs-auth' }],
+        },
+        () => ({}),
+        testConfig,
+        { directTools: { alpha: ['one', 'two', 'three'] } }
+      )
+      yield* Effect.promise(() => harness.start())
+      expect(attempts).toBe(1)
+      expect(callsFor(harness, 'describe')).toHaveLength(0)
+    })
+  )
+
+  it.effect('loads selected tools after an initially unavailable server connects', () =>
+    Effect.gen(function* () {
+      let available = false
+      const harness = createHarness(
+        {
+          connect: () => (available ? Effect.void : Effect.fail(new McpError({ message: 'authentication required' }))),
+          describe: () =>
+            available
+              ? Effect.succeed({ inputSchema: { type: 'object' }, name: 'alpha_find' })
+              : Effect.fail(new McpError({ message: 'authentication required' })),
+          status: () => [{ name: 'alpha', status: 'needs-auth' }],
+        },
+        () => ({}),
+        testConfig,
+        { directTools: { alpha: ['find'] } }
+      )
+      yield* Effect.promise(() => harness.start())
+      expect([...harness.fixture.state.tools.keys()]).toEqual(['mcp'])
+      available = true
+      yield* Effect.promise(() => harness.execute({ connect: 'alpha' }))
+      expect(harness.fixture.pi.getActiveTools()).toContain('alpha_find')
     })
   )
 })

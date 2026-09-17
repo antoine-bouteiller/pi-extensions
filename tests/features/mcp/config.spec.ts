@@ -99,6 +99,22 @@ describe('global MCP config parsing', () => {
     })
   )
 
+  it.effect('rejects Pi tool-selection settings in the MCP transport configuration', () =>
+    Effect.sync(() => {
+      expect(
+        parseMcpConfig({
+          mcpServers: {
+            legacy: { command: 'server', directTools: ['search'] },
+            valid: { command: 'server' },
+          },
+        })
+      ).toEqual({
+        legacy: { invalid: true },
+        valid: { command: 'server', type: 'stdio' },
+      })
+    })
+  )
+
   it.effect('substitutes environment variables in string values without expanding keys or replacements', () =>
     Effect.sync(() => {
       const input = {

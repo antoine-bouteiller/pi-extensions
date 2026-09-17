@@ -4,6 +4,7 @@ import {
   type AgentToolResult,
   type ExtensionAPI,
   type ExtensionCommandContext,
+  getAgentDir,
   keyHint,
   type ExtensionContext,
   type Theme,
@@ -19,6 +20,7 @@ import { Type, type Static } from 'typebox'
 import { type AppServices } from '#shared/effect/app_services'
 import { type Env, type EnvApi, processEnvironment } from '#shared/effect/env'
 import { ToolFailure } from '#shared/effect/errors'
+import { PiCtx } from '#shared/effect/pi_services'
 import { withAbortSignal } from '#shared/effect/runtime'
 import { createStatusChannel } from '#shared/state/status_bar'
 import { type JsonObject, type JsonValue, jsonText, parseJsonText } from '#shared/utils/json'
@@ -29,6 +31,7 @@ import { isRecord } from '#shared/utils/records'
 import { loadGlobalMcpConfig } from './config.js'
 import { createKeychainCredentialStore } from './keychain.js'
 import { boundGatewayOutput } from './output.js'
+import { loadMcpSettings, type McpSettings } from './settings.js'
 import {
   assertOpenableAuthorizationUrl,
   McpError,
@@ -132,7 +135,7 @@ interface McpManagerContext {
 
 export interface McpGatewayApi {
   readonly configPath: string
-  readonly loadConfig: Effect.Effect<McpServerMap, Error, FileSystem | Path | Env>
+  readonly loadConfig: Effect.Effect<{ servers: McpServerMap; settings: McpSettings }, Error, FileSystem | Path | Env | PiCtx>
   readonly createManager: (config: McpServerMap, context: McpManagerContext) => McpGatewayManager | Promise<McpGatewayManager>
   readonly policy: McpGatewayPolicy
 }
@@ -554,18 +557,86 @@ export interface GatewaySession {
     signal: AbortSignal | undefined
   ) => Effect.Effect<AgentToolResult<unknown>, McpOperationError | ToolFailure, FileSystem | Path | McpGateway>
   readonly oauthCompletions: (prefix: string) => { label: string; value: string }[]
+  readonly serverInventory: () => string
   readonly start: (ctx: ExtensionContext) => Effect.Effect<void, McpOperationError, AppServices | McpGateway>
   readonly stop: (ctx: ExtensionContext) => Effect.Effect<void, McpOperationError>
 }
 
 /** Owns one gateway lifecycle; its config and manager are supplied by the `McpGateway` service. */
-export const makeGatewaySession = (pi: ExtensionAPI): GatewaySession => {
+export const makeGatewaySession = (pi: ExtensionAPI, registerDirectTool: (tool: McpToolDescription, server: string) => void): GatewaySession => {
   const state = makeState()
+  const directNames = new Map<string, string>()
+  let loadDirectTools: ((server?: string) => Effect.Effect<void>) | undefined
+
+  const deactivateDirectTools = Effect.try({
+    catch: mcpOperationError,
+    try: () => {
+      if (directNames.size > 0) {
+        pi.setActiveTools(pi.getActiveTools().filter((name) => !directNames.has(name)))
+      }
+    },
+  }).pipe(Effect.ignore)
+
+  const registerSelectedTools = (
+    manager: McpGatewayManager,
+    selections: NonNullable<McpSettings['directTools']>,
+    generation: number,
+    ctx: ExtensionContext,
+    server?: string
+  ) => {
+    const warn = (error: McpOperationError): Effect.Effect<void> =>
+      Effect.sync(() => {
+        if (Ref.getUnsafe(state.generation) === generation && ctx.hasUI) {
+          ctx.ui.notify(`Could not load direct MCP tool: ${error.message}`, 'warning')
+        }
+      })
+    return Effect.forEach(
+      Object.entries(selections).filter(([name]) => server === undefined || name === server),
+      ([name, selection]) =>
+        Effect.gen(function* () {
+          if (selection === false || (Array.isArray(selection) && selection.length === 0)) {
+            return
+          }
+          // Share one connection attempt for the whole selection, including a failed attempt.
+          yield* fromManager(manager.connect(name))
+          const names = selection === true ? (yield* fromManager(manager.list(name))).map((tool) => tool.name) : selection
+          yield* Effect.forEach(
+            [...new Set(names)],
+            (requested) =>
+              Effect.gen(function* () {
+                const tool = yield* fromManager(manager.describe(requested, { server: name }))
+                if (Ref.getUnsafe(state.generation) !== generation) {
+                  return
+                }
+                yield* Effect.try({
+                  catch: mcpOperationError,
+                  try: () => {
+                    const owner = directNames.get(tool.name)
+                    if (
+                      (owner !== undefined && owner !== name) ||
+                      (owner === undefined && pi.getAllTools().some((existing) => existing.name === tool.name))
+                    ) {
+                      throw new Error(`MCP tool ${tool.name} conflicts with an existing Pi tool`)
+                    }
+                    registerDirectTool(tool, name)
+                    directNames.set(tool.name, name)
+                    pi.setActiveTools([...new Set([...pi.getActiveTools(), tool.name])])
+                  },
+                })
+              }).pipe(Effect.catch(warn)),
+            { discard: true }
+          )
+        }).pipe(Effect.catch(warn)),
+      { concurrency: STARTUP_CONNECT_CONCURRENCY, discard: true }
+    )
+  }
 
   const startSession = (ctx: ExtensionContext): Effect.Effect<void, McpOperationError, AppServices | McpGateway> =>
     Effect.gen(function* () {
       const gateway = yield* McpGateway
       const generation = yield* Ref.updateAndGet(state.generation, (value) => value + 1)
+      yield* deactivateDirectTools
+      loadDirectTools = undefined
       const previousManager = yield* Ref.getAndSet(state.manager, Option.none())
       const deferred = yield* Deferred.make<void, McpOperationError>()
       yield* Ref.set(state.initialization, Option.some(deferred))
@@ -574,7 +645,13 @@ export const makeGatewaySession = (pi: ExtensionAPI): GatewaySession => {
         if (Option.isSome(previousManager)) {
           yield* previousManager.value.close
         }
-        const config = yield* fromManager(gateway.loadConfig)
+        const { servers: config, settings } = yield* fromManager(gateway.loadConfig).pipe(Effect.provideService(PiCtx, ctx))
+        const enabled = new Set(
+          Object.entries(config)
+            .filter(([, entry]) => entry.type !== undefined && !isTrue(entry.disabled))
+            .map(([name]) => name)
+        )
+        const selections = Object.fromEntries(Object.entries(settings.directTools ?? {}).filter(([name]) => enabled.has(name)))
         const crypto = yield* Crypto
         const managerCreation = Promise.resolve().then(() =>
           gateway.createManager(config, {
@@ -621,12 +698,16 @@ export const makeGatewaySession = (pi: ExtensionAPI): GatewaySession => {
           (server) => candidate.connect(server.name).pipe(Effect.ignore),
           { concurrency: STARTUP_CONNECT_CONCURRENCY, discard: true }
         ).pipe((connectAll) => Effect.forkDetach(connectAll, { startImmediately: true }))
+        loadDirectTools = (server) => registerSelectedTools(candidate, selections, generation, ctx, server)
+        yield* loadDirectTools()
       }).pipe(Effect.onExit((exit) => Deferred.done(deferred, exit)))
     })
 
   const stopSession = (ctx: ExtensionContext): Effect.Effect<void, McpOperationError> =>
     Effect.gen(function* () {
       yield* Ref.update(state.generation, (value) => value + 1)
+      yield* deactivateDirectTools
+      loadDirectTools = undefined
       const pending = yield* Ref.get(state.initialization)
       if (Option.isSome(pending)) {
         yield* Deferred.await(pending.value).pipe(Effect.exit)
@@ -676,6 +757,7 @@ export const makeGatewaySession = (pi: ExtensionAPI): GatewaySession => {
       }
 
       yield* fromManager(manager.authenticate(server))
+      yield* loadDirectTools?.(server) ?? Effect.void
       ctx.ui.notify(`Authenticated and connected MCP server ${server}.`, 'info')
     }).pipe(
       Effect.catch((error) => {
@@ -689,9 +771,27 @@ export const makeGatewaySession = (pi: ExtensionAPI): GatewaySession => {
     dispatch: (params, signal) =>
       Effect.gen(function* () {
         const gateway = yield* McpGateway
-        return yield* dispatchGateway(gateway.configPath, state, params, signal)
+        const result = yield* dispatchGateway(gateway.configPath, state, params, signal)
+        if (params.connect !== undefined) {
+          yield* loadDirectTools?.(params.connect) ?? Effect.void
+        }
+        return result
       }),
     oauthCompletions,
+    serverInventory: () => {
+      const current = Ref.getUnsafe(state.manager)
+      if (Option.isNone(current)) {
+        return ''
+      }
+      const servers = current.value.status().filter((server) => server.status !== 'disabled' && server.status !== 'invalid-config')
+      return [
+        'Enabled MCP servers:',
+        ...servers.toSorted(compareNames).map((server) => `- ${jsonText(server.name)}`),
+        ...(servers.length === 0 ? ['(none)'] : []),
+        'Use mcp({ server: "<server-name>" }) to list tools, mcp({ search: "..." }) to search, and mcp({ describe: "<tool-name>" }) for its schema.',
+        'Unlisted tool schemas are available on demand; call them through mcp({ tool: "<tool-name>", args: { ... } }).',
+      ].join('\n')
+    },
     start: startSession,
     stop: stopSession,
   }
@@ -729,6 +829,11 @@ export const makeMcpGateway = (): McpGatewayApi => ({
           policy,
         })
     ),
-  loadConfig: loadGlobalMcpConfig,
+  loadConfig: Effect.gen(function* () {
+    const ctx = yield* PiCtx
+    const servers = yield* loadGlobalMcpConfig
+    const settings = yield* loadMcpSettings({ agentDir: getAgentDir(), cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() })
+    return { servers, settings }
+  }),
   policy: mcpPolicyFromEnvironment(),
 })
