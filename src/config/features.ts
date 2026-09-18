@@ -10,6 +10,7 @@ import { feature as hashline } from '#features/hashline/index'
 import { feature as mcp } from '#features/mcp/index'
 import { feature as meridianSessionAffinity } from '#features/meridian_session_affinity/index'
 import { feature as promptRewind } from '#features/prompt_rewind/index'
+import { feature as providerRetry } from '#features/provider_retry/index'
 import { feature as rules } from '#features/rules/index'
 import { feature as statusPanel } from '#features/status_panel/index'
 import { feature as subAgents } from '#features/sub_agents/index'
@@ -25,6 +26,7 @@ export const features = [
   mcp(),
   meridianSessionAffinity(),
   promptRewind(),
+  providerRetry(),
   rules(),
   statusPanel(),
   subAgents(),

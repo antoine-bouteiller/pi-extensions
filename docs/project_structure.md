@@ -25,6 +25,7 @@ src/
 │   ├── mcp/{index,gateway,config,keychain,manager,oauth,output,types}.ts
 │   ├── meridian_session_affinity/{index,affinity,scrub}.ts
 │   ├── prompt_rewind/{index,rewind}.ts
+│   ├── provider_retry/{index,retry}.ts
 │   ├── rules/{index,rules}.ts
 │   ├── status_panel/{index,panel,footer,git,provider,render,sidebar,split_pane,state,statuses}.ts
 │   ├── sub_agents/{index,model,operator,orchestrator,process,protocol,runtime,store,tools,worker}.ts; spec/{sub-agents,agent-profiles,orchestration,delegation-tools,operator-surface}.spec.md

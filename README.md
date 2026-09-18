@@ -61,6 +61,7 @@ This package uses a pre-release version of Effect v4. Because the API changes fr
 | `mcp`                       | A specific, limited MCP gateway (see details below).                                                                      |
 | `meridian_session_affinity` | Includes Pi's session ID in Meridian requests and scrubs Pi's harness fingerprint, which Anthropic meters as Extra Usage. |
 | `prompt_rewind`             | Allows you to edit your original prompt if you cancel before the assistant responds.                                      |
+| `provider_retry`            | Extends Pi's native retries to server errors and unknown-status provider failures in main and sub-agents.                 |
 | `rules`                     | Loads `.md` and `.mdc` rules from `.claude/rules/` and `.agents/rules/`.                                                  |
 | `status_panel`              | A sidebar showing the model, context usage, git status, provider limits, and active subagents.                            |
 | `sub_agents`                | Runs isolated, session-scoped agents for delegated research, review, and implementation.                                  |
@@ -85,6 +86,10 @@ Select always-loaded tools in `~/.pi/agent/settings.json` (or the configured Pi 
 ```
 
 The `mcp.directTools` keys are server names from `mcp.json`; values are exact remote tool names or exposed server-prefixed names. An omitted server, `false`, or `[]` keeps its tools behind the gateway; `true` loads all tools on that server. Keep `directTools` out of `mcp.json`. Startup waits for selected servers to connect (subject to the connection timeout) so their tools can be registered individually with schemas before the first prompt, while unselected tools remain discoverable and callable through `mcp` without being loaded into context up front. Read-only policies still apply. Unavailable or denied selections do not block other tools; authenticate with `/mcp-auth` or retry with `mcp({ connect: "linear" })` to load selections after a connection failure. Reload Pi after editing the configuration.
+
+The `provider_retry` feature extends Pi's native retries to all HTTP 5xx and unknown-status provider failures, including `An error occurred while processing the request`, in both main and sub-agent sessions. It uses response status when exposed, otherwise recognizes common SDK HTTP-status prefixes in error text. A successful HTTP response followed by a stream error has no failure status. Known non-5xx failures are left to Pi's existing policy, including its 429 retries and quota/billing and context-overflow handling.
+
+The feature preserves the original diagnostic with a `server error:` classification prefix and respects Pi's `retry` settings—including disabling retries. Pi's defaults allow three retries with 2s, 4s, and 8s delays; cancellation and sub-agent deadlines still apply. It does not retry tool failures or restart completed tool calls.
 
 The `rules` feature injects general rules immediately. Rules specific to a file path are injected after a tool's result matches a file.
 
