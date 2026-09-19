@@ -1,96 +1,39 @@
-<h1 align="center">Pi extensions</h1>
+# Personal Pi extensions
 
-<p align="center">
-  <a href="https://github.com/antoine-bouteiller/pi-extensions/actions/workflows/quality-checks.yaml"><img alt="Quality Checks" src="https://img.shields.io/github/actions/workflow/status/antoine-bouteiller/pi-extensions/quality-checks.yaml?branch=main&amp;style=for-the-badge&amp;logo=githubactions&amp;logoColor=cad3f5&amp;labelColor=363a4f"></a>
-  <a href="https://codecov.io/gh/antoine-bouteiller/pi-extensions"><img alt="Codecov" src="https://img.shields.io/codecov/c/github/antoine-bouteiller/pi-extensions?style=for-the-badge&amp;logo=codecov&amp;logoColor=cad3f5&amp;colorA=363a4f"></a>
-  <a href="https://bun.sh/"><img alt="Bun" src="https://img.shields.io/badge/runtime-Bun-eed49f?style=for-the-badge&amp;logo=bun&amp;logoColor=cad3f5&amp;labelColor=363a4f"></a>
-</p>
+My personal extension for [Pi](https://github.com/earendil-works/pi)
 
-These are official extensions for [Pi](https://github.com/earendil-works/pi). They are built using a single Bun workspace and are installed as one package.
+**Requires the Bun-compiled version of Pi.**
 
-## Installation
+## Install
 
 ```bash
 pi install git:github.com/antoine-bouteiller/pi-extensions
 ```
 
-The `package.json` file directs Pi to `src/index.ts`, which is the only entry point for the extension. It creates one memoized Effect runtime (`src/config/runtime.ts`) and gives it to an ordered registry in `src/config/features.ts`. This registry attaches every capability found in `src/features/` to a single `ExtensionAPI`. When you install this repository, you are adding exactly one extension; the features listed below are parts of that extension and cannot be loaded individually.
+## Features
+
+- `ask_user` — Multiple-choice questions during a turn.
+- `background_poll` — Background shell polling with completion notifications.
+- `claude_code` — Load Claude commands as temporary Pi skills.
+- `comment_checker` — Check comments after file edits.
+- `hashline` — Hash-anchored file reads and writes that reject stale edits.
+- `mcp` — MCP gateway with discovery, tool selection, and OAuth.
+- `meridian_session_affinity` — Session affinity and harness fingerprint scrubbing for Meridian requests.
+- `prompt_rewind` — Edit your prompt when cancelling before a response.
+- `provider_retry` — Extend retries to server and unknown-status provider failures.
+- `rules` — Load rules from `.claude/rules/` and `.agents/rules/`.
+- `status_panel` — Show model, context, Git, provider limits, and subagents.
+- `sub_agents` — Delegate research, review, and implementation to isolated agents.
+- `webfetch` — Fetch URLs as Markdown, text, or HTML.
 
 ## Development
 
-To develop, link the `src/` directory to Pi's global extension folder (`~/.pi/agent/extensions`). Pi will then load the source code directly instead of the built version.
+From the repository root:
 
 ```bash
 bun install --frozen-lockfile
 bun run check
+pi -e ./src/index.ts
 ```
 
-The command `bun run check` runs Oxfmt, Oxlint, Knip, and the Bun test suite. Use `bun run test:coverage` to see test coverage.
-
-**Type checking is handled by Oxlint.** The `oxlint.config.ts` file enables `options.typeAware` and `options.typeCheck`. Because `oxlint-tsgolint` performs the analysis, `bun run lint` serves as the type check for both local development and CI. You do not need a separate type-checking step.
-
-`bun run typecheck` (`tsc --noEmit`) is for information only. It is used to show suggestions from [`@effect/language-service`](https://github.com/Effect-TS/language-service), such as `processEnv`, `globalTimers`, and `nodeBuiltinImport`. It is excluded from `check` and CI because Oxlint already performs the type check, not because of those errors. Any other warnings are intentionally allowed via the `overrides` block in `oxlint.config.ts`, which is the primary mechanism; an `oxlint-disable` comment is used only where a single call is the right granularity.
-
-## Layout
-
-```text
-src/index.ts                  the only Pi extension entrypoint/default export
-src/config/                   composition only: ordered feature registry and runtime
-src/features/                 one capability per snake_case folder
-src/features/<name>/index.ts  the feature's only registration site, exporting `register(pi, runtime)`
-src/shared/                   cross-feature Effect boundary, state, and utilities
-tests/<mirrors src/>          tests mirror the source tree, using `.spec.ts`
-tests/utils/                  shared typed fakes and the bun_effect harness, imported as @tests/utils/*
-```
-
-Only an `index.ts` file located directly inside a folder is automatically discovered. For this reason, `src/config/`, `src/features/`, and `src/shared/` do not contain `index.ts` files. See [`docs/project_structure.md`](docs/project_structure.md) for rules regarding imports and dependencies.
-
-## Effect
-
-This package uses a pre-release version of Effect v4. Because the API changes frequently, every Effect update must pass the full CI suite. The file `tests/utils/bun_effect.ts` is a custom shim for `it.effect`, `it.scoped`, and `it.live` to replace `@effect/bun-test`, which is not yet available ([Effect-TS/effect#5973](https://github.com/Effect-TS/effect/pull/5973)). Replace this shim once the official package is released.
-
-## Features
-
-| Feature                     | Purpose                                                                                                                   |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `ask_user`                  | Asks the user a multiple-choice question during a turn.                                                                   |
-| `background_poll`           | Runs a shell command in the background and alerts the agent when it succeeds.                                             |
-| `claude_code`               | Turns `.claude/commands/` files in global or trusted projects into temporary Pi skills.                                   |
-| `comment_checker`           | Runs the `comment-checker` tool after file edits and adds any warnings to the result.                                     |
-| `hashline`                  | Replaces `read` and `write` with content-hash-anchored file operations that reject stale edits.                           |
-| `mcp`                       | A specific, limited MCP gateway (see details below).                                                                      |
-| `meridian_session_affinity` | Includes Pi's session ID in Meridian requests and scrubs Pi's harness fingerprint, which Anthropic meters as Extra Usage. |
-| `prompt_rewind`             | Allows you to edit your original prompt if you cancel before the assistant responds.                                      |
-| `provider_retry`            | Extends Pi's native retries to server errors and unknown-status provider failures in main and sub-agents.                 |
-| `rules`                     | Loads `.md` and `.mdc` rules from `.claude/rules/` and `.agents/rules/`.                                                  |
-| `status_panel`              | A sidebar showing the model, context usage, git status, provider limits, and active subagents.                            |
-| `sub_agents`                | Runs isolated, session-scoped agents for delegated research, review, and implementation.                                  |
-| `webfetch`                  | Fetches a URL and provides the content as markdown, plain text, or HTML.                                                  |
-
-The `mcp` feature reads server connections from `~/.config/mcp/mcp.json` and tool selections from the `mcp` block in Pi's `settings.json`. It supports tools via stdio and HTTP/SSE, uses the system keyring to store credentials, and connects enabled servers at session startup. It also handles automatic OAuth through `/mcp-auth`. For HTTP servers like Linear (`https://mcp.linear.app/mcp`), OAuth is detected automatically after a 401 error, so no extra configuration is needed. Custom HTTP headers will stop this automatic detection unless `oauth` is manually set.
-
-MCP configuration string values support `${VAR}` substitution from the environment inherited by Pi, including headers such as `"Authorization": "Bearer ${LINEAR_TOKEN}"`. Export the variable before starting Pi. Missing variables mark only that server as `invalid-config`; empty values are allowed where the field permits them. Substitution is single-pass and does not change object keys or evaluate shell syntax (`$VAR`, defaults, or commands).
-
-MCP keeps the complete enabled-server inventory (names only, not tool schemas) in the system prompt. By default, only the `mcp` gateway is exposed: use `mcp({ server: "linear" })` to list tools, `mcp({ search: "issue" })` to search, `mcp({ describe: "linear_get_issue" })` to inspect a schema, and `mcp({ tool: "linear_get_issue", args: { ... } })` to call it.
-
-Select always-loaded tools in `~/.pi/agent/settings.json` (or the configured Pi agent directory). Trusted project `.pi/settings.json` selections override global selections per server:
-
-```json
-{
-  "mcp": {
-    "directTools": {
-      "linear": ["get_issue", "list_issues"]
-    }
-  }
-}
-```
-
-The `mcp.directTools` keys are server names from `mcp.json`; values are exact remote tool names or exposed server-prefixed names. An omitted server, `false`, or `[]` keeps its tools behind the gateway; `true` loads all tools on that server. Keep `directTools` out of `mcp.json`. Startup waits for selected servers to connect (subject to the connection timeout) so their tools can be registered individually with schemas before the first prompt, while unselected tools remain discoverable and callable through `mcp` without being loaded into context up front. Read-only policies still apply. Unavailable or denied selections do not block other tools; authenticate with `/mcp-auth` or retry with `mcp({ connect: "linear" })` to load selections after a connection failure. Reload Pi after editing the configuration.
-
-The `provider_retry` feature extends Pi's native retries to all HTTP 5xx and unknown-status provider failures, including `An error occurred while processing the request`, in both main and sub-agent sessions. It uses response status when exposed, otherwise recognizes common SDK HTTP-status prefixes in error text. A successful HTTP response followed by a stream error has no failure status. Known non-5xx failures are left to Pi's existing policy, including its 429 retries and quota/billing and context-overflow handling.
-
-The feature preserves the original diagnostic with a `server error:` classification prefix and respects Pi's `retry` settings—including disabling retries. Pi's defaults allow three retries with 2s, 4s, and 8s delays; cancellation and sub-agent deadlines still apply. It does not retry tool failures or restart completed tool calls.
-
-The `rules` feature injects general rules immediately. Rules specific to a file path are injected after a tool's result matches a file.
-
-The `sub_agents` feature reads a `subagents` block in Pi's `settings.json`, with `"provider/model-id"` strings keyed by `scout`, `librarian`, `reviewer`, and `implementer`. Trusted project entries override global entries per profile. If no block exists, it initializes all four profiles in global settings using the current model; later parent model changes do not overwrite them. Reload after editing. See [agent profile configuration](src/features/sub_agents/spec/agent-profiles.spec.md#data-model) for an example.
+`check` runs formatting, linting/type checking, unused-code checks, and tests.
