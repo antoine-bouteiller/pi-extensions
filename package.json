@@ -24,11 +24,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@effect/platform-bun": "4.0.0-rc.115",
+    "@effect/platform-bun": "4.0.0-rc.117",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@napi-rs/keyring": "2.1.0",
     "@oh-my-pi/hashline": "18.1.5",
-    "effect": "4.0.0-rc.115",
+    "effect": "4.0.0-rc.117",
     "turndown": "7.2.4"
   },
   "devDependencies": {
