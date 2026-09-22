@@ -130,7 +130,7 @@ export const createSubagentsOperator = ({ activity, sessionId, store }: Subagent
                     root: path.dirname(record.sessionPath),
                   }).pipe(Effect.map((file) => ({ content: { text: completeLines(file.bytes), turns: record.turns, unavailable: false }, stamp })))
             }),
-            Effect.orElseSucceed<TranscriptRead>(() => ({ content: unavailableTranscript }))
+            Effect.orElseSucceed((): TranscriptRead => ({ content: unavailableTranscript }))
           )
         })
       )
