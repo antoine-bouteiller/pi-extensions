@@ -9,6 +9,7 @@ import { Value } from 'typebox/value'
 
 import { type HerdrResult } from '@/features/herdr/herdr.js'
 import { feature } from '@/features/herdr/index.js'
+import { HerdrSettingsError } from '@/features/herdr/settings.js'
 import { makeEnvironment } from '@/shared/effect/env.js'
 
 interface DisplayTool {
@@ -105,26 +106,96 @@ describe('Herdr registration', () => {
     descriptor.implementation.register(fixture.pi, runtime)
     expect(descriptor).toMatchObject({ bootstrap: 'eager', id: 'herdr' })
     expect([...fixture.state.tools.keys()]).toEqual(['spawn_agent', 'send_message', 'close_pane'])
-    expect(fixture.state.handlers.size).toBe(0)
+    expect([...fixture.state.handlers.keys()]).toEqual(['before_agent_start'])
     expect(fixture.state.commands.size).toBe(0)
     const spawn = fixture.state.tools.get('spawn_agent')
     if (spawn === undefined) {
       throw new Error('spawn_agent not registered')
     }
+    expect(spawn.parameters).toMatchObject({ properties: { model: { description: 'No allowed models are available; spawning is disabled.' } } })
     expect(Value.Check(spawn.parameters, { model: 'azure-openai-responses/gpt-6-sol' })).toBe(false)
     expect(Value.Check(spawn.parameters, { message: 'Review', model: 'azure-openai-responses/gpt-6-sol' })).toBe(true)
     expect(Value.Check(spawn.parameters, { message: 'x'.repeat(32_769), model: 'provider/model' })).toBe(false)
     expect(Value.Check(spawn.parameters, { message: 'Review', model: 'other-provider/task-specific-model' })).toBe(true)
     const guidance = spawn.promptGuidelines?.join('\n') ?? ''
-    expect(guidance).toContain('no fixed model list or role mapping')
+    expect(guidance).toContain('herdr.allowedModels is mandatory')
     expect(guidance).toContain('Prefer Azure OpenAI (azure-openai-responses) for implementation, scouting, and research')
     expect(guidance).toContain('For review, prefer a different provider from the agent that produced the work')
     expect(guidance).toContain('preferences, not restrictions')
     expect(guidance).toContain('Honor explicit user model choices')
-    expect(guidance).toContain('do not silently substitute unavailable models')
+    expect(guidance).toContain('do not silently substitute disallowed or unavailable models')
     expect(fixture.state.tools.get('send_message')?.promptGuidelines?.join('\n')).toContain('notify its parent before ending')
     expect(fixture.state.tools.get('send_message')?.promptGuidelines?.join('\n')).toContain('not new user authorization')
   })
+
+  it.effect('refreshes the model enum from allowed, available models and still enforces it at execution', () =>
+    Effect.gen(function* () {
+      const fixture = createFakePi({
+        exec: () => {
+          throw new Error('must not execute')
+        },
+      })
+      let allowedModels = ['provider/allowed', 'provider/unavailable']
+      let invalid = false
+      feature({
+        dependencies: () =>
+          invalid ? Effect.fail(new HerdrSettingsError({ message: 'invalid herdr.allowedModels' })) : Effect.succeed({ allowedModels }),
+        environment: makeEnvironment({ HERDR_ENV: '1' }),
+      }).implementation.register(fixture.pi, runtime)
+      const ctx = asExtensionContext({
+        isProjectTrusted: () => false,
+        modelRegistry: {
+          getAvailable: () => [
+            { id: 'allowed', provider: 'provider' },
+            { id: 'other', provider: 'provider' },
+          ],
+        },
+      })
+      const sections = { existing: 'keep me', herdr: '' }
+      const event = { systemPromptOptions: { sections } }
+      yield* Effect.promise(() => fixture.emit('before_agent_start', event, ctx))
+      expect(sections.herdr).toBe('spawn_agent may only use these allowed, available models: provider/allowed.')
+      expect(sections.existing).toBe('keep me')
+      const tool = fixture.state.tools.get('spawn_agent')
+      if (tool === undefined) {
+        throw new Error('spawn_agent not registered')
+      }
+      expect(tool.parameters).toMatchObject({ properties: { model: { enum: ['provider/allowed'] } } })
+      expect(Value.Check(tool.parameters, { message: 'Review', model: 'provider/allowed' })).toBe(true)
+      for (const model of ['provider/other', 'provider/unavailable']) {
+        expect(Value.Check(tool.parameters, { message: 'Review', model })).toBe(false)
+      }
+      expect(Value.Check(tool.parameters, { model: 'provider/allowed' })).toBe(false)
+      expect(Value.Check(tool.parameters, { message: 'x'.repeat(32_769), model: 'provider/allowed' })).toBe(false)
+      const failure = yield* Effect.tryPromise(() =>
+        tool.execute('call', { message: 'Review', model: 'provider/other' }, undefined, undefined, ctx)
+      ).pipe(Effect.match({ onFailure: (error) => error.cause, onSuccess: () => undefined }))
+      expect(failure).toMatchObject({
+        _tag: 'ToolFailure',
+        message: 'Model provider/other is not allowed or available. Choose one of: provider/allowed.',
+      })
+      allowedModels = ['provider/allowed', 'provider/other']
+      yield* Effect.promise(() => fixture.emit('before_agent_start', event, ctx))
+      expect(fixture.state.tools.get('spawn_agent')?.parameters).toMatchObject({ properties: { model: { enum: allowedModels } } })
+      expect(tool.parameters).toMatchObject({ properties: { model: { enum: ['provider/allowed'] } } })
+      allowedModels = []
+      yield* Effect.promise(() => fixture.emit('before_agent_start', event, ctx))
+      expect(sections.herdr).toContain('spawn_agent is unavailable: configure herdr.allowedModels')
+      const disabledParameters = fixture.state.tools.get('spawn_agent')?.parameters
+      expect(disabledParameters).toMatchObject({ properties: { model: { description: 'No allowed models are available; spawning is disabled.' } } })
+      expect(disabledParameters).not.toHaveProperty('properties.model.enum')
+      allowedModels = ['provider/other']
+      yield* Effect.promise(() => fixture.emit('before_agent_start', event, ctx))
+      expect(fixture.state.tools.get('spawn_agent')?.parameters).toMatchObject({ properties: { model: { enum: ['provider/other'] } } })
+      invalid = true
+      yield* Effect.promise(() => fixture.emit('before_agent_start', event, ctx))
+      expect(sections.herdr).toContain('invalid herdr.allowedModels')
+      expect(fixture.state.tools.get('spawn_agent')?.parameters).toEqual(disabledParameters)
+      const independent = createFakePi()
+      feature().implementation.register(independent.pi, runtime)
+      expect(independent.state.tools.get('spawn_agent')?.parameters).toEqual(disabledParameters)
+    })
+  )
 
   it.effect('maps unavailable Herdr to a tool failure without contacting the CLI', () =>
     Effect.gen(function* () {
@@ -133,13 +204,25 @@ describe('Herdr registration', () => {
           throw new Error('must not execute')
         },
       })
-      feature({ environment: makeEnvironment({}) }).implementation.register(fixture.pi, runtime)
+      feature({
+        dependencies: () => Effect.succeed({ allowedModels: ['provider/model'] }),
+        environment: makeEnvironment({}),
+      }).implementation.register(fixture.pi, runtime)
       const tool = fixture.state.tools.get('spawn_agent')
       if (tool === undefined) {
         throw new Error('spawn_agent not registered')
       }
       const failure = yield* Effect.tryPromise(() =>
-        tool.execute('call', { message: 'Review', model: 'provider/model' }, undefined, undefined, asExtensionContext({}))
+        tool.execute(
+          'call',
+          { message: 'Review', model: 'provider/model' },
+          undefined,
+          undefined,
+          asExtensionContext({
+            isProjectTrusted: () => false,
+            modelRegistry: { getAvailable: () => [{ id: 'model', provider: 'provider' }] },
+          })
+        )
       ).pipe(Effect.match({ onFailure: (error) => error.cause, onSuccess: () => undefined }))
       expect(failure).toMatchObject({ _tag: 'ToolFailure', message: 'These tools require Pi to run inside Herdr.' })
     })

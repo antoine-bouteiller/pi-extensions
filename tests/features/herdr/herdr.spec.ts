@@ -5,6 +5,7 @@ import { createFakePi } from '@tests/utils/fake_pi.js'
 import { Effect } from 'effect'
 
 import { makeHerdrHandlers } from '@/features/herdr/herdr.js'
+import { HerdrSettingsError } from '@/features/herdr/settings.js'
 import { makeEnvironment } from '@/shared/effect/env.js'
 import { jsonText } from '@/shared/utils/json.js'
 
@@ -32,8 +33,15 @@ const child: Pane = {
   terminal_id: 'child-terminal',
   workspace_id: 'w1',
 }
-const context = (session = '/sessions/parent.jsonl') =>
-  asExtensionContext({ cwd: '/project with spaces', sessionManager: { getSessionFile: () => session } })
+const context = (session = '/sessions/parent.jsonl', models = [task.model]) =>
+  asExtensionContext({
+    cwd: '/project with spaces',
+    isProjectTrusted: () => true,
+    modelRegistry: {
+      getAvailable: () => models.map((model) => ({ id: model.slice(model.indexOf('/') + 1), provider: model.slice(0, model.indexOf('/')) })),
+    },
+    sessionManager: { getSessionFile: () => session },
+  })
 const task = { message: 'Review the diff; do not modify files.', model: 'azure-openai-responses/gpt-6-sol' }
 
 interface CliState {
@@ -55,7 +63,7 @@ type CliReply =
   | { type: 'ok' }
   | { layout: { panes: { pane_id: string; rect: { height: number; width: number } }[] } }
 
-const harness = (environment: Record<string, string> = { HERDR_ENV: '1' }) => {
+const harness = (environment: Record<string, string> = { HERDR_ENV: '1' }, allowedModels = [task.model]) => {
   const calls: { args: string[]; command: string; cwd: string | undefined; timeout: number | undefined }[] = []
   const state: CliState = {
     get child() {
@@ -149,7 +157,7 @@ const harness = (environment: Record<string, string> = { HERDR_ENV: '1' }) => {
       return Promise.resolve({ code: 0, stderr: '', stdout: state.stdout ?? jsonText({ result }) })
     },
   })
-  return { calls, handlers: makeHerdrHandlers(fake.pi, makeEnvironment(environment)), state }
+  return { calls, handlers: makeHerdrHandlers(fake.pi, makeEnvironment(environment), () => Effect.succeed({ allowedModels })), state }
 }
 const refusal = <Result, Services>(effect: Effect.Effect<Result, { message: string }, Services>) =>
   effect.pipe(Effect.match({ onFailure: (error) => error.message, onSuccess: () => 'unexpected success' }))
@@ -258,6 +266,41 @@ describe('Herdr delegation', () => {
       yield* handlers.spawn({ ...task, message: '/quit\n!echo unsafe\n$(touch /tmp/no)' }, context())
       expect(calls[3]?.args).toContain('down')
       expect(calls[5]?.args[3]).toBe(`Message from Pi pane ${parent.pane_id}:\n\n/quit\n!echo unsafe\n$(touch /tmp/no)`)
+    })
+  )
+
+  it.effect('requires an exact allowlisted and available model before contacting Herdr', () =>
+    Effect.gen(function* () {
+      for (const allowed of [[], ['other/model'], ['azure-openai-responses/*'], ['gpt-6-sol']]) {
+        const { handlers, calls } = harness(undefined, allowed)
+        expect(yield* refusal(handlers.spawn(task, context()))).toContain('No allowed models are available')
+        expect(calls).toEqual([])
+      }
+      const { handlers, calls } = harness()
+      expect(yield* refusal(handlers.spawn(task, context(undefined, [])))).toContain('No allowed models are available')
+      expect(yield* refusal(handlers.spawn({ ...task, model: 'other/model' }, context(undefined, [task.model, 'other/model'])))).toContain(
+        `Choose one of: ${task.model}`
+      )
+      expect(calls).toEqual([])
+      expect(yield* handlers.availableModels(context(undefined, ['other/model', task.model]))).toEqual([task.model])
+      expect(yield* handlers.spawn(task, context())).toMatchObject({ status: 'started' })
+      calls.length = 0
+      expect(yield* refusal(handlers.spawn(task, context(undefined, [])))).toContain('No allowed models are available')
+      expect(calls).toEqual([])
+    })
+  )
+
+  it.effect('fails closed on settings errors before contacting Herdr', () =>
+    Effect.gen(function* () {
+      const fake = createFakePi({
+        exec: () => {
+          throw new Error('must not execute')
+        },
+      })
+      const handlers = makeHerdrHandlers(fake.pi, makeEnvironment({ HERDR_ENV: '1' }), () =>
+        Effect.fail(new HerdrSettingsError({ message: 'invalid settings' }))
+      )
+      expect(yield* refusal(handlers.spawn(task, context()))).toContain('invalid settings')
     })
   )
 

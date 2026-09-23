@@ -40,10 +40,26 @@ Children receive their parent address and reply instructions automatically. The 
 its turn while leaving Pi running; a child's message resumes it or queues input if it is busy.
 Detailed reviews can use a temporary handoff file plus a short completion message.
 
-The agent chooses an available model suited to the task, preferring Azure OpenAI
-(`azure-openai-responses`) for implementation, scouting, and research, and a different provider
-from the agent that produced the work for review. These are preferences, not a fixed model list
-or enforced roles; explicit user model choices take precedence.
+Configure an explicit model allowlist in `~/.pi/agent/settings.json` (or your custom Pi agent directory):
+
+```json
+{
+  "herdr": {
+    "allowedModels": ["azure-openai-responses/gpt-6-sol", "anthropic/claude-opus-4-6"]
+  }
+}
+```
+
+Entries are exact `provider/model-id` values, not patterns. Trusted project `.pi/settings.json`
+can replace the list, including with `[]`; untrusted project settings are ignored. Missing or
+empty lists disable spawning. Malformed settings also block spawning. Only allowlisted models
+currently available in Pi's model registry can be spawned; the usable list is exposed directly as
+choices in `spawn_agent`'s `model` argument and checked again before creating a pane. The argument
+schema refreshes each turn; settings are reread each turn and spawn.
+
+Within that list, the agent prefers Azure OpenAI (`azure-openai-responses`) for implementation,
+scouting, and research, and a different provider from the agent that produced the work for review.
+These are preferences, not enforced roles; explicit user model choices must also satisfy the allowlist.
 Herdr manages the Pi processes; there is no sub-agent orchestrator or durable delivery queue. Replies are agent-driven: provider failures or crashes can prevent them. Read and verify
 a delegate's result before relying on it. Panes are not automatically closed on parent exit;
 after Pi reload/restart, manage previously created panes directly in Herdr.

@@ -1,18 +1,19 @@
 import { type AgentToolResult, type ExtensionAPI, keyHint, type Theme, type ToolRenderResultOptions } from '@earendil-works/pi-coding-agent'
 import { Text, truncateToWidth } from '@earendil-works/pi-tui'
 import { Effect } from 'effect'
-import { type Crypto } from 'effect/Crypto'
+import { Type } from 'typebox'
 
 import { type AppRuntime } from '#shared/effect/app_services'
 import { processEnvironment } from '#shared/effect/env'
 import { ToolFailure } from '#shared/effect/errors'
 import { type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
-import { makeToolExecutor } from '#shared/effect/runtime'
+import { makeEventHandler, makeToolExecutor } from '#shared/effect/runtime'
 import { jsonText } from '#shared/utils/json'
 
 import { ClosePaneParams, type HerdrError, type HerdrResult, makeHerdrHandlers, SendMessageParams, SpawnAgentParams } from './herdr.js'
+import { type loadHerdrSettings } from './settings.js'
 
-const result = (operation: Effect.Effect<HerdrResult, HerdrError, Crypto>) =>
+const result = <Services>(operation: Effect.Effect<HerdrResult, HerdrError, Services>) =>
   operation.pipe(
     Effect.map((details) => ({ content: [{ text: jsonText(details), type: 'text' as const }], details })),
     Effect.mapError((error) => ToolFailure.make({ message: error.message }))
@@ -61,7 +62,7 @@ const renderResult = (
   )
 }
 
-export const feature = ((options: FeatureOptions<undefined> = {}) => {
+export const feature = ((options: FeatureOptions<typeof loadHerdrSettings> = {}) => {
   let handlers: ReturnType<typeof makeHerdrHandlers> | undefined
   return {
     bootstrap: 'eager',
@@ -69,25 +70,59 @@ export const feature = ((options: FeatureOptions<undefined> = {}) => {
     implementation: {
       activate: (_event, ctx) => handlers?.startSession(ctx) ?? Effect.void,
       register: (pi: ExtensionAPI, runtime: AppRuntime) => {
-        const operations = makeHerdrHandlers(pi, options.environment ?? processEnvironment)
+        const operations = makeHerdrHandlers(pi, options.environment ?? processEnvironment, options.dependencies)
         handlers = operations
+        pi.on(
+          'before_agent_start',
+          makeEventHandler(runtime)((event, ctx) =>
+            operations.availableModels(ctx).pipe(
+              Effect.match({
+                onFailure: (error) => {
+                  registerSpawn([])
+                  return `spawn_agent is unavailable: ${error.message}`
+                },
+                onSuccess: (models) => {
+                  registerSpawn(models)
+                  return models.length === 0
+                    ? 'spawn_agent is unavailable: configure herdr.allowedModels in settings.json with available provider/model-id values.'
+                    : `spawn_agent may only use these allowed, available models: ${models.join(', ')}.`
+                },
+              }),
+              Effect.map((guidance) => {
+                event.systemPromptOptions.sections.herdr = guidance
+              })
+            )
+          )
+        )
         const execute = makeToolExecutor(runtime)
-        pi.registerTool<typeof SpawnAgentParams, HerdrResult>({
-          description:
-            'Start a fresh Pi agent through Herdr with an exact provider/model-id and initial message. Uses separate Agents tabs, with at most four panes per tab. Returns its pane ID after submitting the task, not after completion. Preserves the current directory and focus. Requires Herdr.',
-          execute: execute(({ params, ctx, signal }) => result(operations.spawn(params, ctx, signal)), { interruptOnAbort: false }),
-          label: 'Spawn Agent',
-          name: 'spawn_agent',
-          parameters: SpawnAgentParams,
-          promptGuidelines: [
-            'Use spawn_agent for self-contained work. Its initial message must include the goal, necessary context, read-only or allowed-write scope, and expected evidence. Do not duplicate delegated work; parallel writers need disjoint scopes.',
-            'Choose an available provider/model-id based on the task and the model’s capabilities; there is no fixed model list or role mapping. Prefer Azure OpenAI (azure-openai-responses) for implementation, scouting, and research. For review, prefer a different provider from the agent that produced the work for an independent perspective. These are preferences, not restrictions; use another model when better suited. Honor explicit user model choices; do not silently substitute unavailable models.',
-            'spawn_agent gives the child its parent address and instructions to send_message when finished. Continue independent work or end your turn while keeping Pi running; do not poll or read terminal transcripts for normal results. A provider failure or exited agent may prevent a callback; inspect Herdr if needed, without blindly respawning.',
-          ],
-          promptSnippet: 'Delegate a task to a chosen model in a new Herdr pane',
-          renderCall: (args, theme, context) => renderCall('spawn_agent', args.model, args.message, theme, context.expanded),
-          renderResult,
-        })
+        const registerSpawn = (models: string[]) =>
+          pi.registerTool<typeof SpawnAgentParams, HerdrResult>({
+            description:
+              'Start a fresh Pi agent through Herdr with an exact provider/model-id and initial message. Uses separate Agents tabs, with at most four panes per tab. Returns its pane ID after submitting the task, not after completion. Preserves the current directory and focus. Requires Herdr.',
+            execute: execute(({ params, ctx, signal }) => result(operations.spawn(params, ctx, signal)), { interruptOnAbort: false }),
+            label: 'Spawn Agent',
+            name: 'spawn_agent',
+            parameters: {
+              ...SpawnAgentParams,
+              properties: {
+                ...SpawnAgentParams.properties,
+                model: Type.String(
+                  models.length === 0
+                    ? { ...SpawnAgentParams.properties.model, description: 'No allowed models are available; spawning is disabled.' }
+                    : { ...SpawnAgentParams.properties.model, enum: models }
+                ),
+              },
+            },
+            promptGuidelines: [
+              'Use spawn_agent for self-contained work. Its initial message must include the goal, necessary context, read-only or allowed-write scope, and expected evidence. Do not duplicate delegated work; parallel writers need disjoint scopes.',
+              'Choose a provider/model-id from the allowed, available Herdr models based on the task and the model’s capabilities; herdr.allowedModels is mandatory. Prefer Azure OpenAI (azure-openai-responses) for implementation, scouting, and research. For review, prefer a different provider from the agent that produced the work for an independent perspective. These are preferences, not restrictions; use another model when better suited. Honor explicit user model choices only within the allowlist; do not silently substitute disallowed or unavailable models.',
+              'spawn_agent gives the child its parent address and instructions to send_message when finished. Continue independent work or end your turn while keeping Pi running; do not poll or read terminal transcripts for normal results. A provider failure or exited agent may prevent a callback; inspect Herdr if needed, without blindly respawning.',
+            ],
+            promptSnippet: 'Delegate a task to a chosen model in a new Herdr pane',
+            renderCall: (args, theme, context) => renderCall('spawn_agent', args.model, args.message, theme, context.expanded),
+            renderResult,
+          })
+        registerSpawn([])
         pi.registerTool<typeof SendMessageParams, HerdrResult>({
           description:
             'Send text to an agent spawned by this Pi session, or from a delegated child to its original parent. Resumes an idle Pi or queues input during work. Returns submission acknowledgment only; never waits for a reply. Rejects stale or unrelated sessions.',
@@ -121,4 +156,4 @@ export const feature = ((options: FeatureOptions<undefined> = {}) => {
     },
     status: { icon: '↗', name: 'herdr' },
   }
-}) satisfies FeaturePlugin<undefined>
+}) satisfies FeaturePlugin<typeof loadHerdrSettings>

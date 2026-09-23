@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url'
 
-import { type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
+import { type ExtensionAPI, type ExtensionContext, getAgentDir } from '@earendil-works/pi-coding-agent'
 import { Data, Effect, Semaphore } from 'effect'
 import { Crypto } from 'effect/Crypto'
 import { Type, type Static, type TSchema } from 'typebox'
@@ -8,6 +8,8 @@ import { Value } from 'typebox/value'
 
 import { type EnvApi } from '#shared/effect/env'
 import { jsonText, parseJsonText } from '#shared/utils/json'
+
+import { loadHerdrSettings } from './settings.js'
 
 const text = Type.String({ maxLength: 32_768, minLength: 1 })
 export const SpawnAgentParams = Type.Object({
@@ -68,7 +70,7 @@ const checkedMessage = (message: string): string => {
 const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 const cancelled = (signal?: AbortSignal): boolean => signal?.aborted === true
 
-export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi) => {
+export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSettings = loadHerdrSettings) => {
   const owned = new Map<string, OwnedPane>()
   const agentTabs = new Map<string, string[]>()
   const allocation = Semaphore.makeUnsafe(1)
@@ -119,10 +121,22 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi) => {
       return undefined
     })
 
+  const availableModels = (ctx: ExtensionContext) =>
+    Effect.gen(function* () {
+      const settings = yield* loadSettings({ agentDir: getAgentDir(), cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() }).pipe(
+        Effect.mapError((error) => fail(error.message))
+      )
+      return ctx.modelRegistry
+        .getAvailable()
+        .map((model) => `${model.provider}/${model.id}`)
+        .filter((model) => settings.allowedModels.includes(model))
+    })
+
   const submit = (ctx: ExtensionContext, from: Pane, to: Target, message: string) =>
     request(ctx.cwd, ['agent', 'prompt', to.pane_id, `Message from Pi pane ${from.pane_id}:\n\n${message}`], Type.Object({ agent: PaneSchema }))
 
   return {
+    availableModels,
     close: (params: Static<typeof ClosePaneParams>, ctx: ExtensionContext, signal?: AbortSignal) =>
       Effect.gen(function* () {
         const from = yield* caller(ctx, signal)
@@ -170,6 +184,14 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi) => {
         const model = params.model.slice(slash + 1)
         if (slash < 1 || !/^[a-zA-Z0-9_-]+$/.test(provider) || !/^[^-\s][^\s]*$/.test(model) || /\p{Cc}/u.test(model)) {
           return yield* fail('model must be an exact provider/model-id.')
+        }
+        const models = yield* availableModels(ctx)
+        if (!models.includes(params.model)) {
+          return yield* fail(
+            models.length === 0
+              ? 'No allowed models are available. Configure herdr.allowedModels in settings.json with available provider/model-id values.'
+              : `Model ${params.model} is not allowed or available. Choose one of: ${models.join(', ')}.`
+          )
         }
         const parent = yield* caller(ctx, signal)
         const crypto = yield* Crypto
