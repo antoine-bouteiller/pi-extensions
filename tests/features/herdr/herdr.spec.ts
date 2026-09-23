@@ -12,19 +12,25 @@ interface Pane {
   agent?: string
   agent_session?: { agent: string; kind: string; value: string }
   pane_id: string
+  tab_id: string
   terminal_id: string
+  workspace_id: string
 }
 const parent: Pane = {
   agent: 'pi',
   agent_session: { agent: 'pi', kind: 'path', value: '/sessions/parent.jsonl' },
   pane_id: 'w1:p1',
+  tab_id: 'w1:t1',
   terminal_id: 'parent-terminal',
+  workspace_id: 'w1',
 }
 const child: Pane = {
   agent: 'pi',
   agent_session: { agent: 'pi', kind: 'path', value: '/sessions/child.jsonl' },
   pane_id: 'w1:p2',
+  tab_id: 'w1:t2',
   terminal_id: 'child-terminal',
+  workspace_id: 'w1',
 }
 const context = (session = '/sessions/parent.jsonl') =>
   asExtensionContext({ cwd: '/project with spaces', sessionManager: { getSessionFile: () => session } })
@@ -34,6 +40,7 @@ interface CliState {
   current: Pane
   parent: Pane
   child: Pane
+  panes: Pane[]
   width: number
   height: number
   fail?: string
@@ -43,12 +50,93 @@ interface CliState {
 type CliReply =
   | { pane: Pane }
   | { agent: Pane }
+  | { root_pane: Pane }
+  | { panes: Pane[] }
   | { type: 'ok' }
   | { layout: { panes: { pane_id: string; rect: { height: number; width: number } }[] } }
 
 const harness = (environment: Record<string, string> = { HERDR_ENV: '1' }) => {
   const calls: { args: string[]; command: string; cwd: string | undefined; timeout: number | undefined }[] = []
-  const state: CliState = { child: { pane_id: child.pane_id, terminal_id: child.terminal_id }, current: parent, height: 40, parent, width: 160 }
+  const state: CliState = {
+    get child() {
+      return getPane(child.pane_id)
+    },
+    set child(pane: Pane) {
+      state.panes = state.panes.map((candidate) => (candidate.pane_id === child.pane_id ? pane : candidate))
+    },
+    current: parent,
+    height: 40,
+    panes: [parent],
+    parent,
+    width: 160,
+  }
+  let nextPane = 2
+  let nextTab = 2
+  const getPane = (id: string | undefined): Pane => {
+    const pane = id === parent.pane_id ? state.parent : state.panes.find((candidate) => candidate.pane_id === id)
+    if (pane === undefined) {
+      throw new Error(`Missing pane ${id}`)
+    }
+    return pane
+  }
+  const reply = (args: string[]): CliReply => {
+    const operation = args.slice(0, 2).join(' ')
+    let result: CliReply
+    switch (operation) {
+      case 'pane current': {
+        result = { pane: state.current }
+        break
+      }
+      case 'pane list': {
+        result = { panes: state.panes }
+        break
+      }
+      case 'pane layout': {
+        const anchor = getPane(args[3])
+        result = {
+          layout: {
+            panes: state.panes
+              .filter((pane) => pane.tab_id === anchor.tab_id)
+              .map((pane, index) => ({ pane_id: pane.pane_id, rect: { height: state.height, width: state.width / (index + 1) } }))
+              .toReversed(),
+          },
+        }
+        break
+      }
+      case 'tab create':
+      case 'pane split': {
+        const tabId = operation === 'tab create' ? `w1:t${nextTab++}` : getPane(args[3]).tab_id
+        const pane = { ...child, agent: undefined, agent_session: undefined, pane_id: `w1:p${nextPane++}`, tab_id: tabId }
+        state.panes.push(pane)
+        result = operation === 'tab create' ? { root_pane: pane } : { pane }
+        break
+      }
+      case 'agent start': {
+        const pane = getPane(args[6])
+        const agent = { ...pane, agent: child.agent, agent_session: child.agent_session }
+        state.panes = state.panes.map((candidate) => (candidate.pane_id === pane.pane_id ? agent : candidate))
+        result = { agent }
+        break
+      }
+      case 'pane get': {
+        result = { pane: getPane(args[2]) }
+        break
+      }
+      case 'agent prompt': {
+        result = { agent: getPane(args[2]) }
+        break
+      }
+      case 'pane close': {
+        state.panes = state.panes.filter((pane) => pane.pane_id !== args[2])
+        result = { type: 'ok' }
+        break
+      }
+      default: {
+        throw new Error(`Unexpected CLI command: ${args.join(' ')}`)
+      }
+    }
+    return result
+  }
   const fake = createFakePi({
     exec: (command, args, options) => {
       calls.push({ args, command, cwd: options?.cwd, timeout: options?.timeout })
@@ -56,41 +144,7 @@ const harness = (environment: Record<string, string> = { HERDR_ENV: '1' }) => {
       if (state.fail === operation) {
         return Promise.resolve({ code: 1, stderr: 'agent_not_ready: inspect the pane', stdout: '' })
       }
-      let result: CliReply
-      switch (operation) {
-        case 'pane current': {
-          result = { pane: state.current }
-          break
-        }
-        case 'pane layout': {
-          result = { layout: { panes: [{ pane_id: state.current.pane_id, rect: { height: state.height, width: state.width } }] } }
-          break
-        }
-        case 'pane split': {
-          result = { pane: state.child }
-          break
-        }
-        case 'agent start': {
-          state.child = child
-          result = { agent: child }
-          break
-        }
-        case 'pane get': {
-          result = { pane: args[2] === parent.pane_id ? state.parent : state.child }
-          break
-        }
-        case 'agent prompt': {
-          result = { agent: args[2] === parent.pane_id ? state.parent : state.child }
-          break
-        }
-        case 'pane close': {
-          result = { type: 'ok' }
-          break
-        }
-        default: {
-          throw new Error(`Unexpected CLI command: ${args.join(' ')}`)
-        }
-      }
+      const result = reply(args)
       state.afterCommand?.(operation)
       return Promise.resolve({ code: 0, stderr: '', stdout: state.stdout ?? jsonText({ result }) })
     },
@@ -106,28 +160,22 @@ describe('Herdr delegation', () => {
     Effect.gen(function* () {
       const { handlers, calls } = harness()
       expect(yield* handlers.spawn(task, context())).toEqual({ model: task.model, pane_id: child.pane_id, status: 'started' })
-      expect(calls.map(({ args }) => args.slice(0, 2).join(' '))).toEqual([
-        'pane current',
-        'pane layout',
-        'pane split',
-        'agent start',
-        'agent prompt',
-      ])
+      expect(calls.map(({ args }) => args.slice(0, 2).join(' '))).toEqual(['pane current', 'tab create', 'agent start', 'agent prompt'])
       expect(calls.every(({ command, cwd, timeout }) => command === 'herdr' && cwd === '/project with spaces' && timeout === 40_000)).toBe(true)
-      expect(calls[2]?.args).toEqual([
-        'pane',
-        'split',
-        '--pane',
-        parent.pane_id,
-        '--direction',
-        'right',
+      expect(calls[1]?.args).toEqual([
+        'tab',
+        'create',
+        '--workspace',
+        parent.workspace_id,
+        '--label',
+        'Agents',
         '--cwd',
         '/project with spaces',
         '--no-focus',
         '--env',
         `PI_HERDR_PARENT=${jsonText({ pane_id: parent.pane_id, session_file: '/sessions/parent.jsonl', terminal_id: parent.terminal_id })}`,
       ])
-      const start = calls[3]?.args ?? []
+      const start = calls[2]?.args ?? []
       expect(start.slice(3, 12)).toEqual([
         '--kind',
         'pi',
@@ -141,18 +189,75 @@ describe('Herdr delegation', () => {
       ])
       expect(start[start.indexOf('--extension') + 1]).toEndWith('/src/index.ts')
       expect(start[start.indexOf('--append-system-prompt') + 1]).toContain(`send_message with pane_id ${parent.pane_id}`)
-      expect(calls[4]?.args).toEqual(['agent', 'prompt', child.pane_id, `Message from Pi pane ${parent.pane_id}:\n\n${task.message}`])
+      expect(calls[3]?.args).toEqual(['agent', 'prompt', child.pane_id, `Message from Pi pane ${parent.pane_id}:\n\n${task.message}`])
       expect(calls.flatMap(({ args }) => args)).not.toContain('--wait')
+    })
+  )
+
+  it.effect('groups concurrent spawns into separate tabs with at most four panes each', () =>
+    Effect.gen(function* () {
+      const { handlers, calls, state } = harness()
+      const results = yield* Effect.all(
+        Array.from({ length: 9 }, () => handlers.spawn(task, context())),
+        { concurrency: 'unbounded' }
+      )
+      expect(new Set(results.map((result) => result.pane_id)).size).toBe(9)
+      const tabs = [...new Set(state.panes.map((pane) => pane.tab_id))]
+      expect(tabs.map((id) => state.panes.filter((pane) => pane.tab_id === id).length)).toEqual([1, 4, 4, 1])
+      expect(calls.filter(({ args }) => args[0] === 'tab' && args[1] === 'create')).toHaveLength(3)
+      const splits = calls.filter(({ args }) => args[1] === 'split')
+      expect(splits).toHaveLength(6)
+      expect(splits.every(({ args }) => args[3] !== parent.pane_id && args.includes('--no-focus') && args.includes('--env'))).toBe(true)
+      expect(splits[0]?.args.slice(0, 6)).toEqual(['pane', 'split', '--pane', child.pane_id, '--direction', 'right'])
+      expect(splits[1]?.args[3]).toBe(child.pane_id)
+      expect(calls.some(({ args }) => args.includes('--focus'))).toBe(false)
+    })
+  )
+
+  it.effect('reuses freed capacity and recreates a tab after its panes are closed', () =>
+    Effect.gen(function* () {
+      const { handlers, calls, state } = harness()
+      yield* Effect.all(Array.from({ length: 5 }, () => handlers.spawn(task, context())))
+      yield* handlers.close({ pane_id: child.pane_id }, context())
+      const replacement = yield* handlers.spawn(task, context())
+      expect(state.panes.find((pane) => pane.pane_id === replacement.pane_id)?.tab_id).toBe(child.tab_id)
+      expect(calls.filter(({ args }) => args[1] === 'create')).toHaveLength(2)
+      state.panes = [parent]
+      const recreated = yield* handlers.spawn(task, context())
+      expect(state.panes.find((pane) => pane.pane_id === recreated.pane_id)?.tab_id).toBe('w1:t4')
+      expect(calls.filter(({ args }) => args[1] === 'create')).toHaveLength(3)
+    })
+  )
+
+  it.effect('does not reuse another parent session’s tab', () =>
+    Effect.gen(function* () {
+      const { handlers, state } = harness()
+      yield* handlers.spawn(task, context())
+      state.current = { ...parent, agent_session: { agent: 'pi', kind: 'path', value: '/sessions/next.jsonl' } }
+      const spawned = yield* handlers.spawn(task, context('/sessions/next.jsonl'))
+      expect(state.panes.find((pane) => pane.pane_id === spawned.pane_id)?.tab_id).toBe('w1:t3')
+    })
+  )
+
+  it.effect('does not create a replacement tab when listing existing panes fails', () =>
+    Effect.gen(function* () {
+      const { handlers, calls, state } = harness()
+      yield* handlers.spawn(task, context())
+      state.fail = 'pane list'
+      expect(yield* refusal(handlers.spawn(task, context()))).toContain('agent_not_ready')
+      expect(calls.filter(({ args }) => args[1] === 'create')).toHaveLength(1)
     })
   )
 
   it.effect('splits narrow panes down and prefixes command-like messages as plain text', () =>
     Effect.gen(function* () {
       const { handlers, calls, state } = harness()
+      yield* handlers.spawn(task, context())
+      calls.length = 0
       state.width = 60
       yield* handlers.spawn({ ...task, message: '/quit\n!echo unsafe\n$(touch /tmp/no)' }, context())
-      expect(calls[2]?.args).toContain('down')
-      expect(calls[4]?.args[3]).toBe(`Message from Pi pane ${parent.pane_id}:\n\n/quit\n!echo unsafe\n$(touch /tmp/no)`)
+      expect(calls[3]?.args).toContain('down')
+      expect(calls[5]?.args[3]).toBe(`Message from Pi pane ${parent.pane_id}:\n\n/quit\n!echo unsafe\n$(touch /tmp/no)`)
     })
   )
 
@@ -209,7 +314,7 @@ describe('Herdr delegation', () => {
       for (const replacement of [
         { ...child, terminal_id: 'replacement' },
         { ...child, agent_session: { agent: 'pi', kind: 'path', value: '/sessions/replaced.jsonl' } },
-        { pane_id: child.pane_id, terminal_id: child.terminal_id },
+        { ...child, agent: undefined, agent_session: undefined },
       ]) {
         fixture.state.child = replacement
         expect(yield* refusal(fixture.handlers.send({ message: 'no', pane_id: child.pane_id }, context()))).toContain('original session')
@@ -261,15 +366,21 @@ describe('Herdr delegation', () => {
 
   it.effect('does not mutate after cancellation during a preflight read', () =>
     Effect.gen(function* () {
-      const spawning = harness()
-      const beforeSplit = makeAbortController()
-      spawning.state.afterCommand = (operation) => {
-        if (operation === 'pane layout') {
-          beforeSplit.abort()
+      for (const preflight of ['pane current', 'pane layout']) {
+        const spawning = harness()
+        if (preflight === 'pane layout') {
+          yield* spawning.handlers.spawn(task, context())
+          spawning.calls.length = 0
         }
+        const beforeSplit = makeAbortController()
+        spawning.state.afterCommand = (operation) => {
+          if (operation === preflight) {
+            beforeSplit.abort()
+          }
+        }
+        expect(yield* refusal(spawning.handlers.spawn(task, context(), beforeSplit.signal))).toContain('Cancelled before creating')
+        expect(spawning.calls.some(({ args }) => ['split', 'create'].includes(args[1] ?? ''))).toBe(false)
       }
-      expect(yield* refusal(spawning.handlers.spawn(task, context(), beforeSplit.signal))).toContain('Cancelled before creating')
-      expect(spawning.calls.some(({ args }) => args[1] === 'split')).toBe(false)
       for (const action of ['send', 'close']) {
         const fixture = harness()
         yield* fixture.handlers.spawn(task, context())
@@ -294,7 +405,7 @@ describe('Herdr delegation', () => {
       const fixture = harness()
       const controller = makeAbortController()
       fixture.state.afterCommand = (operation) => {
-        if (operation === 'pane split') {
+        if (operation === 'tab create') {
           controller.abort()
         }
       }

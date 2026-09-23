@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url'
 
 import { type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
-import { Data, Effect } from 'effect'
+import { Data, Effect, Semaphore } from 'effect'
 import { Crypto } from 'effect/Crypto'
 import { Type, type Static, type TSchema } from 'typebox'
 import { Value } from 'typebox/value'
@@ -21,7 +21,9 @@ const PaneSchema = Type.Object({
   agent: Type.Optional(Type.String()),
   agent_session: Type.Optional(Type.Object({ agent: Type.String(), kind: Type.String(), value: Type.String() })),
   pane_id: Type.String({ minLength: 1 }),
+  tab_id: Type.String({ minLength: 1 }),
   terminal_id: Type.String({ minLength: 1 }),
+  workspace_id: Type.String({ minLength: 1 }),
 })
 const TargetSchema = Type.Object({
   pane_id: Type.String({ minLength: 1 }),
@@ -68,6 +70,8 @@ const cancelled = (signal?: AbortSignal): boolean => signal?.aborted === true
 
 export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi) => {
   const owned = new Map<string, OwnedPane>()
+  const agentTabs = new Map<string, string[]>()
+  const allocation = Semaphore.makeUnsafe(1)
   let startupSession: string | undefined
 
   const request = <Schema extends TSchema>(cwd: string, args: string[], schema: Schema): Effect.Effect<Static<Schema>, HerdrError> =>
@@ -168,32 +172,52 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi) => {
           return yield* fail('model must be an exact provider/model-id.')
         }
         const parent = yield* caller(ctx, signal)
-        const { layout } = yield* request(ctx.cwd, ['pane', 'layout', '--pane', parent.pane.pane_id], LayoutSchema)
-        const rect = layout.panes.find((pane) => pane.pane_id === parent.pane.pane_id)?.rect
-        if (rect === undefined) {
-          return yield* fail('The calling pane is missing from the Herdr layout.')
-        }
         const crypto = yield* Crypto
         const id = yield* crypto.randomUUIDv4.pipe(Effect.mapError((error) => fail(error.message)))
-        if (cancelled(signal)) {
-          return yield* fail('Cancelled before creating a pane.')
-        }
-        const { pane } = yield* request(
-          ctx.cwd,
-          [
-            'pane',
-            'split',
-            '--pane',
-            parent.pane.pane_id,
-            '--direction',
-            rect.width >= rect.height * 2 ? 'right' : 'down',
-            '--cwd',
-            ctx.cwd,
-            '--no-focus',
-            '--env',
-            `PI_HERDR_PARENT=${jsonText(targetFrom(parent.pane))}`,
-          ],
-          Type.Object({ pane: PaneSchema })
+        const pane = yield* allocation.withPermits(1)(
+          Effect.gen(function* () {
+            const tabs = agentTabs.get(parent.session) ?? []
+            let split: string[] | undefined
+            if (tabs.length > 0) {
+              const { panes } = yield* request(
+                ctx.cwd,
+                ['pane', 'list', '--workspace', parent.pane.workspace_id],
+                Type.Object({ panes: Type.Array(PaneSchema) })
+              )
+              const tabId = tabs.find((candidateId) => {
+                const count = panes.filter((candidate) => candidate.tab_id === candidateId).length
+                return candidateId !== parent.pane.tab_id && count > 0 && count < 4
+              })
+              const anchor = panes.find((candidate) => candidate.tab_id === tabId)
+              if (anchor !== undefined) {
+                const { layout } = yield* request(ctx.cwd, ['pane', 'layout', '--pane', anchor.pane_id], LayoutSchema)
+                const largest = layout.panes.reduce<(typeof layout.panes)[number] | undefined>(
+                  (best, candidate) =>
+                    best === undefined || candidate.rect.width * candidate.rect.height > best.rect.width * best.rect.height ? candidate : best,
+                  undefined
+                )
+                if (largest === undefined) {
+                  return yield* fail('The Agents tab has no panes in the Herdr layout.')
+                }
+                split = ['pane', 'split', '--pane', largest.pane_id, '--direction', largest.rect.width >= largest.rect.height * 2 ? 'right' : 'down']
+              }
+            }
+            if (cancelled(signal)) {
+              return yield* fail('Cancelled before creating a pane.')
+            }
+            const args = ['--cwd', ctx.cwd, '--no-focus', '--env', `PI_HERDR_PARENT=${jsonText(targetFrom(parent.pane))}`]
+            if (split !== undefined) {
+              const created = yield* request(ctx.cwd, [...split, ...args], Type.Object({ pane: PaneSchema }))
+              return created.pane
+            }
+            const created = yield* request(
+              ctx.cwd,
+              ['tab', 'create', '--workspace', parent.pane.workspace_id, '--label', 'Agents', ...args],
+              Type.Object({ root_pane: PaneSchema })
+            )
+            agentTabs.set(parent.session, [...tabs, created.root_pane.tab_id])
+            return created.root_pane
+          })
         )
         const record: OwnedPane = { owner: parent.session, target: targetFrom(pane) }
         owned.set(pane.pane_id, record)

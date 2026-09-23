@@ -30,8 +30,9 @@ pi install git:github.com/antoine-bouteiller/pi-extensions
 
 Inside a Herdr-managed pane, the `herdr` feature exposes three Pi tools:
 
-- `spawn_agent({model,message})` creates a Pi agent in a Herdr pane, submits its initial task,
-  and returns the pane ID.
+- `spawn_agent({model,message})` creates a Pi agent in a separate Herdr **Agents** tab, submits
+  its initial task, and returns the pane ID. Each parent session reuses its Agents tabs, with at
+  most four panes per tab, creating another when full. The current directory and focus are preserved.
 - `send_message({pane_id,message})` sends a follow-up or a child's conclusion to its parent,
   without waiting for a response.
 - `close_pane({pane_id})` closes a pane spawned by the current Pi session.

@@ -30,7 +30,7 @@ export const feature = ((options: FeatureOptions<undefined> = {}) => {
         const execute = makeToolExecutor(runtime)
         pi.registerTool({
           description:
-            'Start a fresh Pi agent through Herdr with an exact provider/model-id and initial message. Returns its pane ID after submitting the task, not after completion. Preserves the current directory and focus. Requires Herdr.',
+            'Start a fresh Pi agent through Herdr with an exact provider/model-id and initial message. Uses separate Agents tabs, with at most four panes per tab. Returns its pane ID after submitting the task, not after completion. Preserves the current directory and focus. Requires Herdr.',
           execute: execute(({ params, ctx, signal }) => result(operations.spawn(params, ctx, signal)), { interruptOnAbort: false }),
           label: 'Spawn Agent',
           name: 'spawn_agent',
