@@ -40,11 +40,11 @@ Children receive their parent address and reply instructions automatically. The 
 its turn while leaving Pi running; a child's message resumes it or queues input if it is busy.
 Detailed reviews can use a temporary handoff file plus a short completion message.
 
-The tool guidance suggests `azure-openai-responses/gpt-6-luna` for scouting and cited
-research (librarian), `anthropic/claude-opus-5-5` for review, and
-`azure-openai-responses/gpt-6-sol` for implementation. These are suggestions, not enforced
-roles. Herdr manages the Pi processes; there is no sub-agent orchestrator or durable delivery
-queue. Replies are agent-driven: provider failures or crashes can prevent them. Read and verify
+The agent chooses an available model suited to the task, preferring Azure OpenAI
+(`azure-openai-responses`) for implementation, scouting, and research, and a different provider
+from the agent that produced the work for review. These are preferences, not a fixed model list
+or enforced roles; explicit user model choices take precedence.
+Herdr manages the Pi processes; there is no sub-agent orchestrator or durable delivery queue. Replies are agent-driven: provider failures or crashes can prevent them. Read and verify
 a delegate's result before relying on it. Panes are not automatically closed on parent exit;
 after Pi reload/restart, manage previously created panes directly in Herdr.
 Requires `herdr` and `pi` on `PATH` and access to the chosen model. Old `subagents` settings

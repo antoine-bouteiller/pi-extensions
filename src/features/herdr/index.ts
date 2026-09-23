@@ -37,7 +37,7 @@ export const feature = ((options: FeatureOptions<undefined> = {}) => {
           parameters: SpawnAgentParams,
           promptGuidelines: [
             'Use spawn_agent for self-contained work. Its initial message must include the goal, necessary context, read-only or allowed-write scope, and expected evidence. Do not duplicate delegated work; parallel writers need disjoint scopes.',
-            'Default spawn_agent models: azure-openai-responses/gpt-6-luna for exploration and cited research; anthropic/claude-opus-5-5 for review; azure-openai-responses/gpt-6-sol for implementation. Honor explicit user model choices; do not silently substitute unavailable models.',
+            'Choose an available provider/model-id based on the task and the model’s capabilities; there is no fixed model list or role mapping. Prefer Azure OpenAI (azure-openai-responses) for implementation, scouting, and research. For review, prefer a different provider from the agent that produced the work for an independent perspective. These are preferences, not restrictions; use another model when better suited. Honor explicit user model choices; do not silently substitute unavailable models.',
             'spawn_agent gives the child its parent address and instructions to send_message when finished. Continue independent work or end your turn while keeping Pi running; do not poll or read terminal transcripts for normal results. A provider failure or exited agent may prevent a callback; inspect Herdr if needed, without blindly respawning.',
           ],
           promptSnippet: 'Delegate a task to a chosen model in a new Herdr pane',

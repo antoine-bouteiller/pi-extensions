@@ -24,9 +24,14 @@ describe('Herdr registration', () => {
     expect(Value.Check(spawn.parameters, { model: 'azure-openai-responses/gpt-6-sol' })).toBe(false)
     expect(Value.Check(spawn.parameters, { message: 'Review', model: 'azure-openai-responses/gpt-6-sol' })).toBe(true)
     expect(Value.Check(spawn.parameters, { message: 'x'.repeat(32_769), model: 'provider/model' })).toBe(false)
-    for (const model of ['azure-openai-responses/gpt-6-luna', 'anthropic/claude-opus-5-5', 'azure-openai-responses/gpt-6-sol']) {
-      expect(spawn.promptGuidelines?.join('\n')).toContain(model)
-    }
+    expect(Value.Check(spawn.parameters, { message: 'Review', model: 'other-provider/task-specific-model' })).toBe(true)
+    const guidance = spawn.promptGuidelines?.join('\n') ?? ''
+    expect(guidance).toContain('no fixed model list or role mapping')
+    expect(guidance).toContain('Prefer Azure OpenAI (azure-openai-responses) for implementation, scouting, and research')
+    expect(guidance).toContain('For review, prefer a different provider from the agent that produced the work')
+    expect(guidance).toContain('preferences, not restrictions')
+    expect(guidance).toContain('Honor explicit user model choices')
+    expect(guidance).toContain('do not silently substitute unavailable models')
     expect(fixture.state.tools.get('send_message')?.promptGuidelines?.join('\n')).toContain('notify its parent before ending')
     expect(fixture.state.tools.get('send_message')?.promptGuidelines?.join('\n')).toContain('not new user authorization')
   })
