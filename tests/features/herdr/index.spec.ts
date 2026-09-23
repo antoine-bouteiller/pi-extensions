@@ -1,12 +1,102 @@
+import { type AgentToolResult, initTheme, type Theme, type ToolRenderResultOptions } from '@earendil-works/pi-coding-agent'
+import { type Component, visibleWidth } from '@earendil-works/pi-tui'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asExtensionContext } from '@tests/utils/casts.js'
+import { asExtensionContext, asTheme, asTool } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect } from 'effect'
 import { Value } from 'typebox/value'
 
+import { type HerdrResult } from '@/features/herdr/herdr.js'
 import { feature } from '@/features/herdr/index.js'
 import { makeEnvironment } from '@/shared/effect/env.js'
+
+interface DisplayTool {
+  renderCall: (args: { model?: string; pane_id?: string; message?: string }, theme: Theme, context: { expanded: boolean }) => Component
+  renderResult: (
+    result: AgentToolResult<HerdrResult | undefined>,
+    options: ToolRenderResultOptions,
+    theme: Theme,
+    context: { isError: boolean }
+  ) => Component
+}
+
+initTheme()
+const theme = asTheme({ bold: (text: string) => text, fg: (_color: string, text: string) => text })
+const renderText = (component: Component) =>
+  component
+    .render(160)
+    .map((line) => line.trimEnd())
+    .join('\n')
+    .trim()
+const displayTools = () => {
+  const fixture = createFakePi()
+  feature({ environment: makeEnvironment({}) }).implementation.register(fixture.pi, runtime)
+  return (name: string) => asTool<DisplayTool>(fixture.state.tools.get(name))
+}
+
+describe('Herdr display', () => {
+  it('shows model or pane headers and handles incomplete calls', () => {
+    const tool = displayTools()
+    expect(renderText(tool('spawn_agent').renderCall({}, theme, { expanded: false }))).toBe('spawn_agent ?')
+    expect(renderText(tool('spawn_agent').renderCall({ message: 'Review\nthe diff', model: 'provider/model' }, theme, { expanded: false }))).toBe(
+      'spawn_agent provider/model\nReview the diff'
+    )
+    expect(renderText(tool('send_message').renderCall({ message: 'All checks passed', pane_id: 'w1:p2' }, theme, { expanded: false }))).toBe(
+      'send_message w1:p2\nAll checks passed'
+    )
+    expect(renderText(tool('close_pane').renderCall({ pane_id: 'w1:p2' }, theme, { expanded: false }))).toBe('close_pane w1:p2')
+    expect(renderText(tool('send_message').renderCall({}, theme, { expanded: false }))).toBe('send_message ?')
+    expect(renderText(tool('close_pane').renderCall({}, theme, { expanded: false }))).toBe('close_pane ?')
+  })
+
+  it('bounds message previews and reveals complete multiline text when expanded', () => {
+    const tool = displayTools()
+    const message = `Review 界 ${'long message '.repeat(100)}\nKeep this second line.`
+    for (const name of ['spawn_agent', 'send_message']) {
+      const args = { message, model: 'provider/model', pane_id: 'w1:p2' }
+      const collapsed = tool(name).renderCall(args, theme, { expanded: false })
+      expect(renderText(collapsed)).toContain('to expand')
+      expect(renderText(collapsed)).not.toContain('Keep this second line.')
+      expect(collapsed.render(160)).toHaveLength(3)
+      expect(visibleWidth(collapsed.render(160)[1]?.trimEnd() ?? '')).toBeLessThanOrEqual(120)
+      expect(collapsed.render(20).every((line) => visibleWidth(line) <= 20)).toBe(true)
+      const expanded = tool(name).renderCall(args, theme, { expanded: true })
+      expect(renderText(expanded).replaceAll(/\s+/g, ' ')).toContain(message.replaceAll(/\s+/g, ' '))
+      expect(expanded.render(20).every((line) => visibleWidth(line) <= 20)).toBe(true)
+    }
+  })
+
+  it('renders readable statuses rather than JSON', () => {
+    const tool = displayTools()
+    for (const [name, status, label] of [
+      ['spawn_agent', 'started', 'Started'],
+      ['send_message', 'sent', 'Message submitted'],
+      ['close_pane', 'closed', 'Closed'],
+    ] as const) {
+      const details: HerdrResult = { pane_id: 'w1:p2', status }
+      const result = { content: [{ text: JSON.stringify(details), type: 'text' as const }], details }
+      expect(renderText(tool(name).renderResult(result, { expanded: false, isPartial: false }, theme, { isError: false }))).toBe(`${label} · w1:p2`)
+    }
+    const result: AgentToolResult<HerdrResult> = { content: [], details: { model: 'provider/model', pane_id: 'w1:p2', status: 'started' } }
+    expect(renderText(tool('spawn_agent').renderResult(result, { expanded: true, isPartial: false }, theme, { isError: false }))).toBe(
+      'Started · w1:p2 · provider/model'
+    )
+  })
+
+  it('preserves errors, progress and results without details', () => {
+    const tool = displayTools()('spawn_agent')
+    const options = { expanded: false, isPartial: false }
+    const result: AgentToolResult<undefined> = { content: [{ text: 'Pane w1:p2 remains open. Startup failed.', type: 'text' }], details: undefined }
+    expect(renderText(tool.renderResult(result, options, theme, { isError: true }))).toBe('Pane w1:p2 remains open. Startup failed.')
+    expect(renderText(tool.renderResult(result, { ...options, isPartial: true }, theme, { isError: true }))).toContain('Startup failed.')
+    expect(renderText(tool.renderResult(result, options, theme, { isError: false }))).toContain('Pane w1:p2 remains open.')
+    const empty = { content: [], details: undefined }
+    expect(renderText(tool.renderResult(empty, options, theme, { isError: true }))).toBe('Herdr operation failed')
+    expect(renderText(tool.renderResult(empty, { ...options, isPartial: true }, theme, { isError: false }))).toBe('Working…')
+    expect(renderText(tool.renderResult(empty, options, theme, { isError: false }))).toBe('No output')
+  })
+})
 
 describe('Herdr registration', () => {
   it('registers only three tools with model and callback guidance', () => {
