@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
-import { runtime, runtimeWithEnvironment } from '@tests/utils/runtime.js'
+import { runtime } from '@tests/utils/runtime.js'
 import { Effect } from 'effect'
 
 import { makeFeatureCoordinator } from '@/config/feature_coordinator.js'
@@ -15,24 +15,20 @@ const createHarness = () => {
 }
 
 describe('provider retry registration', () => {
-  it('registers eagerly in both parent and child sessions', () => {
+  it('registers eagerly', () => {
     const descriptor = feature()
     expect(descriptor).toMatchObject({ bootstrap: 'eager', id: 'provider-retry' })
-    expect('suppressInChild' in descriptor).toBe(false)
-    for (const child of ['0', '1']) {
-      const fixture = createFakePi()
-      const childRuntime = runtimeWithEnvironment({ PI_SUBAGENT: child })
-      makeFeatureCoordinator({ features: [descriptor], pi: fixture.pi, runtime: childRuntime }).install()
-      expect([...fixture.state.handlers.keys()]).toEqual([
-        'before_provider_request',
-        'after_provider_response',
-        'message_end',
-        'session_start',
-        'session_shutdown',
-      ])
-      expect(fixture.state.tools.size).toBe(0)
-      expect(fixture.state.commands.size).toBe(0)
-    }
+    const fixture = createFakePi()
+    makeFeatureCoordinator({ features: [descriptor], pi: fixture.pi, runtime }).install()
+    expect([...fixture.state.handlers.keys()]).toEqual([
+      'before_provider_request',
+      'after_provider_response',
+      'message_end',
+      'session_start',
+      'session_shutdown',
+    ])
+    expect(fixture.state.tools.size).toBe(0)
+    expect(fixture.state.commands.size).toBe(0)
   })
 
   it.effect('uses the current response status, clearing it for the next request or finalized assistant', () =>

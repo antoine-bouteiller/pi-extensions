@@ -3,7 +3,6 @@ import { truncateToWidth, visibleWidth, type Component, type OverlayHandle } fro
 import { DateTime } from 'effect'
 import { type Path } from 'effect/Path'
 
-import { type RunningAgent } from '#shared/state/agent_activity'
 import { formatStatusText, type StatusEntry, type StatusTone } from '#shared/state/status_bar'
 import { isEmptyString, isNotEmptyString } from '#shared/utils/predicates'
 
@@ -22,12 +21,8 @@ export interface SidebarState {
   model: ModelInfoState
   git: GitInfoState
   quotas: ProviderQuotas
-  agents?: readonly RunningAgent[]
   extensionStatuses: readonly StatusEntry[]
-  sessionId?: string
 }
-
-const MAX_AGENT_ROWS = 5
 
 type PaletteColor = 'purple' | 'blue' | 'green' | 'red' | 'orange' | 'gray' | 'white'
 
@@ -148,54 +143,6 @@ const contextRows = (state: SidebarState, width: number, theme: SidebarTheme) =>
   return [spaced(paint(theme, color, usage), paint(theme, color, percent), width), meter, ...metricsRows]
 }
 
-const profileColor = (profile: string | undefined): PaletteColor => {
-  switch (profile) {
-    case 'scout': {
-      return 'blue'
-    }
-    case 'librarian': {
-      return 'purple'
-    }
-    case 'reviewer': {
-      return 'orange'
-    }
-    case 'implementer': {
-      return 'green'
-    }
-    default: {
-      return 'gray'
-    }
-  }
-}
-
-const pad2 = (value: number): string => String(value).padStart(2, '0')
-
-const runTime = (ms: number): string => {
-  const seconds = Math.floor(ms / 1000)
-  const minutes = Math.floor(seconds / 60)
-  const hours = Math.floor(minutes / 60)
-  return hours > 0 ? `${hours}:${pad2(minutes % 60)}:${pad2(seconds % 60)}` : `${minutes}:${pad2(seconds % 60)}`
-}
-
-const subagentRow = (agent: RunningAgent, width: number, theme: SidebarTheme, now: number) => {
-  const marker = '▸ '
-  const elapsed = runTime(Math.max(0, now - (agent.startedAt ?? agent.lastActivityAt ?? now)))
-  const nameWidth = width - visibleWidth(marker) - visibleWidth(elapsed) - 1
-  const name = truncateToWidth(sanitize(agent.name), Math.max(0, nameWidth), '…')
-  const gap = ' '.repeat(Math.max(1, width - visibleWidth(marker) - visibleWidth(name) - visibleWidth(elapsed)))
-  const coloredName = paint(theme, profileColor(agent.profile), name)
-  return truncateToWidth(`${paint(theme, 'gray', marker)}${coloredName}${gap}${elapsed}`, width, '')
-}
-
-const subagentRows = (agents: readonly RunningAgent[], width: number, theme: SidebarTheme, now: number) => {
-  const shown = agents.slice(0, MAX_AGENT_ROWS)
-  const rows = shown.map((agent) => subagentRow(agent, width, theme, now))
-  if (agents.length > shown.length) {
-    rows.push(paint(theme, 'gray', `+${agents.length - shown.length} more`))
-  }
-  return rows
-}
-
 const workspaceRows = (state: SidebarState, theme: SidebarTheme, path: Path) => {
   const project = path.basename(state.cwd) || formatDirectory(state.cwd, path)
   const rows = [paint(theme, 'white', sanitize(project)), paint(theme, 'gray', formatDirectory(state.cwd, path))]
@@ -308,7 +255,6 @@ export const renderSidebarLines = ({
   }
   const panelWidth = Math.max(0, safeWidth - 2)
   const rowWidth = Math.max(0, panelWidth - 4)
-  const currentAgents = state.agents?.filter((agent) => state.sessionId === undefined || agent.sessionId === state.sessionId) ?? []
   const groups: PanelGroup[] = [
     {
       dropRank: Number.POSITIVE_INFINITY,
@@ -335,22 +281,6 @@ export const renderSidebarLines = ({
         width: panelWidth,
       }),
     },
-    ...(currentAgents.length > 0
-      ? [
-          {
-            dropRank: 40,
-            name: 'subagents',
-            required: false,
-            rows: panel({
-              color: 'purple',
-              rows: subagentRows(currentAgents, rowWidth, theme, now),
-              theme,
-              title: 'SUBAGENTS',
-              width: panelWidth,
-            }),
-          },
-        ]
-      : []),
     {
       dropRank: 30,
       name: 'workspace',

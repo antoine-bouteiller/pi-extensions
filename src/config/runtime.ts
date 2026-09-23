@@ -2,7 +2,7 @@ import { BunChildProcessSpawner, BunCrypto, BunFileSystem, BunPath } from '@effe
 import { Layer, ManagedRuntime } from 'effect'
 import { FetchHttpClient } from 'effect/unstable/http'
 
-import { AgentActivityLive, type AppServices, StatusBarLive } from '#shared/effect/app_services'
+import { type AppServices, StatusBarLive } from '#shared/effect/app_services'
 import { EnvLive } from '#shared/effect/env'
 
 export type ProcessServices = AppServices
@@ -11,13 +11,13 @@ export type ProcessRuntime = ManagedRuntime.ManagedRuntime<ProcessServices, neve
 /**
  * Composed once, as a module constant: `ManagedRuntime.make` memoises layer construction by
  * reference identity, so every feature using this exact value shares the services it builds
- * (notably `StatusBar`/`AgentActivity`) instead of each getting its own copy. Every member must
+ * (notably `StatusBar`) instead of each getting its own copy. Every member must
  * remain synchronously constructible because status-panel resolves its paint-loop stores with
  * `runtime.runSync` during registration.
  */
 const BunPlatformLayer = BunChildProcessSpawner.layer.pipe(Layer.provideMerge(Layer.mergeAll(BunCrypto.layer, BunFileSystem.layer, BunPath.layer)))
 
-const AppLayer: Layer.Layer<ProcessServices> = Layer.mergeAll(BunPlatformLayer, FetchHttpClient.layer, StatusBarLive, AgentActivityLive).pipe(
+const AppLayer: Layer.Layer<ProcessServices> = Layer.mergeAll(BunPlatformLayer, FetchHttpClient.layer, StatusBarLive).pipe(
   Layer.provideMerge(EnvLive)
 )
 

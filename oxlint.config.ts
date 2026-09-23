@@ -53,17 +53,6 @@ export default defineConfig({
     },
     {
       /*
-       * Effect's `FileSystem` lacks the no-follow metadata, typed directory entries, and unscoped
-       * descriptor ownership the cross-process lock and its TOCTOU checks need, so this module is
-       * the one place that reaches for `node:fs` directly.
-       */
-      files: ['src/shared/effect/bun_host_file_system.ts'],
-      rules: {
-        'effecttsgo/node-builtin-import': 'off',
-      },
-    },
-    {
-      /*
        * The single audited location for test-double casts: it narrows hand-built fakes onto the real
        * extension interfaces they stand in for, and its type parameters are explicit-only because
        * the caller names the target shape and there is nothing to infer.

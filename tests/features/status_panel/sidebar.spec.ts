@@ -21,7 +21,6 @@ const renderSidebarLines = (options: Omit<RenderSidebarLinesOptions, 'path'>) =>
 
 const state: SidebarState = {
   activity: 'working',
-  agents: [],
   cwd: '/Users/example/pi-extensions',
   extensionStatuses: [{ key: 'index', text: 'index ready' }],
   git: {
@@ -51,19 +50,6 @@ const state: SidebarState = {
     azure: { label: 'azure', percent: 71 },
   },
 }
-
-const withAgents = (count: number): SidebarState => ({
-  ...state,
-  agents: Array.from({ length: count }, (_value, index) => ({
-    agentId: `scout-${index}`,
-    color: 'accent' as const,
-    lastActivityAt: 0,
-    name: `/scout-${index}`,
-    profile: 'scout',
-    sessionId: 'session',
-    state: 'running' as const,
-  })),
-})
 
 const ANSI_PATTERN = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g')
 
@@ -128,7 +114,7 @@ describe('sidebar rendering', () => {
           },
         },
       })
-      const sidebar = createSidebarController({ ctx, getState: () => withAgents(1), noColor: true, path })
+      const sidebar = createSidebarController({ ctx, getState: () => state, noColor: true, path })
       sidebar.show()
       if (factory === undefined) {
         throw new Error('expected sidebar factory')
@@ -198,60 +184,6 @@ describe('sidebar rendering', () => {
     })
   )
 
-  it.effect('lists running subagents and hides the panel when none are running', () =>
-    Effect.sync(() => {
-      const text = stripAnsi(renderSidebarLines({ height: 36, now: 0, state: withAgents(2), theme, width: 44 }).join('\n'))
-
-      expect(text).toContain('╭─ ✦ SUBAGENTS')
-      expect(text).toContain('▸ /scout-0')
-      expect(text).toContain('▸ /scout-1')
-      expect(text).toContain('scout')
-      expect(stripAnsi(renderSidebarLines({ height: 36, now: 0, state, theme, width: 44 }).join('\n'))).not.toContain('SUBAGENTS')
-    })
-  )
-
-  it.effect('shows only subagent names and elapsed runtimes from a shared clock', () =>
-    Effect.sync(() => {
-      const activeAgent: SidebarState = {
-        ...state,
-        agents: [
-          {
-            activity: 'tool',
-            color: 'accent',
-            lastActivityAt: 64_000,
-            name: '/first',
-            startedAt: 0,
-          },
-          {
-            activity: 'thinking',
-            color: 'accent',
-            name: '/second',
-            startedAt: 5000,
-          },
-        ],
-      }
-      const minuteText = stripAnsi(renderSidebarLines({ height: 36, now: 65_000, state: activeAgent, theme, width: 44 }).join('\n'))
-      const hourText = stripAnsi(renderSidebarLines({ height: 36, now: 3_661_000, state: activeAgent, theme, width: 44 }).join('\n'))
-      const subagentRows = minuteText.slice(minuteText.indexOf('SUBAGENTS'))
-
-      expect(minuteText).toMatch(/▸ \/first +1:05/)
-      expect(minuteText).toMatch(/▸ \/second +1:00/)
-      expect(hourText).toMatch(/▸ \/first +1:01:01/)
-      expect(hourText).toMatch(/▸ \/second +1:00:56/)
-      expect(subagentRows).not.toMatch(/tool|thinking|running|idle/)
-    })
-  )
-
-  it.effect('caps the subagent list so a large fan-out cannot crowd out other panels', () =>
-    Effect.sync(() => {
-      const text = stripAnsi(renderSidebarLines({ height: 40, now: 0, state: withAgents(9), theme, width: 44 }).join('\n'))
-
-      expect(text).toContain('▸ /scout-4')
-      expect(text).not.toContain('▸ /scout-5')
-      expect(text).toContain('+4 more')
-    })
-  )
-
   it.effect('renders MCP servers in their own panel instead of STATUS', () =>
     Effect.sync(() => {
       const lines = renderSidebarLines({
@@ -276,16 +208,6 @@ describe('sidebar rendering', () => {
       expect(lines.slice(mcpIndex, statusIndex).join('\n')).toContain('slack: auth needed')
       expect(lines.slice(statusIndex).join('\n')).toContain('index ready')
       expect(lines.slice(statusIndex).join('\n')).not.toContain('linear: connected')
-    })
-  )
-
-  it.effect('keeps running subagents visible after other optional panels are dropped', () =>
-    Effect.sync(() => {
-      const text = stripAnsi(renderSidebarLines({ height: 20, now: 0, state: withAgents(2), theme, width: 44 }).join('\n'))
-
-      expect(text).toContain('SUBAGENTS')
-      expect(text).not.toContain('QUOTA')
-      expect(text).not.toContain('STATUS')
     })
   )
 

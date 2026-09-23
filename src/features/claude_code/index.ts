@@ -20,6 +20,5 @@ export const feature = ((options: FeatureOptions<ClaudeCodeEnvironment> = {}) =>
       },
     },
     status: { icon: '🤖', name: 'claude-code' },
-    suppressInChild: true,
   }
 }) satisfies FeaturePlugin<ClaudeCodeEnvironment>

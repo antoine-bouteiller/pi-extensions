@@ -1,13 +1,11 @@
 import { type ExtensionAPI, type ExtensionContext, type ExtensionEvent, type ReadonlyFooterDataProvider } from '@earendil-works/pi-coding-agent'
 import { Clock, Effect, Fiber, MutableRef, Path as PathService, Queue, type Scope } from 'effect'
-import { type Crypto } from 'effect/Crypto'
-import { type FileSystem } from 'effect/FileSystem'
 import { type Path } from 'effect/Path'
 import { type HttpClient } from 'effect/unstable/http'
 
-import { AgentActivity, StatusBar, type AgentActivityApi, type StatusBarApi } from '#shared/effect/app_services'
+import { StatusBar, type StatusBarApi } from '#shared/effect/app_services'
 import { Env } from '#shared/effect/env'
-import { azureQuota, writeSubagentAzureQuota } from '#shared/state/azure_quota'
+import { azureQuota } from '#shared/state/azure_quota'
 import { isEmptyString, isNullOrUndefined, isTrue } from '#shared/utils/predicates'
 
 import { renderFooterLines } from './footer.js'
@@ -42,7 +40,7 @@ export interface PanelHandlers {
   readonly sessionStart: (
     event: PiEvent<'session_start'>,
     ctx: ExtensionContext
-  ) => Effect.Effect<void, never, HttpClient.HttpClient | AgentActivity | StatusBar | Path | Scope.Scope | Env>
+  ) => Effect.Effect<void, never, HttpClient.HttpClient | StatusBar | Path | Scope.Scope | Env>
   readonly modelSelect: (event: PiEvent<'model_select'>, ctx: ExtensionContext) => Effect.Effect<void, never, HttpClient.HttpClient>
   readonly thinkingLevelSelect: (event: PiEvent<'thinking_level_select'>, ctx: ExtensionContext) => Effect.Effect<void>
   readonly agentStart: (event: PiEvent<'agent_start'>, ctx: ExtensionContext) => Effect.Effect<void>
@@ -53,19 +51,6 @@ export interface PanelHandlers {
   readonly sessionShutdown: (event: PiEvent<'session_shutdown'>, ctx: ExtensionContext) => Effect.Effect<void>
 }
 
-export const recordSubagentQuota = (
-  event: PiEvent<'after_provider_response'>,
-  ctx: ExtensionContext
-): Effect.Effect<void, never, FileSystem | Path | Crypto | Env> => {
-  const quota = quotaFromHeaders(ctx.model?.provider ?? '', event.headers)
-  return quota === undefined
-    ? Effect.void
-    : Effect.gen(function* () {
-        const env = yield* Env
-        yield* writeSubagentAzureQuota(env.get('PI_SUBAGENT_OWNER_TOKEN') ?? '', quota.percent)
-      })
-}
-
 export const makePanelController = ({ dependencies, pi }: PanelControllerOptions): PanelHandlers => {
   const panelState = MutableRef.make<PanelState>(emptyPanelState())
 
@@ -74,7 +59,6 @@ export const makePanelController = ({ dependencies, pi }: PanelControllerOptions
   let requestRender: (() => void) | undefined
   let anthropicQuotaBaseUrl: string | undefined
   let unsubscribeAzureQuota: (() => void) | undefined
-  let unsubscribeAgentActivity: (() => void) | undefined
   let unsubscribeStatusBar: (() => void) | undefined
   let sessionScope: Scope.Scope | undefined
   let gitRefreshRequests: Queue.Queue<void> | undefined
@@ -161,7 +145,7 @@ export const makePanelController = ({ dependencies, pi }: PanelControllerOptions
       requestRender?.()
     })
 
-  const install = (ctx: ExtensionContext, path: Path, agentActivity: AgentActivityApi, noColor: boolean): Effect.Effect<void> =>
+  const install = (ctx: ExtensionContext, path: Path, noColor: boolean): Effect.Effect<void> =>
     Effect.gen(function* () {
       if (ctx.mode !== 'tui') {
         return
@@ -213,13 +197,11 @@ export const makePanelController = ({ dependencies, pi }: PanelControllerOptions
             const state = getState()
             return {
               activity: state.activity,
-              agents: agentActivity.list(),
               cwd: ctx.cwd,
               extensionStatuses: collectStatuses(footerData),
               git: state.git,
               model: state.model,
               quotas: state.quotas,
-              sessionId: ctx.sessionManager?.getSessionId() ?? undefined,
             }
           },
           noColor,
@@ -286,8 +268,6 @@ export const makePanelController = ({ dependencies, pi }: PanelControllerOptions
         sessionScope = undefined
         unsubscribeAzureQuota?.()
         unsubscribeAzureQuota = undefined
-        unsubscribeAgentActivity?.()
-        unsubscribeAgentActivity = undefined
         unsubscribeStatusBar?.()
         unsubscribeStatusBar = undefined
         sidebar?.dispose()
@@ -300,7 +280,6 @@ export const makePanelController = ({ dependencies, pi }: PanelControllerOptions
       }),
     sessionStart: (_event, ctx) =>
       Effect.gen(function* () {
-        const agentActivity: AgentActivityApi = yield* AgentActivity
         const statusBar: StatusBarApi = yield* StatusBar
         const path = yield* PathService.Path
         sessionScope = yield* Effect.scope
@@ -308,29 +287,23 @@ export const makePanelController = ({ dependencies, pi }: PanelControllerOptions
         yield* anthropicQuota.stop
         anthropicQuotaBaseUrl = undefined
         unsubscribeAzureQuota?.()
-        unsubscribeAgentActivity?.()
         unsubscribeStatusBar?.()
         azureQuota.set(undefined)
         MutableRef.set(panelState, emptyPanelState())
         unsubscribeAzureQuota = azureQuota.subscribe(syncAzureQuota)
-        unsubscribeAgentActivity = agentActivity.subscribe(() => requestRender?.())
         unsubscribeStatusBar = statusBar.subscribe(() => requestRender?.())
         const requests = yield* Queue.sliding<void>(1)
         gitRefreshRequests = requests
         yield* Effect.forkIn(Effect.forever(Queue.take(requests).pipe(Effect.andThen(refreshGit()))), sessionScope)
         const env = yield* Env
-        yield* install(ctx, path, agentActivity, env.get('NO_COLOR') !== undefined)
+        yield* install(ctx, path, env.get('NO_COLOR') !== undefined)
         if (ctx.mode === 'tui') {
-          const sessionId = ctx.sessionManager?.getSessionId()
           redrawFiber = yield* Effect.forkIn(
             Effect.forever(
               Effect.sleep(REDRAW_MS).pipe(
                 Effect.andThen(
                   Effect.sync(() => {
-                    if (
-                      getState().activity === 'working' ||
-                      agentActivity.list().some((agent) => sessionId === undefined || agent.sessionId === sessionId)
-                    ) {
+                    if (getState().activity === 'working') {
                       requestRender?.()
                     }
                   })

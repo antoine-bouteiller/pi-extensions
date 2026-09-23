@@ -16,23 +16,6 @@ export interface McpToolAnnotations {
   openWorldHint?: boolean
 }
 
-export type McpPolicyOperation = 'list' | 'search' | 'describe' | 'call'
-
-export interface McpPolicyRequest {
-  /** Configured MCP server name, before exposed-name sanitization. */
-  server: string
-  remoteName: string
-  exposedName: string
-  annotations: Readonly<McpToolAnnotations>
-  operation: McpPolicyOperation
-}
-
-export interface McpGatewayPolicy {
-  /** A short, non-sensitive label used in bounded denial errors. */
-  name: string
-  allows: (request: Readonly<McpPolicyRequest>) => boolean
-}
-
 export type McpServerStatus = 'disconnected' | 'connecting' | 'connected' | 'needs-auth' | 'failed' | 'disabled' | 'invalid-config'
 
 export interface OAuthConfig {

@@ -14,11 +14,11 @@ import { httpGet } from '@tests/utils/http.js'
 import { freeLoopbackPort } from '@tests/utils/loopback_port.js'
 import { Effect, Fiber, FileSystem, Option, Path } from 'effect'
 
-import { readonlyMcpPolicy, type McpOperationOptions, type McpSearchOptions } from '@/features/mcp/gateway.js'
+import { type McpOperationOptions, type McpSearchOptions } from '@/features/mcp/gateway.js'
 import { KeychainCredentialError, type CredentialStore } from '@/features/mcp/keychain.js'
 import { McpManager, McpManagerService, mcpManagerLayer } from '@/features/mcp/manager.js'
 import { type OpenUrl } from '@/features/mcp/oauth.js'
-import { type McpGatewayPolicy, type McpServerMap } from '@/features/mcp/types.js'
+import { type McpServerMap } from '@/features/mcp/types.js'
 import { processEnvironment } from '@/shared/effect/env.js'
 import { type JsonObject, jsonText } from '@/shared/utils/json.js'
 
@@ -84,7 +84,6 @@ const harness = (
     callResult?: unknown
     openUrl?: OpenUrl
     credentialStore?: CredentialStore
-    policy?: McpGatewayPolicy
   } = {}
 ) => {
   const calls = {
@@ -182,7 +181,6 @@ const harness = (
     },
     environment: processEnvironment,
     openUrl: options.openUrl ?? (() => Effect.void),
-    policy: options.policy,
   })
   return { calls, manager: promised(manager), raw: manager }
 }
@@ -456,136 +454,6 @@ describe('MCP manager', () => {
         { text: 'embedded', type: 'text' },
         { text: '{\n  "answer": 42\n}', type: 'text' },
       ])
-    })
-  )
-
-  it.effect('read-only policy filters annotated tools across discovery, description, and calls', () =>
-    Effect.gen(function* () {
-      const fixture = harness({
-        config: { linear: { command: 'fixture', type: 'stdio' } },
-        pages: {
-          root: {
-            tools: [
-              {
-                annotations: { destructiveHint: false, readOnlyHint: true },
-                inputSchema: { type: 'object' },
-                name: 'get_issue',
-              },
-              {
-                annotations: { destructiveHint: false, readOnlyHint: false },
-                inputSchema: { type: 'object' },
-                name: 'create_issue',
-              },
-              {
-                annotations: { destructiveHint: true, readOnlyHint: true },
-                inputSchema: { type: 'object' },
-                name: 'dangerous_read',
-              },
-              { inputSchema: { type: 'object' }, name: 'mystery' },
-            ],
-          },
-        },
-        policy: readonlyMcpPolicy,
-      })
-
-      const listed = yield* Effect.promise(() => fixture.manager.list('linear'))
-      expect(listed.map((tool) => tool.remoteName)).toEqual(['get_issue'])
-      const searched = yield* Effect.promise(() => fixture.manager.search('', { server: 'linear' }))
-      expect(searched.map((tool) => tool.remoteName)).toEqual(['get_issue'])
-      const described = yield* Effect.promise(() => fixture.manager.describe('get_issue', { server: 'linear' }))
-      expect(described.annotations).toEqual({ destructiveHint: false, readOnlyHint: true })
-      yield* Effect.promise(() => fixture.manager.call('linear_get_issue', {}))
-
-      for (const denied of ['create_issue', 'dangerous_read', 'mystery']) {
-        expect(fixture.manager.describe(denied, { server: 'linear' })).rejects.toThrow('read-only policy')
-        expect(fixture.manager.call(denied, {}, { server: 'linear' })).rejects.toThrow(`MCP tool "${denied}" on server "linear"`)
-      }
-      expect(fixture.calls.toolCalls.map((call) => call.name)).toEqual(['get_issue'])
-    })
-  )
-
-  it.effect('read-only policy allows only the four exact unannotated DBX metadata tools', () =>
-    Effect.gen(function* () {
-      const allowed = ['dbx_list_connections', 'dbx_list_tables', 'dbx_describe_table', 'dbx_get_schema_context']
-      const denied = ['dbx_execute_sql', 'dbx_execute_redis', 'dbx_open_ui', 'dbx_add_connection', 'dbx_remove_connection']
-      const fixture = harness({
-        config: { dbx: { command: 'fixture', type: 'stdio' } },
-        pages: {
-          root: {
-            tools: [...allowed, ...denied].map((name) => ({
-              inputSchema: { type: 'object' },
-              name,
-            })),
-          },
-        },
-        policy: readonlyMcpPolicy,
-      })
-
-      const listed = yield* Effect.promise(() => fixture.manager.list('dbx'))
-      expect(listed.map((tool) => tool.remoteName)).toEqual(allowed)
-      const searched = yield* Effect.promise(() => fixture.manager.search('dbx_', { server: 'dbx' }))
-      expect(searched.map((tool) => tool.remoteName)).toEqual([...allowed].toSorted())
-      for (const tool of allowed) {
-        const describedTool = yield* Effect.promise(() => fixture.manager.describe(tool, { server: 'dbx' }))
-        expect(describedTool.remoteName).toBe(tool)
-        yield* Effect.promise(() => fixture.manager.call(tool, {}, { server: 'dbx' }))
-      }
-      for (const tool of denied) {
-        expect(fixture.manager.describe(tool, { server: 'dbx' })).rejects.toThrow('read-only policy')
-        expect(fixture.manager.call(tool, {}, { server: 'dbx' })).rejects.toThrow('read-only policy')
-      }
-      expect(fixture.calls.toolCalls.map((call) => call.name)).toEqual(allowed)
-
-      const impersonator = harness({
-        config: { other: { command: 'fixture', type: 'stdio' } },
-        pages: {
-          root: {
-            tools: [{ inputSchema: { type: 'object' }, name: 'dbx_list_tables' }],
-          },
-        },
-        policy: readonlyMcpPolicy,
-      })
-      expect(yield* Effect.promise(() => impersonator.manager.list('other'))).toEqual([])
-      expect(impersonator.manager.call('other_dbx_list_tables', {})).rejects.toThrow('read-only policy')
-    })
-  )
-
-  it.effect('passes the requested operation and canonical names to policy callbacks', () =>
-    Effect.gen(function* () {
-      const requests: {
-        operation: string
-        server: string
-        remoteName: string
-        exposedName: string
-      }[] = []
-      const fixture = harness({
-        policy: {
-          allows(request) {
-            requests.push({
-              exposedName: request.exposedName,
-              operation: request.operation,
-              remoteName: request.remoteName,
-              server: request.server,
-            })
-            return true
-          },
-          name: 'recording',
-        },
-      })
-
-      yield* Effect.promise(() => fixture.manager.list('local'))
-      yield* Effect.promise(() => fixture.manager.search('echo', { server: 'local' }))
-      yield* Effect.promise(() => fixture.manager.describe('echo', { server: 'local' }))
-      yield* Effect.promise(() => fixture.manager.call('local_echo', {}))
-
-      expect(requests).toEqual(
-        ['list', 'search', 'describe', 'call'].map((operation) => ({
-          exposedName: 'local_echo',
-          operation,
-          remoteName: 'echo',
-          server: 'local',
-        }))
-      )
     })
   )
 

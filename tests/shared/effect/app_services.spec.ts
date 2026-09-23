@@ -1,10 +1,9 @@
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asExtensionContext } from '@tests/utils/casts.js'
-import { Effect, Layer, ManagedRuntime } from 'effect'
+import { Effect, ManagedRuntime } from 'effect'
 
-import { AgentActivity, AgentActivityLive, StatusBar, StatusBarLive } from '@/shared/effect/app_services.js'
+import { StatusBar, StatusBarLive } from '@/shared/effect/app_services.js'
 import { perInvocation } from '@/shared/effect/runtime.js'
-import { runningAgents } from '@/shared/state/agent_activity.js'
 import { statusBar } from '@/shared/state/status_bar.js'
 
 const uiContext = () => {
@@ -31,30 +30,6 @@ const headlessContext = () =>
   })
 
 describe('cross-runtime sharing', () => {
-  it.effect('gives two independent extension runtimes the same store instances', () =>
-    Effect.gen(function* () {
-      const subAgentsRuntime = ManagedRuntime.make(Layer.mergeAll(StatusBarLive, AgentActivityLive))
-      const statusPanelRuntime = ManagedRuntime.make(Layer.mergeAll(StatusBarLive, AgentActivityLive))
-
-      yield* Effect.promise(() =>
-        subAgentsRuntime.runPromise(
-          Effect.gen(function* () {
-            const activity = yield* AgentActivity
-            yield* activity.publish([{ color: 'accent', name: 'scout' }])
-          })
-        )
-      )
-
-      const seen = yield* Effect.promise(() => statusPanelRuntime.runPromise(AgentActivity.pipe(Effect.map((activity) => activity.list()))))
-
-      expect(seen.map((agent) => agent.name)).toEqual(['scout'])
-
-      yield* Effect.promise(() => subAgentsRuntime.dispose())
-      yield* Effect.promise(() => statusPanelRuntime.dispose())
-      runningAgents.publish([])
-    })
-  )
-
   it.effect('lets one runtime observe a status published by another', () =>
     Effect.gen(function* () {
       const producer = ManagedRuntime.make(StatusBarLive)
@@ -141,25 +116,18 @@ describe('status channel service', () => {
     })
   )
 
-  it.effect('notifies subscribers of both stores', () =>
+  it.effect('notifies status subscribers', () =>
     Effect.gen(function* () {
-      const runtime = ManagedRuntime.make(Layer.mergeAll(StatusBarLive, AgentActivityLive))
+      const runtime = ManagedRuntime.make(StatusBarLive)
       let statusNotifications = 0
-      let agentNotifications = 0
 
-      const unsubscribes = yield* Effect.promise(() =>
+      const unsubscribe = yield* Effect.promise(() =>
         runtime.runPromise(
           Effect.gen(function* () {
             const bar = yield* StatusBar
-            const activity = yield* AgentActivity
-            return [
-              bar.subscribe(() => {
-                statusNotifications += 1
-              }),
-              activity.subscribe(() => {
-                agentNotifications += 1
-              }),
-            ]
+            return bar.subscribe(() => {
+              statusNotifications += 1
+            })
           })
         )
       )
@@ -168,18 +136,14 @@ describe('status channel service', () => {
         runtime.runPromise(
           Effect.gen(function* () {
             const bar = yield* StatusBar
-            const activity = yield* AgentActivity
             yield* bar.channel('sub').set({ text: 'one' })
-            yield* activity.publish([{ color: 'success', name: 'worker' }])
           }).pipe(Effect.provide(perInvocation(headlessContext())))
         )
       )
 
-      expect([statusNotifications, agentNotifications]).toEqual([1, 1])
+      expect(statusNotifications).toBe(1)
 
-      for (const unsubscribe of unsubscribes) {
-        unsubscribe()
-      }
+      unsubscribe()
       yield* Effect.promise(() =>
         runtime.runPromise(
           Effect.gen(function* () {
@@ -188,7 +152,6 @@ describe('status channel service', () => {
           }).pipe(Effect.provide(perInvocation(headlessContext())))
         )
       )
-      runningAgents.publish([])
       yield* Effect.promise(() => runtime.dispose())
     })
   )

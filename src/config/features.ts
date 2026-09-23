@@ -7,13 +7,13 @@ import { feature as backgroundPoll } from '#features/background_poll/index'
 import { feature as claudeCode } from '#features/claude_code/index'
 import { feature as commentChecker } from '#features/comment_checker/index'
 import { feature as hashline } from '#features/hashline/index'
+import { feature as herdr } from '#features/herdr/index'
 import { feature as mcp } from '#features/mcp/index'
 import { feature as meridianSessionAffinity } from '#features/meridian_session_affinity/index'
 import { feature as promptRewind } from '#features/prompt_rewind/index'
 import { feature as providerRetry } from '#features/provider_retry/index'
 import { feature as rules } from '#features/rules/index'
 import { feature as statusPanel } from '#features/status_panel/index'
-import { feature as subAgents } from '#features/sub_agents/index'
 import { feature as webfetch } from '#features/webfetch/index'
 import { type FeatureDescriptor } from '#shared/effect/feature'
 
@@ -23,13 +23,13 @@ export const features = [
   claudeCode(),
   commentChecker(),
   hashline(),
+  herdr(),
   mcp(),
   meridianSessionAffinity(),
   promptRewind(),
   providerRetry(),
   rules(),
   statusPanel(),
-  subAgents(),
   webfetch(),
 ] satisfies readonly FeatureDescriptor[]
 

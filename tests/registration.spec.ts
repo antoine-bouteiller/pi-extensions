@@ -14,16 +14,7 @@ const KEBAB_CASE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
 const SNAKE_CASE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/
 
 const MANIFEST_KEYS = ['commands', 'handlers', 'messageRenderers', 'tools'] as const
-const T009_FEATURES = new Set([
-  'background_poll',
-  'claude_code',
-  'mcp',
-  'meridian_session_affinity',
-  'prompt_rewind',
-  'rules',
-  'status_panel',
-  'sub_agents',
-])
+const T009_FEATURES = new Set(['background_poll', 'claude_code', 'mcp', 'meridian_session_affinity', 'prompt_rewind', 'rules', 'status_panel'])
 const APPROVED_BACKGROUND_FEATURES = new Set(['comment_checker'])
 
 type Manifest = Record<(typeof MANIFEST_KEYS)[number], string[]>
@@ -120,16 +111,12 @@ const reportScript = (directories: string[]): string => `
   console.log(JSON.stringify(report));
 `
 
-/*
- * Registering sub_agents touches the real agent directory and pollutes Bun's shared module cache
- * for the specs that mock it, so the whole report is collected in a throwaway child process.
- */
+/* Collect the report in a throwaway process to isolate extension registration from other specs. */
 const collectReport = (): Promise<RegistrationReport> =>
   Effect.runPromise(
     Effect.gen(function* () {
-      const { PI_SUBAGENT: _subagent, PI_SUBAGENT_OWNER_TOKEN: _ownerToken, ...env } = process.env
       const script = reportScript(yield* Effect.promise(featureDirectories))
-      const child = Bun.spawn([process.execPath, '--eval', script], { env, stderr: 'pipe', stdout: 'pipe' })
+      const child = Bun.spawn([process.execPath, '--eval', script], { stderr: 'pipe', stdout: 'pipe' })
       return yield* Effect.all(
         [
           Effect.promise(() => new Response(child.stdout).text()),
@@ -265,7 +252,6 @@ export const features = [
         prompt_rewind: { bootstrap: 'eager', id: 'prompt-rewind', status: { icon: '↩️', name: 'prompt-rewind' } },
         rules: { bootstrap: 'eager', id: 'rules', status: { icon: '📜', name: 'rules' } },
         status_panel: { bootstrap: 'eager', id: 'status-panel', status: { icon: '📊', name: 'status-panel' } },
-        sub_agents: { bootstrap: 'eager', id: 'sub-agents', status: { icon: '🧑‍🤝‍🧑', name: 'sub-agents' } },
       })
     })
   )

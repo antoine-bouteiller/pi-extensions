@@ -5,7 +5,6 @@ import { type Path } from 'effect/Path'
 import { type HttpClient } from 'effect/unstable/http'
 import { type ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner'
 
-import { type AgentActivityStore, type RunningAgent, runningAgents } from '#shared/state/agent_activity'
 import { formatStatusText, publishStatus, type StatusEntry, type StatusItem, statusBar } from '#shared/state/status_bar'
 
 import { type Env } from './env.js'
@@ -29,14 +28,6 @@ export interface StatusBarApi {
 
 export class StatusBar extends Context.Service<StatusBar, StatusBarApi>()('pi-extensions/shared/effect/app_services/StatusBar') {}
 
-export interface AgentActivityApi {
-  readonly list: () => readonly RunningAgent[]
-  readonly publish: (agents: readonly RunningAgent[]) => Effect.Effect<void>
-  readonly subscribe: (listener: () => void) => () => void
-}
-
-export class AgentActivity extends Context.Service<AgentActivity, AgentActivityApi>()('pi-extensions/shared/effect/app_services/AgentActivity') {}
-
 const statusChannel = (key: string, defaults: Partial<StatusItem> = {}): StatusChannel => ({
   clear: Effect.gen(function* () {
     const ui = yield* Ui
@@ -57,20 +48,11 @@ const statusChannel = (key: string, defaults: Partial<StatusItem> = {}): StatusC
     }),
 })
 
-const agentActivityApi = (store: AgentActivityStore): AgentActivityApi => ({
-  list: store.list,
-  publish: (agents) =>
-    Effect.sync(() => {
-      store.publish(agents)
-    }),
-  subscribe: store.subscribe,
-})
-
 /**
  * Deliberately backed by the module-level singletons. Extensions load once per process and Node's
- * module cache is what makes `sub-agents` and `status-panel` observe the same data today. Layer
- * memoisation does not cross ManagedRuntime boundaries, so constructing fresh stores per runtime
- * would silently give each feature its own empty store, and the panel would render nothing.
+ * module cache is what makes status entries available across ManagedRuntime boundaries. Layer
+ * memoisation does not cross runtimes, so constructing fresh stores per runtime would silently
+ * give each feature its own empty store.
  */
 export const StatusBarLive: Layer.Layer<StatusBar> = Layer.succeed(StatusBar)({
   channel: statusChannel,
@@ -79,8 +61,6 @@ export const StatusBarLive: Layer.Layer<StatusBar> = Layer.succeed(StatusBar)({
   subscribe: statusBar.subscribe,
 })
 
-export const AgentActivityLive: Layer.Layer<AgentActivity> = Layer.succeed(AgentActivity)(agentActivityApi(runningAgents))
-
-export type AppServices = FileSystem | Path | Crypto | HttpClient.HttpClient | StatusBar | AgentActivity | ChildProcessSpawner | Env
+export type AppServices = FileSystem | Path | Crypto | HttpClient.HttpClient | StatusBar | ChildProcessSpawner | Env
 
 export type AppRuntime = ManagedRuntime.ManagedRuntime<AppServices, never>

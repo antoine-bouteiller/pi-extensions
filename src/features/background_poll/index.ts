@@ -67,6 +67,5 @@ export const feature = ((options: FeatureOptions<PollExec> = {}) => {
       },
     },
     status: { icon: '⏳', name: 'background-poll' },
-    suppressInChild: true,
   }
 }) satisfies FeaturePlugin<PollExec>

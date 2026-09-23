@@ -98,8 +98,6 @@ const isFeatureIndex = (filename: string): boolean => /(?:^|\/)src\/features\/[^
 const isCoordinator = (filename: string): boolean =>
   filename.endsWith('/src/config/feature_coordinator.ts') || filename === 'src/config/feature_coordinator.ts'
 const isRuntimeModule = (filename: string): boolean => filename.endsWith('/src/config/runtime.ts') || filename === 'src/config/runtime.ts'
-const isRuntimeConstructionModule = (filename: string): boolean =>
-  isRuntimeModule(filename) || filename.endsWith('/src/features/sub_agents/runtime.ts') || filename === 'src/features/sub_agents/runtime.ts'
 const isBridgeModule = (filename: string): boolean =>
   filename.endsWith('/src/shared/effect/runtime.ts') || filename === 'src/shared/effect/runtime.ts'
 
@@ -151,7 +149,7 @@ const runtimeReport = (
     return isBridgeModule(filename) ? undefined : 'runtimeEntry'
   }
   if (isImportedReceiver(sourceCode, filename, receiver, 'ManagedRuntime') && method === 'make') {
-    return isRuntimeConstructionModule(filename) ? undefined : 'runtimeConstruction'
+    return isRuntimeModule(filename) ? undefined : 'runtimeConstruction'
   }
   return isRuntimeMethod(method) && isRuntimeReceiver(receiver) && !isBridgeModule(filename) ? 'runtimeEntry' : undefined
 }

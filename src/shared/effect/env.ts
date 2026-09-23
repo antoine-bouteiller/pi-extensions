@@ -1,13 +1,6 @@
 import { Context, Layer } from 'effect'
 
-export const ENVIRONMENT_KEYS = [
-  'MERIDIAN_BASE_URL',
-  'NO_COLOR',
-  'PI_SUBAGENT',
-  'PI_SUBAGENT_OWNER_TOKEN',
-  'PI_SUBAGENT_READONLY',
-  'PI_SUBAGENT_TEMP_DIR',
-] as const
+export const ENVIRONMENT_KEYS = ['MERIDIAN_BASE_URL', 'NO_COLOR'] as const
 
 export type EnvironmentKey = (typeof ENVIRONMENT_KEYS)[number]
 

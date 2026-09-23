@@ -18,7 +18,7 @@ import { type Path } from 'effect/Path'
 import { Type, type Static } from 'typebox'
 
 import { type AppServices } from '#shared/effect/app_services'
-import { type Env, type EnvApi, processEnvironment } from '#shared/effect/env'
+import { type Env, processEnvironment } from '#shared/effect/env'
 import { ToolFailure } from '#shared/effect/errors'
 import { PiCtx } from '#shared/effect/pi_services'
 import { withAbortSignal } from '#shared/effect/runtime'
@@ -35,8 +35,6 @@ import { loadMcpSettings, type McpSettings } from './settings.js'
 import {
   assertOpenableAuthorizationUrl,
   McpError,
-  type McpGatewayPolicy,
-  type McpPolicyRequest,
   type McpServerMap,
   type McpServerStatus as McpServerStatusValue,
   type McpToolAnnotations,
@@ -47,26 +45,6 @@ const SEARCH_FETCH_LIMIT = SEARCH_RESULT_LIMIT + 1
 const LIST_RESULT_LIMIT = 30
 const STARTUP_CONNECT_CONCURRENCY = 4
 const status = createStatusChannel('mcp', { priority: 30, tone: 'muted' })
-
-const READONLY_DBX_TOOLS = new Set(['dbx_list_connections', 'dbx_list_tables', 'dbx_describe_table', 'dbx_get_schema_context'])
-
-export const unrestrictedMcpPolicy: McpGatewayPolicy = {
-  allows: () => true,
-  name: 'unrestricted',
-}
-
-export const readonlyMcpPolicy: McpGatewayPolicy = {
-  allows(request: Readonly<McpPolicyRequest>): boolean {
-    if (isTrue(request.annotations.readOnlyHint) && !isTrue(request.annotations.destructiveHint)) {
-      return true
-    }
-    return request.server === 'dbx' && Object.keys(request.annotations).length === 0 && READONLY_DBX_TOOLS.has(request.remoteName)
-  },
-  name: 'read-only',
-}
-
-export const mcpPolicyFromEnvironment = (environment: EnvApi = processEnvironment): McpGatewayPolicy =>
-  environment.get('PI_SUBAGENT_READONLY') === '1' ? readonlyMcpPolicy : unrestrictedMcpPolicy
 
 export const McpGatewayParameters = Type.Object({
   args: Type.Optional(Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.String({ description: 'A JSON object encoded as a string.' })])),
@@ -130,14 +108,12 @@ interface McpManagerContext {
   callbacks: McpManagerCallbacks
   crypto: Crypto
   pi: ExtensionAPI
-  policy: McpGatewayPolicy
 }
 
 export interface McpGatewayApi {
   readonly configPath: string
   readonly loadConfig: Effect.Effect<{ servers: McpServerMap; settings: McpSettings }, Error, FileSystem | Path | Env | PiCtx>
   readonly createManager: (config: McpServerMap, context: McpManagerContext) => McpGatewayManager | Promise<McpGatewayManager>
-  readonly policy: McpGatewayPolicy
 }
 
 export class McpGateway extends Context.Service<McpGateway, McpGatewayApi>()('pi-extensions/features/mcp/gateway/McpGateway') {}
@@ -664,7 +640,6 @@ export const makeGatewaySession = (pi: ExtensionAPI, registerDirectTool: (tool: 
             },
             crypto,
             pi,
-            policy: gateway.policy,
           })
         )
         const candidate = yield* Effect.callback<McpGatewayManager, McpOperationError>((resume) => {
@@ -809,7 +784,7 @@ export const makeMcpGateway = (): McpGatewayApi => ({
    * Keep the manager behind the session lifecycle boundary: importing this entrypoint and
    * registering the gateway must not initialize MCP SDK transports or native OAuth storage.
    */
-  createManager: (config, { callbacks, crypto, pi, policy }) =>
+  createManager: (config, { callbacks, crypto, pi }) =>
     import('./manager.js').then(
       ({ McpManager: Manager }) =>
         new Manager(config, {
@@ -826,7 +801,6 @@ export const makeMcpGateway = (): McpGatewayApi => ({
                   : Effect.fail(new McpError({ message: `Could not open the OAuth authorization page: ${result.stderr.trim()}` }))
               )
             ),
-          policy,
         })
     ),
   loadConfig: Effect.gen(function* () {
@@ -835,5 +809,4 @@ export const makeMcpGateway = (): McpGatewayApi => ({
     const settings = yield* loadMcpSettings({ agentDir: getAgentDir(), cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() })
     return { servers, settings }
   }),
-  policy: mcpPolicyFromEnvironment(),
 })

@@ -11,11 +11,8 @@ import { FileSystem } from 'effect/FileSystem'
 import { FetchHttpClient } from 'effect/unstable/http'
 
 import {
-  mcpPolicyFromEnvironment,
-  readonlyMcpPolicy,
   renderMcpCall,
   renderMcpResult,
-  unrestrictedMcpPolicy,
   type McpGatewayManager,
   type McpGatewayApi,
   type McpManagerCallbacks,
@@ -26,7 +23,6 @@ import {
 import { feature } from '@/features/mcp/index.js'
 import { loadMcpSettings, type McpSettings } from '@/features/mcp/settings.js'
 import { McpError, type McpServerMap } from '@/features/mcp/types.js'
-import { makeEnvironment } from '@/shared/effect/env.js'
 import { publishStatus } from '@/shared/state/status_bar.js'
 import { type JsonObject, parseJsonText } from '@/shared/utils/json.js'
 
@@ -150,7 +146,6 @@ const createHarness = (
       loadCount += 1
       return { servers: config, settings }
     }),
-    policy: unrestrictedMcpPolicy,
     ...gateway(manager),
   }
   const fixture = createFakePi()
@@ -228,69 +223,6 @@ const authContext = (notifications: { message: string; level: string }[], select
 const callsFor = (harness: ReturnType<typeof createHarness>, method: string): RecordedCall[] => harness.calls.filter((call) => call.method === method)
 
 const signalOf = (value: unknown): unknown => (typeof value === 'object' && value !== null && 'signal' in value ? value.signal : undefined)
-
-describe('MCP gateway policy selection', () => {
-  it.effect('enables read-only policy only for PI_SUBAGENT_READONLY=1', () =>
-    Effect.sync(() => {
-      expect(mcpPolicyFromEnvironment(makeEnvironment({ PI_SUBAGENT_READONLY: '1' }))).toBe(readonlyMcpPolicy)
-      expect(mcpPolicyFromEnvironment(makeEnvironment({ PI_SUBAGENT_READONLY: '0' }))).toBe(unrestrictedMcpPolicy)
-      expect(mcpPolicyFromEnvironment(makeEnvironment({}))).toBe(unrestrictedMcpPolicy)
-      expect(mcpPolicyFromEnvironment(makeEnvironment({ PI_SUBAGENT_READONLY: 'true' }))).toBe(unrestrictedMcpPolicy)
-    })
-  )
-
-  it.effect('allows annotated safe reads and exact DBX exceptions only', () =>
-    Effect.sync(() => {
-      const request = {
-        annotations: { destructiveHint: false, readOnlyHint: true },
-        exposedName: 'linear_get_issue',
-        operation: 'call' as const,
-        remoteName: 'get_issue',
-        server: 'linear',
-      }
-      expect(readonlyMcpPolicy.allows(request)).toBeTrue()
-      expect(
-        readonlyMcpPolicy.allows({
-          ...request,
-          annotations: { destructiveHint: true, readOnlyHint: true },
-        })
-      ).toBeFalse()
-      expect(
-        readonlyMcpPolicy.allows({
-          ...request,
-          annotations: {},
-          remoteName: 'dbx_list_tables',
-          server: 'dbx',
-        })
-      ).toBeTrue()
-      expect(
-        readonlyMcpPolicy.allows({
-          ...request,
-          annotations: {},
-          exposedName: 'dbx_list_tables',
-          remoteName: 'list_tables',
-          server: 'dbx',
-        })
-      ).toBeFalse()
-      expect(
-        readonlyMcpPolicy.allows({
-          ...request,
-          annotations: {},
-          remoteName: 'dbx_execute_sql',
-          server: 'dbx',
-        })
-      ).toBeFalse()
-      expect(
-        readonlyMcpPolicy.allows({
-          ...request,
-          annotations: { readOnlyHint: false },
-          remoteName: 'dbx_list_tables',
-          server: 'dbx',
-        })
-      ).toBeFalse()
-    })
-  )
-})
 
 describe('MCP direct tools and context inventory', () => {
   it.scoped('reads selections from Pi settings again on each session activation', () =>
@@ -399,26 +331,26 @@ describe('MCP direct tools and context inventory', () => {
     })
   )
 
-  it.effect('isolates missing or policy-denied selections and preserves call-time policy failures', () =>
+  it.effect('isolates missing selections and preserves call-time failures', () =>
     Effect.gen(function* () {
       const harness = createHarness(
         {
-          call: () => Effect.fail(new McpError({ message: 'denied by read-only policy' })),
+          call: () => Effect.fail(new McpError({ message: 'remote tool failed' })),
           describe: (name) =>
             name === 'allowed'
               ? Effect.succeed({ inputSchema: { type: 'object' }, name: 'alpha_allowed' })
-              : Effect.fail(new McpError({ message: 'missing or denied by read-only policy' })),
+              : Effect.fail(new McpError({ message: 'missing tool' })),
         },
-        () => ({ policy: readonlyMcpPolicy }),
+        () => ({}),
         testConfig,
-        { directTools: { alpha: ['denied', 'allowed', 'missing'] } }
+        { directTools: { alpha: ['unavailable', 'allowed', 'missing'] } }
       )
       yield* Effect.promise(() => harness.start())
       expect([...harness.fixture.state.tools.keys()]).toEqual(['mcp', 'alpha_allowed'])
       const tool = asTool<{ execute: (id: string, params: JsonObject) => Promise<AgentToolResult<unknown>> }>(
         harness.fixture.state.tools.get('alpha_allowed')
       )
-      expect(tool.execute('direct', {})).rejects.toThrow('denied by read-only policy')
+      expect(tool.execute('direct', {})).rejects.toThrow('remote tool failed')
     })
   )
 
@@ -525,22 +457,6 @@ describe('MCP gateway registration and lifecycle', () => {
       expect(callsFor(harness, 'connect').map((call) => call.values[0])).toEqual(['zeta'])
       expect(statuses).toEqual([{ key: 'mcp', value: 'MCP alpha: connected\nMCP zeta: disconnected' }])
       expect([...harness.fixture.state.tools.keys()]).toEqual(['mcp'])
-    })
-  )
-
-  it.effect('passes its configured policy into each process-local manager', () =>
-    Effect.gen(function* () {
-      let receivedPolicy: unknown
-      const harness = createHarness({}, (manager) => ({
-        createManager: (_config, { policy }) => {
-          receivedPolicy = policy
-          return manager
-        },
-        policy: readonlyMcpPolicy,
-      }))
-
-      yield* Effect.promise(() => harness.start())
-      expect(receivedPolicy).toBe(readonlyMcpPolicy)
     })
   )
 

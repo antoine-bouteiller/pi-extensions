@@ -9,10 +9,6 @@ describe('environment', () => {
       const source = {
         MERIDIAN_BASE_URL: 'http://before',
         NO_COLOR: undefined,
-        PI_SUBAGENT: undefined,
-        PI_SUBAGENT_OWNER_TOKEN: undefined,
-        PI_SUBAGENT_READONLY: undefined,
-        PI_SUBAGENT_TEMP_DIR: undefined,
       }
       const key: EnvironmentKey = 'MERIDIAN_BASE_URL'
       const environment = makeEnvironment(source)

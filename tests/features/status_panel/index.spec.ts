@@ -1,32 +1,27 @@
 import { afterEach, beforeEach } from 'bun:test'
-import { tmpdir, userInfo } from 'node:os'
 
 import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asExtensionContext, asFooterDataProvider, asNarrowed } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtimeWithEnvironment } from '@tests/utils/runtime.js'
-import { Effect, Exit, FileSystem, Layer, Scope } from 'effect'
-import { Crypto } from 'effect/Crypto'
+import { Effect, Exit, Layer, Scope } from 'effect'
 import { TestClock } from 'effect/testing'
 import { FetchHttpClient } from 'effect/unstable/http'
 
-import { join } from '#shared/utils/path'
 import { feature } from '@/features/status_panel/index.js'
 import { makePanelController } from '@/features/status_panel/panel.js'
 import { columns, formatTokens, progressBar } from '@/features/status_panel/render.js'
 import { emptyGitInfoState, emptyModelInfoState } from '@/features/status_panel/state.js'
-import { AgentActivityLive, StatusBarLive } from '@/shared/effect/app_services.js'
-import { runningAgents } from '@/shared/state/agent_activity.js'
-import { azureQuota, consumeSubagentAzureQuota, writeSubagentAzureQuota } from '@/shared/state/azure_quota.js'
+import { StatusBarLive } from '@/shared/effect/app_services.js'
+import { azureQuota } from '@/shared/state/azure_quota.js'
 
 beforeEach(() => azureQuota.set(undefined))
 
 afterEach(() => {
-  runningAgents.publish([])
   azureQuota.set(undefined)
 })
 
-const runtime = runtimeWithEnvironment({ ...process.env, PI_SUBAGENT_OWNER_TOKEN: undefined })
+const runtime = runtimeWithEnvironment(process.env)
 
 type PanelImplementation = ReturnType<typeof feature>['implementation']
 
@@ -63,69 +58,6 @@ const deactivateSession = (implementation: PanelImplementation, ctx: unknown, re
   )
 
 describe('status panel registration', () => {
-  it.effect('registers only Azure response forwarding in a subagent', () => {
-    const ownerToken = '11111111-1111-4111-8111-111111111111'
-    const subagentRuntime = runtimeWithEnvironment({ ...process.env, PI_SUBAGENT_OWNER_TOKEN: ownerToken })
-    return Effect.gen(function* () {
-      const { pi, state, emit } = createFakePi()
-      let dependencyReads = 0
-      const dependencies = {
-        get fetchAnthropicQuota() {
-          dependencyReads += 1
-          return () => Effect.void.pipe(Effect.as(undefined))
-        },
-      }
-
-      feature({ dependencies }).implementation.register(pi, subagentRuntime)
-      yield* Effect.promise(() =>
-        emit(
-          'after_provider_response',
-          { headers: { 'x-ratelimit-limit-tokens': '1000', 'x-ratelimit-remaining-tokens': '250' } },
-          { model: { provider: 'azure-openai-responses' } }
-        )
-      )
-
-      expect(dependencyReads).toBe(0)
-      expect([...state.handlers.keys()]).toEqual(['after_provider_response'])
-      expect(yield* consumeSubagentAzureQuota(ownerToken)).toBe(75)
-    })
-  })
-
-  it.effect('claims a quota handoff once across concurrent consumers', () => {
-    const temporaryRoot = process.env.PI_SUBAGENT_TEMP_DIR || tmpdir()
-    return Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem
-      const token = yield* (yield* Crypto).randomUUIDv4
-      yield* writeSubagentAzureQuota(token, 150)
-      const directory = join(temporaryRoot, 'pi-codex-subagents', userInfo().username, 'quota')
-      const target = join(directory, `${token}.json`)
-      if (process.platform !== 'win32') {
-        expect((yield* fs.stat(directory)).mode & 0o777).toBe(0o700)
-        expect((yield* fs.stat(target)).mode & 0o777).toBe(0o600)
-      }
-      expect((yield* fs.readDirectory(directory)).some((name) => name.includes('.tmp'))).toBe(false)
-      const claimed = yield* Effect.all([consumeSubagentAzureQuota(token), consumeSubagentAzureQuota(token)], { concurrency: 2 })
-      expect(claimed.filter((value) => value === 100)).toHaveLength(1)
-      expect(claimed.filter((value) => value === undefined)).toHaveLength(1)
-      expect(yield* consumeSubagentAzureQuota(token)).toBeUndefined()
-      expect(yield* consumeSubagentAzureQuota('invalid')).toBeUndefined()
-    })
-  })
-
-  it.effect('treats a corrupt quota handoff as absent instead of failing', () => {
-    const temporaryRoot = process.env.PI_SUBAGENT_TEMP_DIR || tmpdir()
-    return Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem
-      const token = yield* (yield* Crypto).randomUUIDv4
-      const directory = join(temporaryRoot, 'pi-codex-subagents', userInfo().username, 'quota')
-      yield* fs.makeDirectory(directory, { recursive: true })
-      yield* fs.writeFileString(join(directory, `${token}.json`), '{ not json')
-
-      expect(yield* consumeSubagentAzureQuota(token)).toBeUndefined()
-      expect((yield* fs.readDirectory(directory)).some((name) => name.startsWith(token))).toBe(false)
-    })
-  })
-
   it.effect('registers the normal main-session lifecycle handlers', () =>
     Effect.sync(() => {
       const { pi, state } = createFakePi()
@@ -142,6 +74,22 @@ describe('status panel registration', () => {
         'agent_settled',
         'after_provider_response',
       ])
+    })
+  )
+
+  it.effect('updates the main-session Azure quota from provider response headers', () =>
+    Effect.gen(function* () {
+      const { pi, emit } = createFakePi()
+      feature().implementation.register(pi, runtime)
+
+      yield* Effect.promise(() =>
+        emit(
+          'after_provider_response',
+          { headers: { 'x-ratelimit-limit-tokens': '1000', 'x-ratelimit-remaining-tokens': '250' } },
+          { model: { provider: 'azure-openai-responses' } }
+        )
+      )
+      expect(azureQuota.get()).toBe(75)
     })
   )
 })
@@ -346,143 +294,12 @@ describe('status panel quota lifecycle', () => {
   )
 })
 
-describe('status panel cross-feature sharing', () => {
-  it.effect('renders subagents published through the shared AgentActivity singleton, as sub-agents does', () =>
-    Effect.gen(function* () {
-      runningAgents.publish([{ color: 'accent', name: '/scout-shared', profile: 'scout' }])
-
-      const { pi } = createFakePi()
-      let renderSidebar: ((width: number) => string[]) | undefined
-      const tui = {
-        render: (_width: number) => [],
-        requestRender() {
-          /* Empty */
-        },
-        terminal: { columns: 120, rows: 30 },
-      }
-      const theme = {
-        bold: (value: string) => value,
-        fg: (_color: string, value: string) => value,
-      }
-      const ui = {
-        custom(
-          factory: (...args: unknown[]) => { render: (width: number) => string[] },
-          options: { onHandle?: (handle: { hide: () => void }) => void }
-        ) {
-          return promiseFromEffect(
-            Effect.callback<void>((resume) => {
-              const component = factory(tui, theme, {}, () => resume(Effect.void))
-              renderSidebar = (width) => component.render(width)
-              options.onHandle?.({
-                hide() {
-                  /* Empty */
-                },
-              })
-            })
-          )
-        },
-        setFooter() {
-          /* Empty */
-        },
-        setTitle() {
-          /* Empty */
-        },
-      }
-      const ctx = {
-        cwd: '/project',
-        getContextUsage: () => undefined,
-        mode: 'tui',
-        model: { contextWindow: 100_000, id: 'model', provider: 'openai' },
-        ui,
-      }
-
-      const descriptor = feature()
-      descriptor.implementation.register(pi, runtime)
-      yield* activateSession(descriptor.implementation, ctx, 'startup')
-
-      if (renderSidebar === undefined) {
-        throw new Error('expected a sidebar renderer')
-      }
-      expect(renderSidebar(44).join('\n')).toContain('/scout-shared')
-
-      yield* deactivateSession(descriptor.implementation, ctx, 'shutdown')
-    })
-  )
-
-  it.effect('keeps re-rendering on agent activity after a session restart', () =>
-    Effect.gen(function* () {
-      const { pi } = createFakePi()
-      let renders = 0
-      const tui = {
-        render: (_width: number) => [],
-        requestRender() {
-          renders += 1
-        },
-        terminal: { columns: 120, rows: 30 },
-      }
-      const theme = {
-        bold: (value: string) => value,
-        fg: (_color: string, value: string) => value,
-      }
-      const ui = {
-        custom(
-          factory: (...args: unknown[]) => { render: (width: number) => string[] },
-          options: { onHandle?: (handle: { hide: () => void }) => void }
-        ) {
-          return promiseFromEffect(
-            Effect.callback<void>((resume) => {
-              factory(tui, theme, {}, () => resume(Effect.void))
-              options.onHandle?.({
-                hide() {
-                  /* Empty */
-                },
-              })
-            })
-          )
-        },
-        setFooter() {
-          /* Empty */
-        },
-        setTitle() {
-          /* Empty */
-        },
-      }
-      const ctx = {
-        cwd: '/project',
-        getContextUsage: () => undefined,
-        mode: 'tui',
-        model: { contextWindow: 100_000, id: 'model', provider: 'openai' },
-        ui,
-      }
-
-      const descriptor = feature()
-      descriptor.implementation.register(pi, runtime)
-      yield* activateSession(descriptor.implementation, ctx, 'startup')
-      renders = 0
-      runningAgents.publish([{ color: 'accent', name: '/first', profile: 'scout' }])
-      expect(renders).toBeGreaterThan(0)
-
-      yield* deactivateSession(descriptor.implementation, ctx, 'replaced')
-      renders = 0
-      runningAgents.publish([{ color: 'accent', name: '/stale', profile: 'scout' }])
-      expect(renders).toBe(0)
-
-      yield* activateSession(descriptor.implementation, ctx, 'resume')
-      renders = 0
-      runningAgents.publish([{ color: 'accent', name: '/second', profile: 'scout' }])
-      expect(renders).toBeGreaterThan(0)
-
-      yield* deactivateSession(descriptor.implementation, ctx, 'shutdown')
-    })
-  )
-})
-
-const panelSessionLayer = Layer.mergeAll(AgentActivityLive, StatusBarLive, FetchHttpClient.layer)
+const panelSessionLayer = Layer.mergeAll(StatusBarLive, FetchHttpClient.layer)
 
 const fakeTheme = { bold: (value: string) => value, fg: (_color: string, value: string) => value }
 
 describe('status panel session fibers', () => {
-  it.effect('shares redraw ticks across parent and background agents until the session ends', () =>
+  it.effect('redraws while the agent is working and stops when it settles or the session ends', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const { pi } = createFakePi()
@@ -543,14 +360,6 @@ describe('status panel session fibers', () => {
         yield* TestClock.adjust('1200 millis')
         expect(renders).toBe(afterSettle)
 
-        runningAgents.publish([
-          { color: 'accent', name: '/first', sessionId: 'session', startedAt: 0 },
-          { color: 'accent', name: '/second', sessionId: 'session', startedAt: 1000 },
-        ])
-        renders = 0
-        yield* TestClock.adjust('400 millis')
-        expect(renders).toBe(1)
-
         yield* handlers.agentStart(agentStart, ctx)
         yield* handlers.agentStart(agentStart, ctx)
         renders = 0
@@ -559,15 +368,9 @@ describe('status panel session fibers', () => {
 
         yield* handlers.agentSettled(agentSettled, ctx)
         renders = 0
-        yield* TestClock.adjust('400 millis')
-        expect(renders).toBe(1)
-
-        runningAgents.publish([{ color: 'accent', name: '/foreign', sessionId: 'other' }])
-        renders = 0
         yield* TestClock.adjust('1200 millis')
         expect(renders).toBe(0)
 
-        runningAgents.publish([{ color: 'accent', name: '/first', sessionId: 'session' }])
         yield* handlers.sessionShutdown({ reason: 'quit', type: 'session_shutdown' }, ctx)
         const afterShutdown = renders
         yield* TestClock.adjust('1200 millis')

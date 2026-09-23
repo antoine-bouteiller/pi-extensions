@@ -11,7 +11,7 @@ import {
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Effect, FileSystem } from 'effect'
 
-import { jsonText, parseJsonText } from '#shared/utils/json'
+import { jsonText } from '#shared/utils/json'
 import { join } from '#shared/utils/path'
 
 import registerProviderRetry from './fixtures/extension.js'
@@ -356,113 +356,6 @@ describe('provider retry session integration', () => {
         expect(retryStarts(harness.events)).toBe(1)
         expect(harness.session.isIdle).toBe(true)
         harness.session.dispose()
-      }),
-    20_000
-  )
-})
-
-const frames = (stdout: string): readonly unknown[] =>
-  stdout
-    .split('\n')
-    .filter((line) => line.length > 0)
-    .map((line) => parseJsonText(line))
-
-const frameType = (value: unknown): string | undefined => {
-  const type = typeof value === 'object' && value !== null ? Reflect.get(value, 'type') : undefined
-  return typeof type === 'string' ? type : undefined
-}
-
-describe('provider retry sub-agent integration', () => {
-  it.scoped(
-    'loads the configured extension in the real worker and waits for native recovery before its result',
-    () =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem
-        const root = yield* fs.makeTempDirectoryScoped({
-          prefix: 'provider-retry-worker-',
-        })
-        const provider = yield* Effect.acquireRelease(
-          Effect.sync(() => startFakeProvider(1)),
-          (active) => Effect.sync(active.close)
-        )
-        const agentDir = join(root, 'agent')
-        const runDir = join(root, 'run')
-        const sessions = join(root, 'sessions')
-        const extensionPath = new URL('fixtures/extension.ts', import.meta.url).pathname
-        yield* fs.makeDirectory(agentDir, { recursive: true })
-        const models = `{"providers":{"fake":{"api":"openai-completions","apiKey":"test-key","baseUrl":"${provider.url}/v1","models":[{"contextWindow":8192,"id":"${MODEL}","maxTokens":1024}]}}}`
-        const settings = jsonText({ extensions: [extensionPath], retry: { baseDelayMs: 1 } })
-        yield* Effect.promise(() => Bun.write(join(agentDir, 'models.json'), models))
-        yield* Effect.promise(() => Bun.write(join(agentDir, 'settings.json'), settings))
-        const entrypoint = new URL('../../../src/features/sub_agents/worker.ts', import.meta.url).pathname
-        const child = yield* Effect.acquireRelease(
-          Effect.sync(() =>
-            Bun.spawn([process.execPath, entrypoint], {
-              cwd: '/tmp',
-              env: { ...process.env, PI_OFFLINE: '1' },
-              stderr: 'pipe',
-              stdin: 'pipe',
-              stdout: 'pipe',
-            })
-          ),
-          (active) => Effect.sync(() => active.kill()).pipe(Effect.ignore, Effect.andThen(Effect.promise(() => active.exited).pipe(Effect.ignore)))
-        )
-        const config = {
-          agent_id: 'agent',
-          run_dir: runDir,
-          session: { expected_dir: sessions, mode: 'create' as const },
-          turn: 1,
-          type: 'config' as const,
-          version: 1 as const,
-          worker: {
-            agentDir,
-            contextCeiling: 100,
-            cwd: '/tmp',
-            memoryPolicy: {
-              inMemory: 'fixed' as const,
-              persistence: 'session_file_only' as const,
-            },
-            model: MODEL,
-            projectTrusted: true,
-            prompt: '',
-            provider: 'fake',
-            resourcePolicy: {
-              configuredExtensions: true as const,
-              contextFiles: false as const,
-              promptTemplates: false as const,
-              skills: false as const,
-            },
-            tools: [],
-            version: 1 as const,
-          },
-        }
-        const task = {
-          agent_id: 'agent',
-          command_id: 'task-command',
-          message: 'say hello',
-          turn: 1,
-          type: 'task' as const,
-        }
-        yield* Effect.promise(() => Promise.resolve(child.stdin.write(`${jsonText(config)}\n`)))
-        yield* Effect.promise(() => Promise.resolve(child.stdin.write(`${jsonText(task)}\n`)))
-        yield* Effect.promise(() => Promise.resolve(child.stdin.flush()))
-        const stdout = yield* Effect.promise(() => new Response(child.stdout).text())
-        const stderr = yield* Effect.promise(() => new Response(child.stderr).text())
-        const exitCode = yield* Effect.promise(() => child.exited)
-        expect(exitCode, stderr).toBe(0)
-        const output = frames(stdout)
-        const ready = output.findIndex((frame) => frameType(frame) === 'ready')
-        const result = output.findIndex((frame) => frameType(frame) === 'result')
-        expect(provider.requests()).toBe(2)
-        expect(ready, stdout).toBeGreaterThanOrEqual(0)
-        expect(result, stdout).toBeGreaterThan(ready)
-        expect(output[result]).toEqual(
-          expect.objectContaining({
-            conclusion: 'recovered',
-            status: 'completed',
-            type: 'result',
-          })
-        )
       }),
     20_000
   )

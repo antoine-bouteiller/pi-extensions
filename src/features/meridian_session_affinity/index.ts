@@ -85,7 +85,7 @@ const makeImplementation = (dependencies: MeridianSessionAffinityDependencies): 
 })
 
 /**
- * Eager on purpose: sub-agent workers call `prompt()` right after `session_start`, so a background
+ * Eager on purpose: sessions can call `prompt()` right after `session_start`, so a background
  * (forked) registration misses the first `before_agent_start` and the unscrubbed pi harness line
  * reaches Meridian, where Anthropic meters it as Extra Usage. The only asynchronous work, the health
  * probe, already runs inside `activate`.

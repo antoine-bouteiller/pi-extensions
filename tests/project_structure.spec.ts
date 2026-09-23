@@ -68,7 +68,6 @@ describe('project structure', () => {
       expect((yield* namesByKind(join(SRC, 'shared'))).directories).toEqual(['effect', 'state', 'utils'])
       expect((yield* namesByKind(join(SRC, 'shared', 'effect'))).files).toEqual([
         'app_services.ts',
-        'bun_host_file_system.ts',
         'crypto.ts',
         'env.ts',
         'errors.ts',
@@ -156,7 +155,7 @@ describe('project structure', () => {
     })
   )
 
-  it.effect('node:fs stays behind the single audited host boundary', () =>
+  it.effect('source uses Effect filesystem services instead of node:fs', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const sources = (yield* descendants(SRC)).filter((path) => path.endsWith('.ts'))
@@ -166,7 +165,7 @@ describe('project structure', () => {
           importers.push(relativePath(SRC, source))
         }
       }
-      expect(importers.toSorted()).toEqual([join('shared', 'effect', 'bun_host_file_system.ts')])
+      expect(importers).toEqual([])
     })
   )
 

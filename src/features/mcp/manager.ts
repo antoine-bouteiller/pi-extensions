@@ -18,16 +18,7 @@ import { isRecord } from '#shared/utils/records'
 import { KeychainCredentialError, type CredentialStore } from './keychain.js'
 import { KeychainOAuthProvider, createOAuthState, oauthCallbackPort, startOAuthCallback, type OAuthCallback, type OpenUrl } from './oauth.js'
 import { boundGatewayOutput, type GatewayContent } from './output.js'
-import {
-  McpError,
-  type McpGatewayPolicy,
-  type McpPolicyOperation,
-  type McpServerMap,
-  type McpServerStatus,
-  type McpToolAnnotations,
-  type OAuthConfig,
-  type ServerConfig,
-} from './types.js'
+import { McpError, type McpServerMap, type McpServerStatus, type McpToolAnnotations, type OAuthConfig, type ServerConfig } from './types.js'
 
 const CONNECT_TIMEOUT_MS = 30_000
 /** Caps the `tools/list` fan-out so a large configuration cannot open every server at once. */
@@ -118,7 +109,6 @@ export interface McpManagerOptions {
   createTransport?: (serverName: string, config: Exclude<ServerConfig, { type?: undefined }>, options: TransportOptions) => Transport
   connectTimeoutMs?: number
   requestTimeoutMs?: number
-  policy?: McpGatewayPolicy
 }
 
 class PendingAuthorization extends Data.TaggedError('PendingAuthorization')<{
@@ -531,7 +521,7 @@ export class McpManager {
 
   list(server: string, options: { signal?: AbortSignal } = {}): Effect.Effect<readonly ToolMetadata[], McpFailure> {
     return this.toolsForServer(server, options.signal).pipe(
-      Effect.map((tools) => tools.filter((tool) => this.isAllowed(tool, 'list')).map((tool) => ({ ...tool, annotations: { ...tool.annotations } })))
+      Effect.map((tools) => tools.map((tool) => ({ ...tool, annotations: { ...tool.annotations } })))
     )
   }
 
@@ -547,7 +537,7 @@ export class McpManager {
       const settled = yield* Effect.forEach(runtimes, (runtime) => Effect.result(this.toolsForServer(runtime.name, options.signal)), {
         concurrency: DISCOVERY_CONCURRENCY,
       })
-      const tools = settled.flatMap((result) => (Result.isSuccess(result) ? result.success : [])).filter((tool) => this.isAllowed(tool, 'search'))
+      const tools = settled.flatMap((result) => (Result.isSuccess(result) ? result.success : []))
       if (tools.length === 0) {
         const firstFailure = settled.find(Result.isFailure)
         if (firstFailure !== undefined) {
@@ -579,7 +569,7 @@ export class McpManager {
   }
 
   describe(tool: string, options: { server?: string; signal?: AbortSignal } = {}): Effect.Effect<ToolMetadata, McpFailure> {
-    return this.resolveTool(tool, options, 'describe').pipe(Effect.map((metadata) => ({ ...metadata, annotations: { ...metadata.annotations } })))
+    return this.resolveTool(tool, options).pipe(Effect.map((metadata) => ({ ...metadata, annotations: { ...metadata.annotations } })))
   }
 
   call(
@@ -588,7 +578,7 @@ export class McpManager {
     options: { server?: string; signal?: AbortSignal } = {}
   ): Effect.Effect<AgentToolResult<unknown>, McpFailure, FileSystem | Path> {
     return Effect.gen({ self: this }, function* () {
-      const metadata = yield* this.resolveTool(tool, options, 'call')
+      const metadata = yield* this.resolveTool(tool, options)
       const runtime = yield* this.runtime(metadata.server)
       const { connection } = runtime
       if (connection === undefined) {
@@ -856,18 +846,14 @@ export class McpManager {
     })
   }
 
-  private resolveTool(
-    requested: string,
-    options: { server?: string; signal?: AbortSignal },
-    operation: 'describe' | 'call'
-  ): Effect.Effect<ToolMetadata, McpFailure> {
+  private resolveTool(requested: string, options: { server?: string; signal?: AbortSignal }): Effect.Effect<ToolMetadata, McpFailure> {
     return Effect.gen({ self: this }, function* () {
       if (isNotNullOrUndefined(options.server) && isNotEmptyString(options.server)) {
         const tools = yield* this.toolsForServer(options.server, options.signal)
         const matches = tools.filter((tool) => tool.name === requested || tool.remoteName === requested)
         const [onlyMatch] = matches
         if (matches.length === 1 && onlyMatch !== undefined) {
-          return yield* this.requireAllowed(onlyMatch, operation)
+          return onlyMatch
         }
         if (matches.length > 1) {
           return yield* new McpError({ message: `Ambiguous MCP tool ${quoted(requested)}` })
@@ -894,7 +880,7 @@ export class McpManager {
         const tools = yield* this.toolsForServer(target.runtime.name, options.signal)
         const match = tools.find((tool) => tool.name === requested)
         if (match !== undefined) {
-          return yield* this.requireAllowed(match, operation)
+          return match
         }
         return yield* new McpError({ message: `Unknown MCP tool ${quoted(requested)}` })
       }
@@ -913,7 +899,7 @@ export class McpManager {
       const matches = all.filter((tool) => tool.name === requested || tool.remoteName === requested)
       const [onlyMatch] = matches
       if (matches.length === 1 && onlyMatch !== undefined) {
-        return yield* this.requireAllowed(onlyMatch, operation)
+        return onlyMatch
       }
       if (matches.length > 1) {
         return yield* new McpError({ message: `Ambiguous MCP tool ${quoted(requested)}; use its exposed server-prefixed name` })
@@ -924,34 +910,6 @@ export class McpManager {
 
   private toolsForServer(server: string, signal?: AbortSignal): Effect.Effect<ToolMetadata[], McpFailure> {
     return this.connect(server, { signal }).pipe(Effect.map((connection) => connection.tools))
-  }
-
-  private isAllowed(tool: ToolMetadata, operation: McpPolicyOperation): boolean {
-    const { policy } = this.options
-    if (policy === undefined) {
-      return true
-    }
-    try {
-      return policy.allows({
-        annotations: { ...tool.annotations },
-        exposedName: tool.name,
-        operation,
-        remoteName: tool.remoteName,
-        server: tool.server,
-      })
-    } catch {
-      return false
-    }
-  }
-
-  private requireAllowed(tool: ToolMetadata, operation: 'describe' | 'call'): Effect.Effect<ToolMetadata, McpFailure> {
-    if (this.isAllowed(tool, operation)) {
-      return Effect.succeed(tool)
-    }
-    const policyName = (this.options.policy?.name ?? 'configured').replaceAll(/[\r\n]/g, ' ').slice(0, 80)
-    const remoteName = quoted(tool.remoteName.slice(0, 128))
-    const server = quoted(tool.server.slice(0, 128))
-    return Effect.fail(new McpError({ message: `MCP tool ${remoteName} on server ${server} is denied by the ${policyName} policy` }))
   }
 
   private establish(

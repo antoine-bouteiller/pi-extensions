@@ -1,6 +1,6 @@
 # Project structure
 
-This repository is one Pi package and one Pi extension. `src/index.ts` is the only extension
+This repository is one Pi package containing one Pi extension. `src/index.ts` is the only extension
 entrypoint: it default-exports the single Pi extension factory that Pi loads, both from the
 packaged manifest and from the linked local-development `src/` directory. Every capability
 under `src/features/` is an internal module, not a separately installed or auto-loaded Pi
@@ -22,17 +22,17 @@ src/
 │   ├── claude_code/{index,discovery}.ts
 │   ├── comment_checker/{index,checker}.ts
 │   ├── hashline/{index,tools}.ts
+│   ├── herdr/{index,herdr}.ts
 │   ├── mcp/{index,gateway,config,keychain,manager,oauth,output,types}.ts
 │   ├── meridian_session_affinity/{index,affinity,scrub}.ts
 │   ├── prompt_rewind/{index,rewind}.ts
 │   ├── provider_retry/{index,retry}.ts
 │   ├── rules/{index,rules}.ts
 │   ├── status_panel/{index,panel,footer,git,provider,render,sidebar,split_pane,state,statuses}.ts
-│   ├── sub_agents/{index,model,operator,orchestrator,process,protocol,runtime,store,tools,worker}.ts; spec/{sub-agents,agent-profiles,orchestration,delegation-tools,operator-surface}.spec.md
 │   └── webfetch/{index,fetch}.ts
 └── shared/
-    ├── effect/{app_services,bun_host_file_system,bun_services,errors,feature,pi_services,runtime}.ts
-    ├── state/{agent_activity,azure_quota,status_bar,store}.ts
+    ├── effect/{app_services,bun_services,errors,feature,pi_services,runtime}.ts
+    ├── state/{azure_quota,status_bar,store}.ts
     └── utils/{json,predicates,protected_paths,records,tool_output}.ts
 
 tests/
@@ -41,8 +41,8 @@ tests/
 ├── registration.spec.ts
 ├── config/{feature_coordinator,runtime}.spec.ts
 ├── features/<feature>/...*.spec.ts   # mirrors src/features
-├── shared/effect/{app_services,bun_host_file_system,runtime}.spec.ts
-├── shared/state/{agent_activity,status_bar}.spec.ts
+├── shared/effect/{app_services,runtime}.spec.ts
+├── shared/state/{status_bar}.spec.ts
 ├── shared/utils/{predicates,protected_paths,tool_output}.spec.ts
 └── utils/{abort_controller,bun_effect,casts,deferred,fake_pi,http,loopback_port,process_env,runtime}.ts
     └── process_env.spec.ts           # the one helper with behaviour worth pinning
@@ -63,7 +63,7 @@ src/index.ts
   bootstrap, feature health, and the complete session lifecycle. In particular, it alone registers
   `session_start` and `session_shutdown`.
 - Every `src/features/<snake_case_name>/index.ts` exports one `feature: FeaturePlugin` factory.
-  Its descriptor identity has an `id`, `{ icon, name }`, and optional intrinsic `suppressInChild`.
+  Its descriptor identity has an `id` and `{ icon, name }`.
   The registry is a bare ordered list of factory calls. An eager descriptor supplies
   `implementation: { register(pi, runtime), activate?, deactivate? }`; a background descriptor
   instead supplies `prepare: Effect<FeatureImplementation, FeaturePreflightError, AppServices>`.

@@ -25,6 +25,5 @@ export const feature = ((options: FeatureOptions<RulesEnvironment> = {}) => {
       },
     },
     status: { icon: '📜', name: 'rules' },
-    suppressInChild: true,
   }
 }) satisfies FeaturePlugin<RulesEnvironment>

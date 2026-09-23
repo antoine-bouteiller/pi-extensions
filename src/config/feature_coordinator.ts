@@ -3,7 +3,7 @@ import { Cause, Effect, Exit, Fiber, Result, Schema, Scope, Semaphore } from 'ef
 
 import { type AppRuntime, type AppServices, StatusBar } from '#shared/effect/app_services'
 import { type FeatureDescriptor, type FeatureImplementation } from '#shared/effect/feature'
-import { type HandlerServices, makeEventHandler, runtimeEnvironment } from '#shared/effect/runtime'
+import { type HandlerServices, makeEventHandler } from '#shared/effect/runtime'
 
 type SafeReason =
   | 'activation failed'
@@ -49,7 +49,6 @@ const FeatureDescriptorInput = Schema.Struct({
   implementation: Schema.optional(Schema.Unknown),
   prepare: Schema.optional(Schema.Unknown),
   status: Schema.optional(Schema.Unknown),
-  suppressInChild: Schema.optional(Schema.Unknown),
 })
 const decodeFeatureDescriptor = (input: unknown) => {
   try {
@@ -126,12 +125,6 @@ const validateBackground = (prepare: unknown, hasImplementation: boolean, id: st
   }
 }
 
-const validateChildSuppression = (value: unknown, id: string): void => {
-  if (value !== undefined && typeof value !== 'boolean') {
-    configurationError(`${id} suppressInChild must be a boolean`)
-  }
-}
-
 const validate = (features: readonly unknown[]): void => {
   const ids = new Set<string>()
   const descriptors = new Set<unknown>()
@@ -139,7 +132,6 @@ const validate = (features: readonly unknown[]): void => {
     const input = decodeFeatureDescriptor(feature)
     const id = validateIdentity(feature, input.id, ids, descriptors)
     validateStatus(input.status, id)
-    validateChildSuppression(input.suppressInChild, id)
     if (input.bootstrap === 'eager') {
       validateEager(input.implementation, Object.hasOwn(input, 'prepare'), id)
     } else if (input.bootstrap === 'background') {
@@ -172,10 +164,8 @@ export const makeFeatureCoordinator = (input: {
   readonly runtime: AppRuntime
   readonly features: readonly FeatureDescriptor[]
 }): FeatureCoordinator => {
-  const enabled =
-    runtimeEnvironment(input.runtime).get('PI_SUBAGENT') === '1' ? input.features.filter((plugin) => plugin.suppressInChild !== true) : input.features
-  validate(enabled)
-  const records: FeatureRecord[] = enabled.map((plugin) => ({
+  validate(input.features)
+  const records: FeatureRecord[] = input.features.map((plugin) => ({
     health: { _tag: 'checking' },
     implementation: plugin.bootstrap === 'eager' ? plugin.implementation : undefined,
     plugin,

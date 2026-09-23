@@ -41,5 +41,4 @@ export const feature = ((_options: FeatureOptions<undefined> = {}) => ({
     },
   },
   status: { icon: '❓', name: 'ask-user' },
-  suppressInChild: true,
 })) satisfies FeaturePlugin<undefined>
