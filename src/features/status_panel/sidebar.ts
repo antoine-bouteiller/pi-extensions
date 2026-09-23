@@ -310,22 +310,7 @@ export const renderSidebarLines = ({
         ]
       : []),
   ]
-  const mcp = statusRows(
-    state.extensionStatuses.filter((status) => status.key === 'mcp').map((status) => ({ ...status, text: status.text.replace(/^MCP\s+/, '') })),
-    theme
-  )
-  if (mcp.length > 0) {
-    groups.push({
-      dropRank: 15,
-      name: 'mcp',
-      required: false,
-      rows: panel({ color: 'blue', rows: mcp, theme, title: 'MCP', width: panelWidth }),
-    })
-  }
-  const statuses = statusRows(
-    state.extensionStatuses.filter((status) => status.key !== 'mcp'),
-    theme
-  )
+  const statuses = statusRows(state.extensionStatuses, theme)
   if (statuses.length > 0) {
     groups.push({
       dropRank: 10,

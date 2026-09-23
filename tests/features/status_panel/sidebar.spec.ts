@@ -184,30 +184,27 @@ describe('sidebar rendering', () => {
     })
   )
 
-  it.effect('renders MCP servers in their own panel instead of STATUS', () =>
+  it.effect('renders all extension statuses in the STATUS panel', () =>
     Effect.sync(() => {
       const lines = renderSidebarLines({
         height: 48,
         state: {
           ...state,
           extensionStatuses: [
-            { key: 'mcp', text: 'MCP linear: connected' },
-            { key: 'mcp', text: 'MCP slack: auth needed' },
+            { key: 'service', text: 'service connected' },
+            { key: 'service', text: 'service auth needed' },
             { key: 'index', text: 'index ready' },
           ],
         },
         theme,
         width: 44,
       }).map(stripAnsi)
-      const mcpIndex = lines.findIndex((line) => line.includes('MCP'))
       const statusIndex = lines.findIndex((line) => line.includes('STATUS'))
 
-      expect(mcpIndex).toBeGreaterThan(-1)
-      expect(statusIndex).toBeGreaterThan(mcpIndex)
-      expect(lines.slice(mcpIndex, statusIndex).join('\n')).toContain('linear: connected')
-      expect(lines.slice(mcpIndex, statusIndex).join('\n')).toContain('slack: auth needed')
+      expect(statusIndex).toBeGreaterThan(-1)
+      expect(lines.slice(statusIndex).join('\n')).toContain('service connected')
+      expect(lines.slice(statusIndex).join('\n')).toContain('service auth needed')
       expect(lines.slice(statusIndex).join('\n')).toContain('index ready')
-      expect(lines.slice(statusIndex).join('\n')).not.toContain('linear: connected')
     })
   )
 

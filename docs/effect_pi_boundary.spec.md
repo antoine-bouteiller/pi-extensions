@@ -9,9 +9,8 @@ related: [docs/project_structure.md]
 ## 2. Problem Statement
 
 Pi is a callback-and-promise host; this package is an Effect program. Crossings have drifted:
-some tools drop Pi cancellation, commands enter the runtime inline, fibers have no owner, and
-the current process runtime imports and initializes MCP even when MCP is disabled. This spec
-defines one boundary and one independently enabled feature contract.
+some tools drop Pi cancellation, commands enter the runtime inline, and fibers have no owner.
+This spec defines one boundary and one independently enabled feature contract.
 
 - `[G-1]` Every Pi callback kind (tool, event, command) has one supported Effect entry and
   one supported Effect-to-Pi service boundary.
@@ -25,7 +24,7 @@ defines one boundary and one independently enabled feature contract.
 - `[G-7]` Every enabled feature has a persistent, distinct icon/name health status.
 - `[G-8]` A failed external check registers no callbacks for its feature, reports a persistent
   error, and retries in the next session without delaying `session_start`.
-- `[G-9]` Disabling MCP removes its import, service initialization, and resource acquisition.
+- `[G-9]` Disabling a feature removes its import, service initialization, and resource acquisition.
 
 ## 3. Key Design Decisions
 
@@ -52,7 +51,7 @@ defines one boundary and one independently enabled feature contract.
 | `[KD-16]` Explicit enablement        | `src/config/features.ts` has one explicit import and one stable ordered registry entry per enabled feature. Commenting **both** lines disables it.                                                                                                                                         | There is no auto-discovery or side-effect enablement.                                                                                                                                       |
 | `[KD-17]` Mixed bootstrap            | Eager descriptors validate/register synchronously in registry order at extension load. Only comment-checker background-prepares and late-registers; Meridian is eager so its scrub precedes a session's immediate first prompt. Eager activation is awaited in registry order per session. | One-shot handlers cannot be missed; only external checks are nonblocking.                                                                                                                   |
 | `[KD-18]` Feature health             | The coordinator owns one `FeatureHealth` enum (`checking`, `healthy`, `error`) and persistently publishes it for every enabled descriptor using §8.12 metadata.                                                                                                                            | Generic, distinct status makes independent failures observable without a second poisoned health state.                                                                                      |
-| `[KD-19]` MCP ownership              | The base runtime has no MCP import or `McpGateway` service. The eager MCP module constructs a plain feature-owned gateway value and provides it to its callback effects.                                                                                                                   | Commenting MCP's two config lines fully disables MCP.                                                                                                                                       |
+| `[KD-19]` Feature resource ownership | The base runtime has no feature imports or feature-owned services. Each feature owns its values and provides them to its callback effects.                                                                                                                                                 | Commenting a feature's two config lines fully disables it.                                                                                                                                  |
 
 ## 4. Principles & Intents
 
@@ -115,16 +114,16 @@ Pi callbacks ── feature index/coordinator ── shared bridges ── AppRu
                                       (no shared -> config or shared -> feature dependency)
 ```
 
-| Component            | Module                                            | Responsibility / public surface                                                                                                       |
-| -------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Shared runtime types | `src/shared/effect/app_services.ts`               | `AppServices`, `AppRuntime`, shared status/activity services (`AppServices` is currently defined at :81 and `AppRuntime` at :83).     |
-| Base runtime         | `src/config/runtime.ts`                           | Build the one `AppRuntime` from Bun FS/path, HTTP, status, and activity layers; after this amendment it imports no `#features/mcp/*`. |
-| Inbound bridges      | `src/shared/effect/runtime.ts`                    | `makeToolExecutor`, `makeEventHandler`, proposed `makeCommandHandler`, `perInvocation`, `HandlerServices`.                            |
-| Outbound services    | `src/shared/effect/pi_services.ts` / `runtime.ts` | `PiCtx`, `Ui`, `makeUi`; generic `withAbortSignal` remains in `runtime.ts:46-51`. `PiCtx` is invocation-local at `pi_services.ts:4`.  |
-| Feature contract     | `src/shared/effect/feature.ts`                    | Generic descriptor types only. It imports shared types/Pi SDK types, never config types.                                              |
-| Coordinator          | `src/config/feature_coordinator.ts`               | Validate, register, maintain state, publish statuses, own session scopes/lifecycle.                                                   |
-| Registry             | `src/config/features.ts`                          | Explicit factory imports and ordered descriptor `features`; `registerFeatures` delegates to coordinator.                              |
-| Feature index        | `src/features/*/index.ts`                         | Export `feature`; own callback registrations and feature-owned preparation/resources.                                                 |
+| Component            | Module                                            | Responsibility / public surface                                                                                                      |
+| -------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Shared runtime types | `src/shared/effect/app_services.ts`               | `AppServices`, `AppRuntime`, shared status/activity services (`AppServices` is currently defined at :81 and `AppRuntime` at :83).    |
+| Base runtime         | `src/config/runtime.ts`                           | Build the one `AppRuntime` from Bun FS/path, HTTP, status, and activity layers; it imports no `#features/*`.                         |
+| Inbound bridges      | `src/shared/effect/runtime.ts`                    | `makeToolExecutor`, `makeEventHandler`, proposed `makeCommandHandler`, `perInvocation`, `HandlerServices`.                           |
+| Outbound services    | `src/shared/effect/pi_services.ts` / `runtime.ts` | `PiCtx`, `Ui`, `makeUi`; generic `withAbortSignal` remains in `runtime.ts:46-51`. `PiCtx` is invocation-local at `pi_services.ts:4`. |
+| Feature contract     | `src/shared/effect/feature.ts`                    | Generic descriptor types only. It imports shared types/Pi SDK types, never config types.                                             |
+| Coordinator          | `src/config/feature_coordinator.ts`               | Validate, register, maintain state, publish statuses, own session scopes/lifecycle.                                                  |
+| Registry             | `src/config/features.ts`                          | Explicit factory imports and ordered descriptor `features`; `registerFeatures` delegates to coordinator.                             |
+| Feature index        | `src/features/*/index.ts`                         | Export `feature`; own callback registrations and feature-owned preparation/resources.                                                |
 
 ## 8. Detailed Design
 
@@ -139,17 +138,14 @@ public API after this change is `getOrCreateAppRuntime(): AppRuntime` (an old
 That private layer merges Bun platform services, `FetchHttpClient`, `StatusBarLive`, and `EnvLive`
 (the current composition is in `src/config/runtime.ts`). Effectful platform
 services—`FileSystem`, `Path`, and `ChildProcessSpawner`—come from `AppServices` through context;
-the pure path helpers belong in `src/shared/utils/path.ts`, not in a service. Remove the current
-`#features/mcp/gateway` import at :5, `ProcessServices`/`ProcessRuntime` widening at :8-9, and
-`McpGatewayLive` at :24. `src/index.ts:3-8` obtains the shared runtime once and delegates to
-`registerFeatures`; it imports no feature.
+the pure path helpers belong in `src/shared/utils/path.ts`, not in a service.
+`src/index.ts:3-8` obtains the shared runtime once and delegates to `registerFeatures`; it imports
+no feature.
 
-An implementation owns non-shared values. Eager MCP constructs a plain `McpGatewayApi` value when
-`src/features/mcp/index.ts` is imported, captures it in its `FeatureImplementation`, and each MCP
-callback effect is explicitly provided that value with the `McpGateway` service tag. It does not use
-`McpGatewayLive` or add `McpGateway` to `AppServices`. A feature needing a session resource acquires
-and releases it in its activation effect/scope. Therefore commenting MCP's import and registry entry
-means neither its module nor gateway value/config/socket resources are evaluated or acquired.
+An implementation owns non-shared values and provides them to its callback effects without adding
+them to `AppServices`. A feature needing a session resource acquires and releases it in its
+activation effect/scope. Commenting its import and registry entry means neither its module nor
+its resources are evaluated or acquired.
 
 ### 8.2 Inbound bridges
 
@@ -269,8 +265,7 @@ export const features = [
 ] satisfies readonly FeatureDescriptor[]
 ```
 
-Commenting both matching lines disables that feature. In particular, the MCP import and its array
-entry are both removed/commented, so no MCP initialization occurs (§8.1).
+Commenting both matching lines disables that feature, including its initialization (§8.1).
 
 At extension load the coordinator validates the complete list, creates process-level records, and
 registers every eager descriptor's direct implementation synchronously in list order. It then
@@ -395,11 +390,11 @@ lines; the symbol is durable when a line drifts (`[C-4]`).
 | Scope     | Rule       | Divergence                                               | Current sites/symbols                                                                                                                                                                            |
 | --------- | ---------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Non-goal  | `[KD-3]`   | Inline tool bridges omit the standard executor behavior. | None. Every site is migrated: `makeToolExecutor` now passes a `ToolInvocation` record and takes `interruptOnAbort` for cooperative bodies.                                                       |
-| Non-goal  | `[KD-5]`   | Inline command bridges.                                  | None. `prompt_rewind` and `mcp` now use `makeCommandHandler`.                                                                                                                                    |
+| Non-goal  | `[KD-5]`   | Inline command bridges.                                  | None. `prompt_rewind` uses `makeCommandHandler`.                                                                                                                                                 |
 | Exception | `[KD-6]`   | Verified memory-only synchronous Effect execution.       | None. Memory-only state is built with `Ref.makeUnsafe`/`Semaphore.makeUnsafe` and read with `Ref.getUnsafe`; the status panel holds its state in a `MutableRef` and the sidebar in plain locals. |
 | Non-goal  | `[KD-7]`   | Existing fork policies.                                  | None. Every status-panel fork names the session scope (`Effect.forkIn`), and the synchronous footer callback enters Effect through `Queue.offerUnsafe` on a session-scoped queue.                |
 | Non-goal  | `[KD-8]`   | Runtime re-entry from effectful code.                    | None. `mutationQueueSlot` (`src/shared/effect/mutation_queue.ts`) acquires Pi's queue as a scoped resource, so the guarded work stays on the calling fiber.                                      |
-| Non-goal  | `[KD-14a]` | Direct runtime adapters outside approved owners.         | None. `KeychainOAuthProvider` builds its promise-returning SDK members with `toPromiseMethod` from the bridge module, and the status panel resolves its services inside `sessionStart`.          |
+| Non-goal  | `[KD-14a]` | Direct runtime adapters outside approved owners.         | None. The status panel resolves its services inside `sessionStart`.                                                                                                                              |
 
 ### 8.9 Test boundary
 
@@ -419,10 +414,6 @@ lines; the symbol is durable when a line drifts (`[C-4]`).
 - Comment-checker tests inject `which`, assert the absolute resolved path is captured and used by the
   runner, and cover missing/relative paths. Meridian tests use a TestClock timeout and assert URL
   normalization, non-redirecting 2xx-only behavior, body discard, and redaction.
-- Build an isolated test entry that imports the base runtime and a registry with no MCP descriptor;
-  inspect Bun's build metafile and assert no `src/features/mcp/` input is reachable. With MCP enabled,
-  spy on its gateway factory to assert one construction and explicit callback-effect provision,
-  never a widened `AppServices` member.
 - Invoke a `makeToolExecutor` tool with an already-aborted signal and prove its body was not built.
 
 ### 8.10 Checklist for a new feature
@@ -451,10 +442,8 @@ src/config/runtime.ts              allow: canonical ManagedRuntime.make for AppR
 all other src/**                   deny: pi.register*, pi.on, bridge helpers, runtime construction/entry
 ```
 
-`toPromiseMethod` in `src/shared/effect/runtime.ts` is the sanctioned adapter for third-party
-contracts that declare promise-returning members, such as the MCP SDK's `OAuthClientProvider`: the
-logic stays in Effect and only the outermost method crosses. Memory-only synchronous state uses the
-`*Unsafe` constructors and readers instead of runtime entry, so no §8.8 site governed by
+Memory-only synchronous state uses the `*Unsafe` constructors and readers instead of runtime
+entry, so no §8.8 site governed by
 `no-effect-pi-boundary` carries a disable comment. `[KD-9]` remains outside this rule. The lint rule also rejects
 `session_start`/`session_shutdown` registration from a feature index and rejects config runtime
 imports matching `#features/*`.
@@ -471,7 +460,6 @@ Every enabled descriptor uses exactly this metadata and its `feature:<id>` key:
 | `comment-checker`           | 💬   | `comment-checker` |
 | `hashline`                  | #️⃣   | `hashline`        |
 | `herdr`                     | ↗    | `herdr`           |
-| `mcp`                       | 🔌   | `mcp`             |
 | `meridian-session-affinity` | 🧭   | `meridian`        |
 | `prompt-rewind`             | ↩️   | `prompt-rewind`   |
 | `rules`                     | 📜   | `rules`           |
@@ -484,12 +472,12 @@ N/A
 
 ## Changelog
 
-| Date       | Amendment                                                                                                                                                          | Sections affected | Reason                                                                                                                                                                                                                                                                                              |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2026-08-14 | Initial boundary specification                                                                                                                                     | 2–9               | Define the Effect/Pi crossing and conformance target.                                                                                                                                                                                                                                               |
-| 2026-08-24 | Add independent feature plugins, background preflight, and generic persistent health                                                                               | 2–8               | Make features independently enabled, registered, checked, and observable without blocking session startup.                                                                                                                                                                                          |
-| 2026-08-24 | Amend boundary ownership, runtime composition, discriminated plugin contract, bootstrap, coordinator races/state, status/security behavior, conformance, and tests | 2–8               | Resolve all review blockers: implementation-returning preparation, synchronous eager registration/ordered activation, only comment-checker/Meridian background prepare, session-only context, resilient status policy, Meridian HTTP security, full MCP disablement, and lifecycle migration scope. |
-| 2026-08-24 | Complete descriptor-only registry composition and remove completed lifecycle/runtime migrations from conformance                                                   | 8                 | Make configuration the sole enablement surface and retain only active divergence inventory.                                                                                                                                                                                                         |
-| 2026-09-03 | Close the `[KD-6]`, `[KD-7]`, and `[KD-14a]` divergences and name `toPromiseMethod` as the SDK-adapter bridge                                                      | 8.8, 8.11         | Unsafe constructors, `MutableRef`, session-scoped forks, and one bridge adapter replace every inline boundary disable.                                                                                                                                                                              |
-| 2026-09-11 | Make `meridian-session-affinity` eager                                                                                                                             | 3, 8.4, 8.5, 8.10 | Sub-agent workers prompt immediately after `session_start`; the forked background registration missed the first `before_agent_start`, so the unscrubbed pi harness line reached Meridian and Anthropic metered it as Extra Usage (`You've hit your individual spend limit`).                        |
-| 2026-09-15 | Remove automatic theme status metadata                                                                                                                             | 8.12              | The automatic theme feature was removed.                                                                                                                                                                                                                                                            |
+| Date       | Amendment                                                                                                                                                          | Sections affected | Reason                                                                                                                                                                                                                                                                                                  |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-08-14 | Initial boundary specification                                                                                                                                     | 2–9               | Define the Effect/Pi crossing and conformance target.                                                                                                                                                                                                                                                   |
+| 2026-08-24 | Add independent feature plugins, background preflight, and generic persistent health                                                                               | 2–8               | Make features independently enabled, registered, checked, and observable without blocking session startup.                                                                                                                                                                                              |
+| 2026-08-24 | Amend boundary ownership, runtime composition, discriminated plugin contract, bootstrap, coordinator races/state, status/security behavior, conformance, and tests | 2–8               | Resolve all review blockers: implementation-returning preparation, synchronous eager registration/ordered activation, only comment-checker/Meridian background prepare, session-only context, resilient status policy, Meridian HTTP security, full feature disablement, and lifecycle migration scope. |
+| 2026-08-24 | Complete descriptor-only registry composition and remove completed lifecycle/runtime migrations from conformance                                                   | 8                 | Make configuration the sole enablement surface and retain only active divergence inventory.                                                                                                                                                                                                             |
+| 2026-09-03 | Close the `[KD-6]`, `[KD-7]`, and `[KD-14a]` divergences                                                                                                           | 8.8, 8.11         | Unsafe constructors, `MutableRef`, session-scoped forks, and one bridge adapter replace every inline boundary disable.                                                                                                                                                                                  |
+| 2026-09-11 | Make `meridian-session-affinity` eager                                                                                                                             | 3, 8.4, 8.5, 8.10 | Sub-agent workers prompt immediately after `session_start`; the forked background registration missed the first `before_agent_start`, so the unscrubbed pi harness line reached Meridian and Anthropic metered it as Extra Usage (`You've hit your individual spend limit`).                            |
+| 2026-09-15 | Remove automatic theme status metadata                                                                                                                             | 8.12              | The automatic theme feature was removed.                                                                                                                                                                                                                                                                |

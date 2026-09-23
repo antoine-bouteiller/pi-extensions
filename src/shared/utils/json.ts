@@ -1,6 +1,6 @@
 import { Result, Schema } from 'effect'
 
-export type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject
+type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject
 export interface JsonObject {
   [key: string]: JsonValue | undefined
 }

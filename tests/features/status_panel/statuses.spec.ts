@@ -18,12 +18,12 @@ const footerData = (entries: Record<string, string>) =>
 describe('collectStatuses', () => {
   it.effect('renders and splits a shared-channel status once despite the mirror into pi', () =>
     Effect.sync(() => {
-      const channel = createStatusChannel('collect-mcp', { tone: 'muted' })
-      channel.set(ctx, { text: 'MCP linear: connected\nMCP slack: needs auth' })
+      const channel = createStatusChannel('collect-service', { tone: 'muted' })
+      channel.set(ctx, { text: 'service connected\nservice needs auth' })
 
-      const collected = collectStatuses(footerData({ 'collect-mcp': 'MCP linear: connected\nMCP slack: needs auth' }))
+      const collected = collectStatuses(footerData({ 'collect-service': 'service connected\nservice needs auth' }))
 
-      expect(statusLines(collected.filter((entry) => entry.key === 'collect-mcp'))).toEqual(['MCP linear: connected', 'MCP slack: needs auth'])
+      expect(statusLines(collected.filter((entry) => entry.key === 'collect-service'))).toEqual(['service connected', 'service needs auth'])
       channel.clear(ctx)
     })
   )

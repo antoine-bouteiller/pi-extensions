@@ -39,7 +39,7 @@ tester.run('pi-extensions/no-effect-pi-boundary', noEffectPiBoundaryRule, {
       ...at('src/config/other.ts', 'runtime.runFork(effect); this.runtime["runPromise"](effect); runtime.runCallback(effect);'),
       errors: [{ messageId: 'runtimeEntry' }, { messageId: 'runtimeEntry' }, { messageId: 'runtimeEntry' }],
     },
-    { ...at('src/config/runtime.ts', 'import gateway from "#features/mcp/gateway";'), errors: [{ messageId: 'featureRuntimeImport' }] },
+    { ...at('src/config/runtime.ts', 'import tool from "#features/example/tool";'), errors: [{ messageId: 'featureRuntimeImport' }] },
     { ...at('src/another/place.ts', 'pi.registerCommand({});'), errors: [{ messageId: 'piRegistration' }] },
     {
       ...at('src/config/other.ts', 'input!.pi.registerTool({}); (input as Input).pi["registerCommand"]({});'),
@@ -91,11 +91,11 @@ tester.run('pi-extensions/no-effect-pi-boundary', noEffectPiBoundaryRule, {
     {
       ...at(
         'src/config/runtime.ts',
-        'const gateway = import("#features/mcp/gateway"); async function load() { return await import("#features/mcp/gateway"); }'
+        'const tool = import("#features/example/tool"); async function load() { return await import("#features/example/tool"); }'
       ),
       errors: [{ messageId: 'featureRuntimeImport' }, { messageId: 'featureRuntimeImport' }],
     },
-    { ...at('src/config/runtime.ts', 'export { gateway } from "#features/mcp/gateway";'), errors: [{ messageId: 'featureRuntimeImport' }] },
+    { ...at('src/config/runtime.ts', 'export { tool } from "#features/example/tool";'), errors: [{ messageId: 'featureRuntimeImport' }] },
   ],
   valid: [
     at('src/features/example/index.ts', 'pi.registerTool({}); pi.on("message", () => {});'),

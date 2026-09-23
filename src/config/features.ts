@@ -8,7 +8,6 @@ import { feature as claudeCode } from '#features/claude_code/index'
 import { feature as commentChecker } from '#features/comment_checker/index'
 import { feature as hashline } from '#features/hashline/index'
 import { feature as herdr } from '#features/herdr/index'
-import { feature as mcp } from '#features/mcp/index'
 import { feature as meridianSessionAffinity } from '#features/meridian_session_affinity/index'
 import { feature as promptRewind } from '#features/prompt_rewind/index'
 import { feature as providerRetry } from '#features/provider_retry/index'
@@ -24,7 +23,6 @@ export const features = [
   commentChecker(),
   hashline(),
   herdr(),
-  mcp(),
   meridianSessionAffinity(),
   promptRewind(),
   providerRetry(),

@@ -40,23 +40,23 @@ describe('cross-runtime sharing', () => {
         producer.runPromise(
           Effect.gen(function* () {
             const bar = yield* StatusBar
-            yield* bar.channel('mcp', { priority: 30, tone: 'muted' }).set({ text: '2 servers' })
+            yield* bar.channel('service', { priority: 30, tone: 'muted' }).set({ text: '2 servers' })
           }).pipe(Effect.provide(perInvocation(ctx)))
         )
       )
 
       const entries = yield* Effect.promise(() => consumer.runPromise(StatusBar.pipe(Effect.map((bar) => bar.list()))))
-      expect(entries.find((entry) => entry.key === 'mcp')?.text).toBe('2 servers')
+      expect(entries.find((entry) => entry.key === 'service')?.text).toBe('2 servers')
 
       yield* Effect.promise(() =>
         producer.runPromise(
           Effect.gen(function* () {
             const bar = yield* StatusBar
-            yield* bar.channel('mcp').clear
+            yield* bar.channel('service').clear
           }).pipe(Effect.provide(perInvocation(ctx)))
         )
       )
-      expect(statusBar.has('mcp')).toBe(false)
+      expect(statusBar.has('service')).toBe(false)
 
       yield* Effect.promise(() => producer.dispose())
       yield* Effect.promise(() => consumer.dispose())

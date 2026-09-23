@@ -140,7 +140,7 @@ describe('status panel formatting', () => {
         getExtensionStatuses: () =>
           new Map([
             ['long-status', 'a very long extension status'],
-            ['mcp', 'MCP: 2 connected'],
+            ['service', 'Service: 2 connected'],
           ]),
         onBranchChange: () => () => undefined,
       }
@@ -190,7 +190,7 @@ describe('status panel formatting', () => {
       expect(narrowFooter).toHaveLength(2)
       expect(narrowFooter?.[0]).toContain('Ctx')
       expect(narrowFooter?.join('\n')).not.toContain('a very long extension status')
-      expect(narrowFooter?.join('\n')).not.toContain('MCP')
+      expect(narrowFooter?.join('\n')).not.toContain('Service')
       tui.terminal.columns = 120
       expect(renderFooter?.(80)).toEqual([])
       if (renderSidebar === undefined) {

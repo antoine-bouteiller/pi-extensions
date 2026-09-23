@@ -18,7 +18,6 @@ pi install git:github.com/antoine-bouteiller/pi-extensions
 - `comment_checker` — Check comments after file edits.
 - `hashline` — Hash-anchored file reads and writes that reject stale edits.
 - `herdr` — Delegate to Pi agents in Herdr panes with three native tools.
-- `mcp` — MCP gateway with discovery, tool selection, and OAuth.
 - `meridian_session_affinity` — Session affinity and harness fingerprint scrubbing for Meridian requests.
 - `prompt_rewind` — Edit your prompt when cancelling before a response.
 - `provider_retry` — Extend retries to server and unknown-status provider failures.

@@ -38,13 +38,6 @@ export default defineConfig({
       },
     },
     {
-      // Only the MCP gateway registration has to hand `null` back to a Pi API that requires it.
-      files: ['src/features/mcp/index.ts'],
-      rules: {
-        'unicorn/no-null': 'off',
-      },
-    },
-    {
       // This module is the one sanctioned ambient read; everything else goes through the Env service.
       files: ['src/shared/effect/env.ts'],
       rules: {

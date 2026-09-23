@@ -23,7 +23,6 @@ src/
 │   ├── comment_checker/{index,checker}.ts
 │   ├── hashline/{index,tools}.ts
 │   ├── herdr/{index,herdr}.ts
-│   ├── mcp/{index,gateway,config,keychain,manager,oauth,output,types}.ts
 │   ├── meridian_session_affinity/{index,affinity,scrub}.ts
 │   ├── prompt_rewind/{index,rewind}.ts
 │   ├── provider_retry/{index,retry}.ts
@@ -44,7 +43,7 @@ tests/
 ├── shared/effect/{app_services,runtime}.spec.ts
 ├── shared/state/{status_bar}.spec.ts
 ├── shared/utils/{predicates,protected_paths,tool_output}.spec.ts
-└── utils/{abort_controller,bun_effect,casts,deferred,fake_pi,http,loopback_port,process_env,runtime}.ts
+└── utils/{abort_controller,bun_effect,casts,deferred,fake_pi,process_env,runtime}.ts
     └── process_env.spec.ts           # the one helper with behaviour worth pinning
 ```
 
@@ -72,13 +71,13 @@ src/index.ts
   successful preparation. Feature indexes own their descriptor's tool, command, and non-lifecycle
   event registration;
   behaviour lives in sibling modules named after what they do (`poll.ts`, `guard.ts`,
-  `gateway.ts`, ...).
+  `tool.ts`, ...).
 - Pi-to-Effect crossings use the supported bridges in `src/shared/effect/runtime.ts`:
   `makeToolExecutor`, `makeCommandHandler`, and `makeEventHandler`. Existing inline
   `runtime.runPromise` sites are tracked temporary divergences under the boundary spec's
   conformance table.
-- Feature-specific values and resources remain feature-owned. The MCP feature creates its gateway
-  and provides it to its callback effects; `src/config/runtime.ts` does not create an MCP gateway.
+- Feature-specific values and resources remain feature-owned; `src/config/runtime.ts` only
+  constructs shared services.
 - No feature module has a default export, and no feature imports a sibling feature.
 - Reusable code that more than one feature needs is promoted to `src/shared/effect/`,
   `src/shared/state/`, or `src/shared/utils/`. Shared code never imports from `src/config/` or
