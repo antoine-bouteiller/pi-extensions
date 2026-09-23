@@ -20,16 +20,6 @@ export const progressBar = (percent: number, width: number): string => {
   return `${'▓'.repeat(filled)}${'░'.repeat(width - filled)}`
 }
 
-export interface ProgressLineOptions {
-  label: string
-  percent: number
-  detail: string
-  width?: number
-}
-
-export const progressLine = ({ label, percent, detail, width = 10 }: ProgressLineOptions) =>
-  `${label}: ${progressBar(percent, width)} ${percent.toFixed(1)}%${isEmptyString(detail) ? '' : `  ${detail}`}`
-
 export const formatDirectory = (cwd: string, path: Path): string => {
   const home = homedir()
   if (cwd === home) {

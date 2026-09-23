@@ -1,12 +1,9 @@
 import { type ThemeColor } from '@earendil-works/pi-coding-agent'
-import { truncateToWidth } from '@earendil-works/pi-tui'
+import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui'
 import { type Path } from 'effect/Path'
 
-import { formatStatusText, type StatusEntry } from '#shared/state/status_bar'
-
-import { columns, formatDirectory, formatTokens, progressBar, progressLine } from './render.js'
+import { formatDirectory, progressBar } from './render.js'
 import { type GitInfoState, type ModelInfoState, type ProviderQuotas } from './state.js'
-import { STATUS_TONE_COLORS } from './statuses.js'
 
 export interface FooterTheme {
   fg: (color: ThemeColor, text: string) => string
@@ -17,42 +14,41 @@ export interface FooterState {
   model: ModelInfoState
   git: GitInfoState
   quotas: ProviderQuotas
-  statuses: readonly StatusEntry[]
 }
 
 export const renderFooterLines = (state: FooterState, theme: FooterTheme, width: number, path: Path): string[] => {
   const { model, git, quotas } = state
-  const percent = model.contextPercent ?? 0
-  const tokens = formatTokens(model.contextTokens ?? 0)
-  const window = model.contextWindow > 0 ? formatTokens(model.contextWindow) : '?'
-  const muted = (text: string) => truncateToWidth(theme.fg('muted', text), width)
-  const lines = [
-    columns(theme.fg('text', formatDirectory(state.cwd, path)), theme.fg('muted', `${model.modelId} · ${model.thinking}`), width),
-    muted(`Context: ${progressBar(percent, 8)} ${tokens}/${window} (${Math.round(percent)}%)`),
-  ]
-
-  if (git.branch !== undefined) {
-    const fileLabel = git.changedFiles === 1 ? 'file' : 'files'
-    lines.push(muted(`${git.branch} · ${git.changedFiles} ${fileLabel} changed`))
-  }
-
-  for (const quota of [quotas.anthropic, quotas.azure]) {
-    if (quota !== undefined) {
-      lines.push(
-        muted(
-          progressLine({
-            detail: quota.detail ?? '',
-            label: quota.label === 'anthropic' ? 'Session' : 'Azure',
-            percent: quota.percent,
-            width: 8,
-          })
-        )
-      )
+  const summary = (barWidth: number): string => {
+    const gauge = (label: string, percent: number) => `${label} ${barWidth > 0 ? `${progressBar(percent, barWidth)} ` : ''}${Math.round(percent)}%`
+    const segments = [theme.fg('text', gauge('Ctx', model.contextPercent ?? 0))]
+    for (const quota of [quotas.anthropic, quotas.azure]) {
+      if (quota === undefined) {
+        continue
+      }
+      const windows = quota.windows ?? [{ label: quota.label === 'anthropic' ? 'Session' : 'Azure', percent: quota.percent }]
+      for (const window of windows) {
+        let { label } = window
+        if (label === 'Session') {
+          label = '5h'
+        } else if (label === 'Weekly') {
+          label = '7d'
+        }
+        const reset = window.label === 'Session' && window.resetsIn !== undefined ? ` ${window.resetsIn}` : ''
+        segments.push(theme.fg(window.label === 'Weekly' ? 'thinkingHigh' : 'muted', `${gauge(label, window.percent)}${reset}`))
+      }
     }
+    segments.push(theme.fg('accent', `${model.modelId} · ${model.thinking}`))
+    return segments.join(theme.fg('dim', ' | '))
   }
-
-  for (const status of state.statuses) {
-    lines.push(truncateToWidth(theme.fg(STATUS_TONE_COLORS[status.tone ?? 'muted'], formatStatusText(status)), width))
-  }
-  return lines
+  const full = summary(4)
+  const fileLabel = git.changedFiles === 1 ? 'file' : 'files'
+  const location = git.branch === undefined ? formatDirectory(state.cwd, path) : `${git.branch} · ${git.changedFiles} ${fileLabel} changed`
+  const details = [
+    model.tokensPerSecond === undefined ? undefined : `${Math.round(model.tokensPerSecond)} tok/s`,
+    model.cacheHitPercent === undefined ? undefined : `Cache hit ${model.cacheHitPercent.toFixed(1)}%`,
+    location,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+  return [truncateToWidth(visibleWidth(full) <= width ? full : summary(0), width), truncateToWidth(theme.fg('muted', details), width)]
 }

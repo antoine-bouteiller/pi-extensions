@@ -182,7 +182,6 @@ export const makePanelController = ({ dependencies, pi }: PanelControllerOptions
                   git: state.git,
                   model: state.model,
                   quotas: state.quotas,
-                  statuses: collectStatuses(footerData),
                 },
                 theme,
                 width,

@@ -1,14 +1,6 @@
-import { type ReadonlyFooterDataProvider, type ThemeColor } from '@earendil-works/pi-coding-agent'
+import { type ReadonlyFooterDataProvider } from '@earendil-works/pi-coding-agent'
 
-import { formatStatusText, statusBar, type StatusEntry, type StatusTone } from '#shared/state/status_bar'
-
-export const STATUS_TONE_COLORS = {
-  error: 'error',
-  info: 'text',
-  muted: 'muted',
-  success: 'success',
-  warning: 'warning',
-} satisfies Record<StatusTone, ThemeColor>
+import { formatStatusText, statusBar, type StatusEntry } from '#shared/state/status_bar'
 
 /**
  * Merges statuses published through the shared channel with those any other extension

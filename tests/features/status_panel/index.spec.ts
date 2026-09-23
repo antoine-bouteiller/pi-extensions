@@ -137,7 +137,11 @@ describe('status panel formatting', () => {
         fg: (_color: string, value: string) => value,
       }
       const footerData = {
-        getExtensionStatuses: () => new Map([['long-status', 'a very long extension status']]),
+        getExtensionStatuses: () =>
+          new Map([
+            ['long-status', 'a very long extension status'],
+            ['mcp', 'MCP: 2 connected'],
+          ]),
         onBranchChange: () => () => undefined,
       }
       const ui = {
@@ -182,8 +186,13 @@ describe('status panel formatting', () => {
 
       expect(renderFooter?.(80)).toEqual([])
       tui.terminal.columns = 80
-      expect(renderFooter?.(80).join('\n')).toContain('Context:')
+      const narrowFooter = renderFooter?.(80)
+      expect(narrowFooter).toHaveLength(2)
+      expect(narrowFooter?.[0]).toContain('Ctx')
+      expect(narrowFooter?.join('\n')).not.toContain('a very long extension status')
+      expect(narrowFooter?.join('\n')).not.toContain('MCP')
       tui.terminal.columns = 120
+      expect(renderFooter?.(80)).toEqual([])
       if (renderSidebar === undefined) {
         throw new Error('expected a sidebar renderer')
       }

@@ -23,37 +23,55 @@ const state: FooterState = {
     tokensPerSecond: undefined,
   },
   quotas: {},
-  statuses: [],
 }
 
 describe('renderFooterLines', () => {
-  it.effect('always shows the directory, model and context', () =>
+  it.effect('uses a ccstatusline-style summary followed by Git', () =>
     Effect.sync(() => {
-      const lines = renderFooterLines(state, theme, 80)
-
-      expect(lines[0]).toContain('pi-extensions')
-      expect(lines[0]).toContain('claude-opus-5 · medium')
-      expect(lines[1]).toContain('34k/272k (13%)')
+      expect(renderFooterLines(state, theme, 80)).toEqual(['Ctx ▓░░░ 13% | claude-opus-5 · medium', 'main · 1 file changed'])
     })
   )
 
   it.effect('uses a singular file label and omits the branch outside a repository', () =>
     Effect.sync(() => {
-      expect(renderFooterLines(state, theme, 80)[2]).toBe('main · 1 file changed')
-      expect(renderFooterLines({ ...state, git: { ...state.git, changedFiles: 3 } }, theme, 80)[2]).toBe('main · 3 files changed')
+      expect(renderFooterLines(state, theme, 80)[1]).toBe('main · 1 file changed')
+      expect(renderFooterLines({ ...state, git: { ...state.git, changedFiles: 3 } }, theme, 80)[1]).toBe('main · 3 files changed')
 
       const detached = renderFooterLines({ ...state, git: { branch: undefined, changedFiles: 0, pullRequest: undefined } }, theme, 80)
-      expect(detached.join('\n')).not.toContain('changed')
+      expect(detached[1]).toBe(state.cwd)
+      expect(detached).toHaveLength(2)
     })
   )
 
-  it.effect('renders Claude and Azure quotas together', () =>
+  it.effect('prepends available throughput and cache hit metrics to the second row', () =>
+    Effect.sync(() => {
+      for (const [tokensPerSecond, cacheHitPercent, prefix] of [
+        [42.4, 87.25, '42 tok/s · Cache hit 87.3% · '],
+        [0, undefined, '0 tok/s · '],
+        [undefined, 0, 'Cache hit 0.0% · '],
+      ] as const) {
+        const lines = renderFooterLines({ ...state, model: { ...state.model, cacheHitPercent, tokensPerSecond } }, theme, 80)
+        expect(lines).toHaveLength(2)
+        expect(lines[1]).toBe(`${prefix}main · 1 file changed`)
+      }
+    })
+  )
+
+  it.effect('fits session, reset, weekly, Azure and model on one row by dropping bars', () =>
     Effect.sync(() => {
       const lines = renderFooterLines(
         {
           ...state,
           quotas: {
-            anthropic: { detail: '3h 10m  Weekly: 18.0% 31.62/200$', label: 'anthropic', percent: 42 },
+            anthropic: {
+              detail: 'verbose quota detail',
+              label: 'anthropic',
+              percent: 42,
+              windows: [
+                { label: 'Session', percent: 42, resetsIn: '3h 10m' },
+                { detail: '31.62/200$', label: 'Weekly', percent: 18, resetsIn: '4d 1h' },
+              ],
+            },
             azure: { label: 'azure', percent: 7 },
           },
         },
@@ -61,45 +79,37 @@ describe('renderFooterLines', () => {
         80
       )
 
-      expect(lines.at(-2)).toContain('Session:')
-      expect(lines.at(-2)).toContain('31.62/200$')
-      expect(lines.at(-1)).toContain('Azure:')
+      expect(lines).toHaveLength(2)
+      expect(lines[0]).toBe('Ctx 13% | 5h 42% 3h 10m | 7d 18% | Azure 7% | claude-opus-5 · medium')
     })
   )
 
-  it.effect('renders each status with its icon', () =>
+  it.effect('renders quota bars when they fit, including quotas without structured windows', () =>
     Effect.sync(() => {
-      const lines = renderFooterLines(
-        {
-          ...state,
-          statuses: [
-            { icon: '🛡️', key: 'safety', text: 'cmd-guard', tone: 'success' },
-            { key: 'mcp', text: 'MCP: 2 connected' },
-          ],
-        },
-        theme,
-        80
-      )
+      const lines = renderFooterLines({ ...state, quotas: { anthropic: { label: 'anthropic', percent: 50 } } }, theme, 80)
 
-      expect(lines.at(-2)).toBe('🛡️ cmd-guard')
-      expect(lines.at(-1)).toBe('MCP: 2 connected')
+      expect(lines[0]).toBe('Ctx ▓░░░ 13% | 5h ▓▓░░ 50% | claude-opus-5 · medium')
+      expect(lines).toHaveLength(2)
     })
   )
 
   it.effect('keeps every line within the available width', () =>
     Effect.sync(() => {
-      const lines = renderFooterLines(
-        {
-          ...state,
-          cwd: `/Users/example/${'deep-'.repeat(40)}`,
-          quotas: { anthropic: { detail: 'x'.repeat(80), label: 'anthropic', percent: 99 } },
-          statuses: [{ key: 'long', text: 'z'.repeat(200) }],
-        },
-        theme,
-        40
-      )
+      for (const width of [0, 1, 20, 40, 60, 80]) {
+        const lines = renderFooterLines(
+          {
+            ...state,
+            git: { ...state.git, branch: '分支'.repeat(40) },
+            model: { ...state.model, cacheHitPercent: 87.25, modelId: '模型'.repeat(40), tokensPerSecond: 42.4 },
+            quotas: { anthropic: { detail: 'x'.repeat(80), label: 'anthropic', percent: 99 } },
+          },
+          { fg: (_color, text) => `\u001b[36m${text}\u001b[0m` },
+          width
+        )
 
-      expect(lines.every((line) => visibleWidth(line) <= 40)).toBeTrue()
+        expect(lines).toHaveLength(2)
+        expect(lines.every((line) => visibleWidth(line) <= width)).toBeTrue()
+      }
     })
   )
 })
