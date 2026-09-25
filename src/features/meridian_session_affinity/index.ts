@@ -6,6 +6,7 @@ import { type AppRuntime, StatusBar } from '#shared/effect/app_services'
 import { processEnvironment } from '#shared/effect/env'
 import { type FeatureImplementation, type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 import { makeEventHandler } from '#shared/effect/runtime'
+import { isNullOrUndefined } from '#shared/utils/predicates'
 
 import { applySessionAffinity, scrubbedSystemPrompt } from './affinity.js'
 
@@ -15,6 +16,7 @@ const HEALTH_STATUS_KEY = 'meridian:health'
 export interface MeridianSessionAffinityDependencies {
   readonly baseUrl?: string
   readonly httpClient?: HttpClient.HttpClient
+  readonly which?: (executable: string) => string | null | undefined
 }
 
 export type MeridianHealthWarning = 'invalid url' | 'unavailable' | 'timeout' | 'defect'
@@ -84,6 +86,9 @@ const makeImplementation = (dependencies: MeridianSessionAffinityDependencies): 
   register: implementation.register,
 })
 
+/** Meridian proxies Claude Code, so without the `claude` binary the feature stays silent and inert. */
+const disabledImplementation: FeatureImplementation = { register: () => undefined }
+
 /**
  * Eager on purpose: sessions can call `prompt()` right after `session_start`, so a background
  * (forked) registration misses the first `before_agent_start` and the unscrubbed pi harness line
@@ -96,7 +101,7 @@ export const feature = ((options: FeatureOptions<MeridianSessionAffinityDependen
   return {
     bootstrap: 'eager',
     id: 'meridian-session-affinity',
-    implementation: makeImplementation(dependencies),
+    implementation: isNullOrUndefined((dependencies.which ?? Bun.which)('claude')) ? disabledImplementation : makeImplementation(dependencies),
     status: { icon: '🧭', name: 'meridian' },
   }
 }) satisfies FeaturePlugin<MeridianSessionAffinityDependencies>

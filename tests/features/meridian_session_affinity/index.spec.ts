@@ -74,6 +74,17 @@ describe('meridian session affinity', () => {
     })
   )
 
+  it.effect('registers nothing and never probes when claude is not installed', () =>
+    Effect.sync(() => {
+      const fixture = createFakePi()
+      const { implementation: disabled } = feature({ dependencies: { which: () => null } })
+      disabled.register(fixture.pi, runtime)
+
+      expect(disabled.activate).toBeUndefined()
+      expect(fixture.state.handlers.size).toBe(0)
+    })
+  )
+
   it.effect('scrubs the first prompt of a worker that starts before any session_start has been processed', () =>
     Effect.gen(function* () {
       const fixture = createFakePi()
