@@ -105,6 +105,14 @@ const isHtml = (contentType: string): boolean => {
   return mediaType === 'text/html' || mediaType === 'application/xhtml+xml'
 }
 
+const isDomainRoot = (url: URL): boolean => url.pathname === '/' && isEmptyString(url.search)
+
+/** SPA hosts often answer every path with a 200 HTML shell, so only a non-HTML text body counts as an llms.txt. */
+const isLlmsTxt = (response: HttpClientResponse.HttpClientResponse): boolean => {
+  const contentType = response.headers['content-type'] ?? ''
+  return response.status >= 200 && response.status < 300 && contentType.trim().toLowerCase().startsWith('text/') && !isHtml(contentType)
+}
+
 const turndown = (): TurndownService => {
   const service = new TurndownService({
     bulletListMarker: '-',
@@ -365,8 +373,21 @@ const fetchResult = ({
       details: {},
     })
 
+    const request = Effect.gen(function* () {
+      if (isDomainRoot(url)) {
+        const probe = yield* executeRequest(new URL('/llms.txt', url), format).pipe(Effect.option)
+        if (probe._tag === 'Some') {
+          if (isLlmsTxt(probe.value.response)) {
+            return probe.value
+          }
+          yield* Effect.promise(() => probe.value.meta?.body?.cancel() ?? Promise.resolve()).pipe(Effect.ignore)
+        }
+      }
+      return yield* executeRequest(url, format)
+    })
+
     const main = Effect.gen(function* () {
-      const { finalUrl, meta, response } = yield* executeRequest(url, format)
+      const { finalUrl, meta, response } = yield* request
       const body = yield* readCappedBody(response, meta)
       return yield* buildFetchResult({
         body,

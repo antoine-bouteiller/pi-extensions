@@ -266,6 +266,48 @@ describe('webfetch', () => {
     })
   )
 
+  it.effect('returns /llms.txt instead of a domain root when it exists', () =>
+    Effect.gen(function* () {
+      const requested: string[] = []
+      const harness = createHarness((input) =>
+        promiseFromEffect(
+          Effect.sync(() => {
+            requested.push(input instanceof Request ? input.url : input.toString())
+            return new Response('# Docs', { headers: { 'content-type': 'text/plain' } })
+          })
+        )
+      )
+
+      const result = yield* Effect.promise(() => harness.execute({ url: 'https://example.com/' }))
+
+      expect(requested).toEqual(['https://example.com/llms.txt'])
+      expect(text(result)).toBe('# Docs')
+      expect(result.details).toMatchObject({ finalUrl: 'https://example.com/llms.txt', url: 'https://example.com/' })
+    })
+  )
+
+  it.effect('falls back to the domain root when /llms.txt is missing or an HTML shell', () =>
+    Effect.gen(function* () {
+      const requested: string[] = []
+      const harness = createHarness((input) =>
+        promiseFromEffect(
+          Effect.sync(() => {
+            const url = input instanceof Request ? input.url : input.toString()
+            requested.push(url)
+            return url.endsWith('/llms.txt')
+              ? new Response('missing', { headers: { 'content-type': 'text/plain' }, status: 404 })
+              : new Response('root')
+          })
+        )
+      )
+
+      const result = yield* Effect.promise(() => harness.execute({ url: 'https://example.com' }))
+
+      expect(requested).toEqual(['https://example.com/llms.txt', 'https://example.com/'])
+      expect(text(result)).toBe('root')
+    })
+  )
+
   it.effect('rejects unsupported protocols before making a request', () =>
     Effect.gen(function* () {
       let calls = 0
