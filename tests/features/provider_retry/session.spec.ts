@@ -170,41 +170,41 @@ const retryExtension: InlineExtension = {
   name: 'provider-retry',
 }
 
-describe('provider retry session integration', () => {
-  const run = (
-    failure: ProviderFailure,
-    options: {
-      readonly baseDelayMs?: number
-      readonly failures?: number
-      readonly maxRetries?: number
-      readonly retryEnabled?: boolean
-    } = {}
-  ) =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem
-      const root = yield* fs.makeTempDirectoryScoped({
-        prefix: 'provider-retry-session-',
-      })
-      const provider = yield* Effect.acquireRelease(
-        Effect.sync(() => startFakeProvider(Array.from({ length: options.failures ?? 1 }, () => failure))),
-        (active) => Effect.sync(active.close)
-      )
-      const agentDir = join(root, 'agent')
-      yield* fs.makeDirectory(agentDir, { recursive: true })
-      const harness = yield* Effect.promise(() =>
-        createHarness({
-          agentDir,
-          baseDelayMs: options.baseDelayMs,
-          extensionFactories: [retryExtension],
-          maxRetries: options.maxRetries ?? 2,
-          providerUrl: provider.url,
-          retryEnabled: options.retryEnabled,
-        })
-      )
-      yield* Effect.promise(() => harness.session.prompt('hello'))
-      return { harness, provider }
+const run = (
+  failure: ProviderFailure,
+  options: {
+    readonly baseDelayMs?: number
+    readonly failures?: number
+    readonly maxRetries?: number
+    readonly retryEnabled?: boolean
+  } = {}
+) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const root = yield* fs.makeTempDirectoryScoped({
+      prefix: 'provider-retry-session-',
     })
+    const provider = yield* Effect.acquireRelease(
+      Effect.sync(() => startFakeProvider(Array.from({ length: options.failures ?? 1 }, () => failure))),
+      (active) => Effect.sync(active.close)
+    )
+    const agentDir = join(root, 'agent')
+    yield* fs.makeDirectory(agentDir, { recursive: true })
+    const harness = yield* Effect.promise(() =>
+      createHarness({
+        agentDir,
+        baseDelayMs: options.baseDelayMs,
+        extensionFactories: [retryExtension],
+        maxRetries: options.maxRetries ?? 2,
+        providerUrl: provider.url,
+        retryEnabled: options.retryEnabled,
+      })
+    )
+    yield* Effect.promise(() => harness.session.prompt('hello'))
+    return { harness, provider }
+  })
 
+describe('provider retry session integration', () => {
   it.scoped(
     'preserves an unhooked generic stream failure exactly',
     () =>

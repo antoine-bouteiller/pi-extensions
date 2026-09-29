@@ -48,6 +48,16 @@ const context = (key: string, hasUI = true, onSetStatus?: (statusKey: string, te
 }
 const emit = (fixture: ReturnType<typeof createFakePi>, name: string, ctx: ExtensionContext) => Effect.promise(() => fixture.emit(name, {}, ctx))
 
+const install = (fixture: ReturnType<typeof createFakePi>, first: Deferred.Deferred<void>, second: Deferred.Deferred<void>) =>
+  makeFeatureCoordinator({
+    features: [
+      background(Deferred.await(first).pipe(Effect.as({ register: (pi) => pi.on('agent_start', () => undefined) })), 'comment-checker'),
+      background(Deferred.await(second).pipe(Effect.as({ register: (pi) => pi.on('agent_end', () => undefined) })), 'meridian-session-affinity'),
+    ],
+    pi: fixture.pi,
+    runtime,
+  }).install()
+
 describe('feature coordinator', () => {
   afterEach(() => {
     for (const id of [
@@ -249,18 +259,6 @@ describe('feature coordinator', () => {
       const secondGate = yield* Deferred.make<void>()
       const reverseFixture = createFakePi()
       const forwardFixture = createFakePi()
-      const install = (fixture: ReturnType<typeof createFakePi>, first: Deferred.Deferred<void>, second: Deferred.Deferred<void>) =>
-        makeFeatureCoordinator({
-          features: [
-            background(Deferred.await(first).pipe(Effect.as({ register: (pi) => pi.on('agent_start', () => undefined) })), 'comment-checker'),
-            background(
-              Deferred.await(second).pipe(Effect.as({ register: (pi) => pi.on('agent_end', () => undefined) })),
-              'meridian-session-affinity'
-            ),
-          ],
-          pi: fixture.pi,
-          runtime,
-        }).install()
 
       install(reverseFixture, firstGate, secondGate)
       const reverseContext = context('background-reverse')
