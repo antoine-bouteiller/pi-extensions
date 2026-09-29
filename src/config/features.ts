@@ -5,7 +5,6 @@ import { type ProcessRuntime } from '#config/runtime'
 import { feature as askUser } from '#features/ask_user/index'
 import { feature as backgroundPoll } from '#features/background_poll/index'
 import { feature as claudeCode } from '#features/claude_code/index'
-import { feature as commentChecker } from '#features/comment_checker/index'
 import { feature as hashline } from '#features/hashline/index'
 import { feature as herdr } from '#features/herdr/index'
 import { feature as meridianSessionAffinity } from '#features/meridian_session_affinity/index'
@@ -21,7 +20,6 @@ export const features = [
   askUser(),
   backgroundPoll(),
   claudeCode(),
-  commentChecker(),
   hashline(),
   herdr(),
   meridianSessionAffinity(),

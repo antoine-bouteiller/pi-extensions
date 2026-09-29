@@ -12,7 +12,6 @@ export const feature = ((options: FeatureOptions<PollExec> = {}) => {
   const exec = options.dependencies ?? undefined
   let handlers: ReturnType<typeof makePollHandlers> | undefined
   return {
-    bootstrap: 'eager',
     id: 'background-poll',
     implementation: {
       activate: (_event, _ctx) => (handlers === undefined ? Effect.die('background-poll is not registered') : handlers.startSession),

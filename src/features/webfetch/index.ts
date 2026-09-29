@@ -15,7 +15,6 @@ import {
 } from './fetch.js'
 
 export const feature = ((_options: FeatureOptions<undefined> = {}) => ({
-  bootstrap: 'eager',
   id: 'webfetch',
   implementation: {
     register: (pi: ExtensionAPI, runtime: AppRuntime): void => {

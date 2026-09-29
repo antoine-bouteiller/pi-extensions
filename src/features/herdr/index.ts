@@ -65,7 +65,6 @@ const renderResult = (
 export const feature = ((options: FeatureOptions<typeof loadHerdrSettings> = {}) => {
   let handlers: ReturnType<typeof makeHerdrHandlers> | undefined
   return {
-    bootstrap: 'eager',
     id: 'herdr',
     implementation: {
       activate: (_event, ctx) => handlers?.startSession(ctx) ?? Effect.void,

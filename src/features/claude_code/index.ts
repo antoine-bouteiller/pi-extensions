@@ -11,7 +11,6 @@ export const feature = ((options: FeatureOptions<ClaudeCodeEnvironment> = {}) =>
   const environment = options.dependencies ?? defaultEnvironment()
   const handlers = makeDiscoveryHandlers(environment)
   return {
-    bootstrap: 'eager',
     id: 'claude-code',
     implementation: {
       deactivate: (ctx, reason) => (reason === 'shutdown' ? handlers.shutdown({ reason: 'quit', type: 'session_shutdown' }, ctx) : Effect.void),

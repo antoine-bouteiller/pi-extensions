@@ -105,7 +105,6 @@ export const feature = ((options: FeatureOptions<MeridianSessionAffinityDependen
   const environment = options.environment ?? processEnvironment
   const dependencies = options.dependencies ?? { baseUrl: environment.get('MERIDIAN_BASE_URL') ?? DEFAULT_MERIDIAN_BASE_URL }
   return {
-    bootstrap: 'eager',
     id: 'meridian-session-affinity',
     implementation: isNullOrUndefined((dependencies.which ?? Bun.which)('claude')) ? disabledImplementation : makeImplementation(dependencies),
     status: { icon: '🧭', name: 'meridian' },

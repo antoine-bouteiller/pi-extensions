@@ -17,7 +17,6 @@ import { ASK_USER_PROMPT_GUIDELINES, ASK_USER_PROMPT_SNIPPET, ASK_USER_TOOL_DESC
 import { askUserEffect, AskUserParams, renderAskUserCall, renderAskUserResult } from './tool.js'
 
 export const feature = ((_options: FeatureOptions<undefined> = {}) => ({
-  bootstrap: 'eager',
   id: 'ask-user',
   implementation: {
     register: (pi: ExtensionAPI, runtime: AppRuntime): void => {

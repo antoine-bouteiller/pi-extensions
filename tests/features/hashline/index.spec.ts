@@ -80,7 +80,7 @@ describe('hashline feature', () => {
     Effect.sync(() => {
       const fixture = createFakePi()
 
-      expect(feature()).toMatchObject({ bootstrap: 'eager', id: 'hashline', status: { icon: '#️⃣', name: 'hashline' } })
+      expect(feature()).toMatchObject({ id: 'hashline', status: { icon: '#️⃣', name: 'hashline' } })
       feature().implementation.register(fixture.pi, runtime)
       expect([...fixture.state.tools.keys()]).toEqual(['read', 'write'])
     })

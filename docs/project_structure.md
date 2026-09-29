@@ -13,14 +13,13 @@ extension. How those modules bridge Pi's callbacks onto Effect is specified in
 src/
 ├── index.ts                         # the only Pi extension entrypoint/default export
 ├── config/
-│   ├── feature_coordinator.ts       # session lifecycle, bootstrap, and feature health owner
+│   ├── feature_coordinator.ts       # session lifecycle, registration, and feature health owner
 │   ├── features.ts                  # explicit ordered FeatureDescriptor registry
 │   └── runtime.ts                   # process-wide shared AppRuntime composition
 ├── features/
 │   ├── ask_user/{index,prompt,tool}.ts
 │   ├── background_poll/{index,poll}.ts
 │   ├── claude_code/{index,discovery}.ts
-│   ├── comment_checker/{index,checker}.ts
 │   ├── hashline/{index,tools}.ts
 │   ├── herdr/{index,herdr}.ts
 │   ├── meridian_session_affinity/{index,affinity,scrub}.ts
@@ -58,17 +57,14 @@ src/index.ts
 
 - `src/config/` is composition only. `runtime.ts` builds the process-wide shared `AppRuntime`; it
   does not import a feature or initialize feature resources. `features.ts` holds the explicit,
-  ordered `FeatureDescriptor` registry, and `feature_coordinator.ts` owns mixed eager/background
-  bootstrap, feature health, and the complete session lifecycle. In particular, it alone registers
+  ordered `FeatureDescriptor` registry, and `feature_coordinator.ts` owns registration, feature
+  health, and the complete session lifecycle. In particular, it alone registers
   `session_start` and `session_shutdown`.
 - Every `src/features/<snake_case_name>/index.ts` exports one `feature: FeaturePlugin` factory.
   Its descriptor identity has an `id` and `{ icon, name }`.
-  The registry is a bare ordered list of factory calls. An eager descriptor supplies
-  `implementation: { register(pi, runtime), activate?, deactivate? }`; a background descriptor
-  instead supplies `prepare: Effect<FeatureImplementation, FeaturePreflightError, AppServices>`.
-  Eager implementations register synchronously in registry order at extension load; background
-  preparation starts per session without delaying `session_start` and registers only after
-  successful preparation. Feature indexes own their descriptor's tool, command, and non-lifecycle
+  The registry is a bare ordered list of factory calls. Each descriptor supplies
+  `implementation: { register(pi, runtime), activate?, deactivate? }`; implementations register
+  synchronously in registry order at extension load. Feature indexes own their descriptor's tool, command, and non-lifecycle
   event registration;
   behaviour lives in sibling modules named after what they do (`poll.ts`, `guard.ts`,
   `tool.ts`, ...).
@@ -117,8 +113,7 @@ mirroring rule.
 ## Adding a feature
 
 1. Create `src/features/<snake_case_name>/index.ts` exporting one `feature: FeaturePlugin`
-   descriptor, plus the implementation modules it delegates to in the same folder. Choose eager
-   `implementation` or background `prepare` as the descriptor contract requires.
+   descriptor, plus the implementation modules it delegates to in the same folder.
 2. Create the mirrored `tests/features/<snake_case_name>/` test folder.
 3. In `src/config/features.ts`, add one factory import and one ordered factory call.
 

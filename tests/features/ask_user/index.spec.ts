@@ -99,7 +99,7 @@ describe('ask_user feature', () => {
     Effect.sync(() => {
       const fixture = createFakePi()
 
-      expect(feature()).toMatchObject({ bootstrap: 'eager', id: 'ask-user', status: { icon: '❓', name: 'ask-user' } })
+      expect(feature()).toMatchObject({ id: 'ask-user', status: { icon: '❓', name: 'ask-user' } })
       feature().implementation.register(fixture.pi, runtime)
       expect(fixture.state.tools.has('ask_user')).toBe(true)
     })

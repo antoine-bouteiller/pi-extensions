@@ -67,7 +67,6 @@ describe('meridian session affinity', () => {
       const descriptor = feature()
 
       expect(descriptor).toMatchObject({
-        bootstrap: 'eager',
         id: 'meridian-session-affinity',
         status: { icon: '🧭', name: 'meridian' },
       })

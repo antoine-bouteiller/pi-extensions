@@ -11,7 +11,6 @@ export const feature = ((options: FeatureOptions<RulesEnvironment> = {}) => {
   const environment = options.dependencies ?? defaultRulesEnvironment()
   const handlers = makeRulesHandlers(environment)
   return {
-    bootstrap: 'eager',
     id: 'rules',
     implementation: {
       activate: (event, ctx) =>

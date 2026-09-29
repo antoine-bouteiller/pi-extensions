@@ -8,7 +8,6 @@ import { makeToolExecutor, type HandlerServices, type ToolInvocation } from '#sh
 import { makeHashlineTools, readSchema, renderHashlineRead, writeSchema, type HashlineToolError } from './tools.js'
 
 export const feature = ((_options: FeatureOptions<undefined> = {}) => ({
-  bootstrap: 'eager',
   id: 'hashline',
   implementation: {
     register: (pi: ExtensionAPI, runtime: AppRuntime): void => {

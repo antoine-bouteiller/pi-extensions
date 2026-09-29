@@ -5,20 +5,13 @@ import { type AppRuntime, type AppServices, StatusBar } from '#shared/effect/app
 import { type FeatureDescriptor, type FeatureImplementation } from '#shared/effect/feature'
 import { type HandlerServices, makeEventHandler } from '#shared/effect/runtime'
 
-type SafeReason =
-  | 'activation failed'
-  | 'activation defect'
-  | 'deactivation failed'
-  | 'deactivation defect'
-  | 'preflight failed'
-  | 'preflight defect'
-  | 'registration failed; restart required'
+type SafeReason = 'activation failed' | 'activation defect' | 'deactivation failed' | 'deactivation defect' | 'registration failed; restart required'
 /** @internal */
 export type FeatureHealth = { readonly _tag: 'checking' } | { readonly _tag: 'healthy' } | { readonly _tag: 'error'; readonly reason: SafeReason }
 type Registration = 'unregistered' | 'registered' | 'poisoned'
 interface FeatureRecord {
   readonly plugin: FeatureDescriptor
-  implementation?: FeatureImplementation
+  readonly implementation: FeatureImplementation
   registration: Registration
   health: FeatureHealth
 }
@@ -45,10 +38,8 @@ const configurationError = (message: string): never => {
 
 const FeatureStatusInput = Schema.Struct({ icon: Schema.optional(Schema.Unknown), name: Schema.optional(Schema.Unknown) })
 const FeatureDescriptorInput = Schema.Struct({
-  bootstrap: Schema.optional(Schema.Unknown),
   id: Schema.optional(Schema.Unknown),
   implementation: Schema.optional(Schema.Unknown),
-  prepare: Schema.optional(Schema.Unknown),
   status: Schema.optional(Schema.Unknown),
 })
 const decodeFeatureDescriptor = (input: unknown) => {
@@ -94,7 +85,7 @@ const hasImplementationCallbacks = (value: Partial<FeatureImplementation>): valu
   (value.activate === undefined || typeof value.activate === 'function') &&
   (value.deactivate === undefined || typeof value.deactivate === 'function')
 
-const validateImplementation = (value: unknown, id: string): FeatureImplementation => {
+const validateImplementation = (value: unknown, id: string): void => {
   const message = `${id} implementation requires register and optional activate/deactivate functions`
   if (typeof value !== 'object' || value === null) {
     return configurationError(message)
@@ -102,27 +93,10 @@ const validateImplementation = (value: unknown, id: string): FeatureImplementati
   try {
     const implementation = value as Partial<FeatureImplementation>
     if (!hasImplementationCallbacks(implementation)) {
-      return configurationError(message)
+      configurationError(message)
     }
-    return implementation
   } catch {
-    return configurationError(message)
-  }
-}
-
-const validateEager = (implementation: unknown, hasPrepare: boolean, id: string): void => {
-  if (hasPrepare) {
-    configurationError(`${id} eager descriptor requires an implementation with register and no prepare`)
-  }
-  validateImplementation(implementation, id)
-}
-
-const validateBackground = (prepare: unknown, hasImplementation: boolean, id: string): void => {
-  if (hasImplementation || !Effect.isEffect(prepare)) {
-    configurationError(`${id} background descriptor requires an Effect prepare and no implementation`)
-  }
-  if (id !== 'comment-checker' && id !== 'meridian-session-affinity') {
-    configurationError(`${id} may not bootstrap in background`)
+    configurationError(message)
   }
 }
 
@@ -133,13 +107,7 @@ const validate = (features: readonly unknown[]): void => {
     const input = decodeFeatureDescriptor(feature)
     const id = validateIdentity(feature, input.id, ids, descriptors)
     validateStatus(input.status, id)
-    if (input.bootstrap === 'eager') {
-      validateEager(input.implementation, Object.hasOwn(input, 'prepare'), id)
-    } else if (input.bootstrap === 'background') {
-      validateBackground(input.prepare, Object.hasOwn(input, 'implementation'), id)
-    } else {
-      configurationError(`${id} bootstrap must be eager or background`)
-    }
+    validateImplementation(input.implementation, id)
   }
 }
 
@@ -169,7 +137,7 @@ export const makeFeatureCoordinator = (input: {
   validate(input.features)
   const records: FeatureRecord[] = input.features.map((plugin) => ({
     health: { _tag: 'checking' },
-    implementation: plugin.bootstrap === 'eager' ? plugin.implementation : undefined,
+    implementation: plugin.implementation,
     plugin,
     registration: 'unregistered',
   }))
@@ -188,7 +156,7 @@ export const makeFeatureCoordinator = (input: {
   const activate = (candidate: Session, record: FeatureRecord, event: SessionStartEvent): Effect.Effect<void, never, AppServices | HandlerServices> =>
     Effect.gen(function* () {
       const { implementation } = record
-      if (!current(candidate) || record.registration !== 'registered' || implementation === undefined) {
+      if (!current(candidate) || record.registration !== 'registered') {
         return
       }
       if (implementation.activate !== undefined) {
@@ -212,41 +180,6 @@ export const makeFeatureCoordinator = (input: {
       }
     })
 
-  const prepare = (candidate: Session, record: FeatureRecord, event: SessionStartEvent): Effect.Effect<void, never, AppServices | HandlerServices> =>
-    Effect.gen(function* () {
-      if (record.plugin.bootstrap !== 'background') {
-        return
-      }
-      const exit = yield* Effect.exit(record.plugin.prepare)
-      if (Exit.isFailure(exit)) {
-        if (current(candidate)) {
-          yield* setHealth(record, { _tag: 'error', reason: reason(exit.cause, 'preflight failed', 'preflight defect') })
-        }
-        return
-      }
-      const validation = yield* Effect.exit(Effect.sync(() => validateImplementation(exit.value, record.plugin.id)))
-      if (Exit.isFailure(validation)) {
-        if (current(candidate)) {
-          yield* setHealth(record, { _tag: 'error', reason: 'preflight defect' })
-        }
-        return
-      }
-      if (!current(candidate) || record.registration !== 'unregistered') {
-        return
-      }
-      record.implementation = validation.value
-      const registered = yield* Effect.exit(Effect.sync(() => validation.value.register(input.pi, input.runtime)))
-      if (Exit.isFailure(registered)) {
-        record.registration = 'poisoned'
-        if (current(candidate)) {
-          yield* setHealth(record, { _tag: 'error', reason: 'registration failed; restart required' })
-        }
-        return
-      }
-      record.registration = 'registered'
-      yield* activate(candidate, record, event)
-    })
-
   const requestStop = (candidate: Session): Effect.Effect<void> =>
     Effect.uninterruptible(
       Effect.gen(function* () {
@@ -267,7 +200,7 @@ export const makeFeatureCoordinator = (input: {
         candidate.phase = 'stopping'
         yield* Fiber.interruptAll(candidate.fibers)
         for (const record of records) {
-          const deactivation = record.implementation?.deactivate
+          const deactivation = record.implementation.deactivate
           if (record.registration !== 'registered' || deactivation === undefined) {
             continue
           }
@@ -337,11 +270,6 @@ export const makeFeatureCoordinator = (input: {
               yield* activate(candidate, record, event)
             }
           }
-          for (const record of records) {
-            if (record.plugin.bootstrap === 'background' && record.registration === 'unregistered' && current(candidate)) {
-              candidate.fibers.push(yield* Effect.forkIn(prepare(candidate, record, event), candidate.scope))
-            }
-          }
           if (current(candidate)) {
             candidate.phase = 'active'
           }
@@ -366,12 +294,8 @@ export const makeFeatureCoordinator = (input: {
       }
       installed = true
       for (const record of records) {
-        const { implementation } = record
-        if (record.plugin.bootstrap !== 'eager' || implementation === undefined) {
-          continue
-        }
         try {
-          implementation.register(input.pi, input.runtime)
+          record.implementation.register(input.pi, input.runtime)
           record.registration = 'registered'
         } catch {
           record.registration = 'poisoned'

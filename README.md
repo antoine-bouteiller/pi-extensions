@@ -15,7 +15,6 @@ pi install git:github.com/antoine-bouteiller/pi-extensions
 - `ask_user` — Multiple-choice questions during a turn.
 - `background_poll` — Background shell polling with completion notifications.
 - `claude_code` — Load Claude commands as temporary Pi skills.
-- `comment_checker` — Check comments after file edits.
 - `hashline` — Hash-anchored file reads and writes that reject stale edits.
 - `herdr` — Delegate to Pi agents in Herdr panes with three native tools.
 - `meridian_session_affinity` — Session affinity and harness fingerprint scrubbing for Meridian requests.

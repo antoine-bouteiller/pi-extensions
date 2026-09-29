@@ -8,22 +8,14 @@ import { runtime } from '@tests/utils/runtime.js'
 import { Deferred, Effect, Fiber, Scope } from 'effect'
 
 import { type FeatureHealth, makeFeatureCoordinator, registerFeatures } from '@/config/feature_coordinator.js'
-import { type FeatureImplementation, type FeatureDescriptor, type FeaturePreflightError } from '@/shared/effect/feature.js'
+import { type FeatureImplementation, type FeatureDescriptor } from '@/shared/effect/feature.js'
 import { publishStatus, statusBar } from '@/shared/state/status_bar.js'
 
 const eager = (id: string, implementation: FeatureImplementation): FeatureDescriptor => ({
-  bootstrap: 'eager',
   id,
   implementation,
   status: { icon: '✓', name: id },
 })
-const background = (prepare: Effect.Effect<FeatureImplementation, FeaturePreflightError>, id = 'comment-checker'): FeatureDescriptor => ({
-  bootstrap: 'background',
-  id,
-  prepare,
-  status: { icon: '✓', name: id },
-})
-
 const context = (key: string, hasUI = true, onSetStatus?: (statusKey: string, text: string | undefined) => void, onGetSessionId?: () => void) => {
   const statuses: { key: string; text: string | undefined }[] = []
   return {
@@ -48,16 +40,6 @@ const context = (key: string, hasUI = true, onSetStatus?: (statusKey: string, te
 }
 const emit = (fixture: ReturnType<typeof createFakePi>, name: string, ctx: ExtensionContext) => Effect.promise(() => fixture.emit(name, {}, ctx))
 
-const install = (fixture: ReturnType<typeof createFakePi>, first: Deferred.Deferred<void>, second: Deferred.Deferred<void>) =>
-  makeFeatureCoordinator({
-    features: [
-      background(Deferred.await(first).pipe(Effect.as({ register: (pi) => pi.on('agent_start', () => undefined) })), 'comment-checker'),
-      background(Deferred.await(second).pipe(Effect.as({ register: (pi) => pi.on('agent_end', () => undefined) })), 'meridian-session-affinity'),
-    ],
-    pi: fixture.pi,
-    runtime,
-  }).install()
-
 describe('feature coordinator', () => {
   afterEach(() => {
     for (const id of [
@@ -69,8 +51,6 @@ describe('feature coordinator', () => {
       'one',
       'two',
       'three',
-      'comment-checker',
-      'meridian-session-affinity',
       'eager',
       'typed',
       'defect',
@@ -95,7 +75,6 @@ describe('feature coordinator', () => {
         ['feature'],
         [descriptor, descriptor],
         [eager('same', { register: () => undefined }), eager('same', { register: () => undefined })],
-        [{ ...descriptor, bootstrap: 'later' }],
         [{ ...descriptor, id: undefined }],
         [{ ...descriptor, id: 1 }],
         [{ ...descriptor, status: undefined }],
@@ -108,18 +87,6 @@ describe('feature coordinator', () => {
         [{ ...descriptor, implementation: { register: 1 } }],
         [{ ...descriptor, implementation: { activate: 1, register: () => undefined } }],
         [{ ...descriptor, implementation: { deactivate: 1, register: () => undefined } }],
-        [{ ...descriptor, prepare: Effect.void }],
-        [{ bootstrap: 'background', id: 'comment-checker', prepare: {}, status: { icon: '✓', name: 'x' } }],
-        [
-          {
-            bootstrap: 'background',
-            id: 'comment-checker',
-            implementation: { register: () => undefined },
-            prepare: Effect.void,
-            status: { icon: '✓', name: 'x' },
-          },
-        ],
-        [{ bootstrap: 'background', id: 'not-approved', prepare: Effect.void, status: { icon: '✓', name: 'x' } }],
       ]
       for (const features of cases) {
         const fixture = createFakePi()
@@ -231,117 +198,17 @@ describe('feature coordinator', () => {
     })
   )
 
-  it.scoped('forks background preparation without delaying start, then registers and activates it once', () =>
+  it.effect('ignores stale shutdown keys before matching shutdown teardown', () =>
     Effect.gen(function* () {
       const fixture = createFakePi()
-      const gate = yield* Deferred.make<void>()
-      const calls: string[] = []
-      const completed = yield* Deferred.make<void>()
-      const implementation: FeatureImplementation = {
-        activate: () => Effect.sync(() => calls.push('activate')).pipe(Effect.andThen(Deferred.succeed(completed, undefined))),
-        register: () => calls.push('register'),
-      }
-      makeFeatureCoordinator({ features: [background(Deferred.await(gate).pipe(Effect.as(implementation)))], pi: fixture.pi, runtime }).install()
-      const fixtureContext = context('background')
-      yield* emit(fixture, 'session_start', fixtureContext.ctx)
-      expect(calls).toEqual([])
-      yield* Deferred.succeed(gate, undefined)
-      yield* Deferred.await(completed)
-      yield* Effect.yieldNow
-      expect(calls).toEqual(['register', 'activate'])
-      expect([fixtureContext.statuses.at(-1)?.text, statusBar.has('feature:comment-checker')]).toEqual([undefined, false])
-    })
-  )
-
-  it.scoped('produces the same observable background capabilities and health regardless of reverse completion order', () =>
-    Effect.gen(function* () {
-      const firstGate = yield* Deferred.make<void>()
-      const secondGate = yield* Deferred.make<void>()
-      const reverseFixture = createFakePi()
-      const forwardFixture = createFakePi()
-
-      install(reverseFixture, firstGate, secondGate)
-      const reverseContext = context('background-reverse')
-      yield* emit(reverseFixture, 'session_start', reverseContext.ctx)
-      yield* Deferred.succeed(secondGate, undefined)
-      yield* Effect.yieldNow
-      expect([...reverseFixture.state.handlers.keys()]).toContain('agent_end')
-      yield* Deferred.succeed(firstGate, undefined)
-      yield* Effect.yieldNow
-
-      const forwardFirstGate = yield* Deferred.make<void>()
-      const forwardSecondGate = yield* Deferred.make<void>()
-      install(forwardFixture, forwardFirstGate, forwardSecondGate)
-      const forwardContext = context('background-forward')
-      yield* emit(forwardFixture, 'session_start', forwardContext.ctx)
-      yield* Deferred.succeed(forwardFirstGate, undefined)
-      yield* Effect.yieldNow
-      yield* Deferred.succeed(forwardSecondGate, undefined)
-      yield* Effect.yieldNow
-
-      expect([...reverseFixture.state.handlers.keys()].toSorted((left, right) => left.localeCompare(right))).toEqual(
-        [...forwardFixture.state.handlers.keys()].toSorted((left, right) => left.localeCompare(right))
-      )
-      expect(reverseContext.statuses.map(({ text }) => text).toSorted((left, right) => (left ?? '').localeCompare(right ?? ''))).toEqual(
-        forwardContext.statuses.map(({ text }) => text).toSorted((left, right) => (left ?? '').localeCompare(right ?? ''))
-      )
-    })
-  )
-
-  it.effect('activates a previously prepared feature in a later session instead of preparing it again', () =>
-    Effect.gen(function* () {
-      const fixture = createFakePi()
-      let prepared = 0
-      let activated = 0
-      const preparedOnce = yield* Deferred.make<void>()
-      const activatedOnce = yield* Deferred.make<void>()
-      const implementation: FeatureImplementation = {
-        activate: () =>
-          Effect.sync(() => {
-            activated++
-          }).pipe(Effect.andThen(Deferred.succeed(activatedOnce, undefined))),
-        register: () => undefined,
-      }
-      makeFeatureCoordinator({
-        features: [
-          background(
-            Effect.sync(() => {
-              prepared++
-              return implementation
-            }).pipe(Effect.tap(() => Deferred.succeed(preparedOnce, undefined)))
-          ),
-        ],
-        pi: fixture.pi,
-        runtime,
-      }).install()
-      const first = context('first')
-      yield* emit(fixture, 'session_start', first.ctx)
-      yield* Deferred.await(preparedOnce)
-      yield* Deferred.await(activatedOnce)
-      yield* emit(fixture, 'session_shutdown', first.ctx)
-      const second = context('second')
-      yield* emit(fixture, 'session_start', second.ctx)
-      expect([prepared, activated]).toEqual([1, 2])
-    })
-  )
-
-  it.scoped('ignores stale shutdown keys and interrupts preparation before matching shutdown teardown', () =>
-    Effect.gen(function* () {
-      const fixture = createFakePi()
-      const begun = yield* Deferred.make<void>()
-      const never = yield* Deferred.make<void>()
       const calls: string[] = []
       makeFeatureCoordinator({
-        features: [
-          eager('eager', { deactivate: (_ctx, why) => Effect.sync(() => calls.push(`deactivate:${why}`)), register: () => undefined }),
-          background(Deferred.succeed(begun, undefined).pipe(Effect.andThen(Deferred.await(never)), Effect.as({ register: () => undefined }))),
-        ],
+        features: [eager('eager', { deactivate: (_ctx, why) => Effect.sync(() => calls.push(`deactivate:${why}`)), register: () => undefined })],
         pi: fixture.pi,
         runtime,
       }).install()
       const current = context('current')
       yield* emit(fixture, 'session_start', current.ctx)
-      yield* Deferred.await(begun)
       yield* emit(fixture, 'session_shutdown', context('stale').ctx)
       expect(calls).toEqual([])
       yield* emit(fixture, 'session_shutdown', current.ctx)
@@ -349,107 +216,21 @@ describe('feature coordinator', () => {
     })
   )
 
-  it.scoped('replaces sessions only after interrupting tracked preparation and deactivates with replaced', () =>
+  it.effect('isolates typed activation failures and defects and maps health safely', () =>
     Effect.gen(function* () {
       const fixture = createFakePi()
-      const entered = yield* Deferred.make<void>()
-      const released = yield* Deferred.make<void>()
-      const order: string[] = []
-      makeFeatureCoordinator({
-        features: [
-          eager('eager', { deactivate: (_ctx, why) => Effect.sync(() => order.push(`deactivate:${why}`)), register: () => undefined }),
-          background(
-            Deferred.succeed(entered, undefined).pipe(
-              Effect.andThen(Effect.never.pipe(Effect.as({ register: () => undefined }))),
-              Effect.onInterrupt(() => Deferred.succeed(released, undefined).pipe(Effect.asVoid))
-            )
-          ),
-        ],
-        pi: fixture.pi,
-        runtime,
-      }).install()
-      const first = context('one')
-      yield* emit(fixture, 'session_start', first.ctx)
-      yield* Deferred.await(entered)
-      const replacement = yield* Effect.forkChild(emit(fixture, 'session_start', context('two').ctx))
-      yield* Deferred.await(released)
-      yield* Fiber.join(replacement)
-      expect(order).toEqual(['deactivate:replaced'])
-    })
-  )
-
-  it.effect('isolates typed failures and defects, maps health safely, and retries failed preparation', () =>
-    Effect.gen(function* () {
-      const fixture = createFakePi()
-      let attempts = 0
-      const firstPrepared = yield* Deferred.make<void>()
-      const secondPrepared = yield* Deferred.make<void>()
       makeFeatureCoordinator({
         features: [
           eager('typed', { activate: () => Effect.fail({ _tag: 'Activation' }), register: () => undefined }),
           eager('defect', { activate: () => Effect.die('boom'), register: () => undefined }),
-          background(
-            Effect.suspend(() => {
-              attempts++
-              return (attempts === 1 ? Effect.fail({ _tag: 'Preflight' }) : Effect.succeed({ register: () => undefined })).pipe(
-                Effect.ensuring(Deferred.succeed(attempts === 1 ? firstPrepared : secondPrepared, undefined))
-              )
-            })
-          ),
         ],
         pi: fixture.pi,
         runtime,
       }).install()
       const first = context('fail-one')
       yield* emit(fixture, 'session_start', first.ctx)
-      yield* Deferred.await(firstPrepared)
-      yield* Effect.yieldNow
       expect(first.statuses.map(({ text }) => text)).toContain('✓ typed: activation failed')
       expect(first.statuses.map(({ text }) => text)).toContain('✓ defect: activation defect')
-      expect(first.statuses.map(({ text }) => text)).toContain('✓ comment-checker: preflight failed')
-      yield* emit(fixture, 'session_shutdown', first.ctx)
-      const second = context('fail-two')
-      yield* emit(fixture, 'session_start', second.ctx)
-      yield* Deferred.await(secondPrepared)
-      yield* Effect.yieldNow
-      expect([attempts, second.statuses.at(-1)?.text]).toEqual([2, undefined])
-    })
-  )
-
-  it.effect('treats malformed prepared implementations as retryable preflight defects without registering them', () =>
-    Effect.gen(function* () {
-      const fixture = createFakePi()
-      let attempts = 0
-      let registrations = 0
-      const firstPrepared = yield* Deferred.make<void>()
-      const secondPrepared = yield* Deferred.make<void>()
-      makeFeatureCoordinator({
-        features: [
-          background(
-            Effect.suspend(() => {
-              attempts++
-              return (
-                attempts === 1
-                  ? asResult<Effect.Effect<FeatureImplementation, FeaturePreflightError>>(Effect.succeed({ activate: 1, deactivate: 1, register: 1 }))
-                  : Effect.succeed({ register: () => registrations++ })
-              ).pipe(Effect.ensuring(Deferred.succeed(attempts === 1 ? firstPrepared : secondPrepared, undefined)))
-            })
-          ),
-        ],
-        pi: fixture.pi,
-        runtime,
-      }).install()
-      const first = context('invalid-preflight-one')
-      yield* emit(fixture, 'session_start', first.ctx)
-      yield* Deferred.await(firstPrepared)
-      yield* Effect.yieldNow
-      expect([registrations, first.statuses.at(-1)?.text]).toEqual([0, '✓ comment-checker: preflight defect'])
-      yield* emit(fixture, 'session_shutdown', first.ctx)
-      const second = context('invalid-preflight-two')
-      yield* emit(fixture, 'session_start', second.ctx)
-      yield* Deferred.await(secondPrepared)
-      yield* Effect.yieldNow
-      expect([attempts, registrations, second.statuses.at(-1)?.text]).toEqual([2, 1, undefined])
     })
   )
 
@@ -535,154 +316,6 @@ describe('feature coordinator', () => {
         tone: 'error',
       })
       expect(second.statuses.map(({ text }) => text)).toEqual([undefined, '✓ eager: activation failed'])
-    })
-  )
-
-  it.effect('maps preparation defects safely and retries them in the next session', () =>
-    Effect.gen(function* () {
-      const fixture = createFakePi()
-      let attempts = 0
-      const firstPrepared = yield* Deferred.make<void>()
-      const secondPrepared = yield* Deferred.make<void>()
-      makeFeatureCoordinator({
-        features: [
-          background(
-            Effect.suspend(() => {
-              attempts++
-              return (attempts === 1 ? Effect.die('broken preflight') : Effect.succeed({ register: () => undefined })).pipe(
-                Effect.ensuring(Deferred.succeed(attempts === 1 ? firstPrepared : secondPrepared, undefined))
-              )
-            })
-          ),
-        ],
-        pi: fixture.pi,
-        runtime,
-      }).install()
-      const first = context('defect-preflight-one')
-      yield* emit(fixture, 'session_start', first.ctx)
-      yield* Deferred.await(firstPrepared)
-      yield* Effect.yieldNow
-      expect(first.statuses.map(({ text }) => text)).toContain('✓ comment-checker: preflight defect')
-      yield* emit(fixture, 'session_shutdown', first.ctx)
-      const second = context('defect-preflight-two')
-      yield* emit(fixture, 'session_start', second.ctx)
-      yield* Deferred.await(secondPrepared)
-      yield* Effect.yieldNow
-      expect([attempts, second.statuses.at(-1)?.text]).toEqual([2, undefined])
-    })
-  )
-
-  it.scoped('publishes no preparation interruption and retries it in the replacement session', () =>
-    Effect.gen(function* () {
-      const fixture = createFakePi()
-      const entered = yield* Deferred.make<void>()
-      const interrupted = yield* Deferred.make<void>()
-      const retried = yield* Deferred.make<void>()
-      let attempts = 0
-      makeFeatureCoordinator({
-        features: [
-          background(
-            Effect.suspend(() => {
-              attempts++
-              return attempts === 1
-                ? Deferred.succeed(entered, undefined).pipe(
-                    Effect.andThen(Effect.never),
-                    Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined).pipe(Effect.asVoid)),
-                    Effect.as({ register: () => undefined })
-                  )
-                : Deferred.succeed(retried, undefined).pipe(Effect.as({ register: () => undefined }))
-            })
-          ),
-        ],
-        pi: fixture.pi,
-        runtime,
-      }).install()
-      const first = context('interrupted-preflight-one')
-      yield* emit(fixture, 'session_start', first.ctx)
-      yield* Deferred.await(entered)
-      yield* emit(fixture, 'session_shutdown', first.ctx)
-      yield* Deferred.await(interrupted)
-      expect(first.statuses.map(({ text }) => text)).not.toContain('✓ comment-checker: preflight defect')
-      const second = context('interrupted-preflight-two')
-      yield* emit(fixture, 'session_start', second.ctx)
-      yield* Deferred.await(retried)
-      yield* Effect.yieldNow
-      expect([attempts, second.statuses.at(-1)?.text]).toEqual([2, undefined])
-    })
-  )
-
-  it.scoped('guards stale prepared completion across a start-stop race', () =>
-    Effect.gen(function* () {
-      const fixture = createFakePi()
-      const gate = yield* Deferred.make<void>()
-      const stopping = yield* Deferred.make<void>()
-      const calls: string[] = []
-      makeFeatureCoordinator({
-        features: [
-          background(
-            Effect.uninterruptible(Deferred.await(gate)).pipe(
-              Effect.as({ activate: () => Effect.sync(() => calls.push('activate')), register: () => calls.push('register') })
-            )
-          ),
-          background(
-            Effect.never.pipe(Effect.onInterrupt(() => Deferred.succeed(stopping, undefined).pipe(Effect.asVoid))),
-            'meridian-session-affinity'
-          ),
-        ],
-        pi: fixture.pi,
-        runtime,
-      }).install()
-      const current = context('stop-race')
-      yield* emit(fixture, 'session_start', current.ctx)
-      const shutdown = yield* Effect.forkChild(emit(fixture, 'session_shutdown', current.ctx))
-      yield* Deferred.await(stopping)
-      yield* Deferred.succeed(gate, undefined)
-      yield* Fiber.join(shutdown)
-      expect(calls).toEqual([])
-      expect([current.statuses.filter(({ text }) => text !== undefined), statusBar.has('feature:comment-checker')]).toEqual([[], false])
-    })
-  )
-
-  it.scoped('guards a replaced generation completion and lets the replacement own registration', () =>
-    Effect.gen(function* () {
-      const fixture = createFakePi()
-      const oldGate = yield* Deferred.make<void>()
-      const stopping = yield* Deferred.make<void>()
-      const calls: string[] = []
-      const replacementReady = yield* Deferred.make<void>()
-      let attempts = 0
-      makeFeatureCoordinator({
-        features: [
-          background(
-            Effect.suspend(() => {
-              attempts++
-              return attempts === 1
-                ? Effect.uninterruptible(Deferred.await(oldGate)).pipe(Effect.as({ register: () => calls.push('old-register') }))
-                : Effect.succeed({
-                    activate: () => Effect.sync(() => calls.push('new-activate')).pipe(Effect.andThen(Deferred.succeed(replacementReady, undefined))),
-                    register: () => calls.push('new-register'),
-                  })
-            })
-          ),
-          background(
-            Effect.never.pipe(Effect.onInterrupt(() => Deferred.succeed(stopping, undefined).pipe(Effect.asVoid))),
-            'meridian-session-affinity'
-          ),
-        ],
-        pi: fixture.pi,
-        runtime,
-      }).install()
-      const first = context('replace-race-one')
-      yield* emit(fixture, 'session_start', first.ctx)
-      const second = context('replace-race-two')
-      const replacement = yield* Effect.forkChild(emit(fixture, 'session_start', second.ctx))
-      yield* Deferred.await(stopping)
-      yield* Deferred.succeed(oldGate, undefined)
-      yield* Fiber.join(replacement)
-      yield* Deferred.await(replacementReady)
-      yield* Effect.yieldNow
-      expect(calls).toEqual(['new-register', 'new-activate'])
-      expect(second.statuses.filter(({ text }) => text !== undefined)).toEqual([])
     })
   )
 

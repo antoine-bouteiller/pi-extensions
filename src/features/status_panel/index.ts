@@ -11,7 +11,6 @@ export const feature = ((options: FeatureOptions<StatusPanelDependencies> = {}) 
   const dependencies = options.dependencies ?? {}
   let handlers: ReturnType<typeof makePanelController> | undefined
   return {
-    bootstrap: 'eager',
     id: 'status-panel',
     implementation: {
       activate: (event, ctx) => (handlers === undefined ? Effect.void : handlers.sessionStart(event, ctx)),

@@ -6,7 +6,6 @@ import { makeEventHandler } from '#shared/effect/runtime'
 import { classifyProviderError } from './retry.js'
 
 export const feature = (() => ({
-  bootstrap: 'eager',
   id: 'provider-retry',
   implementation: {
     register: (pi, runtime) => {

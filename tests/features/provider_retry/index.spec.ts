@@ -17,7 +17,7 @@ const createHarness = () => {
 describe('provider retry registration', () => {
   it('registers eagerly', () => {
     const descriptor = feature()
-    expect(descriptor).toMatchObject({ bootstrap: 'eager', id: 'provider-retry' })
+    expect(descriptor).toMatchObject({ id: 'provider-retry' })
     const fixture = createFakePi()
     makeFeatureCoordinator({ features: [descriptor], pi: fixture.pi, runtime }).install()
     expect([...fixture.state.handlers.keys()]).toEqual([

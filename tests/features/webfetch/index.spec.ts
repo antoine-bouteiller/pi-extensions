@@ -91,7 +91,7 @@ describe('webfetch feature', () => {
     Effect.sync(() => {
       const fixture = createFakePi()
 
-      expect(feature()).toMatchObject({ bootstrap: 'eager', id: 'webfetch', status: { icon: '🌐', name: 'webfetch' } })
+      expect(feature()).toMatchObject({ id: 'webfetch', status: { icon: '🌐', name: 'webfetch' } })
       feature().implementation.register(fixture.pi, testRuntime(stubHttpClient(() => Promise.resolve(new Response('ok')))))
       expect(fixture.state.tools.has('webfetch')).toBe(true)
     })

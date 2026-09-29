@@ -15,12 +15,10 @@ const SNAKE_CASE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/
 
 const MANIFEST_KEYS = ['commands', 'handlers', 'messageRenderers', 'tools'] as const
 const T009_FEATURES = new Set(['background_poll', 'claude_code', 'meridian_session_affinity', 'prompt_rewind', 'rules', 'status_panel'])
-const APPROVED_BACKGROUND_FEATURES = new Set(['comment_checker'])
 
 type Manifest = Record<(typeof MANIFEST_KEYS)[number], string[]>
 
 interface DescriptorMetadata {
-  bootstrap: 'background' | 'eager'
   id: string
   status: { icon: string; name: string }
 }
@@ -93,16 +91,16 @@ const reportScript = (directories: string[]): string => `
     const fixture = createFakePi();
     const descriptor = typeof module.feature === 'function' ? module.feature() : undefined;
     const exportsRegister = typeof module.register === 'function';
-    const exportsFeature = descriptor?.bootstrap === 'eager' || descriptor?.bootstrap === 'background';
+    const exportsFeature = descriptor?.implementation !== undefined;
     if (exportsRegister === exportsFeature) {
       throw new Error('Feature ' + directory + ' must export exactly one registration entrypoint');
     }
-    const register = exportsRegister ? module.register : descriptor?.bootstrap === 'eager' ? descriptor.implementation.register : undefined;
+    const register = exportsRegister ? module.register : descriptor?.implementation.register;
     if (typeof register === 'function') {
       register(fixture.pi, runtime);
     }
     report.features[directory] = {
-      descriptor: exportsFeature ? { bootstrap: descriptor.bootstrap, id: descriptor.id, status: descriptor.status } : undefined,
+      descriptor: exportsFeature ? { id: descriptor.id, status: descriptor.status } : undefined,
       exportsDefault: module.default !== undefined,
       exportsFeature,
       exportsRegister,
@@ -111,7 +109,7 @@ const reportScript = (directories: string[]): string => `
   }
 
   const { features } = await import(${JSON.stringify(PATHS.registry)});
-  report.registry = features.map(feature => ({ bootstrap: feature.bootstrap, id: feature.id, status: feature.status }));
+  report.registry = features.map(feature => ({ id: feature.id, status: feature.status }));
   console.log(JSON.stringify(report));
 `
 
@@ -204,13 +202,11 @@ export const features = [
   it.effect('enabled descriptors have unique identity and status metadata', () =>
     Effect.gen(function* () {
       const { registry } = yield* Effect.promise(() => registrationReport())
-      const identities = registry.map(({ bootstrap, id, status }) => [bootstrap, id, `feature:${id}`, status.icon, status.name])
 
       expect(new Set(registry.map(({ id }) => id)).size).toBe(registry.length)
       expect(new Set(registry.map(({ id }) => `feature:${id}`)).size).toBe(registry.length)
       expect(new Set(registry.map(({ status }) => status.icon)).size).toBe(registry.length)
       expect(new Set(registry.map(({ status }) => status.name)).size).toBe(registry.length)
-      expect(identities.every(([bootstrap]) => bootstrap === 'eager' || bootstrap === 'background')).toBeTrue()
     })
   )
 
@@ -221,52 +217,42 @@ export const features = [
       for (const [directory, feature] of Object.entries(features)) {
         expect(feature.exportsRegister !== feature.exportsFeature, directory).toBeTrue()
         expect(feature.exportsDefault, directory).toBeFalse()
-        if (APPROVED_BACKGROUND_FEATURES.has(directory)) {
-          expect(feature.descriptor?.bootstrap, directory).toBe('background')
-          expect(registrationCount(feature.manifest), directory).toBe(0)
-        } else {
-          expect(registrationCount(feature.manifest), directory).toBeGreaterThan(0)
-        }
+        expect(registrationCount(feature.manifest), directory).toBeGreaterThan(0)
       }
     })
   )
 
-  it.effect('T-009 through T-011 descriptors expose exact bootstrap metadata', () =>
+  it.effect('T-009 through T-011 descriptors expose exact identity metadata', () =>
     Effect.gen(function* () {
       const { features } = yield* Effect.promise(() => registrationReport())
       const descriptors = Object.fromEntries(
         Object.entries(features)
-          .filter(
-            ([directory, feature]) =>
-              (T009_FEATURES.has(directory) || APPROVED_BACKGROUND_FEATURES.has(directory)) && feature.descriptor !== undefined
-          )
+          .filter(([directory, feature]) => T009_FEATURES.has(directory) && feature.descriptor !== undefined)
           .map(([directory, feature]) => [directory, feature.descriptor])
       )
 
       expect(descriptors).toEqual({
-        background_poll: { bootstrap: 'eager', id: 'background-poll', status: { icon: '⏳', name: 'background-poll' } },
-        claude_code: { bootstrap: 'eager', id: 'claude-code', status: { icon: '🤖', name: 'claude-code' } },
-        comment_checker: { bootstrap: 'background', id: 'comment-checker', status: { icon: '💬', name: 'comment-checker' } },
+        background_poll: { id: 'background-poll', status: { icon: '⏳', name: 'background-poll' } },
+        claude_code: { id: 'claude-code', status: { icon: '🤖', name: 'claude-code' } },
         meridian_session_affinity: {
-          bootstrap: 'eager',
           id: 'meridian-session-affinity',
           status: { icon: '🧭', name: 'meridian' },
         },
-        prompt_rewind: { bootstrap: 'eager', id: 'prompt-rewind', status: { icon: '↩️', name: 'prompt-rewind' } },
-        rules: { bootstrap: 'eager', id: 'rules', status: { icon: '📜', name: 'rules' } },
-        status_panel: { bootstrap: 'eager', id: 'status-panel', status: { icon: '📊', name: 'status-panel' } },
+        prompt_rewind: { id: 'prompt-rewind', status: { icon: '↩️', name: 'prompt-rewind' } },
+        rules: { id: 'rules', status: { icon: '📜', name: 'rules' } },
+        status_panel: { id: 'status-panel', status: { icon: '📊', name: 'status-panel' } },
       })
     })
   )
 
-  it.effect('the packaged entrypoint eagerly registers only enabled eager descriptors in config order', () =>
+  it.effect('the packaged entrypoint eagerly registers only enabled descriptors in config order', () =>
     Effect.gen(function* () {
       const { aggregate, features, registry } = yield* Effect.promise(() => registrationReport())
-      const enabledEager = new Set(registry.filter(({ bootstrap }) => bootstrap === 'eager').map(({ id }) => id))
-      const eagerFeatures = Object.fromEntries(
-        Object.entries(features).filter(([, feature]) => feature.descriptor?.bootstrap === 'eager' && enabledEager.has(feature.descriptor.id))
+      const enabled = new Set(registry.map(({ id }) => id))
+      const enabledFeatures = Object.fromEntries(
+        Object.entries(features).filter(([, feature]) => feature.descriptor !== undefined && enabled.has(feature.descriptor.id))
       )
-      const merged = mergedManifest(eagerFeatures)
+      const merged = mergedManifest(enabledFeatures)
 
       for (const key of ['commands', 'messageRenderers', 'tools'] as const) {
         expect(aggregate[key].toSorted(), key).toEqual(merged[key].toSorted())

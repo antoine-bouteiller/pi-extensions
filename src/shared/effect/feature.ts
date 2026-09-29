@@ -5,11 +5,6 @@ import { type AppRuntime, type AppServices } from './app_services.js'
 import { type EnvApi } from './env.js'
 import { type HandlerServices } from './runtime.js'
 
-export interface FeaturePreflightError {
-  readonly _tag: string
-  readonly reason?: string
-}
-
 /** @internal */
 export interface FeatureActivationError {
   readonly _tag: string
@@ -39,12 +34,7 @@ export interface FeatureImplementation {
   readonly deactivate?: (ctx: ExtensionContext, reason: StopReason) => Effect.Effect<void, FeatureActivationError, AppServices | HandlerServices>
 }
 
-export type FeatureDescriptor =
-  | (FeatureIdentity & { readonly bootstrap: 'eager'; readonly implementation: FeatureImplementation })
-  | (FeatureIdentity & {
-      readonly bootstrap: 'background'
-      readonly prepare: Effect.Effect<FeatureImplementation, FeaturePreflightError, AppServices>
-    })
+export type FeatureDescriptor = FeatureIdentity & { readonly implementation: FeatureImplementation }
 
 export interface FeatureOptions<Dependencies> {
   readonly dependencies?: Dependencies

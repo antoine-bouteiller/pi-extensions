@@ -11,7 +11,6 @@ import { makeRewindController, REWIND_COMMAND } from './rewind.js'
 export const feature = ((_options: FeatureOptions<undefined> = {}) => {
   const controller = makeRewindController()
   return {
-    bootstrap: 'eager',
     id: 'prompt-rewind',
     implementation: {
       activate: (event, ctx) => Effect.sync(() => controller.start(event, ctx)),

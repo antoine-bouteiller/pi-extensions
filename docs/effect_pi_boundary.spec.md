@@ -28,30 +28,30 @@ This spec defines one boundary and one independently enabled feature contract.
 
 ## 3. Key Design Decisions
 
-| Decision                             | Choice                                                                                                                                                                                                                                                                                     | Rationale                                                                                                                                                                                   |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `[KD-1]` Runtime instances           | `ManagedRuntime.make` has one construction owner: the lazily memoized process-wide `AppRuntime` in `src/config/runtime.ts`, containing only shared `AppServices`.                                                                                                                          | `AppRuntime` is the shared runtime type in `src/shared/effect/app_services.ts`; it must not import a feature merely to build its base layer. No feature-owned construction runtime remains. |
-| `[KD-2]` Boundary location           | **Amended by `[KD-2a]`.** Feature indexes own feature registrations; the coordinator alone owns extension lifecycle registration.                                                                                                                                                          | Keeps Pi callback signatures at explicit owners.                                                                                                                                            |
-| `[KD-2a]` Registration owners        | `src/features/<name>/index.ts` may register that descriptor's tools, commands, and non-lifecycle events; `src/config/feature_coordinator.ts` alone registers `session_start`/`session_shutdown`.                                                                                           | Feature callbacks remain local, while one coordinator makes bootstrap and session ownership deterministic.                                                                                  |
-| `[KD-3]` Tool bridging               | `makeToolExecutor` is mandatory, never inline `runtime.runPromise`.                                                                                                                                                                                                                        | It suspends before dispatch, forwards `{ signal }`, and provides `PiCtx`/`Ui` per invocation (`src/shared/effect/runtime.ts:15-29`).                                                        |
-| `[KD-4]` Event bridging              | `makeEventHandler`, deliberately generic in its error channel.                                                                                                                                                                                                                             | Event policy belongs to the event body, not a shared helper.                                                                                                                                |
-| `[KD-5]` Command bridging            | Add `makeCommandHandler`, typed to Pi's actual command signature.                                                                                                                                                                                                                          | Commands need the same per-invocation services as tools.                                                                                                                                    |
-| `[KD-6]` `Effect.runSync`            | Only memory-only, non-failing, non-suspending state in synchronous Pi/TUI callbacks.                                                                                                                                                                                                       | A synchronous callback cannot recover a defect from a suspended effect.                                                                                                                     |
-| `[KD-7]` Fiber ownership             | Every fork names a `Scope` or a tracked `Fiber`; detached forks need a written justification.                                                                                                                                                                                              | An unowned fiber is a leak by construction.                                                                                                                                                 |
-| `[KD-8]` Runtime re-entry            | Never call `runtime.runPromise` from work already running on that runtime.                                                                                                                                                                                                                 | Re-entry loses structural interruption and resource ownership.                                                                                                                              |
-| `[KD-9]` Error channel               | Feature modules use tagged errors; an index maps expected tool errors to `ToolFailure`; `orDie` is only for broken invariants.                                                                                                                                                             | Mapping early destroys useful error discrimination.                                                                                                                                         |
-| `[KD-10]` Context lifetime           | **Amended by `[KD-10a]`.** A process may capture `ExtensionAPI`; it never stores an `ExtensionContext`.                                                                                                                                                                                    | `PiCtx` is intentionally rebuilt from the invocation context by `perInvocation` (`src/shared/effect/runtime.ts:9-13`).                                                                      |
-| `[KD-10a]` Session context retention | The coordinator may retain `ExtensionContext` only in the current session record and fibers scoped to that session; it clears it after interrupting/awaiting that scope at shutdown. It never enters process runtime, descriptor, or process service state.                                | Late preparation needs the current session's activation/UI context, but a later session must never use it.                                                                                  |
-| `[KD-11]` Cancellation               | Tool bodies receive `(params)` only and use `withAbortSignal` for host promises.                                                                                                                                                                                                           | The fiber signal, not a separately polled host signal, is what interruption drives.                                                                                                         |
-| `[KD-12]` Test boundary              | Logic is tested as `Effect` with `it.effect`/`it.scoped`; registration is tested through fake Pi.                                                                                                                                                                                          | Virtual time and registered callbacks expose lifecycle regressions.                                                                                                                         |
-| `[KD-13]` Existing divergences       | Record them in a conformance table; do not migrate them in this spec.                                                                                                                                                                                                                      | Visible exceptions cannot be cited as normal practice.                                                                                                                                      |
-| `[KD-14]` Enforcement                | **Amended by `[KD-14a]`.** An oxlint rule bans unsupported registration, bridge, runtime construction, and runtime entry locations.                                                                                                                                                        | The boundary must fail at author time, not in later review.                                                                                                                                 |
-| `[KD-14a]` Enforcement owners        | The rule allows lifecycle `pi.on` only in the coordinator; descriptor registration and bridge calls only in a feature index; managed-runtime entry only in shared bridge implementations; `ManagedRuntime.make` only in config runtime.                                                    | This matches `[KD-2a]` and has no broad “feature directory” exception.                                                                                                                      |
-| `[KD-15]` Feature contract           | `FeatureDescriptor` is a discriminated union; `FeaturePlugin` is the factory returning one descriptor.                                                                                                                                                                                     | Prepared artifacts flow into registration/callback closures without shared-to-config types.                                                                                                 |
-| `[KD-16]` Explicit enablement        | `src/config/features.ts` has one explicit import and one stable ordered registry entry per enabled feature. Commenting **both** lines disables it.                                                                                                                                         | There is no auto-discovery or side-effect enablement.                                                                                                                                       |
-| `[KD-17]` Mixed bootstrap            | Eager descriptors validate/register synchronously in registry order at extension load. Only comment-checker background-prepares and late-registers; Meridian is eager so its scrub precedes a session's immediate first prompt. Eager activation is awaited in registry order per session. | One-shot handlers cannot be missed; only external checks are nonblocking.                                                                                                                   |
-| `[KD-18]` Feature health             | The coordinator owns one `FeatureHealth` enum (`checking`, `healthy`, `error`) and persistently publishes it for every enabled descriptor using §8.12 metadata.                                                                                                                            | Generic, distinct status makes independent failures observable without a second poisoned health state.                                                                                      |
-| `[KD-19]` Feature resource ownership | The base runtime has no feature imports or feature-owned services. Each feature owns its values and provides them to its callback effects.                                                                                                                                                 | Commenting a feature's two config lines fully disables it.                                                                                                                                  |
+| Decision                             | Choice                                                                                                                                                                                                                                                      | Rationale                                                                                                                                                                                   |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `[KD-1]` Runtime instances           | `ManagedRuntime.make` has one construction owner: the lazily memoized process-wide `AppRuntime` in `src/config/runtime.ts`, containing only shared `AppServices`.                                                                                           | `AppRuntime` is the shared runtime type in `src/shared/effect/app_services.ts`; it must not import a feature merely to build its base layer. No feature-owned construction runtime remains. |
+| `[KD-2]` Boundary location           | **Amended by `[KD-2a]`.** Feature indexes own feature registrations; the coordinator alone owns extension lifecycle registration.                                                                                                                           | Keeps Pi callback signatures at explicit owners.                                                                                                                                            |
+| `[KD-2a]` Registration owners        | `src/features/<name>/index.ts` may register that descriptor's tools, commands, and non-lifecycle events; `src/config/feature_coordinator.ts` alone registers `session_start`/`session_shutdown`.                                                            | Feature callbacks remain local, while one coordinator makes bootstrap and session ownership deterministic.                                                                                  |
+| `[KD-3]` Tool bridging               | `makeToolExecutor` is mandatory, never inline `runtime.runPromise`.                                                                                                                                                                                         | It suspends before dispatch, forwards `{ signal }`, and provides `PiCtx`/`Ui` per invocation (`src/shared/effect/runtime.ts:15-29`).                                                        |
+| `[KD-4]` Event bridging              | `makeEventHandler`, deliberately generic in its error channel.                                                                                                                                                                                              | Event policy belongs to the event body, not a shared helper.                                                                                                                                |
+| `[KD-5]` Command bridging            | Add `makeCommandHandler`, typed to Pi's actual command signature.                                                                                                                                                                                           | Commands need the same per-invocation services as tools.                                                                                                                                    |
+| `[KD-6]` `Effect.runSync`            | Only memory-only, non-failing, non-suspending state in synchronous Pi/TUI callbacks.                                                                                                                                                                        | A synchronous callback cannot recover a defect from a suspended effect.                                                                                                                     |
+| `[KD-7]` Fiber ownership             | Every fork names a `Scope` or a tracked `Fiber`; detached forks need a written justification.                                                                                                                                                               | An unowned fiber is a leak by construction.                                                                                                                                                 |
+| `[KD-8]` Runtime re-entry            | Never call `runtime.runPromise` from work already running on that runtime.                                                                                                                                                                                  | Re-entry loses structural interruption and resource ownership.                                                                                                                              |
+| `[KD-9]` Error channel               | Feature modules use tagged errors; an index maps expected tool errors to `ToolFailure`; `orDie` is only for broken invariants.                                                                                                                              | Mapping early destroys useful error discrimination.                                                                                                                                         |
+| `[KD-10]` Context lifetime           | **Amended by `[KD-10a]`.** A process may capture `ExtensionAPI`; it never stores an `ExtensionContext`.                                                                                                                                                     | `PiCtx` is intentionally rebuilt from the invocation context by `perInvocation` (`src/shared/effect/runtime.ts:9-13`).                                                                      |
+| `[KD-10a]` Session context retention | The coordinator may retain `ExtensionContext` only in the current session record and fibers scoped to that session; it clears it after interrupting/awaiting that scope at shutdown. It never enters process runtime, descriptor, or process service state. | Activation needs the current session's context, but a later session must never use it.                                                                                                      |
+| `[KD-11]` Cancellation               | Tool bodies receive `(params)` only and use `withAbortSignal` for host promises.                                                                                                                                                                            | The fiber signal, not a separately polled host signal, is what interruption drives.                                                                                                         |
+| `[KD-12]` Test boundary              | Logic is tested as `Effect` with `it.effect`/`it.scoped`; registration is tested through fake Pi.                                                                                                                                                           | Virtual time and registered callbacks expose lifecycle regressions.                                                                                                                         |
+| `[KD-13]` Existing divergences       | Record them in a conformance table; do not migrate them in this spec.                                                                                                                                                                                       | Visible exceptions cannot be cited as normal practice.                                                                                                                                      |
+| `[KD-14]` Enforcement                | **Amended by `[KD-14a]`.** An oxlint rule bans unsupported registration, bridge, runtime construction, and runtime entry locations.                                                                                                                         | The boundary must fail at author time, not in later review.                                                                                                                                 |
+| `[KD-14a]` Enforcement owners        | The rule allows lifecycle `pi.on` only in the coordinator; descriptor registration and bridge calls only in a feature index; managed-runtime entry only in shared bridge implementations; `ManagedRuntime.make` only in config runtime.                     | This matches `[KD-2a]` and has no broad “feature directory” exception.                                                                                                                      |
+| `[KD-15]` Feature contract           | `FeatureDescriptor` is identity metadata plus an `implementation`; `FeaturePlugin` is the factory returning one descriptor.                                                                                                                                 | Feature artifacts flow into registration/callback closures without shared-to-config types.                                                                                                  |
+| `[KD-16]` Explicit enablement        | `src/config/features.ts` has one explicit import and one stable ordered registry entry per enabled feature. Commenting **both** lines disables it.                                                                                                          | There is no auto-discovery or side-effect enablement.                                                                                                                                       |
+| `[KD-17]` Eager bootstrap            | Every descriptor validates/registers synchronously in registry order at extension load; there is no background preparation or late registration. Activation is awaited in registry order per session.                                                       | One-shot handlers cannot be missed; a session's immediate first prompt already sees every registration.                                                                                     |
+| `[KD-18]` Feature health             | The coordinator owns one `FeatureHealth` enum (`checking`, `healthy`, `error`) and persistently publishes it for every enabled descriptor using §8.12 metadata.                                                                                             | Generic, distinct status makes independent failures observable without a second poisoned health state.                                                                                      |
+| `[KD-19]` Feature resource ownership | The base runtime has no feature imports or feature-owned services. Each feature owns its values and provides them to its callback effects.                                                                                                                  | Commenting a feature's two config lines fully disables it.                                                                                                                                  |
 
 ## 4. Principles & Intents
 
@@ -91,9 +91,8 @@ This spec defines one boundary and one independently enabled feature contract.
   signature change updates `makeCommandHandler`.
 - `[C-6]` **Amended by `[C-6a]`.** The synthetic aborted-tool regression remains owned by fake Pi
   and boundary enforcement; existing tool migration remains backlog.
-- `[C-6a]` It must additionally cover coordinator bootstrap: eager descriptors are registered before
-  the first emitted one-shot event, while failed background descriptors never appear in fake Pi's
-  registration maps. This tests `[KD-17]`, not every legacy callback.
+- `[C-6a]` It must additionally cover coordinator bootstrap: descriptors are registered before the
+  first emitted one-shot event. This tests `[KD-17]`, not every legacy callback.
 - `[C-7]` Pi loads the extension synchronously. Eager validation/registration completes during that
   call; only the coordinator's lifecycle hooks are additionally installed there.
 - `[C-8]` Pi has no unregister transaction. `register` is synchronous and must not throw. A throw
@@ -101,16 +100,16 @@ This spec defines one boundary and one independently enabled feature contract.
 - `[C-9]` Meridian uses Effect `HttpClient`, not `withAbortSignal`, for a non-redirecting `GET`
   to the normalized `/health` URL. It accepts only 2xx, discards its scoped body, and uses a
   TestClock-compatible three-second timeout; every other outcome retries next session.
-- `[C-10]` Eager registration order is exactly registry order. Background prepare completion and
-  late registration order are intentionally unspecified; descriptors must be independent.
-- `[C-11]` Pi 0.84.2 supports late registration (`node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js:206-230`). The coordinator is the only lifecycle listener so a late descriptor cannot miss coordinator-managed activation.
+- `[C-10]` Registration order is exactly registry order; descriptors must still be independent.
+- `[C-11]` The coordinator is the only lifecycle listener, so no descriptor can miss
+  coordinator-managed activation.
 
 ## 7. High-Level Components
 
 ```text
 Pi callbacks ── feature index/coordinator ── shared bridges ── AppRuntime
                     │                             │
-                    └── FeatureDescriptor ── feature-owned prepare/resources
+                    └── FeatureDescriptor ── feature-owned implementation/resources
                                       (no shared -> config or shared -> feature dependency)
 ```
 
@@ -208,17 +207,7 @@ interface FeatureIdentity {
   readonly status: FeatureStatusMetadata
 }
 
-interface EagerFeatureDescriptor extends FeatureIdentity {
-  readonly bootstrap: 'eager'
-  readonly implementation: FeatureImplementation
-}
-
-interface BackgroundFeatureDescriptor extends FeatureIdentity {
-  readonly bootstrap: 'background'
-  readonly prepare: Effect.Effect<FeatureImplementation, FeaturePreflightError, AppServices>
-}
-
-type FeatureDescriptor = EagerFeatureDescriptor | BackgroundFeatureDescriptor
+type FeatureDescriptor = FeatureIdentity & { readonly implementation: FeatureImplementation }
 
 interface FeatureOptions<Dependencies> {
   readonly dependencies?: Dependencies
@@ -226,27 +215,16 @@ interface FeatureOptions<Dependencies> {
 type FeaturePlugin<Dependencies = never> = (options?: FeatureOptions<Dependencies>) => FeatureDescriptor
 ```
 
-Eager descriptors have no `prepare`: validation and `implementation.register` happen synchronously
-at extension load. Background descriptors have no direct implementation: successful `prepare`
-returns the exact implementation that is registered and retained for later sessions. Only
-`comment-checker` is background; `meridian-session-affinity` is eager because sessions can
-prompt right after `session_start`, and a forked registration would miss the first
-`before_agent_start` and leak the pi harness fingerprint that Anthropic meters as Extra Usage.
-The coordinator still allowlists both IDs for background bootstrap. `FeaturePreflightError` and
-`FeatureActivationError` are tagged, concise, safe-to-display contract errors; resource and artifact
-representations never enter `AppServices`. Session resources are acquired in `activate` with the
-provided session `Scope` or released explicitly by `deactivate`; the coordinator invokes
-`deactivate` in registry order before closing the scope.
-
-Comment-checker is constructed with injected `which` (production passes `Bun.which`; tests pass a
-fake). Its preparation resolves `comment-checker` once, rejects a missing/non-absolute result, and
-returns an implementation that closes over that resolved absolute path. Its runtime checker runner
-uses that captured path, never repeats PATH lookup. This is why `prepare` returns an implementation
-rather than `void`.
+Validation and `implementation.register` happen synchronously at extension load. This is why
+`meridian-session-affinity` must stay eager: sessions can prompt right after `session_start`, and a
+forked registration would miss the first `before_agent_start` and leak the pi harness fingerprint
+that Anthropic meters as Extra Usage. `FeatureActivationError` is a tagged, concise, safe-to-display
+contract error; resource and artifact representations never enter `AppServices`. Session resources
+are acquired in `activate` with the provided session `Scope` or released explicitly by `deactivate`;
+the coordinator invokes `deactivate` in registry order before closing the scope.
 
 The coordinator validates before any registration: nonempty unique ID, unique `feature:<id>` key,
-nonempty metadata, exactly the matching union fields, no duplicate descriptor object, and
-`bootstrap: 'background'` only for `comment-checker` or `meridian-session-affinity`. Invalid
+nonempty metadata, a well-formed `implementation`, and no duplicate descriptor object. Invalid
 configuration is a load-time invariant defect with an explicit feature/config diagnostic; it is
 never silently skipped. Validation has no I/O and follows registry order.
 
@@ -256,11 +234,11 @@ never silently skipped. Validation has no I/O and follows registry order.
 `register` functions, and contains one ordered entry for each import:
 
 ```ts
-import { feature as commentChecker } from '#features/comment_checker/index'
+import { feature as askUser } from '#features/ask_user/index'
 // import { feature as meridian } from '#features/meridian_session_affinity/index'
 
 export const features = [
-  commentChecker(),
+  askUser(),
   // meridian(),
 ] satisfies readonly FeatureDescriptor[]
 ```
@@ -268,16 +246,14 @@ export const features = [
 Commenting both matching lines disables that feature, including its initialization (§8.1).
 
 At extension load the coordinator validates the complete list, creates process-level records, and
-registers every eager descriptor's direct implementation synchronously in list order. It then
+registers every descriptor's implementation synchronously in list order. It then
 installs its single `session_start` and `session_shutdown` listeners. This order is mandatory: a tool
-or feature event registered by an eager descriptor exists before Pi can emit a one-shot lifecycle
+or feature event registered by a descriptor exists before Pi can emit a one-shot lifecycle
 event. A descriptor may not register `session_start` or `session_shutdown` itself.
 
 Registration is exactly once per process. A `register` throw transitions only that descriptor to
-`poisoned`; it is never retried because Pi offers no rollback. An eager descriptor with no throw is
-registered even if a sibling is poisoned. Only comment-checker is a background descriptor; it
-registers only the implementation returned by its successful prepare, never after a failed
-preflight.
+`poisoned`; it is never retried because Pi offers no rollback. A descriptor with no throw is
+registered even if a sibling is poisoned.
 
 ### 8.6 Session state, concurrency, and failures
 
@@ -297,9 +273,9 @@ export const registerFeatures = (pi: ExtensionAPI, runtime: AppRuntime): void =>
 `FeatureCoordinator` alone installs `session_start` and `session_shutdown` through
 `makeEventHandler(runtime)`. Its start/shutdown state transitions run as Effects with
 `perInvocation(ctx)` supplied. Each activation is evaluated as `Effect.suspend(() =>
-implementation.activate(event, ctx))` in that session's scope with the same invocation services;
-background preparation needs only `AppServices`. It owns a serialized state cell `{ nextGeneration,
-session, records }`. A record is `{ plugin, implementation?, registration, health }`, where
+implementation.activate(event, ctx))` in that session's scope with the same invocation services.
+It owns a serialized state cell `{ nextGeneration,
+session, records }`. A record is `{ plugin, implementation, registration, health }`, where
 `registration` is `unregistered | registered | poisoned` and the only health enum is
 `FeatureHealth = { _tag: 'checking' } | { _tag: 'healthy' } | { _tag: 'error', reason: SafeReason
 }`. `poisoned` is registration state, mapped to `error` health with the fixed restart-required
@@ -311,40 +287,30 @@ shutdown affects the current record only when its context yields the same key. T
 `ExtensionContext` may live under `[KD-10a]`; no record survives shutdown and no descriptor,
 implementation, process runtime/service, or callback closure retains it.
 
-At load, validation creates records. Each eager record takes its direct implementation, calls
-`register(pi, runtime)` synchronously in config order, and becomes `registered`; a throw makes only
-that record `poisoned/error`. A background record stays `unregistered` until a current-session
-prepare returns an implementation. Its successful fiber first verifies that its generation is current and phase is `starting` or
-`active`, atomically installs the implementation, calls `register` once, then activates it. After
-successful activation—or immediately after registration when no activation exists—it rechecks the
-same generation/phase guard, commits `healthy`, and publishes success. If any guard fails it discards
-the implementation or completion and makes no later Pi/status call.
+At load, validation creates records. Each record calls `register(pi, runtime)` synchronously in
+config order and becomes `registered`; a throw makes only that record `poisoned/error`.
 
 On `session_start`, the coordinator serializes lifecycle transitions. A second start first marks
-the old session `stopping` and invalidates its generation, interrupts and awaits its tracked prepare
-and activation fibers, runs every registered implementation's `deactivate(oldCtx, 'replaced')` in
+the old session `stopping` and invalidates its generation, interrupts and awaits its tracked
+activation fibers, runs every registered implementation's `deactivate(oldCtx, 'replaced')` in
 registry order, closes/awaits its remaining scope, clears its context/fibers, and only then creates
 the next generation; old lifecycle work cannot overlap deactivation. The new session enters `starting`, republishes fixed
 `error` for poisoned records, publishes `checking` for other enabled records, and awaits every
-already-registered implementation's `activate(event, ctx)` one at a time in registry order,
-regardless of eager/background origin. Each successful activation—or registered implementation with
-no activation—commits and publishes `healthy` before the next descriptor; failure commits `error`.
-It then forks prepare only for unregistered background records, marks the session `active`, and returns. Thus eager and previously prepared activation is
-ordered and awaited; external preparation is concurrent and nonblocking.
+registered implementation's `activate(event, ctx)` one at a time in registry order. Each successful
+activation—or registered implementation with no activation—rechecks the generation/phase guard,
+commits and publishes `healthy` before the next descriptor; failure commits `error`. It then marks
+the session `active` and returns.
 
 On `session_shutdown`, the coordinator derives the session key from the callback context. A missing
 current session or unequal key is stale and does nothing. A match atomically marks the generation
-`stopping` and invalid, interrupts and awaits tracked prepare/activation fibers, runs every registered
+`stopping` and invalid, interrupts and awaits tracked activation fibers, runs every registered
 implementation's `deactivate(ctx, 'shutdown')` in registry order with per-feature failure isolation,
-then closes remaining scope resources and clears the session. Prepare completion, registration,
-activation, and their status writes require the current generation in `starting`/`active` immediately
+then closes remaining scope resources and clears the session. Activation and its status writes require the current generation in `starting`/`active` immediately
 before each visible step. Coordinator-owned deactivation may publish an error while `stopping` only
 when both session key and generation still match; replacement completes that publication before
-installing the next generation. No stale completion can register, activate, or overwrite newer status.
+installing the next generation. No stale completion can activate or overwrite newer status.
 
-Prepare typed failure is reduced to a `SafeReason`, leaves the record `unregistered`, and transitions
-health to `error`; it retries only in a later session. A prepare defect is logged diagnostically,
-gets a fixed safe `error` reason, and has the same retry policy. Registration throw is
+Registration throw is
 `poisoned/error` and never retried. Activation or deactivation typed failure leaves registration
 intact and sets `error` for that session; deactivation may publish it during the guarded `stopping`
 phase, and the next session retries lifecycle work. Their defects are logged, converted to fixed
@@ -400,33 +366,27 @@ lines; the symbol is durable when a line drifts (`[C-4]`).
 
 - Test Effect logic with `it.effect`/`it.scoped` and `TestClock` (`tests/utils/bun_effect.ts:14`);
   use `it.live` only for real-clock behavior.
-- Test descriptors/coordinator through `createFakePi` (`tests/utils/fake_pi.ts:27`). Assert eager
-  validation/registration and eager activation in stable registry order; a one-shot event emitted
-  immediately after load reaches the eager registration.
-- With deferred/TestClock preparation, assert `session_start` awaits every registered activation but
-  returns before unregistered background preparation; no callback is registered before prepare
-  returns its implementation, none after failure, and later sessions activate retained background
-  implementations without preparing again.
+- Test descriptors/coordinator through `createFakePi` (`tests/utils/fake_pi.ts:27`). Assert
+  validation/registration and activation in stable registry order; a one-shot event emitted
+  immediately after load reaches the registration.
 - Cover start/start replacement, matching/stale shutdown keys, interrupt-and-await before
-  deactivation, deactivation-before-final-scope-close, stale-generation completion guards, one fiber
-  per background record/generation, sibling independence, status-publication failure, and typed
-  failure/defect/interruption lifecycle policy.
-- Comment-checker tests inject `which`, assert the absolute resolved path is captured and used by the
-  runner, and cover missing/relative paths. Meridian tests use a TestClock timeout and assert URL
+  deactivation, deactivation-before-final-scope-close, stale-generation completion guards, sibling
+  independence, status-publication failure, and typed failure/defect/interruption lifecycle policy.
+- Meridian tests use a TestClock timeout and assert URL
   normalization, non-redirecting 2xx-only behavior, body discard, and redaction.
 - Invoke a `makeToolExecutor` tool with an already-aborted signal and prove its body was not built.
 
 ### 8.10 Checklist for a new feature
 
-1. Export one `feature: FeaturePlugin` factory from its index; it returns one discriminated `FeatureDescriptor`. Eager features expose an
-   implementation; only comment-checker prepares and returns one.
+1. Export one `feature: FeaturePlugin` factory from its index; it returns one `FeatureDescriptor`
+   exposing its implementation.
 2. Give it the unique §8.12 ID, icon, and display name; use safe tagged failures.
 3. Use bridge helpers; migrate lifecycle behavior into `implementation.activate`/`deactivate` and
    do not register lifecycle events from the feature index.
 4. Make values/resources feature-owned; provide captured feature services to callback effects and
    scope session resources to activation.
 5. Add one import and one ordered entry in `src/config/features.ts`; verify commenting both disables it.
-6. Test descriptor validation, bootstrap/implementation artifacts, status, failure, retry, and race
+6. Test descriptor validation, implementation artifacts, status, failure, retry, and race
    behavior independently.
 
 ### 8.11 Enforcement
@@ -457,7 +417,6 @@ Every enabled descriptor uses exactly this metadata and its `feature:<id>` key:
 | `ask-user`                  | ❓   | `ask-user`        |
 | `background-poll`           | ⏳   | `background-poll` |
 | `claude-code`               | 🤖   | `claude-code`     |
-| `comment-checker`           | 💬   | `comment-checker` |
 | `hashline`                  | #️⃣   | `hashline`        |
 | `herdr`                     | ↗    | `herdr`           |
 | `meridian-session-affinity` | 🧭   | `meridian`        |
@@ -472,12 +431,13 @@ N/A
 
 ## Changelog
 
-| Date       | Amendment                                                                                                                                                          | Sections affected | Reason                                                                                                                                                                                                                                                                                                  |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2026-08-14 | Initial boundary specification                                                                                                                                     | 2–9               | Define the Effect/Pi crossing and conformance target.                                                                                                                                                                                                                                                   |
-| 2026-08-24 | Add independent feature plugins, background preflight, and generic persistent health                                                                               | 2–8               | Make features independently enabled, registered, checked, and observable without blocking session startup.                                                                                                                                                                                              |
-| 2026-08-24 | Amend boundary ownership, runtime composition, discriminated plugin contract, bootstrap, coordinator races/state, status/security behavior, conformance, and tests | 2–8               | Resolve all review blockers: implementation-returning preparation, synchronous eager registration/ordered activation, only comment-checker/Meridian background prepare, session-only context, resilient status policy, Meridian HTTP security, full feature disablement, and lifecycle migration scope. |
-| 2026-08-24 | Complete descriptor-only registry composition and remove completed lifecycle/runtime migrations from conformance                                                   | 8                 | Make configuration the sole enablement surface and retain only active divergence inventory.                                                                                                                                                                                                             |
-| 2026-09-03 | Close the `[KD-6]`, `[KD-7]`, and `[KD-14a]` divergences                                                                                                           | 8.8, 8.11         | Unsafe constructors, `MutableRef`, session-scoped forks, and one bridge adapter replace every inline boundary disable.                                                                                                                                                                                  |
-| 2026-09-11 | Make `meridian-session-affinity` eager                                                                                                                             | 3, 8.4, 8.5, 8.10 | Sub-agent workers prompt immediately after `session_start`; the forked background registration missed the first `before_agent_start`, so the unscrubbed pi harness line reached Meridian and Anthropic metered it as Extra Usage (`You've hit your individual spend limit`).                            |
-| 2026-09-15 | Remove automatic theme status metadata                                                                                                                             | 8.12              | The automatic theme feature was removed.                                                                                                                                                                                                                                                                |
+| Date       | Amendment                                                                                                                                                          | Sections affected                 | Reason                                                                                                                                                                                                                                                                                                  |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-08-14 | Initial boundary specification                                                                                                                                     | 2–9                               | Define the Effect/Pi crossing and conformance target.                                                                                                                                                                                                                                                   |
+| 2026-08-24 | Add independent feature plugins, background preflight, and generic persistent health                                                                               | 2–8                               | Make features independently enabled, registered, checked, and observable without blocking session startup.                                                                                                                                                                                              |
+| 2026-08-24 | Amend boundary ownership, runtime composition, discriminated plugin contract, bootstrap, coordinator races/state, status/security behavior, conformance, and tests | 2–8                               | Resolve all review blockers: implementation-returning preparation, synchronous eager registration/ordered activation, only comment-checker/Meridian background prepare, session-only context, resilient status policy, Meridian HTTP security, full feature disablement, and lifecycle migration scope. |
+| 2026-08-24 | Complete descriptor-only registry composition and remove completed lifecycle/runtime migrations from conformance                                                   | 8                                 | Make configuration the sole enablement surface and retain only active divergence inventory.                                                                                                                                                                                                             |
+| 2026-09-03 | Close the `[KD-6]`, `[KD-7]`, and `[KD-14a]` divergences                                                                                                           | 8.8, 8.11                         | Unsafe constructors, `MutableRef`, session-scoped forks, and one bridge adapter replace every inline boundary disable.                                                                                                                                                                                  |
+| 2026-09-11 | Make `meridian-session-affinity` eager                                                                                                                             | 3, 8.4, 8.5, 8.10                 | Sub-agent workers prompt immediately after `session_start`; the forked background registration missed the first `before_agent_start`, so the unscrubbed pi harness line reached Meridian and Anthropic metered it as Extra Usage (`You've hit your individual spend limit`).                            |
+| 2026-09-15 | Remove automatic theme status metadata                                                                                                                             | 8.12                              | The automatic theme feature was removed.                                                                                                                                                                                                                                                                |
+| 2026-09-29 | Remove comment-checker and background bootstrap                                                                                                                    | 3, 5, 7, 8.4–8.6, 8.9, 8.10, 8.12 | comment-checker was the only background descriptor; with it gone every descriptor is eager, so the `bootstrap` discriminant, `prepare`, and preflight health reasons are removed.                                                                                                                       |

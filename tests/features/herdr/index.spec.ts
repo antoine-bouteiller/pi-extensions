@@ -104,7 +104,7 @@ describe('Herdr registration', () => {
     const fixture = createFakePi()
     const descriptor = feature({ environment: makeEnvironment({}) })
     descriptor.implementation.register(fixture.pi, runtime)
-    expect(descriptor).toMatchObject({ bootstrap: 'eager', id: 'herdr' })
+    expect(descriptor).toMatchObject({ id: 'herdr' })
     expect([...fixture.state.tools.keys()]).toEqual(['spawn_agent', 'send_message', 'close_pane'])
     expect([...fixture.state.handlers.keys()]).toEqual(['before_agent_start'])
     expect(fixture.state.commands.size).toBe(0)
