@@ -68,6 +68,10 @@ const featureDirectories = (): Promise<string[]> =>
 const reportScript = (directories: string[]): string => `
   const { createFakePi } = await import(${JSON.stringify(PATHS.fakePi)});
 
+  // Report the installed manifest regardless of host tools: features may stay inert when an executable is missing.
+  const which = Bun.which;
+  Bun.which = (executable, ...rest) => (executable === 'claude' ? '/usr/local/bin/claude' : which(executable, ...rest));
+
   const snapshot = state => ({
     commands: [...state.commands.keys()],
     handlers: [...state.handlers.entries()].flatMap(([event, handlers]) => handlers.map(() => event)),

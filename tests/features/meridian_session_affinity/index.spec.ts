@@ -15,6 +15,8 @@ interface ProviderHeaderEvent {
   headers: Record<string, string>
 }
 
+const claudeInstalled = () => '/usr/local/bin/claude'
+
 const createHarness = (harnessRuntime = runtime) => {
   const fixture = createFakePi()
   implementation.register(fixture.pi, harnessRuntime)
@@ -42,7 +44,7 @@ const activateWith = (baseUrl: string, client: HttpClient.HttpClient, until: () 
   Effect.promise(() =>
     runtime.runPromise(
       Effect.gen(function* () {
-        const prepared = feature({ dependencies: { baseUrl, httpClient: client } }).implementation
+        const prepared = feature({ dependencies: { baseUrl, httpClient: client, which: claudeInstalled } }).implementation
         const scope = yield* Scope.make()
         const ctx = asExtensionContext({ hasUI: false, ui: { setStatus: () => undefined } })
         yield* (prepared.activate?.({ reason: 'startup', type: 'session_start' }, ctx) ?? Effect.void).pipe(
@@ -88,7 +90,7 @@ describe('meridian session affinity', () => {
   it.effect('scrubs the first prompt of a worker that starts before any session_start has been processed', () =>
     Effect.gen(function* () {
       const fixture = createFakePi()
-      makeFeatureCoordinator({ features: [feature()], pi: fixture.pi, runtime }).install()
+      makeFeatureCoordinator({ features: [feature({ dependencies: { which: claudeInstalled } })], pi: fixture.pi, runtime }).install()
       const systemPrompt =
         'You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.\n'
 
