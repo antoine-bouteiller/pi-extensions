@@ -2,9 +2,9 @@ import { BunChildProcessSpawner, BunCrypto, BunFileSystem, BunPath } from '@effe
 import { Layer, ManagedRuntime } from 'effect'
 import { type Crypto } from 'effect/Crypto'
 import { type FileSystem } from 'effect/FileSystem'
+import { FetchHttpClient } from 'effect/http'
 import { type Path } from 'effect/Path'
-import { FetchHttpClient } from 'effect/unstable/http'
-import { type ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner'
+import { type ChildProcessSpawner } from 'effect/process/ChildProcessSpawner'
 
 import { getOrCreateProcessRuntime } from '@/config/runtime.js'
 import { StatusBarLive, type AppRuntime, type StatusBar } from '@/shared/effect/app_services.js'

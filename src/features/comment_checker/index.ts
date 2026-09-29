@@ -1,6 +1,6 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Effect, Path } from 'effect'
-import { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner'
+import { ChildProcessSpawner } from 'effect/process/ChildProcessSpawner'
 
 import { type AppRuntime } from '#shared/effect/app_services'
 import { type FeatureImplementation, type FeatureDescriptor, type FeatureOptions, type FeaturePreflightError } from '#shared/effect/feature'
