@@ -157,7 +157,7 @@ const harness = (environment: Record<string, string> = { HERDR_ENV: '1' }, allow
       return Promise.resolve({ code: 0, stderr: '', stdout: state.stdout ?? jsonText({ result }) })
     },
   })
-  return { calls, handlers: makeHerdrHandlers(fake.pi, makeEnvironment(environment), () => Effect.succeed({ allowedModels })), state }
+  return { calls, handlers: makeHerdrHandlers(fake.pi, makeEnvironment(environment), () => Effect.succeed({ allowedModels, modelNotes: {} })), state }
 }
 const refusal = <Result, Services>(effect: Effect.Effect<Result, { message: string }, Services>) =>
   effect.pipe(Effect.match({ onFailure: (error) => error.message, onSuccess: () => 'unexpected success' }))
@@ -282,7 +282,7 @@ describe('Herdr delegation', () => {
         `Choose one of: ${task.model}`
       )
       expect(calls).toEqual([])
-      expect(yield* handlers.availableModels(context(undefined, ['other/model', task.model]))).toEqual([task.model])
+      expect(yield* handlers.availableModels(context(undefined, ['other/model', task.model]))).toEqual({ models: [task.model], notes: [] })
       expect(yield* handlers.spawn(task, context())).toMatchObject({ status: 'started' })
       calls.length = 0
       expect(yield* refusal(handlers.spawn(task, context(undefined, [])))).toContain('No allowed models are available')

@@ -136,10 +136,11 @@ describe('Herdr registration', () => {
         },
       })
       let allowedModels = ['provider/allowed', 'provider/unavailable']
+      const modelNotes = { 'provider/allowed': 'research only', 'provider/unavailable': 'hidden' }
       let invalid = false
       feature({
         dependencies: () =>
-          invalid ? Effect.fail(new HerdrSettingsError({ message: 'invalid herdr.allowedModels' })) : Effect.succeed({ allowedModels }),
+          invalid ? Effect.fail(new HerdrSettingsError({ message: 'invalid herdr.allowedModels' })) : Effect.succeed({ allowedModels, modelNotes }),
         environment: makeEnvironment({ HERDR_ENV: '1' }),
       }).implementation.register(fixture.pi, runtime)
       const ctx = asExtensionContext({
@@ -161,6 +162,8 @@ describe('Herdr registration', () => {
         throw new Error('spawn_agent not registered')
       }
       expect(tool.parameters).toMatchObject({ properties: { model: { enum: ['provider/allowed'] } } })
+      expect(tool.parameters).toHaveProperty('properties.model.description', expect.stringContaining('Model notes: provider/allowed: research only'))
+      expect(tool.parameters).not.toHaveProperty('properties.model.description', expect.stringContaining('hidden'))
       expect(Value.Check(tool.parameters, { message: 'Review', model: 'provider/allowed' })).toBe(true)
       for (const model of ['provider/other', 'provider/unavailable']) {
         expect(Value.Check(tool.parameters, { message: 'Review', model })).toBe(false)
@@ -205,7 +208,7 @@ describe('Herdr registration', () => {
         },
       })
       feature({
-        dependencies: () => Effect.succeed({ allowedModels: ['provider/model'] }),
+        dependencies: () => Effect.succeed({ allowedModels: ['provider/model'], modelNotes: {} }),
         environment: makeEnvironment({}),
       }).implementation.register(fixture.pi, runtime)
       const tool = fixture.state.tools.get('spawn_agent')

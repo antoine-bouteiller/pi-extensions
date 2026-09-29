@@ -45,7 +45,11 @@ Configure an explicit model allowlist in `~/.pi/agent/settings.json` (or your cu
 ```json
 {
   "herdr": {
-    "allowedModels": ["azure-openai-responses/gpt-6-sol", "anthropic/claude-opus-4-6"]
+    "allowedModels": ["azure-openai-responses/gpt-6-astra", "azure-openai-responses/gpt-6-sol"],
+    "modelNotes": {
+      "azure-openai-responses/gpt-6-astra": "highest-reasoning: complex implementation, debugging, design, and deep review of Claude-produced work",
+      "azure-openai-responses/gpt-6-sol": "scouting, straightforward research, routine scoped implementation, and lightweight review of Claude-produced work"
+    }
   }
 }
 ```
@@ -60,6 +64,10 @@ schema refreshes each turn; settings are reread each turn and spawn.
 Within that list, the agent prefers Azure OpenAI (`azure-openai-responses`) for implementation,
 scouting, and research, and a different provider from the agent that produced the work for review.
 These are preferences, not enforced roles; explicit user model choices must also satisfy the allowlist.
+Optional `herdr.modelNotes` maps a model to a one-line hint (at most 500 characters) shown in
+`spawn_agent`'s `model` argument and taking precedence over those defaults. Notes guide selection;
+they do not enforce model roles. Only notes for allowed, available models are shown.
+Trusted project notes override global notes for matching model IDs; other global notes remain.
 Herdr manages the Pi processes; there is no sub-agent orchestrator or durable delivery queue. Replies are agent-driven: provider failures or crashes can prevent them. Read and verify
 a delegate's result before relying on it. Panes are not automatically closed on parent exit;
 after Pi reload/restart, manage previously created panes directly in Herdr.

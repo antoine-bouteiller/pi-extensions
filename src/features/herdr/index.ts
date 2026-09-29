@@ -78,11 +78,11 @@ export const feature = ((options: FeatureOptions<typeof loadHerdrSettings> = {})
             operations.availableModels(ctx).pipe(
               Effect.match({
                 onFailure: (error) => {
-                  registerSpawn([])
+                  registerSpawn([], [])
                   return `spawn_agent is unavailable: ${error.message}`
                 },
-                onSuccess: (models) => {
-                  registerSpawn(models)
+                onSuccess: ({ models, notes }) => {
+                  registerSpawn(models, notes)
                   return models.length === 0
                     ? 'spawn_agent is unavailable: configure herdr.allowedModels in settings.json with available provider/model-id values.'
                     : `spawn_agent may only use these allowed, available models: ${models.join(', ')}.`
@@ -95,7 +95,7 @@ export const feature = ((options: FeatureOptions<typeof loadHerdrSettings> = {})
           )
         )
         const execute = makeToolExecutor(runtime)
-        const registerSpawn = (models: string[]) =>
+        const registerSpawn = (models: string[], notes: string[]) =>
           pi.registerTool<typeof SpawnAgentParams, HerdrResult>({
             description:
               'Start a fresh Pi agent through Herdr with an exact provider/model-id and initial message. Uses separate Agents tabs, with at most four panes per tab. Returns its pane ID after submitting the task, not after completion. Preserves the current directory and focus. Requires Herdr.',
@@ -109,20 +109,24 @@ export const feature = ((options: FeatureOptions<typeof loadHerdrSettings> = {})
                 model: Type.String(
                   models.length === 0
                     ? { ...SpawnAgentParams.properties.model, description: 'No allowed models are available; spawning is disabled.' }
-                    : { ...SpawnAgentParams.properties.model, enum: models }
+                    : {
+                        ...SpawnAgentParams.properties.model,
+                        ...(notes.length > 0 && { description: `Exact provider/model-id. Model notes: ${notes.join('; ')}` }),
+                        enum: models,
+                      }
                 ),
               },
             },
             promptGuidelines: [
               'Use spawn_agent for self-contained work. Its initial message must include the goal, necessary context, read-only or allowed-write scope, and expected evidence. Do not duplicate delegated work; parallel writers need disjoint scopes.',
-              'Choose a provider/model-id from the allowed, available Herdr models based on the task and the model’s capabilities; herdr.allowedModels is mandatory. Prefer Azure OpenAI (azure-openai-responses) for implementation, scouting, and research. For review, prefer a different provider from the agent that produced the work for an independent perspective. These are preferences, not restrictions; use another model when better suited. Honor explicit user model choices only within the allowlist; do not silently substitute disallowed or unavailable models.',
+              'Choose a provider/model-id from the allowed, available Herdr models based on the task and the model’s capabilities; herdr.allowedModels is mandatory. Prefer Azure OpenAI (azure-openai-responses) for implementation, scouting, and research. For review, prefer a different provider from the agent that produced the work for an independent perspective. Model notes in the model argument take precedence over these defaults. These are preferences, not restrictions; use another model when better suited. Honor explicit user model choices only within the allowlist; do not silently substitute disallowed or unavailable models.',
               'spawn_agent gives the child its parent address and instructions to send_message when finished. Continue independent work or end your turn while keeping Pi running; do not poll or read terminal transcripts for normal results. A provider failure or exited agent may prevent a callback; inspect Herdr if needed, without blindly respawning.',
             ],
             promptSnippet: 'Delegate a task to a chosen model in a new Herdr pane',
             renderCall: (args, theme, context) => renderCall('spawn_agent', args.model, args.message, theme, context.expanded),
             renderResult,
           })
-        registerSpawn([])
+        registerSpawn([], [])
         pi.registerTool<typeof SendMessageParams, HerdrResult>({
           description:
             'Send text to an agent spawned by this Pi session, or from a delegated child to its original parent. Resumes an idle Pi or queues input during work. Returns submission acknowledgment only; never waits for a reply. Rejects stale or unrelated sessions.',

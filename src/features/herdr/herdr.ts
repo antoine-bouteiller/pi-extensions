@@ -126,10 +126,14 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
       const settings = yield* loadSettings({ agentDir: getAgentDir(), cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() }).pipe(
         Effect.mapError((error) => fail(error.message))
       )
-      return ctx.modelRegistry
+      const models = ctx.modelRegistry
         .getAvailable()
         .map((model) => `${model.provider}/${model.id}`)
         .filter((model) => settings.allowedModels.includes(model))
+      return {
+        models,
+        notes: models.flatMap((model) => (settings.modelNotes[model] === undefined ? [] : [`${model}: ${settings.modelNotes[model]}`])),
+      }
     })
 
   const submit = (ctx: ExtensionContext, from: Pane, to: Target, message: string) =>
@@ -185,7 +189,7 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
         if (slash < 1 || !/^[a-zA-Z0-9_-]+$/.test(provider) || !/^[^-\s][^\s]*$/.test(model) || /\p{Cc}/u.test(model)) {
           return yield* fail('model must be an exact provider/model-id.')
         }
-        const models = yield* availableModels(ctx)
+        const { models } = yield* availableModels(ctx)
         if (!models.includes(params.model)) {
           return yield* fail(
             models.length === 0

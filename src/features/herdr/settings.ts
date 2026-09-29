@@ -8,7 +8,11 @@ import { Value } from 'typebox/value'
 import { parseJsonText } from '#shared/utils/json'
 
 const ModelSchema = Type.String({ maxLength: 256, pattern: '^[a-zA-Z0-9_-]+/[^\\s\\x00-\\x1f\\x7f-\\x9f-][^\\s\\x00-\\x1f\\x7f-\\x9f]*$' })
-const HerdrSettingsSchema = Type.Object({ allowedModels: Type.Optional(Type.Array(ModelSchema)) }, { additionalProperties: false })
+const NoteSchema = Type.String({ maxLength: 500, minLength: 1, pattern: '^[^\\x00-\\x1f\\x7f-\\x9f]+$' })
+const HerdrSettingsSchema = Type.Object(
+  { allowedModels: Type.Optional(Type.Array(ModelSchema)), modelNotes: Type.Optional(Type.Record(Type.String(), NoteSchema)) },
+  { additionalProperties: false }
+)
 const SettingsSchema = Type.Object({ herdr: Type.Optional(HerdrSettingsSchema) }, { additionalProperties: true })
 
 export class HerdrSettingsError extends Data.TaggedError('HerdrSettingsError')<{ readonly message: string; readonly cause?: unknown }> {}
@@ -28,7 +32,7 @@ const readSettings = (path: string) =>
         const settings = parseJsonText(text)
         if (!Value.Check(SettingsSchema, settings)) {
           throw new Error(
-            'expected herdr.allowedModels to be an array of exact provider/model-id strings (at most 256 characters, no whitespace or control characters).'
+            'expected herdr.allowedModels to be an array of exact provider/model-id strings (at most 256 characters, no whitespace or control characters) and herdr.modelNotes to map model ids to single-line notes (at most 500 characters).'
           )
         }
         return settings
@@ -42,5 +46,8 @@ export const loadHerdrSettings = (options: { readonly agentDir: string; readonly
     const global = yield* readSettings(path.join(options.agentDir, 'settings.json'))
     const project = options.projectTrusted ? yield* readSettings(path.join(options.cwd, CONFIG_DIR_NAME, 'settings.json')) : {}
 
-    return { allowedModels: project.herdr?.allowedModels ?? global.herdr?.allowedModels ?? [] }
+    return {
+      allowedModels: project.herdr?.allowedModels ?? global.herdr?.allowedModels ?? [],
+      modelNotes: { ...global.herdr?.modelNotes, ...project.herdr?.modelNotes },
+    }
   })

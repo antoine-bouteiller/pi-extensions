@@ -21,16 +21,26 @@ const fixture = Effect.gen(function* () {
 })
 
 describe('Herdr settings', () => {
+  it.scoped('merges model notes, with trusted project notes overriding global ones', () =>
+    Effect.gen(function* () {
+      const { fs, globalPath, options, projectPath } = yield* fixture
+      yield* fs.writeFileString(globalPath, jsonText({ herdr: { allowedModels: ['a/x'], modelNotes: { 'a/x': 'global', 'a/y': 'kept' } } }))
+      yield* fs.writeFileString(projectPath, jsonText({ herdr: { modelNotes: { 'a/x': 'project' } } }))
+      expect(yield* loadHerdrSettings(options)).toEqual({ allowedModels: ['a/x'], modelNotes: { 'a/x': 'project', 'a/y': 'kept' } })
+      expect((yield* loadHerdrSettings({ ...options, projectTrusted: false })).modelNotes).toEqual({ 'a/x': 'global', 'a/y': 'kept' })
+    })
+  )
+
   it.scoped('defaults missing files, blocks, and lists to an empty allowlist without writing files', () =>
     Effect.gen(function* () {
       const { fs, globalPath, options, projectPath } = yield* fixture
-      expect(yield* loadHerdrSettings(options)).toEqual({ allowedModels: [] })
+      expect(yield* loadHerdrSettings(options)).toEqual({ allowedModels: [], modelNotes: {} })
       expect(yield* fs.exists(globalPath)).toBe(false)
       expect(yield* fs.exists(projectPath)).toBe(false)
 
       yield* fs.writeFileString(globalPath, '{"theme":"dark"}')
       yield* fs.writeFileString(projectPath, '{"herdr":{}}')
-      expect(yield* loadHerdrSettings(options)).toEqual({ allowedModels: [] })
+      expect(yield* loadHerdrSettings(options)).toEqual({ allowedModels: [], modelNotes: {} })
     })
   )
 
@@ -39,10 +49,10 @@ describe('Herdr settings', () => {
       const { fs, globalPath, options, projectPath } = yield* fixture
       const allowedModels = ['azure-openai-responses/gpt-6-sol', 'provider_2/vendor/model:version', `p/${'m'.repeat(254)}`]
       yield* fs.writeFileString(globalPath, jsonText({ herdr: { allowedModels }, theme: 'dark' }))
-      expect(yield* loadHerdrSettings(options)).toEqual({ allowedModels })
+      expect(yield* loadHerdrSettings(options)).toEqual({ allowedModels, modelNotes: {} })
 
       yield* fs.writeFileString(projectPath, '{"herdr":{}}')
-      expect(yield* loadHerdrSettings(options)).toEqual({ allowedModels })
+      expect(yield* loadHerdrSettings(options)).toEqual({ allowedModels, modelNotes: {} })
     })
   )
 
@@ -51,10 +61,10 @@ describe('Herdr settings', () => {
       const { fs, globalPath, options, projectPath } = yield* fixture
       yield* fs.writeFileString(globalPath, '{"herdr":{"allowedModels":["global/model"]}}')
       yield* fs.writeFileString(projectPath, '{"herdr":{"allowedModels":["project/model"]}}')
-      expect(yield* loadHerdrSettings(options)).toEqual({ allowedModels: ['project/model'] })
+      expect(yield* loadHerdrSettings(options)).toEqual({ allowedModels: ['project/model'], modelNotes: {} })
 
       yield* fs.writeFileString(projectPath, '{"herdr":{"allowedModels":[]}}')
-      expect(yield* loadHerdrSettings(options)).toEqual({ allowedModels: [] })
+      expect(yield* loadHerdrSettings(options)).toEqual({ allowedModels: [], modelNotes: {} })
     })
   )
 
@@ -62,10 +72,10 @@ describe('Herdr settings', () => {
     Effect.gen(function* () {
       const { fs, globalPath, options, projectPath } = yield* fixture
       yield* fs.writeFileString(projectPath, 'not valid JSON')
-      expect(yield* loadHerdrSettings({ ...options, projectTrusted: false })).toEqual({ allowedModels: [] })
+      expect(yield* loadHerdrSettings({ ...options, projectTrusted: false })).toEqual({ allowedModels: [], modelNotes: {} })
 
       yield* fs.writeFileString(globalPath, '{"herdr":{"allowedModels":["global/model"]}}')
-      expect(yield* loadHerdrSettings({ ...options, projectTrusted: false })).toEqual({ allowedModels: ['global/model'] })
+      expect(yield* loadHerdrSettings({ ...options, projectTrusted: false })).toEqual({ allowedModels: ['global/model'], modelNotes: {} })
     })
   )
 
@@ -84,6 +94,10 @@ describe('Herdr settings', () => {
         '{"herdr":{"allowedModels":{}}}',
         '{"herdr":{"allowedModels":[null]}}',
         '{"herdr":{"allowedModels":[1]}}',
+        '{"herdr":{"modelNotes":[]}}',
+        '{"herdr":{"modelNotes":{"provider/model":1}}}',
+        '{"herdr":{"modelNotes":{"provider/model":""}}}',
+        String.raw`{"herdr":{"modelNotes":{"provider/model":"a\nb"}}}`,
       ]) {
         yield* fs.writeFileString(globalPath, text)
         const error = yield* Effect.flip(loadHerdrSettings(options))
@@ -141,7 +155,7 @@ describe('Herdr settings', () => {
       const { fs, globalPath, options, projectPath } = yield* fixture
       yield* fs.makeDirectory(projectPath)
       expect((yield* Effect.exit(loadHerdrSettings(options)))._tag).toBe('Failure')
-      expect(yield* loadHerdrSettings({ ...options, projectTrusted: false })).toEqual({ allowedModels: [] })
+      expect(yield* loadHerdrSettings({ ...options, projectTrusted: false })).toEqual({ allowedModels: [], modelNotes: {} })
 
       yield* fs.makeDirectory(globalPath)
       expect((yield* Effect.exit(loadHerdrSettings({ ...options, projectTrusted: false })))._tag).toBe('Failure')
