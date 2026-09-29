@@ -8,7 +8,7 @@ import { Effect, Fiber } from 'effect'
 import { TestClock } from 'effect/testing'
 
 import { feature } from '@/features/background_poll/index.js'
-import { formatPollOutput, runPollLoop, type PollExec } from '@/features/background_poll/poll.js'
+import { formatElapsed, formatPollOutput, runPollLoop, type PollExec } from '@/features/background_poll/poll.js'
 import { ToolFailure } from '@/shared/effect/errors.js'
 import { type JsonObject } from '@/shared/utils/json.js'
 
@@ -173,7 +173,7 @@ describe('background poll', () => {
       const expanded = renderText(fixture.tool.renderResult(result, { expanded: true, isPartial: false }, theme, { isError: false }))
       expect(expanded).toContain('Task: poll-call-1')
       expect(expanded).toContain('Stop now')
-      expect(fixture.statuses).toContain('⏳ 1 background poll')
+      expect(fixture.statuses).toContain('⏳ 1 background poll · 0s')
 
       yield* Effect.promise(() => fixture.sent)
       expect(commandTimeouts).toHaveLength(1)
@@ -251,7 +251,7 @@ describe('background poll', () => {
     })
   )
 
-  it.effect('suppresses completion and clears status when the session shuts down', () =>
+  it.live('ticks live status, then suppresses completion and clears status when the session shuts down', () =>
     Effect.gen(function* () {
       const fixture = setup((_command, _args, options) =>
         promiseFromEffect(
@@ -265,6 +265,8 @@ describe('background poll', () => {
       yield* Effect.promise(() =>
         fixture.tool.execute('call-2', { command: 'check-status', interval_seconds: 60, timeout_seconds: 120 }, undefined, undefined, fixture.ctx)
       )
+      yield* Effect.sleep('1100 millis')
+      expect(fixture.statuses.at(-1)).toBe('⏳ 1 background poll · 1s')
       yield* Effect.promise(fixture.deactivate)
 
       expect(fixture.messages).toHaveLength(0)
@@ -274,6 +276,10 @@ describe('background poll', () => {
       ).toBe('Cannot register a background poll during shutdown')
     })
   )
+
+  it('formats elapsed time compactly', () => {
+    expect([formatElapsed(59_999), formatElapsed(61_000), formatElapsed(3_723_000)]).toEqual(['59s', '1m01s', '1h02m'])
+  })
 
   it.effect('uses virtual time and stops retrying at the deadline', () =>
     Effect.gen(function* () {

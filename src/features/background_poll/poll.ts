@@ -1,5 +1,5 @@
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
-import { Clock, Context, Deferred, Effect, Exit, type Fiber, HashMap, Option, Ref, Scope, Semaphore } from 'effect'
+import { Clock, Context, Deferred, Effect, Exit, HashMap, Option, Ref, Scope, Semaphore } from 'effect'
 import { Type, type Static } from 'typebox'
 
 import { ToolFailure } from '#shared/effect/errors'
@@ -192,22 +192,40 @@ interface PollStateFields {
   readonly mutex: Semaphore.Semaphore
   readonly sessionScope: Ref.Ref<Option.Option<Scope.Closeable>>
   readonly shuttingDown: Ref.Ref<boolean>
-  readonly tasks: Ref.Ref<HashMap.HashMap<string, Fiber.Fiber<void>>>
+  /** Task id → start time (ms), used for the live elapsed time in the status bar. */
+  readonly tasks: Ref.Ref<HashMap.HashMap<string, number>>
 }
 
 class PollState extends Context.Service<PollState, PollStateFields>()('pi-extensions/features/background_poll/poll/PollState') {}
 
+/** @internal */
+export const formatElapsed = (ms: number): string => {
+  const seconds = Math.floor(ms / 1000)
+  if (seconds < 60) {
+    return `${seconds}s`
+  }
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) {
+    return `${minutes}m${String(seconds % 60).padStart(2, '0')}s`
+  }
+  return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, '0')}m`
+}
+
 const updateStatus = (state: PollStateFields, ctx: ExtensionContext): Effect.Effect<void> =>
   Effect.gen(function* () {
-    const count = HashMap.size(yield* Ref.get(state.tasks))
+    const startTimes = [...HashMap.values(yield* Ref.get(state.tasks))]
+    const now = yield* Clock.currentTimeMillis
     yield* Effect.sync(() => {
+      const count = startTimes.length
       if (count === 0) {
         status.clear(ctx)
       } else {
-        status.set(ctx, { text: `${count} background poll${count === 1 ? '' : 's'}` })
+        status.set(ctx, { text: `${count} background poll${count === 1 ? '' : 's'} · ${formatElapsed(now - Math.min(...startTimes))}` })
       }
     })
   })
+
+const STATUS_TICK = '1 second'
 
 const OUTCOME_HEADLINES = {
   completed: 'Background poll completed',
@@ -299,7 +317,10 @@ const registerPoll = (
         const taskId = `poll-${toolCallId}`
         const label = params.label?.trim() || params.command
         const start = yield* Deferred.make<void>()
+        const startedAt = yield* Clock.currentTimeMillis
         const loop = Deferred.await(start).pipe(
+          // Child ticker keeps the elapsed time live; it is interrupted when this task's fiber ends.
+          Effect.andThen(Effect.forkChild(Effect.forever(Effect.sleep(STATUS_TICK).pipe(Effect.andThen(updateStatus(state, ctx)))))),
           Effect.andThen(
             runPollLoop({
               command: params.command,
@@ -319,8 +340,8 @@ const registerPoll = (
             })
           )
         )
-        const fiber = yield* Effect.forkIn(loop, sessionScope)
-        yield* Ref.update(state.tasks, HashMap.set(taskId, fiber))
+        yield* Effect.forkIn(loop, sessionScope)
+        yield* Ref.update(state.tasks, HashMap.set(taskId, startedAt))
         yield* updateStatus(state, ctx)
         yield* Deferred.succeed(start, undefined)
         return undefined
@@ -356,7 +377,7 @@ export const makePollHandlers = (pi: ExtensionAPI, exec: PollExec = makePollExec
     mutex: Semaphore.makeUnsafe(1),
     sessionScope: Ref.makeUnsafe<Option.Option<Scope.Closeable>>(Option.none()),
     shuttingDown: Ref.makeUnsafe(false),
-    tasks: Ref.makeUnsafe(HashMap.empty<string, Fiber.Fiber<void>>()),
+    tasks: Ref.makeUnsafe(HashMap.empty<string, number>()),
   }
 
   return {
