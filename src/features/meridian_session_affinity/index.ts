@@ -1,6 +1,6 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Cause, Effect, Scope, Stream } from 'effect'
-import { FetchHttpClient, HttpClient, HttpClientRequest } from 'effect/unstable/http'
+import { FetchHttpClient, HttpClient, HttpClientRequest } from 'effect/http'
 
 import { type AppRuntime, StatusBar } from '#shared/effect/app_services'
 import { processEnvironment } from '#shared/effect/env'

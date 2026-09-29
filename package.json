@@ -24,9 +24,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@effect/platform-bun": "4.0.0-rc.117",
+    "@effect/platform-bun": "4.0.0-rc.118",
     "@oh-my-pi/hashline": "18.1.5",
-    "effect": "4.0.0-rc.117",
+    "effect": "4.0.0-rc.118",
     "turndown": "7.2.4"
   },
   "devDependencies": {

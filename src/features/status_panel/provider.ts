@@ -1,5 +1,5 @@
 import { DateTime, Duration, Effect, Fiber, Ref, Result } from 'effect'
-import { HttpClient, type HttpClientError } from 'effect/unstable/http'
+import { HttpClient, type HttpClientError } from 'effect/http'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 

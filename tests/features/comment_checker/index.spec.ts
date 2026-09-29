@@ -2,7 +2,7 @@ import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect, FileSystem, Path } from 'effect'
-import { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner'
+import { ChildProcessSpawner } from 'effect/process/ChildProcessSpawner'
 
 import { makeCommentCheckerRunner, type CheckerRunner } from '@/features/comment_checker/checker.js'
 import { feature } from '@/features/comment_checker/index.js'

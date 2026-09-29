@@ -1,7 +1,7 @@
 import { type ExtensionContext, type ToolResultEvent } from '@earendil-works/pi-coding-agent'
 import { Cause, Context, Effect, FileSystem, type Scope, Stream } from 'effect'
 import { type PlatformError } from 'effect/PlatformError'
-import { ChildProcess } from 'effect/unstable/process'
+import { ChildProcess } from 'effect/process'
 
 import { jsonText, type JsonObject } from '#shared/utils/json'
 import { isEmptyString } from '#shared/utils/predicates'
