@@ -1,7 +1,9 @@
 import { Context, Layer } from 'effect'
 
+/** @internal */
 export const ENVIRONMENT_KEYS = ['MERIDIAN_BASE_URL', 'NO_COLOR'] as const
 
+/** @internal */
 export type EnvironmentKey = (typeof ENVIRONMENT_KEYS)[number]
 
 export interface EnvApi {
@@ -10,6 +12,7 @@ export interface EnvApi {
 }
 
 /* This is a snapshot with synchronous `get` rather than Config because Pi/TUI callbacks and module-level defaults cannot await. */
+/** @internal */
 export const makeEnvironment = (source: Readonly<Record<string, string | undefined>>): EnvApi => {
   const all = { ...source }
   return {
@@ -24,4 +27,5 @@ export const processEnvironment: EnvApi = makeEnvironment(process.env)
 
 export const EnvLive: Layer.Layer<Env> = Layer.succeed(Env)(processEnvironment)
 
+/** @internal */
 export const envLayer = (source: Readonly<Record<string, string | undefined>>): Layer.Layer<Env> => Layer.succeed(Env)(makeEnvironment(source))

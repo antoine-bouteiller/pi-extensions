@@ -197,6 +197,8 @@ const requestQuotaPayload = (endpoint: string): Effect.Effect<unknown, HttpClien
  * Reads quota from the gateway the anthropic provider is pointed at, which owns the
  * subscription credentials. Upstream `/api/oauth/usage` is not reachable through it.
  * A quota read is decoration: any transport or decoding failure degrades to "no quota".
+ *
+ * @internal
  */
 export const fetchAnthropicQuota = (baseUrl: string): Effect.Effect<ProviderQuota | undefined, never, HttpClient.HttpClient> =>
   Effect.gen(function* () {

@@ -15,6 +15,7 @@ const HerdrSettingsSchema = Type.Object(
 )
 const SettingsSchema = Type.Object({ herdr: Type.Optional(HerdrSettingsSchema) }, { additionalProperties: true })
 
+/** @internal */
 export class HerdrSettingsError extends Data.TaggedError('HerdrSettingsError')<{ readonly message: string; readonly cause?: unknown }> {}
 
 const readSettings = (path: string) =>

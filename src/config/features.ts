@@ -16,6 +16,7 @@ import { feature as statusPanel } from '#features/status_panel/index'
 import { feature as webfetch } from '#features/webfetch/index'
 import { type FeatureDescriptor } from '#shared/effect/feature'
 
+/** @internal */
 export const features = [
   askUser(),
   backgroundPoll(),

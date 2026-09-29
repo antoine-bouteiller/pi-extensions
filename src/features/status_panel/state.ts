@@ -52,6 +52,7 @@ export interface GitInfoState {
   pullRequest: PullRequestInfo | undefined
 }
 
+/** @internal */
 export const emptyModelInfoState = (): ModelInfoState => ({
   cacheHitPercent: undefined,
   contextPercent: undefined,

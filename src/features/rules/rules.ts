@@ -46,6 +46,7 @@ interface FormattedRules {
   emitted: Rule[]
 }
 
+/** @internal */
 export interface RuleFrontmatter {
   body: string
   paths: string[]
@@ -319,7 +320,11 @@ const parseFrontmatterLine = (lines: string[], index: number): FrontmatterLineRe
   return { consumed: 1 }
 }
 
-/** Parse the supported Claude-style rule frontmatter without requiring a YAML dependency. */
+/**
+ * Parse the supported Claude-style rule frontmatter without requiring a YAML dependency.
+ *
+ * @internal
+ */
 export const parseRuleFrontmatter = (content: string): RuleFrontmatter => {
   const normalized = content.startsWith('\uFEFF') ? content.slice(1) : content
   if (!/^---\r?\n/.test(normalized)) {
@@ -531,6 +536,7 @@ const stringProperty = (value: unknown, property: string): string | undefined =>
   return typeof candidate === 'string' && isNotEmptyString(candidate) ? candidate : undefined
 }
 
+/** @internal */
 export const extractToolPaths = (event: ToolResultEvent, cwd: string, pathService: Path.Path): string[] => {
   if (event.isError || !['read', 'edit', 'write'].includes(event.toolName)) {
     return []

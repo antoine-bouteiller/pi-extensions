@@ -18,6 +18,7 @@
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
     "knip": "knip",
+    "knip:production": "knip --production",
     "lint": "oxlint --deny-warnings --report-unused-disable-directives",
     "test": "bun test tests/ && node --test oxlint/rules/*.test.ts",
     "test:coverage": "bun test tests/ --coverage --reporter=junit --reporter-outfile=./junit.xml && node --test oxlint/rules/*.test.ts",

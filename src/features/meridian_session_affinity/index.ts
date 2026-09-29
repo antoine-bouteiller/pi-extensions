@@ -19,6 +19,7 @@ export interface MeridianSessionAffinityDependencies {
   readonly which?: (executable: string) => string | null | undefined
 }
 
+/** @internal */
 export type MeridianHealthWarning = 'invalid url' | 'unavailable' | 'timeout' | 'defect'
 
 const healthUrl = (baseUrl: string): string | undefined => {
@@ -38,7 +39,11 @@ const healthUrl = (baseUrl: string): string | undefined => {
   }
 }
 
-/** Probes Meridian's `/health`; never fails, resolves to a redacted warning when it is not reachable. */
+/**
+ * Probes Meridian's `/health`; never fails, resolves to a redacted warning when it is not reachable.
+ *
+ * @internal
+ */
 export const healthWarning = (
   dependencies: MeridianSessionAffinityDependencies
 ): Effect.Effect<MeridianHealthWarning | undefined, never, HttpClient.HttpClient> =>
@@ -66,6 +71,7 @@ export const healthWarning = (
     )
   })
 
+/** @internal */
 export const implementation = {
   register: (pi: ExtensionAPI, runtime: AppRuntime): void => {
     pi.on('before_agent_start', (event, ctx) => scrubbedSystemPrompt({ ctx, event }))

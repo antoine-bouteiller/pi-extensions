@@ -84,6 +84,8 @@ const canonicalizeNearestExistingEffect = (path: string): Effect.Effect<string, 
  * Apply protected-file policy to both the lexical and canonical spellings.
  * Checking both means neither a harmless-looking symlink to a credential nor
  * a credential-shaped symlink to a harmless file bypasses the policy.
+ *
+ * @internal
  */
 export const resolveProtectedPathEffect = (path: string, cwd: string): Effect.Effect<ProtectedPathResolution, PlatformError, FileSystem> =>
   Effect.gen(function* () {

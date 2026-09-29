@@ -1,5 +1,6 @@
 import { HStack, type Component, type OverlayOptions, type TUI } from '@earendil-works/pi-tui'
 
+/** @internal */
 export const DEFAULT_SIDEBAR_WIDTH = 44
 export const MIN_SIDEBAR_WIDTH = 28
 const MAX_SIDEBAR_WIDTH = 72

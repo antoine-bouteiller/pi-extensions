@@ -10,16 +10,19 @@ export interface FeaturePreflightError {
   readonly reason?: string
 }
 
+/** @internal */
 export interface FeatureActivationError {
   readonly _tag: string
   readonly reason?: string
 }
 
+/** @internal */
 export interface FeatureStatusMetadata {
   readonly icon: string
   readonly name: string
 }
 
+/** @internal */
 export interface FeatureIdentity {
   readonly id: string
   readonly status: FeatureStatusMetadata

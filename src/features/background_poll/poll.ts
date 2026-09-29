@@ -88,6 +88,7 @@ const makePollExec =
       )
     )
 
+/** @internal */
 export interface PollLoopOptions {
   readonly command: string
   readonly cwd: string | undefined
@@ -98,11 +99,13 @@ export interface PollLoopOptions {
   readonly timeoutMs: number
 }
 
+/** @internal */
 export interface PollLoopResult {
   readonly details: PollResultDetails
   readonly output: string
 }
 
+/** @internal */
 export const formatPollOutput = (stdout: string, stderr: string): string => {
   const output = [stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join('\n')
   if (isEmptyString(output)) {
@@ -117,6 +120,7 @@ export const formatPollOutput = (stdout: string, stderr: string): string => {
   return truncated.truncated ? truncated.content + truncationNotice(truncated, { from: 'tail' }) : truncated.content
 }
 
+/** @internal */
 export const runPollLoop = (options: PollLoopOptions): Effect.Effect<PollLoopResult> =>
   Effect.gen(function* () {
     const startedAt = yield* Clock.currentTimeMillis

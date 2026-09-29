@@ -89,7 +89,11 @@ const discoverMarkdownFiles = (root: string): Effect.Effect<MarkdownFile[], neve
 
 const unquote = (value: string): string => value.replaceAll(/^["']|["']$/g, '')
 
-/** Convert a Claude command into Agent Skills-compatible metadata and content. */
+/**
+ * Convert a Claude command into Agent Skills-compatible metadata and content.
+ *
+ * @internal
+ */
 export const parseCommandFrontmatter = (content: string): CommandFrontmatter => {
   const match = /^---\r?\n(?<frontmatter>[\s\S]*?)\r?\n---\r?\n?/.exec(content)
   const body = match === null ? content : content.slice(match[0].length)

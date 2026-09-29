@@ -10,11 +10,13 @@ import { formatDirectory, formatTokens } from './render.js'
 import { createSplitPaneController, type SplitPaneController } from './split_pane.js'
 import { type GitInfoState, type ModelInfoState, type ProviderQuota, type ProviderQuotas, type QuotaWindow } from './state.js'
 
+/** @internal */
 export interface SidebarTheme {
   fg: (color: ThemeColor, text: string) => string
   bold?: (text: string) => string
 }
 
+/** @internal */
 export interface SidebarState {
   activity: 'ready' | 'working'
   cwd: string
@@ -231,6 +233,7 @@ interface PanelGroup {
   dropRank: number
 }
 
+/** @internal */
 export interface RenderSidebarLinesOptions {
   state: SidebarState
   theme: SidebarTheme
@@ -240,6 +243,7 @@ export interface RenderSidebarLinesOptions {
   now?: number
 }
 
+/** @internal */
 export const renderSidebarLines = ({
   state,
   theme,

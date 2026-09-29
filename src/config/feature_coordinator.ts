@@ -13,6 +13,7 @@ type SafeReason =
   | 'preflight failed'
   | 'preflight defect'
   | 'registration failed; restart required'
+/** @internal */
 export type FeatureHealth = { readonly _tag: 'checking' } | { readonly _tag: 'healthy' } | { readonly _tag: 'error'; readonly reason: SafeReason }
 type Registration = 'unregistered' | 'registered' | 'poisoned'
 interface FeatureRecord {
@@ -159,6 +160,7 @@ const publish = (record: FeatureRecord): Effect.Effect<void, never, AppServices 
     yield* item === undefined ? channel.clear : channel.set(item)
   }).pipe(Effect.ignoreCause)
 
+/** @internal */
 export const makeFeatureCoordinator = (input: {
   readonly pi: ExtensionAPI
   readonly runtime: AppRuntime

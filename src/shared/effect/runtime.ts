@@ -18,6 +18,8 @@ export interface ToolInvocation<Params> {
 /**
  * Per-invocation services. Rebuilt for every call because `ctx` differs per invocation; hoisting
  * these into the stable runtime would freeze the first invocation's context for all later ones.
+ *
+ * @internal
  */
 export const perInvocation = (ctx: ExtensionContext): Context.Context<HandlerServices> => Context.make(PiCtx, ctx).pipe(Context.add(Ui, makeUi(ctx)))
 
@@ -84,6 +86,8 @@ export const makeEventHandler =
 /**
  * Keeps the rejection in the error channel instead of dying, so callers can `catchAll` it and map
  * it onto their own extension error rather than losing it as a defect.
+ *
+ * @internal
  */
 export const withAbortSignal = <Value>(run: (signal: AbortSignal) => Promise<Value>): Effect.Effect<Value, Cause.UnknownError> =>
   Effect.tryPromise(run)

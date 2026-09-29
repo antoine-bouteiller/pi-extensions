@@ -46,6 +46,7 @@ export interface BoundedText {
   truncation: Truncation
 }
 
+/** @internal */
 export const SPILL_TTL_MS = 24 * 60 * 60 * 1000
 
 /**

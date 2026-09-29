@@ -16,4 +16,5 @@ export const collectStatuses = (footerData: ReadonlyFooterDataProvider | undefin
   return [...shared, ...external]
 }
 
+/** @internal */
 export const statusLines = (entries: readonly StatusEntry[]): readonly string[] => entries.map(formatStatusText).filter(Boolean)
