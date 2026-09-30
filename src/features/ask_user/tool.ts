@@ -13,7 +13,7 @@ import {
 } from '@earendil-works/pi-tui'
 import { Data, Effect } from 'effect'
 import { Type, type Static } from 'typebox'
-import { Check } from 'typebox/schema'
+import { Check } from 'typebox/value'
 
 import { ToolFailure } from '#shared/effect/errors'
 import { PiCtx } from '#shared/effect/pi_services'

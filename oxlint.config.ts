@@ -23,6 +23,18 @@ export default defineConfig({
     {
       files: ['src/**'],
       rules: {
+        // Pi aliases only these typebox entry points into extensions; other subpaths fail to resolve at load.
+        'no-restricted-imports': [
+          'error',
+          {
+            patterns: [
+              {
+                group: ['typebox/*', '!typebox/compile', '!typebox/value'],
+                message: 'Pi only supplies typebox, typebox/compile, and typebox/value to extensions.',
+              },
+            ],
+          },
+        ],
         'pi-extensions/no-effect-pi-boundary': 'error',
       },
     },
