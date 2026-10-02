@@ -1,16 +1,18 @@
 import { makeAbortController } from '@tests/utils/abort_controller.js'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asExtensionContext } from '@tests/utils/casts.js'
+import { asExtensionContext, asResult } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { Effect } from 'effect'
+import { FileSystem } from 'effect/FileSystem'
 
-import { makeHerdrHandlers } from '@/features/herdr/herdr.js'
+import { CLOSED_ENTRY, makeHerdrHandlers, RESULT_MESSAGE, SPAWN_ENTRY } from '@/features/herdr/herdr.js'
 import { HerdrSettingsError } from '@/features/herdr/settings.js'
 import { makeEnvironment } from '@/shared/effect/env.js'
-import { jsonText } from '@/shared/utils/json.js'
+import { jsonText, parseJsonText } from '@/shared/utils/json.js'
 
 interface Pane {
   agent?: string
+  agent_status?: string
   agent_session?: { agent: string; kind: string; value: string }
   pane_id: string
   tab_id: string
@@ -33,14 +35,14 @@ const child: Pane = {
   terminal_id: 'child-terminal',
   workspace_id: 'w1',
 }
-const context = (session = '/sessions/parent.jsonl', models = [task.model]) =>
+const context = (session = '/sessions/parent.jsonl', models = [task.model], branch: unknown[] = []) =>
   asExtensionContext({
     cwd: '/project with spaces',
     isProjectTrusted: () => true,
     modelRegistry: {
       getAvailable: () => models.map((model) => ({ id: model.slice(model.indexOf('/') + 1), provider: model.slice(0, model.indexOf('/')) })),
     },
-    sessionManager: { getSessionFile: () => session },
+    sessionManager: { getBranch: () => branch, getSessionFile: () => session },
   })
 const task = { message: 'Review the diff; do not modify files.', model: 'azure-openai-responses/gpt-6-sol' }
 
@@ -53,6 +55,7 @@ interface CliState {
   height: number
   fail?: string
   stdout?: string
+  childSession: string
   afterCommand?: (operation: string) => void
 }
 type CliReply =
@@ -63,7 +66,7 @@ type CliReply =
   | { type: 'ok' }
   | { layout: { panes: { pane_id: string; rect: { height: number; width: number } }[] } }
 
-const harness = (environment: Record<string, string> = { HERDR_ENV: '1' }, allowedModels = [task.model]) => {
+const harness = (environment: Record<string, string> = { HERDR_ENV: '1' }, allowedModels = [task.model], childSession = '/sessions/child.jsonl') => {
   const calls: { args: string[]; command: string; cwd: string | undefined; timeout: number | undefined }[] = []
   const state: CliState = {
     get child() {
@@ -72,6 +75,7 @@ const harness = (environment: Record<string, string> = { HERDR_ENV: '1' }, allow
     set child(pane: Pane) {
       state.panes = state.panes.map((candidate) => (candidate.pane_id === child.pane_id ? pane : candidate))
     },
+    childSession,
     current: parent,
     height: 40,
     panes: [parent],
@@ -121,7 +125,7 @@ const harness = (environment: Record<string, string> = { HERDR_ENV: '1' }, allow
       }
       case 'agent start': {
         const pane = getPane(args[6])
-        const agent = { ...pane, agent: child.agent, agent_session: child.agent_session }
+        const agent = { ...pane, agent: 'pi', agent_session: { agent: 'pi', kind: 'path', value: state.childSession } }
         state.panes = state.panes.map((candidate) => (candidate.pane_id === pane.pane_id ? agent : candidate))
         result = { agent }
         break
@@ -132,6 +136,10 @@ const harness = (environment: Record<string, string> = { HERDR_ENV: '1' }, allow
       }
       case 'agent prompt': {
         result = { agent: getPane(args[2]) }
+        break
+      }
+      case 'pane rename': {
+        result = { pane: getPane(args[2]) }
         break
       }
       case 'pane close': {
@@ -152,12 +160,24 @@ const harness = (environment: Record<string, string> = { HERDR_ENV: '1' }, allow
       if (state.fail === operation) {
         return Promise.resolve({ code: 1, stderr: 'agent_not_ready: inspect the pane', stdout: '' })
       }
+      if (operation === 'pane get' && !state.panes.some((pane) => pane.pane_id === args[2]) && args[2] !== parent.pane_id) {
+        return Promise.resolve({ code: 1, stderr: jsonText({ error: { code: 'pane_not_found', message: 'pane not found' } }), stdout: '' })
+      }
+      if (operation === 'pane send-keys') {
+        state.afterCommand?.(operation)
+        return Promise.resolve({ code: 0, stderr: '', stdout: '' })
+      }
       const result = reply(args)
       state.afterCommand?.(operation)
       return Promise.resolve({ code: 0, stderr: '', stdout: state.stdout ?? jsonText({ result }) })
     },
   })
-  return { calls, handlers: makeHerdrHandlers(fake.pi, makeEnvironment(environment), () => Effect.succeed({ allowedModels, modelNotes: {} })), state }
+  return {
+    calls,
+    fake,
+    handlers: makeHerdrHandlers(fake.pi, makeEnvironment(environment), () => Effect.succeed({ allowedModels, modelNotes: {} })),
+    state,
+  }
 }
 const refusal = <Result, Services>(effect: Effect.Effect<Result, { message: string }, Services>) =>
   effect.pipe(Effect.match({ onFailure: (error) => error.message, onSuccess: () => 'unexpected success' }))
@@ -196,7 +216,9 @@ describe('Herdr delegation', () => {
         'gpt-6-sol',
       ])
       expect(start[start.indexOf('--extension') + 1]).toEndWith('/src/index.ts')
-      expect(start[start.indexOf('--append-system-prompt') + 1]).toContain(`send_message with pane_id ${parent.pane_id}`)
+      expect(start[start.indexOf('--append-system-prompt') + 1]).toContain('final response is delivered to the parent agent automatically')
+      expect(start).not.toContain('--thinking')
+      expect(start).not.toContain('--tools')
       expect(calls[3]?.args).toEqual(['agent', 'prompt', child.pane_id, `Message from Pi pane ${parent.pane_id}:\n\n${task.message}`])
       expect(calls.flatMap(({ args }) => args)).not.toContain('--wait')
     })
@@ -367,30 +389,6 @@ describe('Herdr delegation', () => {
     })
   )
 
-  it.effect('limits child callbacks to the original parent and original child session', () =>
-    Effect.gen(function* () {
-      const fixture = harness({
-        HERDR_ENV: '1',
-        PI_HERDR_PARENT: jsonText({ pane_id: parent.pane_id, session_file: '/sessions/parent.jsonl', terminal_id: parent.terminal_id }),
-      })
-      fixture.state.current = child
-      const childContext = context('/sessions/child.jsonl')
-      yield* fixture.handlers.startSession(childContext)
-      expect(yield* fixture.handlers.send({ message: 'Review done. No findings.', pane_id: parent.pane_id }, childContext)).toEqual({
-        pane_id: parent.pane_id,
-        status: 'sent',
-      })
-      expect(yield* refusal(fixture.handlers.close({ pane_id: parent.pane_id }, childContext))).toContain('Only panes')
-      fixture.state.parent = { ...parent, agent_session: { agent: 'pi', kind: 'path', value: '/sessions/new-parent.jsonl' } }
-      expect(yield* refusal(fixture.handlers.send({ message: 'late', pane_id: parent.pane_id }, childContext))).toContain('original session')
-      fixture.state.current = { ...child, agent_session: { agent: 'pi', kind: 'path', value: '/sessions/new-child.jsonl' } }
-      const nextContext = context('/sessions/new-child.jsonl')
-      yield* fixture.handlers.startSession(nextContext)
-      expect(yield* refusal(fixture.handlers.send({ message: 'late', pane_id: parent.pane_id }, nextContext))).toContain('only')
-      expect(mutations(fixture.calls)).toHaveLength(1)
-    })
-  )
-
   it.effect('retains known panes on failed startup or submission, without retrying or closing automatically', () =>
     Effect.gen(function* () {
       for (const failure of ['agent start', 'agent prompt']) {
@@ -455,6 +453,158 @@ describe('Herdr delegation', () => {
       expect(yield* refusal(fixture.handlers.spawn(task, context(), controller.signal))).toContain(`Pane ${child.pane_id} was created`)
       expect(fixture.calls.some(({ args }) => args[1] === 'start')).toBe(false)
       expect(yield* fixture.handlers.close({ pane_id: child.pane_id }, context())).toEqual({ pane_id: child.pane_id, status: 'closed' })
+    })
+  )
+
+  it.effect('passes the pane label, thinking level and tool allowlist, and validates them before contacting Herdr', () =>
+    Effect.gen(function* () {
+      const { handlers, calls } = harness()
+      yield* handlers.spawn({ ...task, name: 'Review auth', thinking: 'high', tools: ['read', 'grep'] }, context())
+      expect(calls.find(({ args }) => args[1] === 'rename')?.args).toEqual(['pane', 'rename', child.pane_id, 'Review auth'])
+      const start = calls.find(({ args }) => args[1] === 'start')?.args ?? []
+      expect(start.slice(12, 16)).toEqual(['--thinking', 'high', '--tools', 'read,grep'])
+      calls.length = 0
+      for (const invalid of [
+        { name: '--help' },
+        { name: 'a\nb' },
+        { thinking: 'extreme' },
+        { tools: [] },
+        { tools: ['read,bash'] },
+        { tools: ['-x'] },
+      ]) {
+        expect(yield* refusal(handlers.spawn(asResult<typeof task>({ ...task, ...invalid }), context()))).toContain('name must be')
+      }
+      expect(calls).toEqual([])
+    })
+  )
+
+  it.effect('interrupts and lists only owned, verified agents', () =>
+    Effect.gen(function* () {
+      const { handlers, calls, state } = harness()
+      expect(yield* handlers.list(context())).toEqual({ agents: [] })
+      yield* handlers.spawn({ ...task, name: 'Review' }, context())
+      state.child = { ...state.child, agent_status: 'working' }
+      expect(yield* handlers.list(context())).toEqual({
+        agents: [{ awaiting_result: true, model: task.model, name: 'Review', pane_id: child.pane_id, status: 'working' }],
+      })
+      expect(yield* handlers.interrupt({ pane_id: child.pane_id }, context())).toEqual({ pane_id: child.pane_id, status: 'interrupted' })
+      expect(calls.at(-1)?.args).toEqual(['pane', 'send-keys', child.pane_id, 'Escape'])
+      expect(yield* refusal(handlers.interrupt({ pane_id: parent.pane_id }, context()))).toContain('Only running agents')
+      state.child = { ...state.child, terminal_id: 'replacement' }
+      expect(yield* refusal(handlers.interrupt({ pane_id: child.pane_id }, context()))).toContain('original session')
+      expect((yield* handlers.list(context())).agents[0]?.status).toBe('replaced')
+      expect(calls.filter(({ args }) => args[1] === 'send-keys')).toHaveLength(1)
+    })
+  )
+})
+
+const assistant = (id: string, text: string, stopReason = 'stop', errorMessage?: string) => ({
+  id,
+  message: { content: [{ text, type: 'text' }], errorMessage, role: 'assistant', stopReason },
+  type: 'message',
+})
+
+describe('Herdr results', () => {
+  it.scoped('publishes each settled child run once through the exit file, never through Herdr', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem
+      const dir = yield* fs.makeTempDirectoryScoped()
+      const session = `${dir}/child.jsonl`
+      const fixture = harness({ HERDR_ENV: '1', PI_HERDR_PARENT: '{}' })
+      const branch = [assistant('a1', 'Review done. No findings.')]
+      const ctx = context(session, undefined, branch)
+      yield* fixture.handlers.activate(ctx)
+      yield* fixture.handlers.report(ctx)
+      expect(parseJsonText(yield* fs.readFileString(`${session}.exit`))).toEqual({ text: 'Review done. No findings.', type: 'done' })
+      yield* fs.remove(`${session}.exit`)
+      yield* fixture.handlers.report(ctx)
+      expect(yield* fs.exists(`${session}.exit`)).toBe(false)
+      branch.push(assistant('a2', '', 'error', 'rate limited'))
+      yield* fixture.handlers.report(ctx)
+      expect(parseJsonText(yield* fs.readFileString(`${session}.exit`))).toEqual({ errorMessage: 'rate limited', text: '', type: 'error' })
+      const other = `${dir}/other.jsonl`
+      yield* fixture.handlers.report(context(other, undefined, [assistant('b1', 'late')]))
+      expect(yield* fs.exists(`${other}.exit`)).toBe(false)
+      expect(fixture.calls).toEqual([])
+      fixture.state.current = { ...child, agent_session: { agent: 'pi', kind: 'path', value: session } }
+      expect(yield* refusal(fixture.handlers.send({ message: 'done', pane_id: parent.pane_id }, ctx))).toContain('only')
+      expect(mutations(fixture.calls)).toEqual([])
+    })
+  )
+
+  it.scoped('delivers results, blocked prompts and unannounced exits to the parent once each', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem
+      const dir = yield* fs.makeTempDirectoryScoped()
+      const session = `${dir}/child.jsonl`
+      const { fake, handlers, state } = harness(undefined, undefined, session)
+      yield* handlers.spawn({ ...task, name: 'Review' }, context())
+      yield* handlers.poll(context())
+      expect(fake.state.messages).toEqual([])
+      yield* fs.writeFileString(`${session}.exit`, jsonText({ text: 'No findings.', type: 'done' }))
+      yield* handlers.poll(context())
+      expect(fake.state.messages).toEqual([
+        {
+          message: {
+            content: `Agent "Review" (pane ${child.pane_id}) finished (${task.model}).\n\nNo findings.`,
+            customType: RESULT_MESSAGE,
+            details: { model: task.model, name: 'Review', pane_id: child.pane_id, status: 'done' },
+            display: true,
+          },
+          options: { deliverAs: 'followUp', triggerTurn: true },
+        },
+      ])
+      expect(yield* fs.readDirectory(dir)).toEqual([])
+      state.child = { ...state.child, agent_status: 'blocked' }
+      yield* handlers.poll(context())
+      yield* handlers.poll(context())
+      state.child = { ...state.child, agent_status: 'idle' }
+      yield* handlers.poll(context())
+      expect(fake.state.messages).toMatchObject([{ message: { details: { status: 'done' } } }, { message: { details: { status: 'blocked' } } }])
+      yield* handlers.send({ message: 'Also check tests', pane_id: child.pane_id }, context())
+      state.panes = [parent]
+      yield* handlers.poll(context())
+      yield* handlers.poll(context())
+      expect(fake.state.messages.at(-1)?.message).toMatchObject({
+        content: expect.stringContaining('exited or its pane was closed'),
+        details: { status: 'exited' },
+      })
+      expect(fake.state.messages).toHaveLength(3)
+      expect(fake.state.entries.at(-1)).toEqual({ customType: CLOSED_ENTRY, data: { pane_id: child.pane_id } })
+      expect(yield* handlers.list(context())).toEqual({ agents: [] })
+    })
+  )
+
+  it.effect('restores live agents after reload without reporting exits it never awaited', () =>
+    Effect.gen(function* () {
+      const { fake, handlers, state } = harness()
+      yield* handlers.spawn(task, context())
+      expect(fake.state.entries).toEqual([
+        {
+          customType: SPAWN_ENTRY,
+          data: {
+            model: task.model,
+            pane_id: child.pane_id,
+            target: { pane_id: child.pane_id, session_file: '/sessions/child.jsonl', terminal_id: child.terminal_id },
+          },
+        },
+      ])
+      yield* handlers.close({ pane_id: child.pane_id }, context())
+      yield* handlers.spawn(task, context())
+      const restored = makeHerdrHandlers(fake.pi, makeEnvironment({ HERDR_ENV: '1' }), () => Effect.succeed({ allowedModels: [], modelNotes: {} }))
+      yield* Effect.scoped(
+        restored.activate(
+          context(
+            undefined,
+            undefined,
+            fake.state.entries.map((entry) => ({ ...entry, type: 'custom' }))
+          )
+        )
+      )
+      expect((yield* restored.list(context())).agents).toEqual([{ awaiting_result: false, model: task.model, pane_id: 'w1:p3', status: 'unknown' }])
+      state.panes = [parent]
+      yield* restored.poll(context())
+      expect(fake.state.messages).toEqual([])
     })
   )
 })

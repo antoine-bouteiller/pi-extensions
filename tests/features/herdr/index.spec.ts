@@ -100,12 +100,12 @@ describe('Herdr display', () => {
 })
 
 describe('Herdr registration', () => {
-  it('registers only three tools with model and callback guidance', () => {
+  it('registers the delegation tools with model and result guidance', () => {
     const fixture = createFakePi()
     const descriptor = feature({ environment: makeEnvironment({}) })
     descriptor.implementation.register(fixture.pi, runtime)
     expect(descriptor).toMatchObject({ id: 'herdr' })
-    expect([...fixture.state.tools.keys()]).toEqual(['spawn_agent', 'send_message', 'close_pane'])
+    expect([...fixture.state.tools.keys()]).toEqual(['spawn_agent', 'send_message', 'close_pane', 'interrupt_agent', 'list_agents'])
     expect([...fixture.state.handlers.keys()]).toEqual(['before_agent_start'])
     expect(fixture.state.commands.size).toBe(0)
     const spawn = fixture.state.tools.get('spawn_agent')
@@ -124,8 +124,16 @@ describe('Herdr registration', () => {
     expect(guidance).toContain('preferences, not restrictions')
     expect(guidance).toContain('Honor explicit user model choices')
     expect(guidance).toContain('do not silently substitute disallowed or unavailable models')
-    expect(fixture.state.tools.get('send_message')?.promptGuidelines?.join('\n')).toContain('notify its parent before ending')
+    expect(guidance).toContain('arrives automatically')
+    expect(fixture.state.tools.get('send_message')?.promptGuidelines?.join('\n')).toContain('arrives automatically')
     expect(fixture.state.tools.get('send_message')?.promptGuidelines?.join('\n')).toContain('not new user authorization')
+  })
+
+  it('gives delegated agents no Herdr tools and reports their settled runs instead', () => {
+    const fixture = createFakePi()
+    feature({ environment: makeEnvironment({ HERDR_ENV: '1', PI_HERDR_PARENT: '{}' }) }).implementation.register(fixture.pi, runtime)
+    expect(fixture.state.tools.size).toBe(0)
+    expect([...fixture.state.handlers.keys()]).toEqual(['agent_settled'])
   })
 
   it.effect('refreshes the model enum from allowed, available models and still enforces it at execution', () =>
