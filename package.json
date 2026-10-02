@@ -35,7 +35,7 @@
     "@earendil-works/pi-coding-agent": "0.87.1",
     "@earendil-works/pi-tui": "0.87.1",
     "@effect/language-service": "0.87.2",
-    "@effect/tsgo": "0.47.1",
+    "@effect/tsgo": "0.47.2",
     "@oxlint/plugins": "1.86.0",
     "@types/bun": "1.4.2",
     "@types/turndown": "5.0.6",
