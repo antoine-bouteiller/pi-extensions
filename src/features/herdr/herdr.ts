@@ -73,10 +73,19 @@ const LayoutSchema = Type.Object({
 })
 const ExitSchema = Type.Object({
   errorMessage: Type.Optional(Type.String()),
+  request_id: Type.Optional(Type.String()),
   text: Type.String(),
   type: Type.Union([Type.Literal('done'), Type.Literal('error'), Type.Literal('aborted')]),
 })
-const SpawnEntrySchema = Type.Object({ model: Type.String(), name: Type.Optional(Type.String()), pane_id: Type.String(), target: TargetSchema })
+const SpawnEntrySchema = Type.Object({
+  awaiting: Type.Boolean(),
+  model: Type.String(),
+  name: Type.Optional(Type.String()),
+  owner: Type.String(),
+  pane_id: Type.String(),
+  request_id: Type.Optional(Type.String()),
+  target: TargetSchema,
+})
 const ClosedEntrySchema = Type.Object({ pane_id: Type.String() })
 type Pane = Static<typeof PaneSchema>
 type Target = Static<typeof TargetSchema>
@@ -90,6 +99,7 @@ interface OwnedPane {
   ready: boolean
   /** A spawn or follow-up has not produced a result yet; only then is an unannounced exit worth reporting. */
   awaiting: boolean
+  request_id?: string
   blocked: boolean
 }
 export interface HerdrResult {
@@ -119,6 +129,7 @@ export class HerdrError extends Data.TaggedError('HerdrError')<{ readonly messag
 export const SPAWN_ENTRY = 'herdr-agent'
 /** @internal */
 export const CLOSED_ENTRY = 'herdr-agent-closed'
+const STATE_ENTRY = 'herdr-agent-state'
 /** @internal */
 export const RESULT_MESSAGE = 'herdr-agent-result'
 const WATCH_INTERVAL = '3 seconds'
@@ -140,6 +151,7 @@ const matches = (pane: Pane, target: Target): boolean =>
   sessionFile(pane) === target.session_file &&
   (target.session_file !== undefined || pane.agent === undefined)
 const exitFile = (session: string) => `${session}.exit`
+const resultsDirectory = (session: string) => `${exitFile(session)}.d`
 const checkedMessage = (message: string): string => {
   const controls = message.match(/\p{Cc}/gu)?.some((character) => character !== '\n' && character !== '\t') === true
   if (message.trim().length === 0 || controls) {
@@ -160,12 +172,12 @@ const label = (paneIdValue: string, record: OwnedPane) =>
   record.name === undefined ? `pane ${paneIdValue}` : `"${record.name}" (pane ${paneIdValue})`
 
 /** Renaming first means a result written concurrently by the child lands in a fresh file instead of being deleted unread. */
-const claim = (session: string) =>
+const claim = (file: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem
     const crypto = yield* Crypto
-    const claimed = `${exitFile(session)}.${yield* crypto.randomUUIDv4}`
-    const renamed = yield* fs.rename(exitFile(session), claimed).pipe(
+    const claimed = `${file}.${yield* crypto.randomUUIDv4}`
+    const renamed = yield* fs.rename(file, claimed).pipe(
       Effect.as(true),
       Effect.catchIf(
         (error) => error.reason._tag === 'NotFound',
@@ -182,6 +194,18 @@ const claim = (session: string) =>
     )
   })
 
+const reportedRequest = (ctx: ExtensionContext): string | undefined => {
+  const input = ctx.sessionManager.getBranch().findLast((candidate) => candidate.type === 'message' && candidate.message.role === 'user')
+  if (input?.type !== 'message' || input.message.role !== 'user') {
+    return undefined
+  }
+  const content =
+    typeof input.message.content === 'string'
+      ? input.message.content
+      : input.message.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join('\n')
+  return /^Message from Pi pane \S+ \[herdr-request:(?<id>[^\]]+)\]:/.exec(content)?.groups?.id
+}
+
 const CHILD_PROMPT =
   'You are a delegated agent. Complete only the initial task; you cannot delegate. Whenever you stop, your final response is delivered to the parent agent automatically, and the parent may send follow-up messages. End with a concise conclusion or failure, including evidence/checks and blockers. For detailed reviews or large results, write a temporary handoff file and include its absolute path in your final response; this file is allowed even for a read-only task, but other read-only restrictions still apply.'
 
@@ -189,6 +213,7 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
   const owned = new Map<string, OwnedPane>()
   const agentTabs = new Map<string, string[]>()
   const allocation = Semaphore.makeUnsafe(1)
+  const delivery = Semaphore.makeUnsafe(1)
   let startupSession: string | undefined
   let lastReported: string | undefined
   const isChild = environment.all.PI_HERDR_PARENT !== undefined
@@ -270,8 +295,23 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
       }
     })
 
-  const submit = (ctx: ExtensionContext, from: Pane, to: Target, message: string) =>
-    request(ctx.cwd, ['agent', 'prompt', to.pane_id, `Message from Pi pane ${from.pane_id}:\n\n${message}`], Type.Object({ agent: PaneSchema }))
+  const submit = (ctx: ExtensionContext, from: Pane, to: Target, message: string, requestId: string) =>
+    request(
+      ctx.cwd,
+      ['agent', 'prompt', to.pane_id, `Message from Pi pane ${from.pane_id} [herdr-request:${requestId}]:\n\n${message}`],
+      Type.Object({ agent: PaneSchema })
+    )
+
+  const persist = (id: string, record: OwnedPane) =>
+    pi.appendEntry(STATE_ENTRY, {
+      awaiting: record.awaiting,
+      model: record.model,
+      name: record.name,
+      owner: record.owner,
+      pane_id: id,
+      request_id: record.request_id,
+      target: record.target,
+    })
 
   const forget = (id: string) => {
     owned.delete(id)
@@ -280,11 +320,14 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
 
   const notify = (content: string, details: ResultDetails) =>
     Effect.sync(() => {
-      pi.sendMessage({ content, customType: RESULT_MESSAGE, details, display: true }, { deliverAs: 'followUp', triggerTurn: true })
+      pi.sendMessage({ content, customType: RESULT_MESSAGE, details, display: true }, { deliverAs: 'steer', triggerTurn: true })
     })
 
   const deliver = (id: string, record: OwnedPane, exit: Exit) => {
-    record.awaiting = false
+    if (exit.request_id === record.request_id) {
+      record.awaiting = false
+      persist(id, record)
+    }
     const headline = { aborted: 'was interrupted', done: 'finished', error: 'failed' }[exit.type]
     const bounded = truncateOutput(exit.text.trim() || '(no final text)', RESULT_LIMITS)
     const failure = exit.errorMessage === undefined ? '' : `\nError: ${exit.errorMessage}`
@@ -298,9 +341,25 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
     Effect.gen(function* () {
       const session = record.target.session_file
       if (session !== undefined) {
-        const exit = yield* claim(session)
-        if (Option.isSome(exit)) {
-          yield* deliver(id, record, exit.value)
+        const fs = yield* FileSystem
+        const directory = resultsDirectory(session)
+        const files = yield* fs.readDirectory(directory).pipe(
+          Effect.catchIf(
+            (error) => error.reason._tag === 'NotFound',
+            () => Effect.succeed([] as string[])
+          )
+        )
+        for (const file of [
+          exitFile(session),
+          ...files
+            .filter((name) => name.endsWith('.json'))
+            .toSorted()
+            .map((name) => `${directory}/${name}`),
+        ]) {
+          const exit = yield* claim(file)
+          if (Option.isSome(exit)) {
+            yield* deliver(id, record, exit.value)
+          }
         }
       }
       const pane = yield* inspect(cwd, id)
@@ -336,10 +395,10 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
       const session = ctx.sessionManager.getSessionFile()
       const due = [...owned].filter(([, record]) => record.owner === session && record.ready)
       yield* Effect.forEach(due, ([id, record]) => check(ctx.cwd, id, record).pipe(Effect.ignore), { discard: true })
-    })
+    }).pipe(delivery.withPermits(1))
 
   const restore = (ctx: ExtensionContext) =>
-    Effect.gen(function* () {
+    Effect.sync(() => {
       const session = ctx.sessionManager.getSessionFile()
       if (session === undefined) {
         return
@@ -349,7 +408,11 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
         if (entry.type !== 'custom') {
           continue
         }
-        if (entry.customType === SPAWN_ENTRY && Value.Check(SpawnEntrySchema, entry.data)) {
+        if (
+          (entry.customType === SPAWN_ENTRY || entry.customType === STATE_ENTRY) &&
+          Value.Check(SpawnEntrySchema, entry.data) &&
+          entry.data.owner === session
+        ) {
           entries.set(entry.data.pane_id, entry.data)
         } else if (entry.customType === CLOSED_ENTRY && Value.Check(ClosedEntrySchema, entry.data)) {
           entries.delete(entry.data.pane_id)
@@ -359,21 +422,16 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
         if (owned.has(entry.pane_id)) {
           continue
         }
-        const alive = yield* verify(ctx.cwd, entry.target).pipe(
-          Effect.as(true),
-          Effect.orElseSucceed(() => false)
-        )
-        if (alive) {
-          owned.set(entry.pane_id, {
-            awaiting: false,
-            blocked: false,
-            model: entry.model,
-            name: entry.name,
-            owner: session,
-            ready: true,
-            target: entry.target,
-          })
-        }
+        owned.set(entry.pane_id, {
+          awaiting: entry.awaiting,
+          blocked: false,
+          model: entry.model,
+          name: entry.name,
+          owner: session,
+          ready: true,
+          request_id: entry.request_id,
+          target: entry.target,
+        })
       }
     })
 
@@ -397,10 +455,14 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
         message.stopReason === 'error'
           ? { errorMessage: message.errorMessage ?? 'The provider request failed.', text: body, type: 'error' }
           : { text: body, type: message.stopReason === 'aborted' ? 'aborted' : 'done' }
+      exit.request_id = reportedRequest(ctx)
       const fs = yield* FileSystem
-      const pending = `${exitFile(session)}.tmp`
+      const directory = resultsDirectory(session)
+      yield* fs.makeDirectory(directory, { recursive: true })
+      const file = `${directory}/${String(ctx.sessionManager.getBranch().indexOf(entry)).padStart(12, '0')}-${entry.id}.json`
+      const pending = `${file}.tmp`
       yield* fs.writeFileString(pending, jsonText(exit))
-      yield* fs.rename(pending, exitFile(session))
+      yield* fs.rename(pending, file)
       lastReported = entry.id
     })
 
@@ -430,7 +492,7 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
         yield* request(ctx.cwd, ['pane', 'close', params.pane_id], Type.Object({ type: Type.Literal('ok') }))
         forget(params.pane_id)
         return { pane_id: params.pane_id, status: 'closed' } satisfies HerdrResult
-      }),
+      }).pipe(delivery.withPermits(1)),
     interrupt: (params: Static<typeof PaneParams>, ctx: ExtensionContext, signal?: AbortSignal) =>
       Effect.gen(function* () {
         const from = yield* caller(ctx, signal)
@@ -486,10 +548,14 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
         if (cancelled(signal)) {
           return yield* fail('Cancelled before sending the message.')
         }
-        yield* submit(ctx, from.pane, record.target, message)
+        const crypto = yield* Crypto
+        const requestId = yield* crypto.randomUUIDv4.pipe(Effect.mapError((error) => fail(error.message)))
+        yield* submit(ctx, from.pane, record.target, message, requestId)
+        record.request_id = requestId
         record.awaiting = true
+        persist(params.pane_id, record)
         return { pane_id: params.pane_id, status: 'sent' } satisfies HerdrResult
-      }),
+      }).pipe(delivery.withPermits(1)),
     spawn: (params: Static<typeof SpawnAgentParams>, ctx: ExtensionContext, signal?: AbortSignal) =>
       Effect.gen(function* () {
         const message = yield* Effect.try({ catch: (error) => fail(errorMessage(error)), try: () => checkedMessage(params.message) })
@@ -604,16 +670,20 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
           }
           record.target = targetFrom(agent)
           record.ready = true
+          record.request_id = id
           pi.appendEntry(SPAWN_ENTRY, {
+            awaiting: record.awaiting,
             model: record.model,
+            owner: record.owner,
             pane_id: pane.pane_id,
+            request_id: record.request_id,
             target: record.target,
             ...(record.name !== undefined && { name: record.name }),
           } satisfies Static<typeof SpawnEntrySchema>)
           if (cancelled(signal)) {
             return yield* fail('Cancelled after starting Pi; the initial message was not submitted.')
           }
-          yield* submit(ctx, parent.pane, record.target, message)
+          yield* submit(ctx, parent.pane, record.target, message, id)
           return { model: params.model, pane_id: pane.pane_id, status: 'started' } satisfies HerdrResult
         }).pipe(Effect.mapError((error) => fail(`Pane ${pane.pane_id} was created and remains open. ${error.message}`)))
       }),

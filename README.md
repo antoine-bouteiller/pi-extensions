@@ -39,13 +39,18 @@ Inside a Herdr-managed pane, the `herdr` feature exposes these Pi tools:
 - `close_pane({pane_id})` closes a pane spawned by the current Pi session.
 
 Delegated agents get none of these tools, so they cannot delegate or message other panes. Whenever
-a child's run settles, its final response is written atomically to `<child session>.jsonl.exit`.
-The parent polls that file and the child's Herdr pane every few seconds and delivers a
-`herdr-agent-result` message that wakes it (as a follow-up if it is busy) for each result, for a
-blocked approval prompt, and for an agent that exits or loses its pane while a result is awaited.
+a child's run settles, its final response is written atomically to a separate record in
+`<child session>.jsonl.exit.d/`. The parent polls those records and the child's Herdr pane every
+few seconds and delivers a `herdr-agent-result` message that wakes it (as steering at the next
+turn boundary if it is busy) for each result, for a blocked approval prompt, and for an agent that
+exits or loses its pane while a result is awaited.
 The parent can finish its turn while leaving Pi running. Detailed reviews can use a temporary
 handoff file referenced in the child's final response. Spawned panes are recorded in the parent
-session, so they survive a Pi reload or restart.
+session with their original owner and outstanding request, so they survive a Pi reload or restart
+without granting forked sessions control of the original parent's agents. `awaiting_result` clears
+when the latest request's result is queued for delivery; it does not indicate that the parent has
+consumed it. Legacy ownership records without a parent identity are not restored; close those
+panes manually in Herdr before spawning replacements.
 
 Configure an explicit model allowlist in `~/.pi/agent/settings.json` (or your custom Pi agent directory):
 

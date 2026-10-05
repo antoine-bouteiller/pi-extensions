@@ -147,7 +147,7 @@ export const feature = ((options: FeatureOptions<typeof loadHerdrSettings> = {})
               'Use spawn_agent for self-contained work. Its initial message must include the goal, necessary context, read-only or allowed-write scope, and expected evidence. Do not duplicate delegated work; parallel writers need disjoint scopes.',
               'Choose a provider/model-id from the allowed, available Herdr models based on the task and the model’s capabilities; herdr.allowedModels is mandatory. Prefer Azure OpenAI (azure-openai-responses) for implementation, scouting, and research. For review, prefer a different provider from the agent that produced the work for an independent perspective. Model notes in the model argument take precedence over these defaults. These are preferences, not restrictions; use another model when better suited. Honor explicit user model choices only within the allowlist; do not silently substitute disallowed or unavailable models.',
               'Give each spawn a short name. Pass tools (for example read, grep, find, ls) to enforce read-only scope, and thinking when the task needs a different effort. Delegated agents cannot delegate further.',
-              'Each time a child stops, its final response arrives automatically as a herdr-agent-result message, as do exits without a result and blocked approval prompts. Continue independent work or end your turn while keeping Pi running; do not poll, call list_agents in a loop, or read terminal transcripts for normal results.',
+              'Each time a child stops, its final response arrives automatically as a herdr-agent-result message at the next parent turn boundary, as do exits without a result and blocked approval prompts. Continue independent work or end your turn while keeping Pi running; do not poll, call list_agents in a loop, or read terminal transcripts for normal results.',
             ],
             promptSnippet: 'Delegate a task to a chosen model in a new Herdr pane',
             renderCall: (args, theme, context) =>
@@ -199,7 +199,7 @@ export const feature = ((options: FeatureOptions<typeof loadHerdrSettings> = {})
         })
         pi.registerTool<typeof ListAgentsParams, ListResult>({
           description:
-            'List agents spawned by this Pi session (including after reload) with their model, name, Herdr status (idle, working, blocked, done, gone, replaced), and whether a result is still awaited.',
+            'List agents spawned by this Pi session (including after reload) with their model, name, Herdr status (idle, working, blocked, done, gone, replaced), and whether the latest request has not yet produced a result. A false awaiting_result means the result was queued for delivery, not necessarily consumed by the parent.',
           execute: execute(({ ctx, signal }) => result(operations.list(ctx, signal)), { interruptOnAbort: false }),
           label: 'List Agents',
           name: 'list_agents',

@@ -219,7 +219,12 @@ describe('Herdr delegation', () => {
       expect(start[start.indexOf('--append-system-prompt') + 1]).toContain('final response is delivered to the parent agent automatically')
       expect(start).not.toContain('--thinking')
       expect(start).not.toContain('--tools')
-      expect(calls[3]?.args).toEqual(['agent', 'prompt', child.pane_id, `Message from Pi pane ${parent.pane_id}:\n\n${task.message}`])
+      expect(calls[3]?.args).toEqual([
+        'agent',
+        'prompt',
+        child.pane_id,
+        expect.stringMatching(/^Message from Pi pane w1:p1 \[herdr-request:[^\]]+\]:\n\nReview the diff; do not modify files\.$/),
+      ])
       expect(calls.flatMap(({ args }) => args)).not.toContain('--wait')
     })
   )
@@ -287,7 +292,8 @@ describe('Herdr delegation', () => {
       state.width = 60
       yield* handlers.spawn({ ...task, message: '/quit\n!echo unsafe\n$(touch /tmp/no)' }, context())
       expect(calls[3]?.args).toContain('down')
-      expect(calls[5]?.args[3]).toBe(`Message from Pi pane ${parent.pane_id}:\n\n/quit\n!echo unsafe\n$(touch /tmp/no)`)
+      expect(calls[5]?.args[3]).toStartWith(`Message from Pi pane ${parent.pane_id} [herdr-request:`)
+      expect(calls[5]?.args[3]).toEndWith('\n\n/quit\n!echo unsafe\n$(touch /tmp/no)')
     })
   )
 
@@ -515,13 +521,16 @@ describe('Herdr results', () => {
       const ctx = context(session, undefined, branch)
       yield* fixture.handlers.activate(ctx)
       yield* fixture.handlers.report(ctx)
-      expect(parseJsonText(yield* fs.readFileString(`${session}.exit`))).toEqual({ text: 'Review done. No findings.', type: 'done' })
-      yield* fs.remove(`${session}.exit`)
+      const directory = `${session}.exit.d`
+      const [first] = yield* fs.readDirectory(directory)
+      expect(parseJsonText(yield* fs.readFileString(`${directory}/${first}`))).toEqual({ text: 'Review done. No findings.', type: 'done' })
+      yield* fs.remove(`${directory}/${first}`)
       yield* fixture.handlers.report(ctx)
-      expect(yield* fs.exists(`${session}.exit`)).toBe(false)
+      expect(yield* fs.readDirectory(directory)).toEqual([])
       branch.push(assistant('a2', '', 'error', 'rate limited'))
       yield* fixture.handlers.report(ctx)
-      expect(parseJsonText(yield* fs.readFileString(`${session}.exit`))).toEqual({ errorMessage: 'rate limited', text: '', type: 'error' })
+      const [second] = yield* fs.readDirectory(directory)
+      expect(parseJsonText(yield* fs.readFileString(`${directory}/${second}`))).toEqual({ errorMessage: 'rate limited', text: '', type: 'error' })
       const other = `${dir}/other.jsonl`
       yield* fixture.handlers.report(context(other, undefined, [assistant('b1', 'late')]))
       expect(yield* fs.exists(`${other}.exit`)).toBe(false)
@@ -529,6 +538,30 @@ describe('Herdr results', () => {
       fixture.state.current = { ...child, agent_session: { agent: 'pi', kind: 'path', value: session } }
       expect(yield* refusal(fixture.handlers.send({ message: 'done', pane_id: parent.pane_id }, ctx))).toContain('only')
       expect(mutations(fixture.calls)).toEqual([])
+    })
+  )
+
+  it.scoped('preserves every settled report before the parent polls', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem
+      const dir = yield* fs.makeTempDirectoryScoped()
+      const session = `${dir}/child.jsonl`
+      const producer = harness({ HERDR_ENV: '1', PI_HERDR_PARENT: '{}' })
+      const branch = [assistant('a1', 'First result')]
+      const ctx = context(session, undefined, branch)
+      yield* producer.handlers.activate(ctx)
+      yield* producer.handlers.report(ctx)
+      branch.push(assistant('a2', 'Second result'))
+      yield* producer.handlers.report(ctx)
+      const consumer = harness(undefined, undefined, session)
+      yield* consumer.handlers.spawn(task, context())
+      yield* consumer.handlers.poll(context())
+      expect(consumer.fake.state.messages.map(({ message }) => asResult<{ content: string }>(message).content)).toEqual([
+        expect.stringContaining('First result'),
+        expect.stringContaining('Second result'),
+      ])
+      yield* consumer.handlers.poll(context())
+      expect(consumer.fake.state.messages).toHaveLength(2)
     })
   )
 
@@ -551,7 +584,7 @@ describe('Herdr results', () => {
             details: { model: task.model, name: 'Review', pane_id: child.pane_id, status: 'done' },
             display: true,
           },
-          options: { deliverAs: 'followUp', triggerTurn: true },
+          options: { deliverAs: 'steer', triggerTurn: true },
         },
       ])
       expect(yield* fs.readDirectory(dir)).toEqual([])
@@ -575,7 +608,100 @@ describe('Herdr results', () => {
     })
   )
 
-  it.effect('restores live agents after reload without reporting exits it never awaited', () =>
+  it.scoped('keeps awaiting a follow-up when an older result arrives, including after reload', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem
+      const dir = yield* fs.makeTempDirectoryScoped()
+      const session = `${dir}/child.jsonl`
+      const { handlers, fake, state } = harness(undefined, undefined, session)
+      yield* handlers.spawn(task, context())
+      yield* fs.writeFileString(`${session}.exit`, jsonText({ text: 'Old result', type: 'done' }))
+      yield* handlers.send({ message: 'New task', pane_id: child.pane_id }, context())
+      yield* handlers.poll(context())
+      expect((yield* handlers.list(context())).agents[0]?.awaiting_result).toBe(true)
+      const restored = makeHerdrHandlers(fake.pi, makeEnvironment({ HERDR_ENV: '1' }))
+      yield* restored.activate(
+        context(
+          undefined,
+          undefined,
+          fake.state.entries.map((entry) => ({ ...entry, type: 'custom' }))
+        )
+      )
+      state.panes = [parent]
+      yield* restored.poll(context())
+      expect(fake.state.messages.at(-1)?.message).toMatchObject({ details: { status: 'exited' } })
+    })
+  )
+
+  it.scoped('clears awaiting only for the latest submitted request', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem
+      const dir = yield* fs.makeTempDirectoryScoped()
+      const session = `${dir}/child.jsonl`
+      const consumer = harness(undefined, undefined, session)
+      yield* consumer.handlers.spawn(task, context())
+      const first = consumer.calls.at(-1)?.args[3]
+      yield* consumer.handlers.send({ message: 'Second task', pane_id: child.pane_id }, context())
+      const second = consumer.calls.at(-1)?.args[3]
+      const producer = harness({ HERDR_ENV: '1', PI_HERDR_PARENT: '{}' })
+      const branch = [{ id: 'u1', message: { content: first, role: 'user' }, type: 'message' }, assistant('a1', 'First result')]
+      const ctx = context(session, undefined, branch)
+      yield* producer.handlers.activate(ctx)
+      yield* producer.handlers.report(ctx)
+      yield* consumer.handlers.poll(context())
+      expect((yield* consumer.handlers.list(context())).agents[0]?.awaiting_result).toBe(true)
+      branch.push({ id: 'u2', message: { content: second, role: 'user' }, type: 'message' }, assistant('a2', 'Second result'))
+      yield* producer.handlers.report(ctx)
+      yield* consumer.handlers.poll(context())
+      expect((yield* consumer.handlers.list(context())).agents[0]?.awaiting_result).toBe(false)
+      expect(consumer.fake.state.messages).toHaveLength(2)
+    })
+  )
+
+  it.scoped('does not grant a fork ownership of copied delegation history', () =>
+    Effect.gen(function* () {
+      const { handlers, fake, state } = harness()
+      yield* handlers.spawn(task, context())
+      const fork = '/sessions/fork.jsonl'
+      state.current = { ...parent, agent_session: { agent: 'pi', kind: 'path', value: fork } }
+      const restored = makeHerdrHandlers(fake.pi, makeEnvironment({ HERDR_ENV: '1' }))
+      const ctx = context(
+        fork,
+        undefined,
+        fake.state.entries.map((entry) => ({ ...entry, type: 'custom' }))
+      )
+      yield* restored.activate(ctx)
+      expect(yield* restored.list(ctx)).toEqual({ agents: [] })
+      expect(yield* refusal(restored.close({ pane_id: child.pane_id }, ctx))).toContain('Only panes')
+    })
+  )
+
+  it.scoped('retries restored children after temporary Herdr failures', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem
+      const dir = yield* fs.makeTempDirectoryScoped()
+      const session = `${dir}/child.jsonl`
+      const { handlers, fake, state } = harness(undefined, undefined, session)
+      yield* handlers.spawn(task, context())
+      state.fail = 'pane get'
+      const restored = makeHerdrHandlers(fake.pi, makeEnvironment({ HERDR_ENV: '1' }))
+      yield* restored.activate(
+        context(
+          undefined,
+          undefined,
+          fake.state.entries.map((entry) => ({ ...entry, type: 'custom' }))
+        )
+      )
+      yield* restored.poll(context())
+      state.fail = undefined
+      yield* fs.writeFileString(`${session}.exit`, jsonText({ text: 'Recovered result', type: 'done' }))
+      yield* restored.poll(context())
+      expect(fake.state.messages).toMatchObject([{ message: { content: expect.stringContaining('Recovered result') } }])
+      expect((yield* restored.list(context())).agents).toHaveLength(1)
+    })
+  )
+
+  it.effect('restores live agents and outstanding work after reload', () =>
     Effect.gen(function* () {
       const { fake, handlers, state } = harness()
       yield* handlers.spawn(task, context())
@@ -583,8 +709,11 @@ describe('Herdr results', () => {
         {
           customType: SPAWN_ENTRY,
           data: {
+            awaiting: true,
             model: task.model,
+            owner: '/sessions/parent.jsonl',
             pane_id: child.pane_id,
+            request_id: expect.any(String),
             target: { pane_id: child.pane_id, session_file: '/sessions/child.jsonl', terminal_id: child.terminal_id },
           },
         },
@@ -601,10 +730,10 @@ describe('Herdr results', () => {
           )
         )
       )
-      expect((yield* restored.list(context())).agents).toEqual([{ awaiting_result: false, model: task.model, pane_id: 'w1:p3', status: 'unknown' }])
+      expect((yield* restored.list(context())).agents).toEqual([{ awaiting_result: true, model: task.model, pane_id: 'w1:p3', status: 'unknown' }])
       state.panes = [parent]
       yield* restored.poll(context())
-      expect(fake.state.messages).toEqual([])
+      expect(fake.state.messages).toMatchObject([{ message: { details: { status: 'exited' } } }])
     })
   )
 })
