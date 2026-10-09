@@ -238,6 +238,23 @@ describe('sidebar rendering', () => {
     })
   )
 
+  it.effect('shows Git changes beside the project and ellipsizes a long branch', () =>
+    Effect.sync(() => {
+      const lines = renderSidebarLines({
+        height: 36,
+        now: 0,
+        state: { ...state, git: { ...state.git, branch: `feature/${'b'.repeat(80)}` } },
+        theme,
+        width: 44,
+      }).map(stripAnsi)
+      const workspaceIndex = lines.findIndex((line) => line.includes('WORKSPACE'))
+      const [project, , branch] = lines.slice(workspaceIndex + 1, workspaceIndex + 4)
+
+      expect(project).toContain('pi-extensions · 4 files changed')
+      expect(branch).toMatch(/feature\/b+… *│$/)
+    })
+  )
+
   it.effect('renders unavailable context explicitly', () =>
     Effect.sync(() => {
       const unavailable = {

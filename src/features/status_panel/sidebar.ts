@@ -145,22 +145,24 @@ const contextRows = (state: SidebarState, width: number, theme: SidebarTheme) =>
   return [spaced(paint(theme, color, usage), paint(theme, color, percent), width), meter, ...metricsRows]
 }
 
-const workspaceRows = (state: SidebarState, theme: SidebarTheme, path: Path) => {
-  const project = path.basename(state.cwd) || formatDirectory(state.cwd, path)
-  const rows = [paint(theme, 'white', sanitize(project)), paint(theme, 'gray', formatDirectory(state.cwd, path))]
+const workspaceRows = (state: SidebarState, width: number, theme: SidebarTheme, path: Path) => {
+  const project = sanitize(path.basename(state.cwd) || formatDirectory(state.cwd, path))
+  const directory = paint(theme, 'gray', formatDirectory(state.cwd, path))
   if (state.git.branch === undefined) {
-    rows.push(paint(theme, 'gray', 'not a Git repository'))
-  } else {
-    const fileLabel = state.git.changedFiles === 1 ? 'file' : 'files'
-    const change = state.git.changedFiles > 0 ? `${state.git.changedFiles} ${fileLabel} changed` : 'clean'
-    rows.push(
-      `${paint(theme, 'purple', sanitize(state.git.branch))} ${paint(theme, 'gray', '·')} ${paint(
-        theme,
-        state.git.changedFiles > 0 ? 'orange' : 'green',
-        change
-      )}`
-    )
+    return [paint(theme, 'white', truncateToWidth(project, width, '…')), directory, paint(theme, 'gray', 'not a Git repository')]
   }
+  const fileLabel = state.git.changedFiles === 1 ? 'file' : 'files'
+  const change = state.git.changedFiles > 0 ? `${state.git.changedFiles} ${fileLabel} changed` : 'clean'
+  const projectWidth = Math.max(0, width - visibleWidth(change) - 3)
+  const rows = [
+    `${paint(theme, 'white', truncateToWidth(project, projectWidth, '…'))} ${paint(theme, 'gray', '·')} ${paint(
+      theme,
+      state.git.changedFiles > 0 ? 'orange' : 'green',
+      change
+    )}`,
+    directory,
+    paint(theme, 'purple', truncateToWidth(sanitize(state.git.branch), width, '…')),
+  ]
   if (state.git.pullRequest !== undefined) {
     rows.push(paint(theme, 'purple', `PR #${state.git.pullRequest.number}`))
   }
@@ -291,7 +293,7 @@ export const renderSidebarLines = ({
       required: false,
       rows: panel({
         color: 'purple',
-        rows: workspaceRows(state, theme, path),
+        rows: workspaceRows(state, rowWidth, theme, path),
         theme,
         title: 'WORKSPACE',
         width: panelWidth,
