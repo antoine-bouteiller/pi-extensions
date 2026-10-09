@@ -31,9 +31,9 @@
     "turndown": "7.2.4"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.87.1",
-    "@earendil-works/pi-coding-agent": "0.87.1",
-    "@earendil-works/pi-tui": "0.87.1",
+    "@earendil-works/pi-ai": "0.99.2",
+    "@earendil-works/pi-coding-agent": "0.99.2",
+    "@earendil-works/pi-tui": "0.99.2",
     "@effect/language-service": "0.87.2",
     "@effect/tsgo": "0.51.1",
     "@oxlint/plugins": "1.87.0",
