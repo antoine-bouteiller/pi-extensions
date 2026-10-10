@@ -59,6 +59,7 @@ const fakeTerminal = (): Terminal => ({
   kittyProtocolActive: false,
   moveBy: () => undefined,
   rows: 36,
+  setProgramStatus: () => undefined,
   setProgress: () => undefined,
   setTitle: () => undefined,
   showCursor: () => undefined,

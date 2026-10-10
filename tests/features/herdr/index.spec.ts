@@ -1,7 +1,7 @@
 import { type AgentToolResult, initTheme, type Theme, type ToolRenderResultOptions } from '@earendil-works/pi-coding-agent'
 import { type Component, visibleWidth } from '@earendil-works/pi-tui'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asExtensionContext, asTheme, asTool } from '@tests/utils/casts.js'
+import { asExtensionToolContext, asTheme, asTool } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'
 import { Effect } from 'effect'
@@ -151,7 +151,7 @@ describe('Herdr registration', () => {
           invalid ? Effect.fail(new HerdrSettingsError({ message: 'invalid herdr.allowedModels' })) : Effect.succeed({ allowedModels, modelNotes }),
         environment: makeEnvironment({ HERDR_ENV: '1' }),
       }).implementation.register(fixture.pi, runtime)
-      const ctx = asExtensionContext({
+      const ctx = asExtensionToolContext({
         isProjectTrusted: () => false,
         modelRegistry: {
           getAvailable: () => [
@@ -229,7 +229,7 @@ describe('Herdr registration', () => {
           { message: 'Review', model: 'provider/model' },
           undefined,
           undefined,
-          asExtensionContext({
+          asExtensionToolContext({
             isProjectTrusted: () => false,
             modelRegistry: { getAvailable: () => [{ id: 'model', provider: 'provider' }] },
           })

@@ -1,4 +1,4 @@
-import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { type ExtensionAPI, type ExtensionToolContext } from '@earendil-works/pi-coding-agent'
 import { type Effect } from 'effect'
 
 import { type AppServices, type AppRuntime } from '#shared/effect/app_services'
@@ -19,8 +19,12 @@ export const feature = ((_options: FeatureOptions<undefined> = {}) => ({
        * mutation-queue wait and replace its cooperative `throwIfAborted` message with a generic one.
        */
       const runTool = <Params, Result>(
-        body: (params: Params, signal: AbortSignal | undefined) => Effect.Effect<Result, HashlineToolError, HandlerServices | AppServices>
-      ) => makeToolExecutor(runtime)(({ params, signal }: ToolInvocation<Params>) => body(params, signal), { interruptOnAbort: false })
+        body: (
+          params: Params,
+          signal: AbortSignal | undefined,
+          ctx: ExtensionToolContext
+        ) => Effect.Effect<Result, HashlineToolError, HandlerServices | AppServices>
+      ) => makeToolExecutor(runtime)(({ ctx, params, signal }: ToolInvocation<Params>) => body(params, signal, ctx), { interruptOnAbort: false })
 
       pi.registerTool({
         description: `Read a file with stable line anchors and a content hash for write. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. Text output is bounded; use offset and limit for large files. Protected credential paths are refused by this tool itself.`,

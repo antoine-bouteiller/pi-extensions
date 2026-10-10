@@ -1,4 +1,11 @@
-import { createReadToolDefinition, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type AgentToolResult, type Theme } from '@earendil-works/pi-coding-agent'
+import {
+  createReadToolDefinition,
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
+  type AgentToolResult,
+  type ExtensionToolContext,
+  type Theme,
+} from '@earendil-works/pi-coding-agent'
 import { Text, type Component } from '@earendil-works/pi-tui'
 import {
   computeFileHash,
@@ -312,7 +319,7 @@ export const renderHashlineRead = (readResult: RenderableToolOutput, _options: u
 type HashlineToolEffect = Effect.Effect<ToolOutput, HashlineToolError, HandlerServices | FileSystem | Path.Path | Crypto>
 
 export interface HashlineTools {
-  readonly read: (params: Static<typeof readSchema>, signal: AbortSignal | undefined) => HashlineToolEffect
+  readonly read: (params: Static<typeof readSchema>, signal: AbortSignal | undefined, toolCtx: ExtensionToolContext) => HashlineToolEffect
   readonly write: (params: Static<typeof writeSchema>, signal: AbortSignal | undefined) => HashlineToolEffect
 }
 
@@ -323,7 +330,7 @@ export const makeHashlineTools = (): HashlineTools => {
   ): Effect.Effect<Success, Failure, Services> => effect.pipe(Effect.provideService(Snapshots, snapshotsStore))
 
   return {
-    read: ({ limit, offset, path }, signal) =>
+    read: ({ limit, offset, path }, signal, toolCtx) =>
       withSnapshots(
         Effect.gen(function* () {
           const ctx = yield* PiCtx
@@ -335,7 +342,8 @@ export const makeHashlineTools = (): HashlineTools => {
           if (exists) {
             const builtInResult = yield* Effect.tryPromise({
               catch: hashlineToolError,
-              try: () => createReadToolDefinition(ctx.cwd).execute('read', { limit, offset, path: resolution.absolutePath }, signal, undefined, ctx),
+              try: () =>
+                createReadToolDefinition(ctx.cwd).execute('read', { limit, offset, path: resolution.absolutePath }, signal, undefined, toolCtx),
             })
             if (builtInResult.content.some((content) => content.type === 'image')) {
               return { content: builtInResult.content, details: { path } }
