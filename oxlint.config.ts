@@ -138,6 +138,8 @@ export default defineConfig({
      * package is ever called data-last, so the rule only produced `Function.dual` boilerplate.
      */
     'effecttsgo/missing-pipeable-signature': 'off',
+    // FileSystem, Path, Crypto, HTTP, and the platform layers have no stable alternative.
+    'effecttsgo/unstable-api-usage': 'off',
 
     'pi-extensions/no-conditional-empty-object-spread': 'error',
     'pi-extensions/no-known-value-widening': 'error',

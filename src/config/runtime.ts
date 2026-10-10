@@ -1,6 +1,6 @@
 import { BunChildProcessSpawner, BunCrypto, BunFileSystem, BunPath } from '@effect/platform-bun'
 import { Layer, ManagedRuntime } from 'effect'
-import { FetchHttpClient } from 'effect/unstable/http'
+import { FetchHttpClient } from 'effect/http'
 
 import { type AppServices, StatusBarLive } from '#shared/effect/app_services'
 import { EnvLive } from '#shared/effect/env'

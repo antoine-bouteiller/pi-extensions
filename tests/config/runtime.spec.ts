@@ -3,7 +3,7 @@ import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asExtensionContext } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { Effect, Exit, Layer, ManagedRuntime, Scope } from 'effect'
-import { FetchHttpClient } from 'effect/unstable/http'
+import { FetchHttpClient } from 'effect/http'
 
 import { getOrCreateProcessRuntime } from '@/config/runtime.js'
 import { feature as statusPanel } from '@/features/status_panel/index.js'

@@ -10,8 +10,8 @@ import {
 import { Text, type Component } from '@earendil-works/pi-tui'
 import { Duration, Effect, Schema, Stream } from 'effect'
 import { type FileSystem } from 'effect/FileSystem'
+import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest, type HttpClientResponse } from 'effect/http'
 import { type Path } from 'effect/Path'
-import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest, type HttpClientResponse } from 'effect/unstable/http'
 import TurndownService from 'turndown'
 import { Type, type Static } from 'typebox'
 

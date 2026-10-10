@@ -5,8 +5,8 @@ import { asExtensionContext, asFooterDataProvider, asNarrowed } from '@tests/uti
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtimeWithEnvironment } from '@tests/utils/runtime.js'
 import { Effect, Exit, Layer, Scope } from 'effect'
+import { FetchHttpClient } from 'effect/http'
 import { TestClock } from 'effect/testing'
-import { FetchHttpClient } from 'effect/unstable/http'
 
 import { feature } from '@/features/status_panel/index.js'
 import { makePanelController } from '@/features/status_panel/panel.js'

@@ -2,8 +2,8 @@ import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect
 import { asFetch } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { Clock, Effect } from 'effect'
+import { FetchHttpClient, type HttpClient } from 'effect/http'
 import { TestClock } from 'effect/testing'
-import { FetchHttpClient, type HttpClient } from 'effect/unstable/http'
 
 import { fetchAnthropicQuota, makeQuotaPoller, quotaFromHeaders } from '@/features/status_panel/provider.js'
 import { type ProviderQuota } from '@/features/status_panel/state.js'
