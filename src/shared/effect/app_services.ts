@@ -1,9 +1,9 @@
 import { Context, Effect, Layer, type ManagedRuntime } from 'effect'
 import { type Crypto } from 'effect/Crypto'
 import { type FileSystem } from 'effect/FileSystem'
+import { type HttpClient } from 'effect/http'
 import { type Path } from 'effect/Path'
-import { type HttpClient } from 'effect/unstable/http'
-import { type ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner'
+import { type ChildProcessSpawner } from 'effect/process/ChildProcessSpawner'
 
 import { formatStatusText, publishStatus, type StatusEntry, type StatusItem, statusBar } from '#shared/state/status_bar'
 

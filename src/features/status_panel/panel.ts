@@ -1,7 +1,7 @@
 import { type ExtensionAPI, type ExtensionContext, type ExtensionEvent, type ReadonlyFooterDataProvider } from '@earendil-works/pi-coding-agent'
 import { Clock, Effect, Fiber, MutableRef, Path as PathService, Queue, type Scope } from 'effect'
+import { type HttpClient } from 'effect/http'
 import { type Path } from 'effect/Path'
-import { type HttpClient } from 'effect/unstable/http'
 
 import { StatusBar, type StatusBarApi } from '#shared/effect/app_services'
 import { Env } from '#shared/effect/env'
