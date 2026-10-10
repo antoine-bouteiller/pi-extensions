@@ -1,4 +1,10 @@
-import { type ExtensionAPI, type ExtensionContext, type ReadonlyFooterDataProvider, type Theme } from '@earendil-works/pi-coding-agent'
+import {
+  type ExtensionAPI,
+  type ExtensionContext,
+  type ExtensionToolContext,
+  type ReadonlyFooterDataProvider,
+  type Theme,
+} from '@earendil-works/pi-coding-agent'
 import { type TUI } from '@earendil-works/pi-tui'
 
 import { type CommandDefinition, type ToolDefinition } from './fake_pi.js'
@@ -15,6 +21,7 @@ export const asExtensionApi = (double: unknown): ExtensionAPI => requireObject(d
 
 // ExtensionContext is host-owned and too broad for focused hand-built event contexts.
 export const asExtensionContext = (double: unknown): ExtensionContext => requireObject(double, 'ExtensionContext') as ExtensionContext
+export const asExtensionToolContext = (double: unknown): ExtensionToolContext => requireObject(double, 'ExtensionToolContext') as ExtensionToolContext
 
 // The native fetch type includes members that an injected request function cannot reproduce.
 export const asFetch = (double: (input: string | URL, init?: RequestInit) => Promise<Response>): typeof fetch => double as typeof fetch

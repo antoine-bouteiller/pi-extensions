@@ -1,7 +1,7 @@
 import { type ExtensionCommandContext, type ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { makeAbortController } from '@tests/utils/abort_controller.js'
 import { promiseFromEffect, tryEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asError, asExtensionContext, asNarrowed, asTool } from '@tests/utils/casts.js'
+import { asError, asExtensionToolContext, asNarrowed, asTool } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { Context, Effect, Fiber, Layer, ManagedRuntime } from 'effect'
 import { Type } from 'typebox'
@@ -18,7 +18,7 @@ interface UiCalls {
 
 const fakeContext = (overrides: { cwd?: string; hasUI?: boolean; confirm?: boolean } = {}) => {
   const calls: UiCalls = { confirms: [], notifications: [], statuses: [] }
-  const ctx = asExtensionContext({
+  const ctx = asExtensionToolContext({
     cwd: overrides.cwd ?? '/repo',
     hasUI: overrides.hasUI ?? true,
     ui: {

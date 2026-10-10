@@ -1,4 +1,9 @@
-import { type AgentToolUpdateCallback, type ExtensionCommandContext, type ExtensionContext } from '@earendil-works/pi-coding-agent'
+import {
+  type AgentToolUpdateCallback,
+  type ExtensionCommandContext,
+  type ExtensionContext,
+  type ExtensionToolContext,
+} from '@earendil-works/pi-coding-agent'
 import { type Cause, Context, Effect, type ManagedRuntime } from 'effect'
 
 import { makeUi, PiCtx, Ui } from './pi_services.js'
@@ -7,7 +12,7 @@ export type HandlerServices = PiCtx | Ui
 
 /** One record rather than positional arguments because every body needs a different subset of it. */
 export interface ToolInvocation<Params> {
-  readonly ctx: ExtensionContext
+  readonly ctx: ExtensionToolContext
   /** Left at the SDK's own default detail type: `execute` is contravariant here, so any narrower choice rejects tools whose details are concrete. */
   readonly onUpdate: AgentToolUpdateCallback | undefined
   readonly params: Params
@@ -40,7 +45,7 @@ export const makeToolExecutor =
     params: Params,
     signal: AbortSignal | undefined,
     onUpdate: AgentToolUpdateCallback | undefined,
-    ctx: ExtensionContext
+    ctx: ExtensionToolContext
   ): Promise<Result> => {
     const interruptOnAbort = options.interruptOnAbort ?? true
     return runtime.runPromise(
