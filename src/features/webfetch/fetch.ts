@@ -12,12 +12,13 @@ import { Duration, Effect, Schema, Stream } from 'effect'
 import { type FileSystem } from 'effect/FileSystem'
 import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest, type HttpClientResponse } from 'effect/http'
 import { type Path } from 'effect/Path'
-import TurndownService from 'turndown'
 import { Type, type Static } from 'typebox'
 
 import { ToolFailure } from '#shared/effect/errors'
 import { isEmptyString, isNotEmptyString, isNullOrUndefined, isTrue } from '#shared/utils/predicates'
 import { boundToolTextEffect, writePrivateTempFileEffect } from '#shared/utils/tool_output'
+
+import { decodeEntities, htmlFragmentToMarkdown } from './html_to_markdown.js'
 
 const DEFAULT_TIMEOUT_SECONDS = 30
 const MAX_TIMEOUT_SECONDS = 120
@@ -113,16 +114,6 @@ const isLlmsTxt = (response: HttpClientResponse.HttpClientResponse): boolean => 
   return response.status >= 200 && response.status < 300 && contentType.trim().toLowerCase().startsWith('text/') && !isHtml(contentType)
 }
 
-const turndown = (): TurndownService => {
-  const service = new TurndownService({
-    bulletListMarker: '-',
-    codeBlockStyle: 'fenced',
-    headingStyle: 'atx',
-  })
-  service.remove(['script', 'style', 'noscript', 'template', 'form'])
-  return service
-}
-
 const articleHtml = (html: string): string => {
   for (const tag of ['article', 'main', 'body'] as const) {
     const match = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`, 'i').exec(html)
@@ -139,14 +130,13 @@ const pageTitle = (html: string): string | undefined => {
   if (isNullOrUndefined(captured) || isEmptyString(captured)) {
     return undefined
   }
-  const title = turndown().turndown(captured).replaceAll(/\s+/g, ' ').trim()
+  const title = decodeEntities(captured).replaceAll(/\s+/g, ' ').trim()
   return isEmptyString(title) ? undefined : title
 }
 
 const htmlToMarkdown = (html: string): string => {
   const title = pageTitle(html)
-  const content = turndown()
-    .turndown(articleHtml(html))
+  const content = htmlFragmentToMarkdown(articleHtml(html))
     .replaceAll(/[ \t]+$/gm, '')
     .replaceAll(/\n{3,}/g, '\n\n')
     .trim()

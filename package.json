@@ -27,8 +27,7 @@
   "dependencies": {
     "@effect/platform-bun": "4.0.2",
     "@oh-my-pi/hashline": "18.1.5",
-    "effect": "4.0.2",
-    "turndown": "7.2.4"
+    "effect": "4.0.2"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "1.2.0",
@@ -37,7 +36,6 @@
     "@effect/tsgo": "0.51.1",
     "@oxlint/plugins": "1.87.0",
     "@types/bun": "1.4.3",
-    "@types/turndown": "5.0.6",
     "knip": "6.41.0",
     "lefthook": "^2.1.10",
     "oxfmt": "0.72.0",
