@@ -176,7 +176,7 @@ const claim = (file: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem
     const crypto = yield* Crypto
-    const claimed = `${file}.${yield* crypto.randomUUIDv4}`
+    const claimed = `${file}.${yield* crypto.randomUUIDv4()}`
     const renamed = yield* fs.rename(file, claimed).pipe(
       Effect.as(true),
       Effect.catchIf(
@@ -549,7 +549,7 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
           return yield* fail('Cancelled before sending the message.')
         }
         const crypto = yield* Crypto
-        const requestId = yield* crypto.randomUUIDv4.pipe(Effect.mapError((error) => fail(error.message)))
+        const requestId = yield* crypto.randomUUIDv4().pipe(Effect.mapError((error) => fail(error.message)))
         yield* submit(ctx, from.pane, record.target, message, requestId)
         record.request_id = requestId
         record.awaiting = true
@@ -578,7 +578,7 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
         }
         const parent = yield* caller(ctx, signal)
         const crypto = yield* Crypto
-        const id = yield* crypto.randomUUIDv4.pipe(Effect.mapError((error) => fail(error.message)))
+        const id = yield* crypto.randomUUIDv4().pipe(Effect.mapError((error) => fail(error.message)))
         const pane = yield* allocation.withPermits(1)(
           Effect.gen(function* () {
             const tabs = agentTabs.get(parent.session) ?? []
