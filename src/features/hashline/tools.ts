@@ -17,7 +17,7 @@ import {
   Patch,
   Patcher,
 } from '@oh-my-pi/hashline'
-import { Context, Data, Effect, Path, type Scope } from 'effect'
+import { Context, Effect, Path, Schema, type Scope } from 'effect'
 import { type Crypto } from 'effect/Crypto'
 import { type FileSystem } from 'effect/FileSystem'
 import { Type, type Static } from 'typebox'
@@ -293,16 +293,16 @@ const writeHashlinePatch = ({
 
 class Snapshots extends Context.Service<Snapshots, InMemorySnapshotStore>()('pi-extensions/features/hashline/tools/Snapshots') {}
 
-export class HashlineToolError extends Data.TaggedError('HashlineToolError')<{
-  readonly cause: unknown
-  readonly message: string
-}> {}
+export class HashlineToolError extends Schema.TaggedError<HashlineToolError>()('HashlineToolError', {
+  cause: Schema.Unknown,
+  message: Schema.String,
+}) {}
 
 const hashlineToolError = (cause: unknown): HashlineToolError =>
-  new HashlineToolError({ cause, message: cause instanceof Error ? cause.message : String(cause) })
+  HashlineToolError.make({ cause, message: cause instanceof Error ? cause.message : String(cause) })
 
 const hashlineFailure = (message: string): Effect.Effect<never, HashlineToolError> =>
-  Effect.fail(new HashlineToolError({ cause: undefined, message }))
+  Effect.fail(HashlineToolError.make({ cause: undefined, message }))
 
 const abortCheck = (signal: AbortSignal | undefined): Effect.Effect<void, HashlineToolError> =>
   isTrue(signal?.aborted) ? hashlineFailure('Hashline operation aborted') : Effect.void

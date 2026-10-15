@@ -326,7 +326,7 @@ describe('Herdr delegation', () => {
         },
       })
       const handlers = makeHerdrHandlers(fake.pi, makeEnvironment({ HERDR_ENV: '1' }), () =>
-        Effect.fail(new HerdrSettingsError({ message: 'invalid settings' }))
+        Effect.fail(HerdrSettingsError.make({ message: 'invalid settings' }))
       )
       expect(yield* refusal(handlers.spawn(task, context()))).toContain('invalid settings')
     })

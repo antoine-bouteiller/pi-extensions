@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url'
 
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from '@earendil-works/pi-coding-agent'
-import { Data, Effect, Option, Scope, Semaphore } from 'effect'
+import { Effect, Option, Schema, Scope, Semaphore } from 'effect'
 import { Crypto } from 'effect/Crypto'
 import { FileSystem } from 'effect/FileSystem'
 import { Type, type Static, type TSchema } from 'typebox'
@@ -123,7 +123,9 @@ export interface ResultDetails {
 export interface ListResult {
   readonly agents: readonly AgentSummary[]
 }
-export class HerdrError extends Data.TaggedError('HerdrError')<{ readonly message: string }> {}
+export class HerdrError extends Schema.TaggedError<HerdrError>()('HerdrError', {
+  message: Schema.String,
+}) {}
 
 /** @internal */
 export const SPAWN_ENTRY = 'herdr-agent'
@@ -135,7 +137,7 @@ export const RESULT_MESSAGE = 'herdr-agent-result'
 const WATCH_INTERVAL = '3 seconds'
 const RESULT_LIMITS = { maxBytes: 50 * 1024, maxLines: 2000 }
 
-const fail = (message: string) => new HerdrError({ message })
+const fail = (message: string) => HerdrError.make({ message })
 const decode = <Schema extends TSchema>(schema: Schema, value: unknown): Static<Schema> => {
   if (!Value.Check(schema, value)) {
     throw fail('Herdr returned an unexpected response.')

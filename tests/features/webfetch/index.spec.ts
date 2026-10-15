@@ -5,7 +5,7 @@ import { asError, asNarrowed, asTheme, asTool } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { testRuntime } from '@tests/utils/runtime.js'
-import { Clock, Data, Effect, Layer } from 'effect'
+import { Clock, Effect, Layer, Schema } from 'effect'
 import { FetchHttpClient, type HttpClient } from 'effect/http'
 import { TestClock } from 'effect/testing'
 
@@ -19,13 +19,15 @@ type WebfetchFetch = (input: string | URL | Request, init?: RequestInit) => Prom
 const stubHttpClient = (fetchImpl: WebfetchFetch): Layer.Layer<HttpClient.HttpClient> =>
   Layer.mergeAll(FetchHttpClient.layer, Layer.succeed(FetchHttpClient.Fetch)(asNarrowed<typeof fetch, WebfetchFetch>(fetchImpl)))
 
-class StubFetchError extends Data.TaggedError('StubFetchError')<{ readonly cause: unknown }> {}
+class StubFetchError extends Schema.TaggedError<StubFetchError>()('StubFetchError', {
+  cause: Schema.Unknown,
+}) {}
 
 const pendingFetch = (signal: AbortSignal | null | undefined, onStart?: () => void): Promise<Response> =>
   promiseFromEffect(
     Effect.callback<Response, StubFetchError>((resume) => {
       onStart?.()
-      signal?.addEventListener('abort', () => resume(Effect.fail(new StubFetchError({ cause: signal.reason }))), { once: true })
+      signal?.addEventListener('abort', () => resume(Effect.fail(StubFetchError.make({ cause: signal.reason }))), { once: true })
     })
   )
 
