@@ -1,14 +1,16 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
-import { Data, Effect } from 'effect'
+import { Effect, Schema } from 'effect'
 
 import { isNotEmptyString } from '#shared/utils/predicates'
 
 import { emptyGitInfoState, type GitInfoState } from './state.js'
 
-class ExecGitError extends Data.TaggedError('ExecGitError')<{ readonly cause: unknown }> {}
+class ExecGitError extends Schema.TaggedError<ExecGitError>()('ExecGitError', {
+  cause: Schema.Unknown,
+}) {}
 
 const execGit = (pi: ExtensionAPI, args: string[]) =>
-  Effect.tryPromise({ catch: (cause) => new ExecGitError({ cause }), try: () => pi.exec('git', args) })
+  Effect.tryPromise({ catch: (cause) => ExecGitError.make({ cause }), try: () => pi.exec('git', args) })
 
 /** Non-fatal by design: no commits, detached HEAD, or no git at all should degrade to the empty state, not fail the caller. */
 export const fetchGitInfo = (pi: ExtensionAPI): Effect.Effect<GitInfoState> =>

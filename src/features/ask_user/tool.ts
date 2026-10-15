@@ -11,7 +11,7 @@ import {
   type EditorTheme,
   type Focusable,
 } from '@earendil-works/pi-tui'
-import { Data, Effect } from 'effect'
+import { Effect, Schema } from 'effect'
 import { Type, type Static } from 'typebox'
 import { Check } from 'typebox/value'
 
@@ -77,10 +77,10 @@ interface AskUserResult {
   details: AskUserDetails
 }
 
-class AskUserUiError extends Data.TaggedError('AskUserUiError')<{
-  readonly cause: unknown
-  readonly message: string
-}> {}
+class AskUserUiError extends Schema.TaggedError<AskUserUiError>()('AskUserUiError', {
+  cause: Schema.Unknown,
+  message: Schema.String,
+}) {}
 
 const showQuestion = (
   ctx: ExtensionContext,
@@ -89,7 +89,7 @@ const showQuestion = (
   uiSignal: AbortSignal | undefined
 ): Effect.Effect<SelectionResult, AskUserUiError> =>
   Effect.tryPromise({
-    catch: (cause) => new AskUserUiError({ cause, message: cause instanceof Error ? cause.message : String(cause) }),
+    catch: (cause) => AskUserUiError.make({ cause, message: cause instanceof Error ? cause.message : String(cause) }),
     try: () =>
       ctx.ui.custom<SelectionResult>((tui, theme, _kb, done) => {
         let optionIndex = 0

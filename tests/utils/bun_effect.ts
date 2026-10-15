@@ -1,7 +1,7 @@
 import { test } from 'bun:test'
 
 import { BunCrypto, BunFileSystem, BunPath } from '@effect/platform-bun'
-import { Data, Effect, Layer, type Crypto, type FileSystem, type Path, type Scope } from 'effect'
+import { Effect, Layer, Schema, type Crypto, type FileSystem, type Path, type Scope } from 'effect'
 import { TestClock } from 'effect/testing'
 
 import { type Env, EnvLive } from '@/shared/effect/env.js'
@@ -17,13 +17,15 @@ const testEnv: Layer.Layer<TestServices> = Layer.mergeAll(BunCrypto.layer, BunFi
 
 const run = <Success, Failure>(eff: Effect.Effect<Success, Failure, TestServices>) => Effect.runPromise(Effect.provide(eff, testEnv))
 
-export class PromiseEffectError extends Data.TaggedError('PromiseEffectError')<{ readonly cause: unknown }> {}
+export class PromiseEffectError extends Schema.TaggedError<PromiseEffectError>()('PromiseEffectError', {
+  cause: Schema.Unknown,
+}) {}
 
 export const tryEffect = <Success>(evaluate: () => Success): Effect.Effect<Success, PromiseEffectError> =>
-  Effect.try({ catch: (cause) => new PromiseEffectError({ cause }), try: evaluate })
+  Effect.try({ catch: (cause) => PromiseEffectError.make({ cause }), try: evaluate })
 
 export const tryPromiseEffect = <Success>(evaluate: () => PromiseLike<Success>): Effect.Effect<Success, PromiseEffectError> =>
-  Effect.tryPromise({ catch: (cause) => new PromiseEffectError({ cause }), try: evaluate })
+  Effect.tryPromise({ catch: (cause) => PromiseEffectError.make({ cause }), try: evaluate })
 
 export const promiseFromEffect = <Success, Failure>(effect: Effect.Effect<Success, Failure>): Promise<Success> =>
   Effect.runPromise(effect).catch((error: unknown) => Promise.reject(error instanceof PromiseEffectError ? error.cause : error))

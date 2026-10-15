@@ -1,5 +1,5 @@
 import { CONFIG_DIR_NAME } from '@earendil-works/pi-coding-agent'
-import { Data, Effect } from 'effect'
+import { Effect, Schema } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
 import { Path } from 'effect/Path'
 import { Type } from 'typebox'
@@ -16,7 +16,10 @@ const HerdrSettingsSchema = Type.Object(
 const SettingsSchema = Type.Object({ herdr: Type.Optional(HerdrSettingsSchema) }, { additionalProperties: true })
 
 /** @internal */
-export class HerdrSettingsError extends Data.TaggedError('HerdrSettingsError')<{ readonly message: string; readonly cause?: unknown }> {}
+export class HerdrSettingsError extends Schema.TaggedError<HerdrSettingsError>()('HerdrSettingsError', {
+  cause: Schema.optional(Schema.Unknown),
+  message: Schema.String,
+}) {}
 
 const readSettings = (path: string) =>
   Effect.gen(function* () {
@@ -28,7 +31,7 @@ const readSettings = (path: string) =>
       )
     )
     return yield* Effect.try({
-      catch: (error) => new HerdrSettingsError({ cause: error, message: `${path}: ${String(error)}` }),
+      catch: (error) => HerdrSettingsError.make({ cause: error, message: `${path}: ${String(error)}` }),
       try: () => {
         const settings = parseJsonText(text)
         if (!Value.Check(SettingsSchema, settings)) {

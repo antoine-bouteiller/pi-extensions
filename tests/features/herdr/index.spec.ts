@@ -148,7 +148,7 @@ describe('Herdr registration', () => {
       let invalid = false
       feature({
         dependencies: () =>
-          invalid ? Effect.fail(new HerdrSettingsError({ message: 'invalid herdr.allowedModels' })) : Effect.succeed({ allowedModels, modelNotes }),
+          invalid ? Effect.fail(HerdrSettingsError.make({ message: 'invalid herdr.allowedModels' })) : Effect.succeed({ allowedModels, modelNotes }),
         environment: makeEnvironment({ HERDR_ENV: '1' }),
       }).implementation.register(fixture.pi, runtime)
       const ctx = asExtensionToolContext({
