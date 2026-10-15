@@ -92,8 +92,11 @@ From the repository root:
 
 ```bash
 bun install --frozen-lockfile
-bun run check
+bun run fmt:check
+bun run lint
+bun run knip
+bun run test
 pi -e .
 ```
 
-`check` runs formatting, linting/type checking, unused-code checks, and tests.
+`lint` also type-checks through Oxlint. `bun check` runs Bun's standalone type checker.
