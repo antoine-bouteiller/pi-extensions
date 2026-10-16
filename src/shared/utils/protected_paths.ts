@@ -36,7 +36,7 @@ const matchesProtectedPolicy = (path: string): boolean => {
 
 const protectedPathMessage = (path: string, operation: string): string => `Refusing to ${operation} protected path: ${path}`
 
-export class ProtectedPathError extends Schema.TaggedError<ProtectedPathError>()('ProtectedPathError', {
+export class ProtectedPathError extends Schema.TaggedError<ProtectedPathError, { readonly brand: unique symbol }>()('ProtectedPathError', {
   message: Schema.String,
   path: Schema.String,
 }) {}

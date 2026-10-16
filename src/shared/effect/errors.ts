@@ -4,7 +4,7 @@ import { Cause, Schema } from 'effect'
 export const unknownError = (cause: unknown): Cause.UnknownError =>
   Cause.isUnknownError(cause) ? cause : new Cause.UnknownError(cause, cause instanceof Error ? cause.message : String(cause))
 
-export class ToolFailure extends Schema.TaggedError<ToolFailure>()('ToolFailure', {
+export class ToolFailure extends Schema.TaggedError<ToolFailure, { readonly brand: unique symbol }>()('ToolFailure', {
   cause: Schema.optional(Schema.Unknown),
   message: Schema.String,
 }) {}

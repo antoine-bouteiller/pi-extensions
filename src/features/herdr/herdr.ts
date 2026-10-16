@@ -123,7 +123,7 @@ export interface ResultDetails {
 export interface ListResult {
   readonly agents: readonly AgentSummary[]
 }
-export class HerdrError extends Schema.TaggedError<HerdrError>()('HerdrError', {
+export class HerdrError extends Schema.TaggedError<HerdrError, { readonly brand: unique symbol }>()('HerdrError', {
   message: Schema.String,
 }) {}
 

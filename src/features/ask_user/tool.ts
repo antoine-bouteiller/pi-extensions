@@ -77,7 +77,7 @@ interface AskUserResult {
   details: AskUserDetails
 }
 
-class AskUserUiError extends Schema.TaggedError<AskUserUiError>()('AskUserUiError', {
+class AskUserUiError extends Schema.TaggedError<AskUserUiError, { readonly brand: unique symbol }>()('AskUserUiError', {
   cause: Schema.Unknown,
   message: Schema.String,
 }) {}

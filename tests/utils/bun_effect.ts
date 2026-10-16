@@ -17,7 +17,7 @@ const testEnv: Layer.Layer<TestServices> = Layer.mergeAll(BunCrypto.layer, BunFi
 
 const run = <Success, Failure>(eff: Effect.Effect<Success, Failure, TestServices>) => Effect.runPromise(Effect.provide(eff, testEnv))
 
-export class PromiseEffectError extends Schema.TaggedError<PromiseEffectError>()('PromiseEffectError', {
+export class PromiseEffectError extends Schema.TaggedError<PromiseEffectError, { readonly brand: unique symbol }>()('PromiseEffectError', {
   cause: Schema.Unknown,
 }) {}
 

@@ -19,7 +19,7 @@ type WebfetchFetch = (input: string | URL | Request, init?: RequestInit) => Prom
 const stubHttpClient = (fetchImpl: WebfetchFetch): Layer.Layer<HttpClient.HttpClient> =>
   Layer.mergeAll(FetchHttpClient.layer, Layer.succeed(FetchHttpClient.Fetch)(asNarrowed<typeof fetch, WebfetchFetch>(fetchImpl)))
 
-class StubFetchError extends Schema.TaggedError<StubFetchError>()('StubFetchError', {
+class StubFetchError extends Schema.TaggedError<StubFetchError, { readonly brand: unique symbol }>()('StubFetchError', {
   cause: Schema.Unknown,
 }) {}
 
