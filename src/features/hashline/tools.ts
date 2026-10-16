@@ -293,7 +293,7 @@ const writeHashlinePatch = ({
 
 class Snapshots extends Context.Service<Snapshots, InMemorySnapshotStore>()('pi-extensions/features/hashline/tools/Snapshots') {}
 
-export class HashlineToolError extends Schema.TaggedError<HashlineToolError>()('HashlineToolError', {
+export class HashlineToolError extends Schema.TaggedError<HashlineToolError, { readonly brand: unique symbol }>()('HashlineToolError', {
   cause: Schema.Unknown,
   message: Schema.String,
 }) {}

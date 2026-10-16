@@ -5,7 +5,7 @@ import { isNotEmptyString } from '#shared/utils/predicates'
 
 import { emptyGitInfoState, type GitInfoState } from './state.js'
 
-class ExecGitError extends Schema.TaggedError<ExecGitError>()('ExecGitError', {
+class ExecGitError extends Schema.TaggedError<ExecGitError, { readonly brand: unique symbol }>()('ExecGitError', {
   cause: Schema.Unknown,
 }) {}
 

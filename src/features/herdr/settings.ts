@@ -16,7 +16,7 @@ const HerdrSettingsSchema = Type.Object(
 const SettingsSchema = Type.Object({ herdr: Type.Optional(HerdrSettingsSchema) }, { additionalProperties: true })
 
 /** @internal */
-export class HerdrSettingsError extends Schema.TaggedError<HerdrSettingsError>()('HerdrSettingsError', {
+export class HerdrSettingsError extends Schema.TaggedError<HerdrSettingsError, { readonly brand: unique symbol }>()('HerdrSettingsError', {
   cause: Schema.optional(Schema.Unknown),
   message: Schema.String,
 }) {}
