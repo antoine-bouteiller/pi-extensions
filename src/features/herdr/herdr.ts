@@ -1,9 +1,11 @@
+import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from '@earendil-works/pi-coding-agent'
 import { Effect, Option, Schema, Scope, Semaphore } from 'effect'
 import { Crypto } from 'effect/Crypto'
 import { FileSystem } from 'effect/FileSystem'
+import { Path } from 'effect/Path'
 import { Type, type Static, type TSchema } from 'typebox'
 import { Value } from 'typebox/value'
 
@@ -16,6 +18,15 @@ import { loadHerdrSettings } from './settings.js'
 const text = Type.String({ maxLength: 32_768, minLength: 1 })
 const paneId = Type.String({ minLength: 1 })
 export const SpawnAgentParams = Type.Object({
+  cwd: Type.Optional(
+    Type.String({
+      description:
+        'Directory for the child, only when the user asks to work in another folder or project: absolute, ~/-relative, or relative to the current directory. The child starts in a new Herdr workspace for that folder.',
+      maxLength: 4096,
+      minLength: 1,
+      pattern: '^[^\\x00-\\x1f\\x7f-\\x9f]+$',
+    })
+  ),
   message: text,
   model: Type.String({ description: 'Exact provider/model-id, for example azure-openai-responses/gpt-6-sol.', maxLength: 256, minLength: 1 }),
   name: Type.Optional(
@@ -52,10 +63,13 @@ export const SendMessageParams = Type.Object({ message: text, pane_id: paneId })
 export const PaneParams = Type.Object({ pane_id: paneId })
 export const ListAgentsParams = Type.Object({})
 
+const optionalText = Type.Optional(Type.Union([Type.String(), Type.Null()]))
 const PaneSchema = Type.Object({
   agent: Type.Optional(Type.String()),
   agent_session: Type.Optional(Type.Object({ agent: Type.String(), kind: Type.String(), value: Type.String() })),
   agent_status: Type.Optional(Type.String()),
+  cwd: optionalText,
+  name: optionalText,
   pane_id: Type.String({ minLength: 1 }),
   tab_id: Type.String({ minLength: 1 }),
   terminal_id: Type.String({ minLength: 1 }),
@@ -66,6 +80,7 @@ const TargetSchema = Type.Object({
   session_file: Type.Optional(Type.String({ minLength: 1 })),
   terminal_id: Type.String({ minLength: 1 }),
 })
+const WorkspaceSchema = Type.Object({ label: optionalText, workspace_id: Type.String({ minLength: 1 }) })
 const LayoutSchema = Type.Object({
   layout: Type.Object({
     panes: Type.Array(Type.Object({ pane_id: Type.String(), rect: Type.Object({ height: Type.Number(), width: Type.Number() }) })),
@@ -114,6 +129,18 @@ export interface AgentSummary {
   readonly status: string
   readonly awaiting_result: boolean
 }
+export interface DiscoveredAgent {
+  readonly pane_id: string
+  /** Delegated agents are other sessions' children and cannot be messaged; peers are any other top-level Pi agents. */
+  readonly role: 'spawned' | 'delegated' | 'peer'
+  readonly status: string
+  readonly workspace: string
+  readonly cwd?: string
+  readonly name?: string
+}
+export interface DiscoverResult {
+  readonly agents: readonly DiscoveredAgent[]
+}
 export interface ResultDetails {
   readonly pane_id: string
   readonly model: string
@@ -152,6 +179,8 @@ const matches = (pane: Pane, target: Target): boolean =>
   pane.terminal_id === target.terminal_id &&
   sessionFile(pane) === target.session_file &&
   (target.session_file !== undefined || pane.agent === undefined)
+/** Matches the `agent start` name given to every spawned child. */
+const isDelegated = (pane: Pane): boolean => typeof pane.name === 'string' && /^pi-[0-9a-f]{8}$/.test(pane.name)
 const exitFile = (session: string) => `${session}.exit`
 const resultsDirectory = (session: string) => `${exitFile(session)}.d`
 const checkedMessage = (message: string): string => {
@@ -208,12 +237,35 @@ const reportedRequest = (ctx: ExtensionContext): string | undefined => {
   return /^Message from Pi pane \S+ \[herdr-request:(?<id>[^\]]+)\]:/.exec(content)?.groups?.id
 }
 
+const resolveDirectory = (cwd: string, requested: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem
+    const path = yield* Path
+    const expanded = requested === '~' || requested.startsWith('~/') ? path.join(homedir(), requested.slice(1)) : requested
+    const missing = () => fail(`cwd ${requested} is not an existing directory.`)
+    const directory = yield* fs.realPath(path.resolve(cwd, expanded)).pipe(Effect.mapError(missing))
+    const info = yield* fs.stat(directory).pipe(Effect.mapError(missing))
+    if (info.type !== 'Directory') {
+      return yield* missing()
+    }
+    return directory === cwd ? undefined : directory
+  })
+
+const refusedPeer = () => fail("Messages may target only this session's spawned agents or top-level Pi agents listed as peers by discover_agents.")
+const roleOf = (agent: Pane, spawned: boolean): DiscoveredAgent['role'] => {
+  if (spawned) {
+    return 'spawned'
+  }
+  return isDelegated(agent) ? 'delegated' : 'peer'
+}
+
 const CHILD_PROMPT =
   'You are a delegated agent. Complete only the initial task; you cannot delegate. Whenever you stop, your final response is delivered to the parent agent automatically, and the parent may send follow-up messages. End with a concise conclusion or failure, including evidence/checks and blockers. For detailed reviews or large results, write a temporary handoff file and include its absolute path in your final response; this file is allowed even for a read-only task, but other read-only restrictions still apply.'
 
 export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSettings = loadHerdrSettings) => {
   const owned = new Map<string, OwnedPane>()
-  const agentTabs = new Map<string, string[]>()
+  /** Keyed by parent session and target directory; `workspace_id` is unset until a workspace for another directory exists. */
+  const placements = new Map<string, { readonly workspace_id?: string; readonly tabs: readonly string[] }>()
   const allocation = Semaphore.makeUnsafe(1)
   const delivery = Semaphore.makeUnsafe(1)
   let startupSession: string | undefined
@@ -297,12 +349,10 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
       }
     })
 
+  const prompt = (ctx: ExtensionContext, to: string, header: string, message: string) =>
+    request(ctx.cwd, ['agent', 'prompt', to, `${header}\n\n${message}`], Type.Object({ agent: PaneSchema }))
   const submit = (ctx: ExtensionContext, from: Pane, to: Target, message: string, requestId: string) =>
-    request(
-      ctx.cwd,
-      ['agent', 'prompt', to.pane_id, `Message from Pi pane ${from.pane_id} [herdr-request:${requestId}]:\n\n${message}`],
-      Type.Object({ agent: PaneSchema })
-    )
+    prompt(ctx, to.pane_id, `Message from Pi pane ${from.pane_id} [herdr-request:${requestId}]:`, message)
 
   const persist = (id: string, record: OwnedPane) =>
     pi.appendEntry(STATE_ENTRY, {
@@ -468,6 +518,60 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
       lastReported = entry.id
     })
 
+  /** The split adding a pane to the first listed tab with room, other than the parent's; None when every tab is full or gone. */
+  const findSplit = (cwd: string, workspaceId: string, tabs: readonly string[], parentTab: string) =>
+    Effect.gen(function* () {
+      const { panes } = yield* request(cwd, ['pane', 'list', '--workspace', workspaceId], Type.Object({ panes: Type.Array(PaneSchema) }))
+      const tabId = tabs.find((candidateId) => {
+        const count = panes.filter((candidate) => candidate.tab_id === candidateId).length
+        return candidateId !== parentTab && count > 0 && count < 4
+      })
+      const anchor = panes.find((candidate) => candidate.tab_id === tabId)
+      if (anchor === undefined) {
+        return Option.none<string[]>()
+      }
+      const { layout } = yield* request(cwd, ['pane', 'layout', '--pane', anchor.pane_id], LayoutSchema)
+      const largest = layout.panes.reduce<(typeof layout.panes)[number] | undefined>(
+        (best, candidate) =>
+          best === undefined || candidate.rect.width * candidate.rect.height > best.rect.width * best.rect.height ? candidate : best,
+        undefined
+      )
+      if (largest === undefined) {
+        return yield* fail('The Agents tab has no panes in the Herdr layout.')
+      }
+      return Option.some([
+        'pane',
+        'split',
+        '--pane',
+        largest.pane_id,
+        '--direction',
+        largest.rect.width >= largest.rect.height * 2 ? 'right' : 'down',
+      ])
+    })
+
+  const sendToPeer = (id: string, message: string, ctx: ExtensionContext, from: Pane, signal?: AbortSignal) =>
+    Effect.gen(function* () {
+      if (isChild) {
+        return yield* refusedPeer()
+      }
+      const { agent } = yield* request(ctx.cwd, ['agent', 'get', id], Type.Object({ agent: PaneSchema })).pipe(
+        Effect.catchIf((error) => error.message.includes('agent_not_found'), refusedPeer)
+      )
+      if (agent.pane_id === from.pane_id || sessionFile(agent) === undefined || isDelegated(agent)) {
+        return yield* refusedPeer()
+      }
+      if (cancelled(signal)) {
+        return yield* fail('Cancelled before sending the message.')
+      }
+      yield* prompt(
+        ctx,
+        id,
+        `Message from Pi agent in pane ${from.pane_id} (cwd ${ctx.cwd}), not from your user. Reply with send_message to pane ${from.pane_id} only if a response is needed:`,
+        message
+      )
+      return { pane_id: id, status: 'sent' } satisfies HerdrResult
+    })
+
   return {
     activate: (ctx: ExtensionContext) =>
       Effect.gen(function* () {
@@ -495,6 +599,34 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
         forget(params.pane_id)
         return { pane_id: params.pane_id, status: 'closed' } satisfies HerdrResult
       }).pipe(delivery.withPermits(1)),
+    discover: (ctx: ExtensionContext, signal?: AbortSignal) =>
+      Effect.gen(function* () {
+        const from = yield* caller(ctx, signal)
+        const [{ agents }, { workspaces }] = yield* Effect.all([
+          request(ctx.cwd, ['agent', 'list'], Type.Object({ agents: Type.Array(PaneSchema) })),
+          request(ctx.cwd, ['workspace', 'list'], Type.Object({ workspaces: Type.Array(WorkspaceSchema) })),
+        ])
+        const labels = new Map(workspaces.map((workspace) => [workspace.workspace_id, workspace.label ?? workspace.workspace_id]))
+        return {
+          agents: agents.flatMap((agent): DiscoveredAgent[] => {
+            if (agent.pane_id === from.pane.pane_id || sessionFile(agent) === undefined) {
+              return []
+            }
+            const record = ownedBy(from.session, agent.pane_id, from.pane)
+            const spawned = record !== undefined && matches(agent, record.target)
+            return [
+              {
+                pane_id: agent.pane_id,
+                role: roleOf(agent, spawned),
+                status: agent.agent_status ?? 'unknown',
+                workspace: labels.get(agent.workspace_id) ?? agent.workspace_id,
+                ...(typeof agent.cwd === 'string' && { cwd: agent.cwd }),
+                ...(spawned && record.name !== undefined && { name: record.name }),
+              },
+            ]
+          }),
+        } satisfies DiscoverResult
+      }),
     interrupt: (params: Static<typeof PaneParams>, ctx: ExtensionContext, signal?: AbortSignal) =>
       Effect.gen(function* () {
         const from = yield* caller(ctx, signal)
@@ -543,8 +675,11 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
         const message = yield* Effect.try({ catch: (error) => fail(errorMessage(error)), try: () => checkedMessage(params.message) })
         const from = yield* caller(ctx, signal)
         const record = ownedBy(from.session, params.pane_id, from.pane)
-        if (record?.target.session_file === undefined) {
-          return yield* fail("Messages may target only this session's spawned agents.")
+        if (record === undefined) {
+          return yield* sendToPeer(params.pane_id, message, ctx, from.pane, signal)
+        }
+        if (record.target.session_file === undefined) {
+          return yield* fail('The agent is still starting; wait for spawn_agent to return before messaging it.')
         }
         yield* verify(ctx.cwd, record.target)
         if (cancelled(signal)) {
@@ -568,8 +703,9 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
           return yield* fail('model must be an exact provider/model-id.')
         }
         if (!Value.Check(SpawnAgentParams, params)) {
-          return yield* fail('name must be a single-line label, thinking a supported level, and tools a list of tool names.')
+          return yield* fail('name must be a single-line label, thinking a supported level, tools a list of tool names, and cwd a path.')
         }
+        const directory = params.cwd === undefined ? undefined : yield* resolveDirectory(ctx.cwd, params.cwd)
         const { models } = yield* availableModels(ctx)
         if (!models.includes(params.model)) {
           return yield* fail(
@@ -583,46 +719,45 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
         const id = yield* crypto.randomUUIDv4().pipe(Effect.mapError((error) => fail(error.message)))
         const pane = yield* allocation.withPermits(1)(
           Effect.gen(function* () {
-            const tabs = agentTabs.get(parent.session) ?? []
-            let split: string[] | undefined
-            if (tabs.length > 0) {
-              const { panes } = yield* request(
-                ctx.cwd,
-                ['pane', 'list', '--workspace', parent.pane.workspace_id],
-                Type.Object({ panes: Type.Array(PaneSchema) })
-              )
-              const tabId = tabs.find((candidateId) => {
-                const count = panes.filter((candidate) => candidate.tab_id === candidateId).length
-                return candidateId !== parent.pane.tab_id && count > 0 && count < 4
-              })
-              const anchor = panes.find((candidate) => candidate.tab_id === tabId)
-              if (anchor !== undefined) {
-                const { layout } = yield* request(ctx.cwd, ['pane', 'layout', '--pane', anchor.pane_id], LayoutSchema)
-                const largest = layout.panes.reduce<(typeof layout.panes)[number] | undefined>(
-                  (best, candidate) =>
-                    best === undefined || candidate.rect.width * candidate.rect.height > best.rect.width * best.rect.height ? candidate : best,
-                  undefined
-                )
-                if (largest === undefined) {
-                  return yield* fail('The Agents tab has no panes in the Herdr layout.')
-                }
-                split = ['pane', 'split', '--pane', largest.pane_id, '--direction', largest.rect.width >= largest.rect.height * 2 ? 'right' : 'down']
-              }
-            }
+            const key = `${parent.session}\n${directory ?? ''}`
+            let placement = placements.get(key) ?? { tabs: [], workspace_id: directory === undefined ? parent.pane.workspace_id : undefined }
+            const split =
+              placement.workspace_id === undefined || placement.tabs.length === 0
+                ? Option.none<string[]>()
+                : yield* findSplit(ctx.cwd, placement.workspace_id, placement.tabs, parent.pane.tab_id).pipe(
+                    Effect.catchIf(
+                      (error) => directory !== undefined && error.message.includes('workspace_not_found'),
+                      () =>
+                        Effect.sync(() => {
+                          placement = { tabs: [] }
+                          return Option.none<string[]>()
+                        })
+                    )
+                  )
             if (cancelled(signal)) {
               return yield* fail('Cancelled before creating a pane.')
             }
-            const args = ['--cwd', ctx.cwd, '--no-focus', '--env', `PI_HERDR_PARENT=${jsonText(targetFrom(parent.pane))}`]
-            if (split !== undefined) {
-              const created = yield* request(ctx.cwd, [...split, ...args], Type.Object({ pane: PaneSchema }))
+            const args = ['--cwd', directory ?? ctx.cwd, '--no-focus', '--env', `PI_HERDR_PARENT=${jsonText(targetFrom(parent.pane))}`]
+            if (Option.isSome(split)) {
+              const created = yield* request(ctx.cwd, [...split.value, ...args], Type.Object({ pane: PaneSchema }))
               return created.pane
+            }
+            if (placement.workspace_id === undefined) {
+              const path = yield* Path
+              const created = yield* request(
+                ctx.cwd,
+                ['workspace', 'create', '--label', path.basename(directory ?? ctx.cwd), ...args],
+                Type.Object({ root_pane: PaneSchema })
+              )
+              placements.set(key, { tabs: [created.root_pane.tab_id], workspace_id: created.root_pane.workspace_id })
+              return created.root_pane
             }
             const created = yield* request(
               ctx.cwd,
-              ['tab', 'create', '--workspace', parent.pane.workspace_id, '--label', 'Agents', ...args],
+              ['tab', 'create', '--workspace', placement.workspace_id, '--label', 'Agents', ...args],
               Type.Object({ root_pane: PaneSchema })
             )
-            agentTabs.set(parent.session, [...tabs, created.root_pane.tab_id])
+            placements.set(key, { ...placement, tabs: [...placement.tabs, created.root_pane.tab_id] })
             return created.root_pane
           })
         )
@@ -640,6 +775,16 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
           if (params.name !== undefined) {
             yield* run(ctx.cwd, ['pane', 'rename', pane.pane_id, params.name]).pipe(Effect.ignore)
           }
+          // Display-only marker for Herdr sidebar rules (`$subagent`).
+          yield* run(ctx.cwd, [
+            'pane',
+            'report-metadata',
+            pane.pane_id,
+            '--source',
+            'pi-herdr',
+            '--token',
+            `subagent=${params.name ?? params.model}`,
+          ]).pipe(Effect.ignore)
           if (cancelled(signal)) {
             return yield* fail('Cancelled after creating the pane.')
           }

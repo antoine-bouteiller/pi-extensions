@@ -16,7 +16,7 @@ pi install git:github.com/antoine-bouteiller/pi-extensions
 - `background_poll` — Background shell polling with completion notifications.
 - `claude_code` — Load Claude commands as temporary Pi skills.
 - `hashline` — Hash-anchored file reads and writes that reject stale edits.
-- `herdr` — Delegate to Pi agents in Herdr panes and receive their results automatically.
+- `herdr` — Delegate to Pi agents in Herdr panes, receive their results automatically, and message other running Pi agents.
 - `meridian_session_affinity` — Session affinity and harness fingerprint scrubbing for Meridian requests.
 - `prompt_rewind` — Edit your prompt when cancelling before a response.
 - `provider_retry` — Extend retries to server and unknown-status provider failures.
@@ -28,17 +28,43 @@ pi install git:github.com/antoine-bouteiller/pi-extensions
 
 Inside a Herdr-managed pane, the `herdr` feature exposes these Pi tools:
 
-- `spawn_agent({model,message,name?,thinking?,tools?})` creates a Pi agent in a separate Herdr
+- `spawn_agent({model,message,name?,thinking?,tools?,cwd?})` creates a Pi agent in a separate Herdr
   **Agents** tab, submits its initial task, and returns the pane ID. Each parent session reuses its
   Agents tabs, with at most four panes per tab, creating another when full. The current directory
   and focus are preserved. `name` labels the pane, `thinking` sets the child's thinking level, and
-  `tools` restricts the child to an allowlist (for example `["read","grep","find","ls"]`).
-- `send_message({pane_id,message})` sends a follow-up to a spawned agent without waiting for a response.
+  `tools` restricts the child to an allowlist (for example `["read","grep","find","ls"]`). `cwd`
+  (absolute, `~/`-relative, or relative to the current directory; meant for when the user asks for
+  another folder or project) starts the child in a new Herdr workspace for that folder instead. Later
+  spawns into the same folder from the same session reuse that workspace's tabs, and a closed workspace
+  is recreated.
+- `send_message({pane_id,message})` sends a follow-up to a spawned agent, or a message to a peer,
+  without waiting for a response.
 - `interrupt_agent({pane_id})` sends Escape to cancel a spawned agent's current turn; the agent stays open.
 - `list_agents()` lists spawned agents with their Herdr status and whether a result is awaited.
+- `discover_agents()` lists every other Pi agent running in Herdr, across all workspaces, with its
+  workspace, cwd, status, and role: `spawned` (by this session), `peer` (another top-level agent),
+  or `delegated` (another session's child).
 - `close_pane({pane_id})` closes a pane spawned by the current Pi session.
 
-Delegated agents get none of these tools, so they cannot delegate or message other panes. Whenever
+Peers are top-level Pi agents. A peer receives a message framed as coming from another agent's pane,
+not from its user, and replies, if at all, with its own `send_message`. Nothing reports back
+automatically. Agents delegated by another session cannot be messaged, because their responses go to
+their own parent. Delegated agents are recognized by the `pi-<8 hex>` Herdr agent name that
+`spawn_agent` assigns.
+
+Each spawned pane carries a display-only Herdr pane token, `subagent`, set to the child's name, or
+its model when unnamed. Herdr's Agent sidebar rows can show it as `$subagent`. For example, in
+Herdr's `config.toml`:
+
+```toml
+[ui.sidebar.agents]
+rows = [["state_icon", "machine", "workspace", "tab"], ["agent", { token = "$subagent", dim = true }]]
+```
+
+Herdr has no setting to hide an agent from the sidebar. Its rules style or hide one token based
+on that token's own value, so the token marks children but cannot dim or remove their whole entry.
+
+Delegated agents get none of these tools, so they cannot delegate, discover, or message other panes. Whenever
 a child's run settles, its final response is written atomically to a separate record in
 `<child session>.jsonl.exit.d/`. The parent polls those records and the child's Herdr pane every
 few seconds and delivers a `herdr-agent-result` message that wakes it (as steering at the next
