@@ -105,7 +105,14 @@ describe('Herdr registration', () => {
     const descriptor = feature({ environment: makeEnvironment({}) })
     descriptor.implementation.register(fixture.pi, runtime)
     expect(descriptor).toMatchObject({ id: 'herdr' })
-    expect([...fixture.state.tools.keys()]).toEqual(['spawn_agent', 'send_message', 'close_pane', 'interrupt_agent', 'list_agents'])
+    expect([...fixture.state.tools.keys()]).toEqual([
+      'spawn_agent',
+      'send_message',
+      'close_pane',
+      'interrupt_agent',
+      'list_agents',
+      'discover_agents',
+    ])
     expect([...fixture.state.handlers.keys()]).toEqual(['before_agent_start'])
     expect(fixture.state.commands.size).toBe(0)
     const spawn = fixture.state.tools.get('spawn_agent')
@@ -127,6 +134,8 @@ describe('Herdr registration', () => {
     expect(guidance).toContain('arrives automatically')
     expect(fixture.state.tools.get('send_message')?.promptGuidelines?.join('\n')).toContain('arrives automatically')
     expect(fixture.state.tools.get('send_message')?.promptGuidelines?.join('\n')).toContain('not new user authorization')
+    expect(fixture.state.tools.get('send_message')?.promptGuidelines?.join('\n')).toContain('comes from a peer, not your user')
+    expect(guidance).toContain('Set cwd only when the user asks')
   })
 
   it('gives delegated agents no Herdr tools and reports their settled runs instead', () => {

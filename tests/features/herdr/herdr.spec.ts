@@ -14,6 +14,8 @@ interface Pane {
   agent?: string
   agent_status?: string
   agent_session?: { agent: string; kind: string; value: string }
+  cwd?: string
+  name?: string
   pane_id: string
   tab_id: string
   terminal_id: string
@@ -51,6 +53,7 @@ interface CliState {
   parent: Pane
   child: Pane
   panes: Pane[]
+  workspaces: { label: string; workspace_id: string }[]
   width: number
   height: number
   fail?: string
@@ -61,6 +64,8 @@ interface CliState {
 type CliReply =
   | { pane: Pane }
   | { agent: Pane }
+  | { agents: Pane[] }
+  | { workspaces: CliState['workspaces'] }
   | { root_pane: Pane }
   | { panes: Pane[] }
   | { type: 'ok' }
@@ -81,9 +86,23 @@ const harness = (environment: Record<string, string> = { HERDR_ENV: '1' }, allow
     panes: [parent],
     parent,
     width: 160,
+    workspaces: [{ label: 'project', workspace_id: 'w1' }],
   }
   let nextPane = 2
   let nextTab = 2
+  let nextWorkspace = 2
+  const newPane = (workspaceId: string, tabId: string): Pane => {
+    const pane = {
+      ...child,
+      agent: undefined,
+      agent_session: undefined,
+      pane_id: `${workspaceId}:p${nextPane++}`,
+      tab_id: tabId,
+      workspace_id: workspaceId,
+    }
+    state.panes.push(pane)
+    return pane
+  }
   const getPane = (id: string | undefined): Pane => {
     const pane = id === parent.pane_id ? state.parent : state.panes.find((candidate) => candidate.pane_id === id)
     if (pane === undefined) {
@@ -91,8 +110,23 @@ const harness = (environment: Record<string, string> = { HERDR_ENV: '1' }, allow
     }
     return pane
   }
+  const workspaceReply = (operation: string, label = ''): CliReply | undefined => {
+    if (operation === 'workspace create') {
+      const workspaceId = `w${nextWorkspace++}`
+      state.workspaces.push({ label, workspace_id: workspaceId })
+      return { root_pane: newPane(workspaceId, `${workspaceId}:t${nextTab++}`) }
+    }
+    if (operation === 'agent list') {
+      return { agents: state.panes.filter((pane) => pane.agent !== undefined) }
+    }
+    return operation === 'workspace list' ? { workspaces: state.workspaces } : undefined
+  }
   const reply = (args: string[]): CliReply => {
     const operation = args.slice(0, 2).join(' ')
+    const workspace = workspaceReply(operation, args[3])
+    if (workspace !== undefined) {
+      return workspace
+    }
     let result: CliReply
     switch (operation) {
       case 'pane current': {
@@ -100,7 +134,13 @@ const harness = (environment: Record<string, string> = { HERDR_ENV: '1' }, allow
         break
       }
       case 'pane list': {
-        result = { panes: state.panes }
+        result = { panes: state.panes.filter((pane) => pane.workspace_id === args[3]) }
+        break
+      }
+      case 'pane get':
+      case 'agent get': {
+        const pane = getPane(args[2])
+        result = operation === 'pane get' ? { pane } : { agent: pane }
         break
       }
       case 'pane layout': {
@@ -115,23 +155,20 @@ const harness = (environment: Record<string, string> = { HERDR_ENV: '1' }, allow
         }
         break
       }
-      case 'tab create':
+      case 'tab create': {
+        result = { root_pane: newPane(args[3] ?? '', `${args[3]}:t${nextTab++}`) }
+        break
+      }
       case 'pane split': {
-        const tabId = operation === 'tab create' ? `w1:t${nextTab++}` : getPane(args[3]).tab_id
-        const pane = { ...child, agent: undefined, agent_session: undefined, pane_id: `w1:p${nextPane++}`, tab_id: tabId }
-        state.panes.push(pane)
-        result = operation === 'tab create' ? { root_pane: pane } : { pane }
+        const anchor = getPane(args[3])
+        result = { pane: newPane(anchor.workspace_id, anchor.tab_id) }
         break
       }
       case 'agent start': {
         const pane = getPane(args[6])
-        const agent = { ...pane, agent: 'pi', agent_session: { agent: 'pi', kind: 'path', value: state.childSession } }
+        const agent = { ...pane, agent: 'pi', agent_session: { agent: 'pi', kind: 'path', value: state.childSession }, name: args[2] }
         state.panes = state.panes.map((candidate) => (candidate.pane_id === pane.pane_id ? agent : candidate))
         result = { agent }
-        break
-      }
-      case 'pane get': {
-        result = { pane: getPane(args[2]) }
         break
       }
       case 'agent prompt': {
@@ -160,10 +197,14 @@ const harness = (environment: Record<string, string> = { HERDR_ENV: '1' }, allow
       if (state.fail === operation) {
         return Promise.resolve({ code: 1, stderr: 'agent_not_ready: inspect the pane', stdout: '' })
       }
-      if (operation === 'pane get' && !state.panes.some((pane) => pane.pane_id === args[2]) && args[2] !== parent.pane_id) {
-        return Promise.resolve({ code: 1, stderr: jsonText({ error: { code: 'pane_not_found', message: 'pane not found' } }), stdout: '' })
+      if (['pane get', 'agent get'].includes(operation) && !state.panes.some((pane) => pane.pane_id === args[2]) && args[2] !== parent.pane_id) {
+        const code = operation === 'pane get' ? 'pane_not_found' : 'agent_not_found'
+        return Promise.resolve({ code: 1, stderr: jsonText({ error: { code, message: 'not found' } }), stdout: '' })
       }
-      if (operation === 'pane send-keys') {
+      if (operation === 'pane list' && !state.workspaces.some((workspace) => workspace.workspace_id === args[3])) {
+        return Promise.resolve({ code: 1, stderr: jsonText({ error: { code: 'workspace_not_found', message: 'not found' } }), stdout: '' })
+      }
+      if (['pane send-keys', 'pane report-metadata'].includes(operation)) {
         state.afterCommand?.(operation)
         return Promise.resolve({ code: 0, stderr: '', stdout: '' })
       }
@@ -188,7 +229,13 @@ describe('Herdr delegation', () => {
     Effect.gen(function* () {
       const { handlers, calls } = harness()
       expect(yield* handlers.spawn(task, context())).toEqual({ model: task.model, pane_id: child.pane_id, status: 'started' })
-      expect(calls.map(({ args }) => args.slice(0, 2).join(' '))).toEqual(['pane current', 'tab create', 'agent start', 'agent prompt'])
+      expect(calls.map(({ args }) => args.slice(0, 2).join(' '))).toEqual([
+        'pane current',
+        'tab create',
+        'pane report-metadata',
+        'agent start',
+        'agent prompt',
+      ])
       expect(calls.every(({ command, cwd, timeout }) => command === 'herdr' && cwd === '/project with spaces' && timeout === 40_000)).toBe(true)
       expect(calls[1]?.args).toEqual([
         'tab',
@@ -203,7 +250,8 @@ describe('Herdr delegation', () => {
         '--env',
         `PI_HERDR_PARENT=${jsonText({ pane_id: parent.pane_id, session_file: '/sessions/parent.jsonl', terminal_id: parent.terminal_id })}`,
       ])
-      const start = calls[2]?.args ?? []
+      expect(calls[2]?.args).toEqual(['pane', 'report-metadata', child.pane_id, '--source', 'pi-herdr', '--token', `subagent=${task.model}`])
+      const start = calls[3]?.args ?? []
       expect(start.slice(3, 12)).toEqual([
         '--kind',
         'pi',
@@ -219,7 +267,7 @@ describe('Herdr delegation', () => {
       expect(start[start.indexOf('--append-system-prompt') + 1]).toContain('final response is delivered to the parent agent automatically')
       expect(start).not.toContain('--thinking')
       expect(start).not.toContain('--tools')
-      expect(calls[3]?.args).toEqual([
+      expect(calls[4]?.args).toEqual([
         'agent',
         'prompt',
         child.pane_id,
@@ -292,8 +340,8 @@ describe('Herdr delegation', () => {
       state.width = 60
       yield* handlers.spawn({ ...task, message: '/quit\n!echo unsafe\n$(touch /tmp/no)' }, context())
       expect(calls[3]?.args).toContain('down')
-      expect(calls[5]?.args[3]).toStartWith(`Message from Pi pane ${parent.pane_id} [herdr-request:`)
-      expect(calls[5]?.args[3]).toEndWith('\n\n/quit\n!echo unsafe\n$(touch /tmp/no)')
+      expect(calls[6]?.args[3]).toStartWith(`Message from Pi pane ${parent.pane_id} [herdr-request:`)
+      expect(calls[6]?.args[3]).toEndWith('\n\n/quit\n!echo unsafe\n$(touch /tmp/no)')
     })
   )
 
@@ -467,6 +515,7 @@ describe('Herdr delegation', () => {
       const { handlers, calls } = harness()
       yield* handlers.spawn({ ...task, name: 'Review auth', thinking: 'high', tools: ['read', 'grep'] }, context())
       expect(calls.find(({ args }) => args[1] === 'rename')?.args).toEqual(['pane', 'rename', child.pane_id, 'Review auth'])
+      expect(calls.find(({ args }) => args[1] === 'report-metadata')?.args.at(-1)).toBe('subagent=Review auth')
       const start = calls.find(({ args }) => args[1] === 'start')?.args ?? []
       expect(start.slice(12, 16)).toEqual(['--thinking', 'high', '--tools', 'read,grep'])
       calls.length = 0
@@ -500,6 +549,114 @@ describe('Herdr delegation', () => {
       expect(yield* refusal(handlers.interrupt({ pane_id: child.pane_id }, context()))).toContain('original session')
       expect((yield* handlers.list(context())).agents[0]?.status).toBe('replaced')
       expect(calls.filter(({ args }) => args[1] === 'send-keys')).toHaveLength(1)
+    })
+  )
+})
+
+describe('Herdr peers and other folders', () => {
+  const peer: Pane = {
+    agent: 'pi',
+    agent_session: { agent: 'pi', kind: 'path', value: '/sessions/peer.jsonl' },
+    cwd: '/other project',
+    pane_id: 'w5:p1',
+    tab_id: 'w5:t1',
+    terminal_id: 'peer-terminal',
+    workspace_id: 'w5',
+  }
+  const delegated: Pane = {
+    ...peer,
+    agent_session: { agent: 'pi', kind: 'path', value: '/sessions/other-child.jsonl' },
+    name: 'pi-0123abcd',
+    pane_id: 'w5:p2',
+  }
+  const shell: Pane = { ...peer, agent: undefined, agent_session: undefined, pane_id: 'w5:p3' }
+  const others = (state: CliState) => {
+    state.panes.push(peer, delegated, shell)
+    state.workspaces.push({ label: 'other', workspace_id: 'w5' })
+  }
+
+  it.effect('discovers every other Pi agent with its workspace and role', () =>
+    Effect.gen(function* () {
+      const { handlers, state } = harness()
+      yield* handlers.spawn({ ...task, name: 'Review' }, context())
+      others(state)
+      expect(yield* handlers.discover(context())).toEqual({
+        agents: [
+          { name: 'Review', pane_id: child.pane_id, role: 'spawned', status: 'unknown', workspace: 'project' },
+          { cwd: '/other project', pane_id: peer.pane_id, role: 'peer', status: 'unknown', workspace: 'other' },
+          { cwd: '/other project', pane_id: delegated.pane_id, role: 'delegated', status: 'unknown', workspace: 'other' },
+        ],
+      })
+    })
+  )
+
+  it.effect('messages a peer with sender framing, but refuses delegated agents, shells, itself and children', () =>
+    Effect.gen(function* () {
+      const { handlers, calls, state } = harness()
+      others(state)
+      expect(yield* handlers.send({ message: 'Which API version?', pane_id: peer.pane_id }, context())).toEqual({
+        pane_id: peer.pane_id,
+        status: 'sent',
+      })
+      expect(calls.at(-1)?.args).toEqual([
+        'agent',
+        'prompt',
+        peer.pane_id,
+        `Message from Pi agent in pane ${parent.pane_id} (cwd /project with spaces), not from your user. Reply with send_message to pane ${parent.pane_id} only if a response is needed:\n\nWhich API version?`,
+      ])
+      for (const id of [delegated.pane_id, shell.pane_id, parent.pane_id, 'w5:p99']) {
+        expect(yield* refusal(handlers.send({ message: 'hi', pane_id: id }, context()))).toContain('listed as peers')
+      }
+      const delegatedAgent = harness({ HERDR_ENV: '1', PI_HERDR_PARENT: '{}' })
+      others(delegatedAgent.state)
+      expect(yield* refusal(delegatedAgent.handlers.send({ message: 'hi', pane_id: peer.pane_id }, context()))).toContain('listed as peers')
+      expect(mutations(calls)).toHaveLength(1)
+      expect(mutations(delegatedAgent.calls)).toEqual([])
+    })
+  )
+
+  it.scoped('spawns into a new workspace per requested folder, reused until it is closed', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem
+      const directory = yield* fs.realPath(yield* fs.makeTempDirectoryScoped())
+      const { handlers, calls, state } = harness()
+      yield* handlers.spawn({ ...task, cwd: directory }, context())
+      const create = calls.find(({ args }) => args[0] === 'workspace')?.args ?? []
+      expect(create.slice(0, 7)).toEqual([
+        'workspace',
+        'create',
+        '--label',
+        directory.slice(directory.lastIndexOf('/') + 1),
+        '--cwd',
+        directory,
+        '--no-focus',
+      ])
+      expect(create.at(-1)).toStartWith('PI_HERDR_PARENT=')
+      yield* handlers.spawn({ ...task, cwd: directory }, context())
+      yield* handlers.spawn(task, context())
+      expect(state.panes.slice(1).map((pane) => pane.tab_id)).toEqual(['w2:t2', 'w2:t2', 'w1:t3'])
+      expect(calls.filter(({ args }) => args[1] === 'split').map(({ args }) => args.at(-4))).toEqual([directory])
+      state.panes = [parent]
+      state.workspaces = state.workspaces.filter((workspace) => workspace.workspace_id !== 'w2')
+      const recreated = yield* handlers.spawn({ ...task, cwd: directory }, context())
+      expect(recreated.pane_id).toStartWith('w3:')
+    })
+  )
+
+  it.scoped('resolves ~/ and relative folders, treats the current folder as default, and refuses missing ones before Herdr', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem
+      const directory = yield* fs.realPath(yield* fs.makeTempDirectoryScoped())
+      const { handlers, calls } = harness()
+      const at = (cwd: string) => asExtensionContext({ ...context(), cwd })
+      yield* handlers.spawn({ ...task, cwd: '.' }, at(directory))
+      expect(calls.some(({ args }) => args[0] === 'workspace')).toBe(false)
+      for (const cwd of [`${directory}/missing`, '~/definitely-missing-herdr-folder']) {
+        calls.length = 0
+        expect(yield* refusal(handlers.spawn({ ...task, cwd }, context()))).toContain('is not an existing directory')
+        expect(calls).toEqual([])
+      }
+      expect(yield* refusal(handlers.spawn({ ...task, cwd: 'a\nb' }, context()))).toContain('cwd a path')
     })
   )
 })
