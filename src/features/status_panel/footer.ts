@@ -10,6 +10,8 @@ export interface StatusTheme {
   getThinkingBorderColor: (level: ThinkingLevel) => (text: string) => string
 }
 
+const CONTEXT_BAR_WIDTH = 10
+
 const contextColor = (percent: number): ThemeColor => {
   if (percent >= 90) {
     return 'error'
@@ -36,10 +38,12 @@ export const renderStatusLine = (model: ModelInfoState, theme: StatusTheme, widt
 export const renderFooterLine = (model: ModelInfoState, theme: StatusTheme, width: number): string => {
   const { cacheHitPercent, contextPercent, contextTokens, contextWindow, tokensPerSecond } = model
   const window = contextWindow > 0 ? formatTokens(contextWindow) : '—'
-  const context =
-    contextPercent === undefined || contextTokens === undefined
-      ? theme.fg('muted', `ctx — / ${window}`)
-      : theme.fg(contextColor(contextPercent), `ctx ${contextPercent.toFixed(1)}% · ${formatTokens(contextTokens)} / ${window}`)
+  const known = contextPercent !== undefined && contextTokens !== undefined
+  const color = known ? contextColor(contextPercent) : 'muted'
+  const filled = known ? Math.round((Math.max(0, Math.min(100, contextPercent)) / 100) * CONTEXT_BAR_WIDTH) : 0
+  const bar = `${theme.fg(color, '■'.repeat(filled))}${theme.fg('dim', '·'.repeat(CONTEXT_BAR_WIDTH - filled))}`
+  const values = known ? `${contextPercent.toFixed(1)}% · ${formatTokens(contextTokens)} / ${window}` : `— / ${window}`
+  const context = `${theme.fg(color, 'ctx')} ${bar} ${theme.fg(color, values)}`
   const metrics = [
     cacheHitPercent === undefined ? undefined : `cache ${cacheHitPercent.toFixed(0)}%`,
     tokensPerSecond === undefined ? undefined : `${Math.round(tokensPerSecond)} tok/s`,

@@ -48,16 +48,18 @@ describe('renderFooterLine', () => {
   it.effect('puts context on the left and cache hit and throughput on the right', () =>
     Effect.sync(() => {
       const line = renderFooterLine(model, plain, 60)
-      expect(line).toBe(`ctx 12.5% · 34k / 272k${' '.repeat(18)}cache 87% · 42 tok/s`)
+      expect(line).toBe(`ctx ■········· 12.5% · 34k / 272k${' '.repeat(7)}cache 87% · 42 tok/s`)
       expect(visibleWidth(line)).toBe(60)
     })
   )
 
   it.effect('omits missing metrics and marks unknown context usage', () =>
     Effect.sync(() => {
-      expect(renderFooterLine({ ...model, cacheHitPercent: undefined, tokensPerSecond: undefined }, plain, 40)).toBe('ctx 12.5% · 34k / 272k')
+      expect(renderFooterLine({ ...model, cacheHitPercent: undefined, tokensPerSecond: undefined }, plain, 40)).toBe(
+        'ctx ■········· 12.5% · 34k / 272k'
+      )
       expect(renderFooterLine({ ...model, cacheHitPercent: undefined }, plain, 40).trimEnd()).toEndWith('42 tok/s')
-      expect(renderFooterLine(emptyModelInfoState(), plain, 40)).toBe('ctx — / —')
+      expect(renderFooterLine(emptyModelInfoState(), plain, 40)).toBe('ctx ·········· — / —')
     })
   )
 

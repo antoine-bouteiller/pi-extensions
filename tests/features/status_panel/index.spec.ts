@@ -91,7 +91,7 @@ describe('status panel', () => {
       yield* panel.activate()
 
       expect(panel.topBorder(60)).toBe(`╭─ ● Ready › gpt-test · low ${'─'.repeat(31)}╮`)
-      expect(panel.footerLine(60)).toEqual(['ctx 6.2% · 12k / 200k'])
+      expect(panel.footerLine(60)).toEqual(['ctx ■········· 6.2% · 12k / 200k'])
 
       yield* panel.emit('thinking_level_select', { level: 'high' })
       expect(panel.topBorder(60)).toStartWith('╭─ ● Ready › gpt-test · high ')
@@ -103,7 +103,7 @@ describe('status panel', () => {
       panel.setUsage({ contextWindow: 200_000, percent: 10, tokens: 20_000 })
       yield* panel.emit('agent_settled')
       expect(panel.topBorder(60)).toStartWith('╭─ ● Ready ')
-      expect(panel.footerLine(60)[0]).toMatch(/^ctx 10\.0% · 20k \/ 200k +cache 90% · \d+ tok\/s$/)
+      expect(panel.footerLine(60)[0]).toMatch(/^ctx ■········· 10\.0% · 20k \/ 200k +cache 90% · \d+ tok\/s$/)
     })
   )
 
