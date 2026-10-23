@@ -70,7 +70,7 @@ export const makePanelController = (pi: ExtensionAPI): PanelHandlers => {
     }
     ctx.ui.setEditorComponent(
       (tui, theme, keybindings) =>
-        new StatusEditor(tui, theme, keybindings, (width, activity) => renderStatusLine(getModel(), ctx.ui.theme, width, activity))
+        new StatusEditor(tui, theme, keybindings, (width, color, activity) => renderStatusLine(getModel(), ctx.ui.theme, width, color, activity))
     )
     installed = true
     ctx.ui.setTitle(`pi · ${formatDirectory(ctx.cwd, path)}`)

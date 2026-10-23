@@ -8,8 +8,9 @@ import { emptyModelInfoState, type ModelInfoState } from '@/features/status_pane
 const plain: StatusTheme = {
   bold: (text) => text,
   fg: (_color, text) => text,
-  getThinkingBorderColor: () => (text) => text,
 }
+const identity = (text: string) => text
+const border = (text: string) => `[${text}]`
 const tagged: StatusTheme = { ...plain, fg: (color, text) => `<${color}>${text}` }
 
 const model: ModelInfoState = {
@@ -26,8 +27,8 @@ const model: ModelInfoState = {
 describe('renderStatusLine', () => {
   it.effect('shows ready, model and thinking level', () =>
     Effect.sync(() => {
-      expect(renderStatusLine(model, plain, 80)).toBe('● Ready › claude-opus-5 · medium')
-      expect(visibleWidth(renderStatusLine(model, plain, 12))).toBeLessThanOrEqual(12)
+      expect(renderStatusLine(model, plain, 80, identity)).toBe('● Ready › claude-opus-5 · medium')
+      expect(visibleWidth(renderStatusLine(model, plain, 12, identity))).toBeLessThanOrEqual(12)
     })
   )
 
@@ -38,8 +39,15 @@ describe('renderStatusLine', () => {
         widths.push(width)
         return '⠋ Working…'
       }
-      expect(renderStatusLine(model, plain, 40, activity)).toBe('⠋ Working… › claude-opus-5 · medium')
+      expect(renderStatusLine(model, plain, 40, identity, activity)).toBe('⠋ Working… › claude-opus-5 · medium')
       expect(widths).toEqual([40 - ' › claude-opus-5 · medium'.length])
+    })
+  )
+
+  it.effect('draws the whole status in the border color, dropping the activity colors', () =>
+    Effect.sync(() => {
+      expect(renderStatusLine(model, plain, 80, border)).toBe('[● Ready][ › claude-opus-5 · medium]')
+      expect(renderStatusLine(model, plain, 80, border, () => '\u001B[36m⠋\u001B[39m Working…')).toBe('[⠋ Working…][ › claude-opus-5 · medium]')
     })
   )
 })

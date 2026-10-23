@@ -1,6 +1,6 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
-export type ThinkingLevel = ReturnType<ExtensionAPI['getThinkingLevel']>
+type ThinkingLevel = ReturnType<ExtensionAPI['getThinkingLevel']>
 
 export interface ModelInfoState {
   modelId: string

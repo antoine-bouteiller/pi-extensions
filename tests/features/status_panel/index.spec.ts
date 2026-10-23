@@ -21,7 +21,6 @@ const previousEditor: Factory = () => ({ render: () => [] })
 const theme = {
   bold: (text: string) => text,
   fg: (_color: string, text: string) => text,
-  getThinkingBorderColor: () => (text: string) => text,
 }
 
 const harness = (mode: 'tui' | 'rpc' = 'tui') => {

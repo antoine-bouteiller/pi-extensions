@@ -2,7 +2,7 @@ import { CustomEditor, type KeybindingsManager } from '@earendil-works/pi-coding
 import { truncateToWidth, visibleWidth, type EditorTheme, type TUI } from '@earendil-works/pi-tui'
 
 type StatusIndicator = Parameters<CustomEditor['setWorkingStatusIndicator']>[0]
-type RenderStatus = (width: number, activity?: (width: number) => string) => string
+type RenderStatus = (width: number, color: (text: string) => string, activity?: (width: number) => string) => string
 
 /** Border and one column of padding on each side. */
 const FRAME_CHROME = 4
@@ -58,6 +58,7 @@ export class StatusEditor extends CustomEditor {
     const indicator = this.#indicator
     const status = this.#renderStatus(
       statusWidth,
+      this.borderColor,
       indicator === undefined ? undefined : (available) => indicator.renderInBorder(available) || indicator.renderSpinnerInBorder(available)
     )
     const fill = width - 2 - visibleWidth(status)

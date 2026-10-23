@@ -1,13 +1,14 @@
+import { stripVTControlCharacters } from 'node:util'
+
 import { type ThemeColor } from '@earendil-works/pi-coding-agent'
 import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui'
 
 import { columns, formatTokens } from './render.js'
-import { type ModelInfoState, type ThinkingLevel } from './state.js'
+import { type ModelInfoState } from './state.js'
 
 export interface StatusTheme {
   fg: (color: ThemeColor, text: string) => string
   bold: (text: string) => string
-  getThinkingBorderColor: (level: ThinkingLevel) => (text: string) => string
 }
 
 const CONTEXT_BAR_WIDTH = 10
@@ -23,14 +24,19 @@ const contextColor = (percent: number): ThemeColor => {
 }
 
 /**
- * Activity, model and thinking level, embedded in the editor's top border. `activity` renders
- * Pi's working indicator into whatever width the model leaves; without it the agent is ready.
+ * Activity, model and thinking level, embedded in the editor's top border and drawn in its color.
+ * `activity` renders Pi's working indicator into whatever width the model leaves; without it the agent is ready.
  */
-export const renderStatusLine = (model: ModelInfoState, theme: StatusTheme, width: number, activity?: (width: number) => string): string => {
-  const thinking = theme.getThinkingBorderColor(model.thinking)(model.thinking)
-  const tail = `${theme.fg('dim', ' › ')}${theme.fg('accent', model.modelId)}${theme.fg('dim', ' · ')}${thinking}`
-  const ready = theme.bold(theme.fg('success', '● Ready'))
-  const head = activity?.(Math.max(1, width - visibleWidth(tail))) ?? ready
+export const renderStatusLine = (
+  model: ModelInfoState,
+  theme: StatusTheme,
+  width: number,
+  color: (text: string) => string,
+  activity?: (width: number) => string
+): string => {
+  const tail = color(` › ${model.modelId} · ${model.thinking}`)
+  const head =
+    activity === undefined ? theme.bold(color('● Ready')) : color(stripVTControlCharacters(activity(Math.max(1, width - visibleWidth(tail)))))
   return truncateToWidth(`${head}${tail}`, width)
 }
 
