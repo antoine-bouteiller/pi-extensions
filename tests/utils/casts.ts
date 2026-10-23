@@ -1,11 +1,4 @@
-import {
-  type ExtensionAPI,
-  type ExtensionContext,
-  type ExtensionToolContext,
-  type ReadonlyFooterDataProvider,
-  type Theme,
-} from '@earendil-works/pi-coding-agent'
-import { type TUI } from '@earendil-works/pi-tui'
+import { type ExtensionAPI, type ExtensionContext, type ExtensionToolContext, type Theme } from '@earendil-works/pi-coding-agent'
 
 import { type CommandDefinition, type ToolDefinition } from './fake_pi.js'
 
@@ -23,20 +16,12 @@ export const asExtensionApi = (double: unknown): ExtensionAPI => requireObject(d
 export const asExtensionContext = (double: unknown): ExtensionContext => requireObject(double, 'ExtensionContext') as ExtensionContext
 export const asExtensionToolContext = (double: unknown): ExtensionToolContext => requireObject(double, 'ExtensionToolContext') as ExtensionToolContext
 
-// The native fetch type includes members that an injected request function cannot reproduce.
-export const asFetch = (double: (input: string | URL, init?: RequestInit) => Promise<Response>): typeof fetch => double as typeof fetch
-
-// TUI and Theme are opaque host rendering interfaces; tests supply only the rendering surface used.
-export const asTui = (double: unknown): TUI => requireObject(double, 'TUI') as TUI
+// Theme is an opaque host rendering interface; tests supply only the rendering surface used.
 export const asTheme = (double: unknown): Theme => requireObject(double, 'Theme') as Theme
 
 // Pi erases registered tool and command generics in its registry; callers restore the definition under test.
 export const asTool = <Tool>(tool: ToolDefinition | undefined): Tool => requireObject(tool, 'tool') as Tool
 export const asCommand = <Command>(command: CommandDefinition | undefined): Command => requireObject(command, 'command') as Command
-
-// ReadonlyFooterDataProvider is host-owned; status tests need only its status and branch callbacks.
-export const asFooterDataProvider = (double: unknown): ReadonlyFooterDataProvider =>
-  requireObject(double, 'ReadonlyFooterDataProvider') as ReadonlyFooterDataProvider
 
 // SDK and Effect internals expose narrower opaque types than their structural test doubles.
 export const asNarrowed = <Narrow, Wide extends object>(value: Wide): Narrow => requireObject(value, 'value') as Narrow

@@ -1,115 +1,77 @@
 import { visibleWidth } from '@earendil-works/pi-tui'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { runtime } from '@tests/utils/runtime.js'
-import { Effect, Path } from 'effect'
+import { Effect } from 'effect'
 
-import { renderFooterLines as renderFooterLinesWithPath, type FooterState, type FooterTheme } from '@/features/status_panel/footer.js'
+import { renderFooterLine, renderStatusLine, type StatusTheme } from '@/features/status_panel/footer.js'
+import { emptyModelInfoState, type ModelInfoState } from '@/features/status_panel/state.js'
 
-const theme = { fg: (_color: string, text: string) => text }
-const path = runtime.runSync(Path.Path)
-const renderFooterLines = (state: FooterState, renderTheme: FooterTheme, width: number) => renderFooterLinesWithPath(state, renderTheme, width, path)
+const plain: StatusTheme = {
+  bold: (text) => text,
+  fg: (_color, text) => text,
+  getThinkingBorderColor: () => (text) => text,
+}
+const tagged: StatusTheme = { ...plain, fg: (color, text) => `<${color}>${text}` }
 
-const state: FooterState = {
-  cwd: '/Users/example/pi-extensions',
-  git: { branch: 'main', changedFiles: 1, pullRequest: undefined },
-  model: {
-    cacheHitPercent: undefined,
-    contextPercent: 12.5,
-    contextTokens: 34_000,
-    contextWindow: 272_000,
-    modelId: 'claude-opus-5',
-    provider: 'anthropic',
-    thinking: 'medium',
-    tokensPerSecond: undefined,
-  },
-  quotas: {},
+const model: ModelInfoState = {
+  ...emptyModelInfoState(),
+  cacheHitPercent: 87.4,
+  contextPercent: 12.5,
+  contextTokens: 34_000,
+  contextWindow: 272_000,
+  modelId: 'claude-opus-5',
+  thinking: 'medium',
+  tokensPerSecond: 42.4,
 }
 
-describe('renderFooterLines', () => {
-  it.effect('uses a ccstatusline-style summary followed by Git', () =>
+describe('renderStatusLine', () => {
+  it.effect('shows ready, model and thinking level', () =>
     Effect.sync(() => {
-      expect(renderFooterLines(state, theme, 80)).toEqual(['Ctx ▓░░░ 13% | claude-opus-5 · medium', 'main · 1 file changed'])
+      expect(renderStatusLine(model, plain, 80)).toBe('● Ready › claude-opus-5 · medium')
+      expect(visibleWidth(renderStatusLine(model, plain, 12))).toBeLessThanOrEqual(12)
     })
   )
 
-  it.effect('uses a singular file label and omits the branch outside a repository', () =>
+  it.effect('replaces ready with the activity, giving it only the width the model leaves', () =>
     Effect.sync(() => {
-      expect(renderFooterLines(state, theme, 80)[1]).toBe('main · 1 file changed')
-      expect(renderFooterLines({ ...state, git: { ...state.git, changedFiles: 3 } }, theme, 80)[1]).toBe('main · 3 files changed')
-
-      const detached = renderFooterLines({ ...state, git: { branch: undefined, changedFiles: 0, pullRequest: undefined } }, theme, 80)
-      expect(detached[1]).toBe(state.cwd)
-      expect(detached).toHaveLength(2)
-    })
-  )
-
-  it.effect('prepends available throughput and cache hit metrics to the second row', () =>
-    Effect.sync(() => {
-      for (const [tokensPerSecond, cacheHitPercent, prefix] of [
-        [42.4, 87.25, '42 tok/s · Cache hit 87.3% · '],
-        [0, undefined, '0 tok/s · '],
-        [undefined, 0, 'Cache hit 0.0% · '],
-      ] as const) {
-        const lines = renderFooterLines({ ...state, model: { ...state.model, cacheHitPercent, tokensPerSecond } }, theme, 80)
-        expect(lines).toHaveLength(2)
-        expect(lines[1]).toBe(`${prefix}main · 1 file changed`)
+      const widths: number[] = []
+      const activity = (width: number) => {
+        widths.push(width)
+        return '⠋ Working…'
       }
+      expect(renderStatusLine(model, plain, 40, activity)).toBe('⠋ Working… › claude-opus-5 · medium')
+      expect(widths).toEqual([40 - ' › claude-opus-5 · medium'.length])
+    })
+  )
+})
+
+describe('renderFooterLine', () => {
+  it.effect('puts context on the left and cache hit and throughput on the right', () =>
+    Effect.sync(() => {
+      const line = renderFooterLine(model, plain, 60)
+      expect(line).toBe(`ctx 12.5% · 34k / 272k${' '.repeat(18)}cache 87% · 42 tok/s`)
+      expect(visibleWidth(line)).toBe(60)
     })
   )
 
-  it.effect('fits session, reset, weekly, Azure and model on one row by dropping bars', () =>
+  it.effect('omits missing metrics and marks unknown context usage', () =>
     Effect.sync(() => {
-      const lines = renderFooterLines(
-        {
-          ...state,
-          quotas: {
-            anthropic: {
-              detail: 'verbose quota detail',
-              label: 'anthropic',
-              percent: 42,
-              windows: [
-                { label: 'Session', percent: 42, resetsIn: '3h 10m' },
-                { detail: '31.62/200$', label: 'Weekly', percent: 18, resetsIn: '4d 1h' },
-              ],
-            },
-            azure: { label: 'azure', percent: 7 },
-          },
-        },
-        theme,
-        80
-      )
-
-      expect(lines).toHaveLength(2)
-      expect(lines[0]).toBe('Ctx 13% | 5h 42% 3h 10m | 7d 18% | Azure 7% | claude-opus-5 · medium')
+      expect(renderFooterLine({ ...model, cacheHitPercent: undefined, tokensPerSecond: undefined }, plain, 40)).toBe('ctx 12.5% · 34k / 272k')
+      expect(renderFooterLine({ ...model, cacheHitPercent: undefined }, plain, 40).trimEnd()).toEndWith('42 tok/s')
+      expect(renderFooterLine(emptyModelInfoState(), plain, 40)).toBe('ctx — / —')
     })
   )
 
-  it.effect('renders quota bars when they fit, including quotas without structured windows', () =>
+  it.effect('escalates the context colour as the window fills', () =>
     Effect.sync(() => {
-      const lines = renderFooterLines({ ...state, quotas: { anthropic: { label: 'anthropic', percent: 50 } } }, theme, 80)
-
-      expect(lines[0]).toBe('Ctx ▓░░░ 13% | 5h ▓▓░░ 50% | claude-opus-5 · medium')
-      expect(lines).toHaveLength(2)
+      expect(renderFooterLine({ ...model, contextPercent: 69 }, tagged, 80)).toStartWith('<muted>ctx')
+      expect(renderFooterLine({ ...model, contextPercent: 70 }, tagged, 80)).toStartWith('<warning>ctx')
+      expect(renderFooterLine({ ...model, contextPercent: 90 }, tagged, 80)).toStartWith('<error>ctx')
     })
   )
 
-  it.effect('keeps every line within the available width', () =>
+  it.effect('stays within narrow widths', () =>
     Effect.sync(() => {
-      for (const width of [0, 1, 20, 40, 60, 80]) {
-        const lines = renderFooterLines(
-          {
-            ...state,
-            git: { ...state.git, branch: '分支'.repeat(40) },
-            model: { ...state.model, cacheHitPercent: 87.25, modelId: '模型'.repeat(40), tokensPerSecond: 42.4 },
-            quotas: { anthropic: { detail: 'x'.repeat(80), label: 'anthropic', percent: 99 } },
-          },
-          { fg: (_color, text) => `\u001b[36m${text}\u001b[0m` },
-          width
-        )
-
-        expect(lines).toHaveLength(2)
-        expect(lines.every((line) => visibleWidth(line) <= width)).toBeTrue()
-      }
+      expect(visibleWidth(renderFooterLine(model, plain, 24))).toBeLessThanOrEqual(24)
     })
   )
 })

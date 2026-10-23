@@ -3,13 +3,13 @@
  * process, so a module-level store is how one feature hands data to another (notably to
  * the status panel) without either side importing the other's implementation.
  */
-export interface ObservableStore<TValue> {
+interface ObservableStore<TValue> {
   get: () => TValue
   set: (next: TValue) => void
   subscribe: (listener: () => void) => () => void
 }
 
-export const createObservableStore = <TValue>(initial: TValue): ObservableStore<TValue> => {
+const createObservableStore = <TValue>(initial: TValue): ObservableStore<TValue> => {
   let value = initial
   const listeners = new Set<() => void>()
   const notify = () => {

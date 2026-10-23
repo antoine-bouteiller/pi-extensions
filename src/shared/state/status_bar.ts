@@ -2,7 +2,7 @@ import { type ExtensionContext } from '@earendil-works/pi-coding-agent'
 
 import { createKeyedStore } from './store.js'
 
-export type StatusTone = 'muted' | 'info' | 'success' | 'warning' | 'error'
+type StatusTone = 'muted' | 'info' | 'success' | 'warning' | 'error'
 
 export interface StatusItem {
   text: string

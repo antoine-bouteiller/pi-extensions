@@ -1,25 +1,10 @@
-type ProviderQuotaLabel = 'anthropic' | 'azure'
+import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
-export interface QuotaWindow {
-  label: string
-  percent: number
-  detail?: string
-  resetsIn?: string
-}
-
-export interface ProviderQuota {
-  label: ProviderQuotaLabel
-  percent: number
-  detail?: string
-  windows?: readonly QuotaWindow[]
-}
-
-export type ProviderQuotas = Partial<Record<ProviderQuotaLabel, ProviderQuota>>
+export type ThinkingLevel = ReturnType<ExtensionAPI['getThinkingLevel']>
 
 export interface ModelInfoState {
-  provider: string
   modelId: string
-  thinking: string
+  thinking: ThinkingLevel
   contextTokens: number | undefined
   contextWindow: number
   contextPercent: number | undefined
@@ -41,45 +26,12 @@ export const turnMetrics = ({ usage, timestamp }: TurnMetricsInput, now: number)
   }
 }
 
-interface PullRequestInfo {
-  number: number
-  url: string
-}
-
-export interface GitInfoState {
-  branch: string | undefined
-  changedFiles: number
-  pullRequest: PullRequestInfo | undefined
-}
-
-/** @internal */
 export const emptyModelInfoState = (): ModelInfoState => ({
   cacheHitPercent: undefined,
   contextPercent: undefined,
   contextTokens: undefined,
   contextWindow: 0,
   modelId: 'no-model',
-  provider: '',
   thinking: 'off',
   tokensPerSecond: undefined,
-})
-
-export const emptyGitInfoState = (): GitInfoState => ({
-  branch: undefined,
-  changedFiles: 0,
-  pullRequest: undefined,
-})
-
-export interface PanelState {
-  activity: 'ready' | 'working'
-  model: ModelInfoState
-  git: GitInfoState
-  quotas: ProviderQuotas
-}
-
-export const emptyPanelState = (): PanelState => ({
-  activity: 'ready',
-  git: emptyGitInfoState(),
-  model: emptyModelInfoState(),
-  quotas: {},
 })

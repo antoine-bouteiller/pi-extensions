@@ -26,11 +26,11 @@ src/
 │   ├── prompt_rewind/{index,rewind}.ts
 │   ├── provider_retry/{index,retry}.ts
 │   ├── rules/{index,rules}.ts
-│   ├── status_panel/{index,panel,footer,git,provider,render,sidebar,split_pane,state,statuses}.ts
+│   ├── status_panel/{index,panel,editor,footer,render,state}.ts
 │   └── webfetch/{index,fetch}.ts
 └── shared/
     ├── effect/{app_services,bun_services,errors,feature,pi_services,runtime}.ts
-    ├── state/{azure_quota,status_bar,store}.ts
+    ├── state/{status_bar,store}.ts
     └── utils/{json,predicates,protected_paths,records,tool_output}.ts
 
 tests/

@@ -6,9 +6,10 @@ import { Effect, Exit, Layer, ManagedRuntime, Scope } from 'effect'
 import { FetchHttpClient } from 'effect/http'
 
 import { getOrCreateProcessRuntime } from '@/config/runtime.js'
-import { feature as statusPanel } from '@/features/status_panel/index.js'
+import { feature as meridian } from '@/features/meridian_session_affinity/index.js'
 import { StatusBar, type StatusBarApi, type AppRuntime } from '@/shared/effect/app_services.js'
 import { envLayer } from '@/shared/effect/env.js'
+import { perInvocation } from '@/shared/effect/runtime.js'
 
 const BunPlatformLayer = BunChildProcessSpawner.layer.pipe(Layer.provideMerge(Layer.mergeAll(BunCrypto.layer, BunFileSystem.layer, BunPath.layer)))
 
@@ -21,35 +22,33 @@ describe('process-wide runtime', () => {
 
   it.effect('uses the runtime supplied to a feature register function when the session activates', () =>
     Effect.gen(function* () {
-      let subscriptions = 0
+      let channels = 0
       const sentinelStatus: StatusBarApi = {
-        channel: () => ({ clear: Effect.void, set: () => Effect.void }),
+        channel: () => {
+          channels += 1
+          return { clear: Effect.void, set: () => Effect.void }
+        },
         has: () => false,
         list: () => [],
-        subscribe: () => {
-          subscriptions += 1
-          return () => undefined
-        },
+        subscribe: () => () => undefined,
       }
       const runtime: AppRuntime = ManagedRuntime.make(
         Layer.mergeAll(BunPlatformLayer, FetchHttpClient.layer, envLayer(process.env), Layer.succeed(StatusBar)(sentinelStatus))
       )
       yield* Effect.gen(function* () {
-        const descriptor = statusPanel()
+        const descriptor = meridian({ dependencies: { baseUrl: 'http://127.0.0.1:1', which: () => '/usr/local/bin/claude' } })
         descriptor.implementation.register(createFakePi().pi, runtime)
         const scope = Scope.makeUnsafe()
-        const ctx = asExtensionContext({
-          cwd: '/project',
-          getContextUsage: () => undefined,
-          mode: 'rpc',
-          model: { contextWindow: 100_000, id: 'model', provider: 'openai' },
-        })
+        const ctx = asExtensionContext({ hasUI: false })
         yield* Effect.promise(() =>
           runtime.runPromise(
-            Effect.provideService(descriptor.implementation.activate({ reason: 'startup', type: 'session_start' }, ctx), Scope.Scope, scope)
+            (descriptor.implementation.activate?.({ reason: 'startup', type: 'session_start' }, ctx) ?? Effect.void).pipe(
+              Effect.provideService(Scope.Scope, scope),
+              Effect.provide(perInvocation(ctx))
+            )
           )
         )
-        expect(subscriptions).toBe(1)
+        expect(channels).toBe(1)
         yield* Effect.promise(() => runtime.runPromise(Scope.close(scope, Exit.void)))
       }).pipe(Effect.ensuring(Effect.promise(() => runtime.dispose())))
     })

@@ -18,6 +18,7 @@ const eager = (id: string, implementation: FeatureImplementation): FeatureDescri
 })
 const context = (key: string, hasUI = true, onSetStatus?: (statusKey: string, text: string | undefined) => void, onGetSessionId?: () => void) => {
   const statuses: { key: string; text: string | undefined }[] = []
+  const notifications: { message: string; level: string | undefined }[] = []
   return {
     ctx: asExtensionContext({
       cwd: '/repo',
@@ -29,12 +30,16 @@ const context = (key: string, hasUI = true, onSetStatus?: (statusKey: string, te
         },
       },
       ui: {
+        notify: (message: string, level?: string) => {
+          notifications.push({ level, message })
+        },
         setStatus: (statusKey: string, text: string | undefined) => {
           statuses.push({ key: statusKey, text })
           onSetStatus?.(statusKey, text)
         },
       },
     }),
+    notifications,
     statuses,
   }
 }
@@ -231,6 +236,10 @@ describe('feature coordinator', () => {
       yield* emit(fixture, 'session_start', first.ctx)
       expect(first.statuses.map(({ text }) => text)).toContain('✓ typed: activation failed')
       expect(first.statuses.map(({ text }) => text)).toContain('✓ defect: activation defect')
+      expect(first.notifications).toEqual([
+        { level: 'error', message: '✓ typed: activation failed' },
+        { level: 'error', message: '✓ defect: activation defect' },
+      ])
     })
   )
 
@@ -585,6 +594,7 @@ describe('feature coordinator', () => {
       yield* emit(fixture, 'session_shutdown', fixtureContext.ctx)
       expect(calls).toEqual(['sibling'])
       expect(fixtureContext.statuses).toEqual([])
+      expect(fixtureContext.notifications).toEqual([])
       expect(statusBar.list().find(({ key }) => key === 'feature:typed-stop')).toMatchObject({
         text: 'typed-stop: deactivation failed',
         tone: 'error',

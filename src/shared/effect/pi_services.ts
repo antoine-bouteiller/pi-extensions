@@ -30,3 +30,12 @@ export const makeUi = (ctx: ExtensionContext): UiApi => ({
       ctx.ui.setStatus(key, text)
     }),
 })
+
+/** Pi has no status bar under the status panel, so problems worth a status are also shown once in the chat. */
+export const notifyUser = (message: string, level: NotifyLevel): Effect.Effect<void, never, Ui> =>
+  Effect.gen(function* () {
+    const ui = yield* Ui
+    if (yield* ui.hasUI) {
+      yield* ui.notify(message, level)
+    }
+  })

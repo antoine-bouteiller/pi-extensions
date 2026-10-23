@@ -21,7 +21,7 @@ pi install git:github.com/antoine-bouteiller/pi-extensions
 - `prompt_rewind` — Edit your prompt when cancelling before a response.
 - `provider_retry` — Extend retries to server and unknown-status provider failures.
 - `rules` — Load rules from `.claude/rules/` and `.agents/rules/`.
-- `status_panel` — Show model, context, Git, and provider limits.
+- `status_panel` — Show activity, model, and thinking in the editor border, and context, cache hit, and throughput in a one-line footer.
 - `webfetch` — Fetch URLs as Markdown, text, or HTML.
 
 ## Delegation

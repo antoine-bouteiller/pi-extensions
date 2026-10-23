@@ -1,28 +1,13 @@
-import { type ExtensionAPI, type ExtensionContext, type ExtensionEvent, type ReadonlyFooterDataProvider } from '@earendil-works/pi-coding-agent'
-import { Clock, Effect, Fiber, MutableRef, Path as PathService, Queue, type Scope } from 'effect'
-import { type HttpClient } from 'effect/http'
+import { type ExtensionAPI, type ExtensionContext, type ExtensionEvent } from '@earendil-works/pi-coding-agent'
+import { Clock, Effect, MutableRef, Path as PathService } from 'effect'
 import { type Path } from 'effect/Path'
 
-import { StatusBar, type StatusBarApi } from '#shared/effect/app_services'
-import { Env } from '#shared/effect/env'
-import { azureQuota } from '#shared/state/azure_quota'
-import { isEmptyString, isNullOrUndefined, isTrue } from '#shared/utils/predicates'
+import { isTrue } from '#shared/utils/predicates'
 
-import { renderFooterLines } from './footer.js'
-import { fetchGitInfo } from './git.js'
-import { makeQuotaPoller, quotaFromHeaders, type QuotaFetcher, type QuotaPoller } from './provider.js'
+import { StatusEditor } from './editor.js'
+import { renderFooterLine, renderStatusLine } from './footer.js'
 import { formatDirectory } from './render.js'
-import { createSidebarController, type SidebarController } from './sidebar.js'
-import { MIN_MAIN_WIDTH, MIN_SIDEBAR_WIDTH } from './split_pane.js'
-import { emptyPanelState, turnMetrics, type ModelInfoState, type PanelState, type ProviderQuota } from './state.js'
-import { collectStatuses } from './statuses.js'
-
-const ANTHROPIC_QUOTA_REFRESH_MS = 15_000
-const REDRAW_MS = 400
-
-export interface StatusPanelDependencies {
-  fetchAnthropicQuota?: QuotaFetcher
-}
+import { emptyModelInfoState, turnMetrics, type ModelInfoState } from './state.js'
 
 /*
  * The individual payload interfaces are not re-exported from the package root, but the
@@ -31,98 +16,28 @@ export interface StatusPanelDependencies {
  */
 type PiEvent<Type extends ExtensionEvent['type']> = Extract<ExtensionEvent, { type: Type }>
 
-export interface PanelControllerOptions {
-  readonly dependencies: StatusPanelDependencies
-  readonly pi: ExtensionAPI
-}
+type EditorFactory = ReturnType<ExtensionContext['ui']['getEditorComponent']>
 
 export interface PanelHandlers {
-  readonly sessionStart: (
-    event: PiEvent<'session_start'>,
-    ctx: ExtensionContext
-  ) => Effect.Effect<void, never, HttpClient.HttpClient | StatusBar | Path | Scope.Scope | Env>
-  readonly modelSelect: (event: PiEvent<'model_select'>, ctx: ExtensionContext) => Effect.Effect<void, never, HttpClient.HttpClient>
+  readonly sessionStart: (event: PiEvent<'session_start'>, ctx: ExtensionContext) => Effect.Effect<void, never, Path>
+  readonly modelSelect: (event: PiEvent<'model_select'>, ctx: ExtensionContext) => Effect.Effect<void>
   readonly thinkingLevelSelect: (event: PiEvent<'thinking_level_select'>, ctx: ExtensionContext) => Effect.Effect<void>
-  readonly agentStart: (event: PiEvent<'agent_start'>, ctx: ExtensionContext) => Effect.Effect<void>
   readonly messageEnd: (event: PiEvent<'message_end'>, ctx: ExtensionContext) => Effect.Effect<void>
   readonly turnEnd: (event: PiEvent<'turn_end'>, ctx: ExtensionContext) => Effect.Effect<void>
   readonly agentSettled: (event: PiEvent<'agent_settled'>, ctx: ExtensionContext) => Effect.Effect<void>
-  readonly afterProviderResponse: (event: PiEvent<'after_provider_response'>, ctx: ExtensionContext) => Effect.Effect<void>
   readonly sessionShutdown: (event: PiEvent<'session_shutdown'>, ctx: ExtensionContext) => Effect.Effect<void>
 }
 
-export const makePanelController = ({ dependencies, pi }: PanelControllerOptions): PanelHandlers => {
-  const panelState = MutableRef.make<PanelState>(emptyPanelState())
-
-  let sidebar: SidebarController | undefined
-  let footerData: ReadonlyFooterDataProvider | undefined
+export const makePanelController = (pi: ExtensionAPI): PanelHandlers => {
+  const modelState = MutableRef.make<ModelInfoState>(emptyModelInfoState())
   let requestRender: (() => void) | undefined
-  let anthropicQuotaBaseUrl: string | undefined
-  let unsubscribeAzureQuota: (() => void) | undefined
-  let unsubscribeStatusBar: (() => void) | undefined
-  let sessionScope: Scope.Scope | undefined
-  let gitRefreshRequests: Queue.Queue<void> | undefined
-  let redrawFiber: Fiber.Fiber<never> | undefined
+  let previousEditor: EditorFactory | undefined
+  let installed = false
 
-  const getState = (): PanelState => MutableRef.get(panelState)
-  const setState = (updater: (state: PanelState) => PanelState): void => {
-    MutableRef.update(panelState, updater)
-  }
-  const updateState = (updater: (state: PanelState) => PanelState): Effect.Effect<void> => Effect.sync(() => setState(updater))
-  const setQuota = (label: 'anthropic' | 'azure', quota: ProviderQuota | undefined): void => {
-    setState((state) => {
-      const quotas = { ...state.quotas }
-      if (quota === undefined) {
-        delete quotas[label]
-      } else {
-        quotas[label] = quota
-      }
-      return { ...state, quotas }
-    })
-    requestRender?.()
-  }
-  const syncAzureQuota = (): void => {
-    const percent = azureQuota.get()
-    setQuota('azure', percent === undefined ? undefined : { label: 'azure', percent })
-  }
-
-  const anthropicQuota: QuotaPoller = makeQuotaPoller((quota) => Effect.sync(() => setQuota('anthropic', quota)), {
-    fetchQuota: dependencies.fetchAnthropicQuota,
-    refreshMs: ANTHROPIC_QUOTA_REFRESH_MS,
-  })
-
-  const startAnthropicQuota = (ctx: ExtensionContext): Effect.Effect<void, never, HttpClient.HttpClient> =>
-    Effect.gen(function* () {
-      if (ctx.mode !== 'tui') {
-        return
-      }
-      if (anthropicQuotaBaseUrl !== undefined) {
-        return
-      }
-      const baseUrl =
-        (ctx.model?.provider === 'anthropic' ? ctx.model.baseUrl : undefined) ??
-        ctx.modelRegistry?.getAvailable().find((model) => model.provider === 'anthropic')?.baseUrl
-      if (isNullOrUndefined(baseUrl) || isEmptyString(baseUrl)) {
-        return
-      }
-      anthropicQuotaBaseUrl = baseUrl
-      yield* anthropicQuota.start(baseUrl)
-    })
-
-  /** Fire-and-forget by design, like the original `void refreshGit()`: forked in the session scope so it keeps running after the triggering hook's effect completes, and still ends with the session. */
-  const scheduleGitRefresh = (): Effect.Effect<void> =>
-    sessionScope === undefined ? Effect.void : Effect.forkIn(refreshGit(), sessionScope).pipe(Effect.asVoid)
-
-  const stopRedraw: Effect.Effect<void> = Effect.suspend(() => {
-    const fiber = redrawFiber
-    redrawFiber = undefined
-    return fiber === undefined ? Effect.void : Fiber.interrupt(fiber)
-  })
-
-  const refreshGit = (): Effect.Effect<void> =>
-    Effect.gen(function* () {
-      const git = yield* fetchGitInfo(pi)
-      yield* updateState((state) => ({ ...state, git }))
+  const getModel = (): ModelInfoState => MutableRef.get(modelState)
+  const updateModel = (updater: (model: ModelInfoState) => ModelInfoState): Effect.Effect<void> =>
+    Effect.sync(() => {
+      MutableRef.update(modelState, updater)
       requestRender?.()
     })
 
@@ -134,197 +49,64 @@ export const makePanelController = ({ dependencies, pi }: PanelControllerOptions
       contextTokens: usage?.tokens ?? undefined,
       contextWindow: usage?.contextWindow ?? ctx.model?.contextWindow ?? 0,
       modelId: ctx.model?.id ?? 'no-model',
-      provider: ctx.model?.provider ?? '',
       thinking: isTrue(ctx.model?.reasoning) ? pi.getThinkingLevel() : 'off',
     }
   }
 
-  const refreshModel = (ctx: ExtensionContext): Effect.Effect<void> =>
-    Effect.gen(function* () {
-      yield* updateState((state) => ({ ...state, model: applyModelInfo(ctx, state.model) }))
-      requestRender?.()
-    })
+  const refreshModel = (ctx: ExtensionContext): Effect.Effect<void> => updateModel((model) => applyModelInfo(ctx, model))
 
-  const install = (ctx: ExtensionContext, path: Path, noColor: boolean): Effect.Effect<void> =>
-    Effect.gen(function* () {
-      if (ctx.mode !== 'tui') {
-        return
+  const install = (ctx: ExtensionContext, path: Path): void => {
+    ctx.ui.setFooter((tui, theme) => {
+      requestRender = () => tui.requestRender()
+      return {
+        invalidate() {
+          /* Empty */
+        },
+        render: (width: number) => [renderFooterLine(getModel(), theme, width)],
       }
-      sidebar?.dispose()
-      footerData = undefined
-      yield* Effect.sync(() => {
-        ctx.ui.setFooter((tui, theme, data: ReadonlyFooterDataProvider) => {
-          footerData = data
-          const unsubscribe = data.onBranchChange?.(() => {
-            if (gitRefreshRequests !== undefined) {
-              Queue.offerUnsafe(gitRefreshRequests, undefined)
-            }
-            tui.requestRender()
-          })
-          return {
-            dispose() {
-              unsubscribe?.()
-              if (footerData === data) {
-                footerData = undefined
-              }
-            },
-            invalidate() {
-              /* Empty */
-            },
-            render(width: number) {
-              if (tui.terminal.columns >= MIN_MAIN_WIDTH + MIN_SIDEBAR_WIDTH) {
-                return []
-              }
-              const state = getState()
-              return renderFooterLines(
-                {
-                  cwd: ctx.cwd,
-                  git: state.git,
-                  model: state.model,
-                  quotas: state.quotas,
-                },
-                theme,
-                width,
-                path
-              )
-            },
-          }
-        })
-        sidebar = createSidebarController({
-          ctx,
-          getState: () => {
-            const state = getState()
-            return {
-              activity: state.activity,
-              cwd: ctx.cwd,
-              extensionStatuses: collectStatuses(footerData),
-              git: state.git,
-              model: state.model,
-              quotas: state.quotas,
-            }
-          },
-          noColor,
-          onError: () => undefined,
-          path,
-        })
-        requestRender = () => sidebar?.requestRender()
-        sidebar.show()
-        ctx.ui.setTitle(`pi · ${formatDirectory(ctx.cwd, path)}`)
-      })
-      yield* refreshModel(ctx)
-      yield* scheduleGitRefresh()
     })
+    if (!installed) {
+      previousEditor = ctx.ui.getEditorComponent()
+    }
+    ctx.ui.setEditorComponent(
+      (tui, theme, keybindings) =>
+        new StatusEditor(tui, theme, keybindings, (width, activity) => renderStatusLine(getModel(), ctx.ui.theme, width, activity))
+    )
+    installed = true
+    ctx.ui.setTitle(`pi · ${formatDirectory(ctx.cwd, path)}`)
+  }
 
   return {
-    afterProviderResponse: (event, ctx) =>
-      Effect.sync(() => {
-        const quota = quotaFromHeaders(ctx.model?.provider ?? '', event.headers)
-        if (quota !== undefined) {
-          azureQuota.set(quota.percent)
-        }
-      }),
-    agentSettled: (_event, ctx) =>
-      Effect.gen(function* () {
-        yield* updateState((state) => ({ ...state, activity: 'ready' }))
-        yield* refreshModel(ctx)
-      }),
-    agentStart: () =>
-      Effect.gen(function* () {
-        yield* updateState((state) => ({ ...state, activity: 'working' }))
-        requestRender?.()
-      }),
+    agentSettled: (_event, ctx) => refreshModel(ctx),
     messageEnd: (event) =>
       Effect.gen(function* () {
         if (event.message.role !== 'assistant') {
           return
         }
         const metrics = turnMetrics(event.message, yield* Clock.currentTimeMillis)
-        yield* updateState((state) => ({ ...state, model: { ...state.model, ...metrics } }))
-        requestRender?.()
+        yield* updateModel((model) => ({ ...model, ...metrics }))
       }),
-    modelSelect: (event, ctx) =>
-      Effect.gen(function* () {
-        yield* updateState((state) => ({
-          ...state,
-          model: {
-            ...state.model,
-            contextWindow: event.model.contextWindow,
-            modelId: event.model.id,
-            provider: event.model.provider,
-            thinking: isTrue(event.model.reasoning) ? pi.getThinkingLevel() : 'off',
-          },
-        }))
-        yield* refreshModel(ctx)
-        yield* scheduleGitRefresh()
-        yield* startAnthropicQuota(ctx)
-      }),
+    modelSelect: (_event, ctx) => refreshModel(ctx),
     sessionShutdown: (_event, ctx) =>
-      Effect.gen(function* () {
-        yield* stopRedraw
-        yield* anthropicQuota.stop
-        anthropicQuotaBaseUrl = undefined
-        gitRefreshRequests = undefined
-        sessionScope = undefined
-        unsubscribeAzureQuota?.()
-        unsubscribeAzureQuota = undefined
-        unsubscribeStatusBar?.()
-        unsubscribeStatusBar = undefined
-        sidebar?.dispose()
-        sidebar = undefined
-        footerData = undefined
+      Effect.sync(() => {
         requestRender = undefined
-        if (ctx.mode === 'tui') {
+        if (ctx.mode === 'tui' && installed) {
           ctx.ui.setFooter(undefined)
+          ctx.ui.setEditorComponent(previousEditor)
         }
+        installed = false
+        previousEditor = undefined
       }),
     sessionStart: (_event, ctx) =>
       Effect.gen(function* () {
-        const statusBar: StatusBarApi = yield* StatusBar
         const path = yield* PathService.Path
-        sessionScope = yield* Effect.scope
-        yield* stopRedraw
-        yield* anthropicQuota.stop
-        anthropicQuotaBaseUrl = undefined
-        unsubscribeAzureQuota?.()
-        unsubscribeStatusBar?.()
-        azureQuota.set(undefined)
-        MutableRef.set(panelState, emptyPanelState())
-        unsubscribeAzureQuota = azureQuota.subscribe(syncAzureQuota)
-        unsubscribeStatusBar = statusBar.subscribe(() => requestRender?.())
-        const requests = yield* Queue.sliding<void>(1)
-        gitRefreshRequests = requests
-        yield* Effect.forkIn(Effect.forever(Queue.take(requests).pipe(Effect.andThen(refreshGit()))), sessionScope)
-        const env = yield* Env
-        yield* install(ctx, path, env.get('NO_COLOR') !== undefined)
+        MutableRef.set(modelState, emptyModelInfoState())
         if (ctx.mode === 'tui') {
-          redrawFiber = yield* Effect.forkIn(
-            Effect.forever(
-              Effect.sleep(REDRAW_MS).pipe(
-                Effect.andThen(
-                  Effect.sync(() => {
-                    if (getState().activity === 'working') {
-                      requestRender?.()
-                    }
-                  })
-                )
-              )
-            ),
-            sessionScope
-          )
-        } else {
-          yield* refreshModel(ctx)
+          install(ctx, path)
         }
-        yield* startAnthropicQuota(ctx)
-      }),
-    thinkingLevelSelect: (event) =>
-      Effect.gen(function* () {
-        yield* updateState((state) => ({ ...state, model: { ...state.model, thinking: event.level } }))
-        requestRender?.()
-      }),
-    turnEnd: (_event, ctx) =>
-      Effect.gen(function* () {
         yield* refreshModel(ctx)
-        yield* scheduleGitRefresh()
       }),
+    thinkingLevelSelect: (event) => updateModel((model) => ({ ...model, thinking: event.level })),
+    turnEnd: (_event, ctx) => refreshModel(ctx),
   }
 }

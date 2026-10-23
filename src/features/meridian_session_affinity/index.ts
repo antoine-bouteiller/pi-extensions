@@ -5,6 +5,7 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from 'effect/http'
 import { type AppRuntime, StatusBar } from '#shared/effect/app_services'
 import { processEnvironment } from '#shared/effect/env'
 import { type FeatureImplementation, type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
+import { notifyUser } from '#shared/effect/pi_services'
 import { makeEventHandler } from '#shared/effect/runtime'
 import { isNullOrUndefined } from '#shared/utils/predicates'
 
@@ -85,7 +86,11 @@ const makeImplementation = (dependencies: MeridianSessionAffinityDependencies): 
     Effect.gen(function* () {
       const channel = (yield* StatusBar).channel(HEALTH_STATUS_KEY, { icon: '🧭', tone: 'warning' })
       const publish = healthWarning(dependencies).pipe(
-        Effect.flatMap((warning) => (warning === undefined ? channel.clear : channel.set({ text: `meridian: ${warning}` })))
+        Effect.flatMap((warning) =>
+          warning === undefined
+            ? channel.clear
+            : channel.set({ text: `meridian: ${warning}` }).pipe(Effect.andThen(notifyUser(`🧭 meridian: ${warning}`, 'warning')))
+        )
       )
       yield* Effect.forkIn(publish, yield* Scope.Scope)
     }),

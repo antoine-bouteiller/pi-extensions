@@ -40,13 +40,16 @@ const probe = (baseUrl: string, client: HttpClient.HttpClient) =>
   healthWarning({ baseUrl, httpClient: client }).pipe(Effect.provideService(HttpClient.HttpClient, client))
 
 /** Stands in for the coordinator: activate inside a session scope with handler services. */
-const activateWith = (baseUrl: string, client: HttpClient.HttpClient, until: () => boolean): Effect.Effect<void> =>
+const activateWith = (baseUrl: string, client: HttpClient.HttpClient, until: () => boolean, notifications?: string[]): Effect.Effect<void> =>
   Effect.promise(() =>
     runtime.runPromise(
       Effect.gen(function* () {
         const prepared = feature({ dependencies: { baseUrl, httpClient: client, which: claudeInstalled } }).implementation
         const scope = yield* Scope.make()
-        const ctx = asExtensionContext({ hasUI: false, ui: { setStatus: () => undefined } })
+        const ctx = asExtensionContext({
+          hasUI: notifications !== undefined,
+          ui: { notify: (message: string, level: string) => notifications?.push(`${level}: ${message}`), setStatus: () => undefined },
+        })
         yield* (prepared.activate?.({ reason: 'startup', type: 'session_start' }, ctx) ?? Effect.void).pipe(
           Effect.provideService(Scope.Scope, scope),
           Effect.provide(perInvocation(ctx))
@@ -164,7 +167,9 @@ describe('meridian session affinity', () => {
 
   it.effect('loads regardless of Meridian health and only publishes a warning status while it is down', () =>
     Effect.gen(function* () {
-      yield* activateWith('https://meridian.example.test', healthClient(503), () => statusBar.has('meridian:health'))
+      const notifications: string[] = []
+      yield* activateWith('https://meridian.example.test', healthClient(503), () => notifications.length > 0, notifications)
+      expect(notifications).toEqual(['warning: 🧭 meridian: unavailable'])
       expect(statusBar.list().find((entry) => entry.key === 'meridian:health')).toMatchObject({
         icon: '🧭',
         text: 'meridian: unavailable',

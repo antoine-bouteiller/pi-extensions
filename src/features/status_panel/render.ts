@@ -15,11 +15,6 @@ export const formatTokens = (tokens: number) => {
   return `${(tokens / 1_000_000).toFixed(1)}M`
 }
 
-export const progressBar = (percent: number, width: number): string => {
-  const filled = Math.round((Math.max(0, Math.min(100, percent)) / 100) * width)
-  return `${'▓'.repeat(filled)}${'░'.repeat(width - filled)}`
-}
-
 export const formatDirectory = (cwd: string, path: Path): string => {
   const home = homedir()
   if (cwd === home) {
@@ -31,7 +26,6 @@ export const formatDirectory = (cwd: string, path: Path): string => {
   return cwd
 }
 
-/** @internal */
 export const columns = (left: string, right: string, width: number): string => {
   if (isEmptyString(right)) {
     return truncateToWidth(left, width)

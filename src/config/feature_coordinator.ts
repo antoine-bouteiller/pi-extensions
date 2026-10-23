@@ -3,6 +3,7 @@ import { Cause, Effect, Exit, Fiber, Result, Schema, Scope, Semaphore } from 'ef
 
 import { type AppRuntime, type AppServices, StatusBar } from '#shared/effect/app_services'
 import { type FeatureDescriptor, type FeatureImplementation } from '#shared/effect/feature'
+import { notifyUser } from '#shared/effect/pi_services'
 import { type HandlerServices, makeEventHandler } from '#shared/effect/runtime'
 
 type SafeReason = 'activation failed' | 'activation defect' | 'deactivation failed' | 'deactivation defect' | 'registration failed; restart required'
@@ -125,7 +126,12 @@ const publish = (record: FeatureRecord): Effect.Effect<void, never, AppServices 
     const status = yield* StatusBar
     const channel = status.channel(`feature:${record.plugin.id}`)
     const item = statusItem(record)
-    yield* item === undefined ? channel.clear : channel.set(item)
+    if (item === undefined) {
+      yield* channel.clear
+      return
+    }
+    yield* channel.set(item)
+    yield* notifyUser(`${item.icon} ${item.text}`, 'error')
   }).pipe(Effect.ignoreCause)
 
 /** @internal */
