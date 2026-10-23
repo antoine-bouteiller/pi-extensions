@@ -47,7 +47,7 @@ const gutterRow = (content: string, width: number, panelWidth: number) => trunca
 
 const ANSI_PATTERN = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g')
 const sanitize = (text: string) =>
-  Array.from(text.replace(ANSI_PATTERN, ''), (character) => {
+  Array.from(text.replaceAll(ANSI_PATTERN, ''), (character) => {
     const code = character.charCodeAt(0)
     return code < 32 || code === 127 ? ' ' : character
   })

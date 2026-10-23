@@ -53,7 +53,7 @@ const state: SidebarState = {
 
 const ANSI_PATTERN = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g')
 
-const stripAnsi = (text: string) => text.replace(ANSI_PATTERN, '')
+const stripAnsi = (text: string) => text.replaceAll(ANSI_PATTERN, '')
 
 describe('sidebar rendering', () => {
   it.effect('renders the Atelier-style information hierarchy', () =>

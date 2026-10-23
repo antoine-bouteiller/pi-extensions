@@ -7,8 +7,8 @@ import { Value } from 'typebox/value'
 
 import { parseJsonText } from '#shared/utils/json'
 
-const ModelSchema = Type.String({ maxLength: 256, pattern: '^[a-zA-Z0-9_-]+/[^\\s\\x00-\\x1f\\x7f-\\x9f-][^\\s\\x00-\\x1f\\x7f-\\x9f]*$' })
-const NoteSchema = Type.String({ maxLength: 500, minLength: 1, pattern: '^[^\\x00-\\x1f\\x7f-\\x9f]+$' })
+const ModelSchema = Type.String({ maxLength: 256, pattern: String.raw`^[a-zA-Z0-9_-]+/[^\s\x00-\x1f\x7f-\x9f-][^\s\x00-\x1f\x7f-\x9f]*$` })
+const NoteSchema = Type.String({ maxLength: 500, minLength: 1, pattern: String.raw`^[^\x00-\x1f\x7f-\x9f]+$` })
 const HerdrSettingsSchema = Type.Object(
   { allowedModels: Type.Optional(Type.Array(ModelSchema)), modelNotes: Type.Optional(Type.Record(Type.String(), NoteSchema)) },
   { additionalProperties: false }

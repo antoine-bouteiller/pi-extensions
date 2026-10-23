@@ -34,7 +34,7 @@ export const SpawnAgentParams = Type.Object({
       description: 'Short pane label shown in Herdr and in result notifications, for example "Review auth".',
       maxLength: 64,
       minLength: 1,
-      pattern: '^[^\\s\\x00-\\x1f\\x7f-\\x9f-][^\\x00-\\x1f\\x7f-\\x9f]*$',
+      pattern: String.raw`^[^\s\x00-\x1f\x7f-\x9f-][^\x00-\x1f\x7f-\x9f]*$`,
     })
   ),
   thinking: Type.Optional(
