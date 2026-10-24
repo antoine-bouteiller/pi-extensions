@@ -1,4 +1,4 @@
-import { createAssistantMessageEventStream, type AssistantMessage, type Message } from '@earendil-works/pi-ai'
+import { type AssistantMessage, createAssistantMessageEventStream, type Message } from '@earendil-works/pi-ai'
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { deferred } from '@tests/utils/deferred.js'

@@ -4,7 +4,7 @@
     {
       description: 'Oxc Group',
       groupName: 'oxc',
-      matchPackageNames: ['oxlint', 'oxfmt', 'oxlint-tsgolint', '@oxlint/plugins', '@effect/tsgo'],
+      matchPackageNames: ['oxlint', 'oxlint-tsgolint', '@oxlint/plugins', '@effect/tsgo'],
     },
     {
       description: 'Pi Coding Agent Group',

@@ -2,7 +2,7 @@ import { afterEach } from 'bun:test'
 import { tmpdir } from 'node:os'
 
 import { type ToolResultEvent } from '@earendil-works/pi-coding-agent'
-import { promiseFromEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
+import { describe, expect, it, promiseFromEffect } from '@tests/utils/bun_effect.js'
 import { asExtensionContext, asResult } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtime } from '@tests/utils/runtime.js'

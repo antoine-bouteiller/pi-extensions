@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Effect } from 'effect'
 
-import { type FeatureActivationError, type FeatureIdentity, type FeatureDescriptor, type FeatureStatusMetadata } from '@/shared/effect/feature.js'
+import { type FeatureActivationError, type FeatureDescriptor, type FeatureIdentity, type FeatureStatusMetadata } from '@/shared/effect/feature.js'
 
 describe('FeatureDescriptor', () => {
   it.effect('pairs identity metadata with an implementation', () =>

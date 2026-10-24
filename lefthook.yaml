@@ -15,7 +15,7 @@ pre-commit:
       run: bunx oxlint --fix --fix-suggestions {staged_files}
       stage_fixed: true
     - name: Format
-      run: bunx oxfmt {staged_files}
+      run: bun fmt --no-script --ignore-unknown {staged_files}
       stage_fixed: true
     - name: Knip
       run: bun run knip

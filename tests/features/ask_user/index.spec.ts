@@ -1,4 +1,4 @@
-import { CURSOR_MARKER, visibleWidth, type Component, type Focusable } from '@earendil-works/pi-tui'
+import { type Component, CURSOR_MARKER, type Focusable, visibleWidth } from '@earendil-works/pi-tui'
 import { makeAbortController } from '@tests/utils/abort_controller.js'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asTool } from '@tests/utils/casts.js'

@@ -1,7 +1,7 @@
 import { test } from 'bun:test'
 
 import { BunCrypto, BunFileSystem, BunPath } from '@effect/platform-bun'
-import { Effect, Layer, Schema, type Crypto, type FileSystem, type Path, type Scope } from 'effect'
+import { type Crypto, Effect, type FileSystem, Layer, type Path, Schema, type Scope } from 'effect'
 import { TestClock } from 'effect/testing'
 
 import { type Env, EnvLive } from '@/shared/effect/env.js'

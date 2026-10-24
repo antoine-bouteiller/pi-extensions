@@ -1,6 +1,6 @@
 import { type AgentToolResult, type Theme } from '@earendil-works/pi-coding-agent'
 import { makeAbortController } from '@tests/utils/abort_controller.js'
-import { promiseFromEffect, tryPromiseEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
+import { describe, expect, it, promiseFromEffect, tryPromiseEffect } from '@tests/utils/bun_effect.js'
 import { asError, asNarrowed, asTheme, asTool } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'

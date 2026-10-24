@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Effect } from 'effect'
 
-import { ENVIRONMENT_KEYS, envLayer, makeEnvironment, type EnvironmentKey } from '@/shared/effect/env.js'
+import { ENVIRONMENT_KEYS, type EnvironmentKey, envLayer, makeEnvironment } from '@/shared/effect/env.js'
 
 describe('environment', () => {
   it.effect('snapshots its source for get and all', () =>

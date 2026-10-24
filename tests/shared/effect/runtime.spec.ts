@@ -1,6 +1,6 @@
 import { type ExtensionCommandContext, type ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { makeAbortController } from '@tests/utils/abort_controller.js'
-import { promiseFromEffect, tryEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
+import { describe, expect, it, promiseFromEffect, tryEffect } from '@tests/utils/bun_effect.js'
 import { asError, asExtensionToolContext, asNarrowed, asTool } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { Context, Effect, Fiber, Layer, ManagedRuntime } from 'effect'

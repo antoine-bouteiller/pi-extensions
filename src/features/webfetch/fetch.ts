@@ -7,12 +7,12 @@ import {
   type Theme,
   type ToolRenderResultOptions,
 } from '@earendil-works/pi-coding-agent'
-import { Text, type Component } from '@earendil-works/pi-tui'
+import { type Component, Text } from '@earendil-works/pi-tui'
 import { Duration, Effect, Schema, Stream } from 'effect'
 import { type FileSystem } from 'effect/FileSystem'
 import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest, type HttpClientResponse } from 'effect/http'
 import { type Path } from 'effect/Path'
-import { Type, type Static } from 'typebox'
+import { type Static, Type } from 'typebox'
 
 import { ToolFailure } from '#shared/effect/errors'
 import { isEmptyString, isNotEmptyString, isNullOrUndefined, isTrue } from '#shared/utils/predicates'

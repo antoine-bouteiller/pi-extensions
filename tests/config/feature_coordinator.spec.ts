@@ -8,7 +8,7 @@ import { runtime } from '@tests/utils/runtime.js'
 import { Deferred, Effect, Fiber, Scope } from 'effect'
 
 import { type FeatureHealth, makeFeatureCoordinator, registerFeatures } from '@/config/feature_coordinator.js'
-import { type FeatureImplementation, type FeatureDescriptor } from '@/shared/effect/feature.js'
+import { type FeatureDescriptor, type FeatureImplementation } from '@/shared/effect/feature.js'
 import { publishStatus, statusBar } from '@/shared/state/status_bar.js'
 
 const eager = (id: string, implementation: FeatureImplementation): FeatureDescriptor => ({

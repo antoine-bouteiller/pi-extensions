@@ -7,7 +7,7 @@ import { FetchHttpClient } from 'effect/http'
 
 import { getOrCreateProcessRuntime } from '@/config/runtime.js'
 import { feature as meridian } from '@/features/meridian_session_affinity/index.js'
-import { StatusBar, type StatusBarApi, type AppRuntime } from '@/shared/effect/app_services.js'
+import { type AppRuntime, StatusBar, type StatusBarApi } from '@/shared/effect/app_services.js'
 import { envLayer } from '@/shared/effect/env.js'
 import { perInvocation } from '@/shared/effect/runtime.js'
 

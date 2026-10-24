@@ -1,4 +1,4 @@
-import { type ExtensionAPI, type ExtensionContext, type SessionStartEvent, type SessionShutdownEvent } from '@earendil-works/pi-coding-agent'
+import { type ExtensionAPI, type ExtensionContext, type SessionShutdownEvent, type SessionStartEvent } from '@earendil-works/pi-coding-agent'
 import { Cause, Effect, Exit, Fiber, Result, Schema, Scope, Semaphore } from 'effect'
 
 import { type AppRuntime, type AppServices, StatusBar } from '#shared/effect/app_services'

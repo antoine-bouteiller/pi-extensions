@@ -5,7 +5,7 @@ import { type AppRuntime } from '#shared/effect/app_services'
 import { type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 import { makeEventHandler } from '#shared/effect/runtime'
 
-import { defaultEnvironment, makeDiscoveryHandlers, type ClaudeCodeEnvironment } from './discovery.js'
+import { type ClaudeCodeEnvironment, defaultEnvironment, makeDiscoveryHandlers } from './discovery.js'
 
 export const feature = ((options: FeatureOptions<ClaudeCodeEnvironment> = {}) => {
   const environment = options.dependencies ?? defaultEnvironment()

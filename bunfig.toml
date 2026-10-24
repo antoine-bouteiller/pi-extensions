@@ -1,2 +1,9 @@
 [test]
 coverageReporter = ["text", "lcov"]
+
+[fmt]
+printWidth = 150
+semi = false
+singleQuote = true
+sortImports = true
+trailingComma = "es5"

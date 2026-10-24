@@ -1,12 +1,12 @@
 import {
+  type AgentToolResult,
   createReadToolDefinition,
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
-  type AgentToolResult,
   type ExtensionToolContext,
   type Theme,
 } from '@earendil-works/pi-coding-agent'
-import { Text, type Component } from '@earendil-works/pi-tui'
+import { type Component, Text } from '@earendil-works/pi-tui'
 import {
   computeFileHash,
   formatHashlineHeader,
@@ -20,7 +20,7 @@ import {
 import { Context, Effect, Path, Schema, type Scope } from 'effect'
 import { type Crypto } from 'effect/Crypto'
 import { type FileSystem } from 'effect/FileSystem'
-import { Type, type Static } from 'typebox'
+import { type Static, Type } from 'typebox'
 
 import { sha256Hex } from '#shared/effect/crypto'
 import { mutationQueueSlot } from '#shared/effect/mutation_queue'
