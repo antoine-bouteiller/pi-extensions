@@ -16,5 +16,10 @@
       groupName: 'effect',
       matchPackageNames: ['effect', '@effect/**', '!@effect/tsgo'],
     },
+    {
+      description: 'Bun Group',
+      groupName: 'bun',
+      matchPackageNames: ['bun', 'oven-sh/bun', '@types/bun'],
+    },
   ],
 }
