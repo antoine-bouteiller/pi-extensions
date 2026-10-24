@@ -6,7 +6,7 @@ import { Effect, Option, Schema, Scope, Semaphore } from 'effect'
 import { Crypto } from 'effect/Crypto'
 import { FileSystem } from 'effect/FileSystem'
 import { Path } from 'effect/Path'
-import { Type, type Static, type TSchema } from 'typebox'
+import { type Static, type TSchema, Type } from 'typebox'
 import { Value } from 'typebox/value'
 
 import { type EnvApi } from '#shared/effect/env'

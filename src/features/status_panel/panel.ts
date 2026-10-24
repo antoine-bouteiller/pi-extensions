@@ -7,7 +7,7 @@ import { isTrue } from '#shared/utils/predicates'
 import { StatusEditor } from './editor.js'
 import { renderFooterLine, renderStatusLine } from './footer.js'
 import { formatDirectory } from './render.js'
-import { emptyModelInfoState, turnMetrics, type ModelInfoState } from './state.js'
+import { emptyModelInfoState, type ModelInfoState, turnMetrics } from './state.js'
 
 /*
  * The individual payload interfaces are not re-exported from the package root, but the

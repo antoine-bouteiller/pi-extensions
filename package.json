@@ -14,8 +14,7 @@
   },
   "scripts": {
     "prepare": "command -v effect-tsgo >/dev/null 2>&1 || exit 0; effect-tsgo patch --no-typescript --oxlint",
-    "fmt": "oxfmt",
-    "fmt:check": "oxfmt --check",
+    "fmt:check": "bun fmt --check",
     "knip": "knip",
     "knip:production": "knip --production",
     "lint": "oxlint --deny-warnings --report-unused-disable-directives",
@@ -36,7 +35,6 @@
     "@types/bun": "1.4.4",
     "knip": "6.42.1",
     "lefthook": "^2.1.10",
-    "oxfmt": "0.73.0",
     "oxlint": "1.88.0",
     "oxlint-tsgolint": "7.0.2004",
     "typebox": "1.4.3"

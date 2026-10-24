@@ -1,6 +1,6 @@
 import { initTheme, type Theme } from '@earendil-works/pi-coding-agent'
 import { type Component, visibleWidth } from '@earendil-works/pi-tui'
-import { promiseFromEffect, tryEffect, tryPromiseEffect, describe, expect, it } from '@tests/utils/bun_effect.js'
+import { describe, expect, it, promiseFromEffect, tryEffect, tryPromiseEffect } from '@tests/utils/bun_effect.js'
 import { asExtensionApi, asExtensionContext, asTheme } from '@tests/utils/casts.js'
 import { deferred } from '@tests/utils/deferred.js'
 import { runtime } from '@tests/utils/runtime.js'
@@ -8,7 +8,7 @@ import { Effect, Fiber } from 'effect'
 import { TestClock } from 'effect/testing'
 
 import { feature } from '@/features/background_poll/index.js'
-import { formatElapsed, formatPollOutput, runPollLoop, type PollExec } from '@/features/background_poll/poll.js'
+import { formatElapsed, formatPollOutput, type PollExec, runPollLoop } from '@/features/background_poll/poll.js'
 import { ToolFailure } from '@/shared/effect/errors.js'
 import { type JsonObject } from '@/shared/utils/json.js'
 

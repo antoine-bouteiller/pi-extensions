@@ -1,12 +1,12 @@
 import {
+  type AgentSession,
+  type AgentSessionEvent,
   createAgentSession,
   DefaultResourceLoader,
+  type InlineExtension,
   ModelRuntime,
   SessionManager,
   SettingsManager,
-  type AgentSession,
-  type AgentSessionEvent,
-  type InlineExtension,
 } from '@earendil-works/pi-coding-agent'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Effect, FileSystem } from 'effect'

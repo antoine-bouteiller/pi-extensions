@@ -1,11 +1,11 @@
 import { type ExtensionAPI, type ExtensionToolContext } from '@earendil-works/pi-coding-agent'
 import { type Effect } from 'effect'
 
-import { type AppServices, type AppRuntime } from '#shared/effect/app_services'
+import { type AppRuntime, type AppServices } from '#shared/effect/app_services'
 import { type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
-import { makeToolExecutor, type HandlerServices, type ToolInvocation } from '#shared/effect/runtime'
+import { type HandlerServices, makeToolExecutor, type ToolInvocation } from '#shared/effect/runtime'
 
-import { makeHashlineTools, readSchema, renderHashlineRead, writeSchema, type HashlineToolError } from './tools.js'
+import { type HashlineToolError, makeHashlineTools, readSchema, renderHashlineRead, writeSchema } from './tools.js'
 
 export const feature = ((_options: FeatureOptions<undefined> = {}) => ({
   id: 'hashline',

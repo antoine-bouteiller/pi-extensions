@@ -5,7 +5,7 @@ import { type HttpClient } from 'effect/http'
 import { type Path } from 'effect/Path'
 import { type ChildProcessSpawner } from 'effect/process/ChildProcessSpawner'
 
-import { formatStatusText, publishStatus, type StatusEntry, type StatusItem, statusBar } from '#shared/state/status_bar'
+import { formatStatusText, publishStatus, statusBar, type StatusEntry, type StatusItem } from '#shared/state/status_bar'
 
 import { type Env } from './env.js'
 import { Ui } from './pi_services.js'

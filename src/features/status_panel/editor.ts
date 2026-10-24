@@ -1,5 +1,5 @@
 import { CustomEditor, type KeybindingsManager } from '@earendil-works/pi-coding-agent'
-import { truncateToWidth, visibleWidth, type EditorTheme, type TUI } from '@earendil-works/pi-tui'
+import { type EditorTheme, truncateToWidth, type TUI, visibleWidth } from '@earendil-works/pi-tui'
 
 type StatusIndicator = Parameters<CustomEditor['setWorkingStatusIndicator']>[0]
 type RenderStatus = (width: number, color: (text: string) => string, activity?: (width: number) => string) => string

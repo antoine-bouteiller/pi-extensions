@@ -7,8 +7,8 @@ import { type Path } from 'effect/Path'
 import { type ChildProcessSpawner } from 'effect/process/ChildProcessSpawner'
 
 import { getOrCreateProcessRuntime } from '@/config/runtime.js'
-import { StatusBarLive, type AppRuntime, type StatusBar } from '@/shared/effect/app_services.js'
-import { envLayer, EnvLive, type Env } from '@/shared/effect/env.js'
+import { type AppRuntime, type StatusBar, StatusBarLive } from '@/shared/effect/app_services.js'
+import { type Env, envLayer, EnvLive } from '@/shared/effect/env.js'
 
 export const runtime: AppRuntime = getOrCreateProcessRuntime()
 

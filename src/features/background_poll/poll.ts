@@ -1,6 +1,6 @@
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { Clock, Context, Deferred, Effect, Exit, HashMap, Option, Ref, Scope, Semaphore } from 'effect'
-import { Type, type Static } from 'typebox'
+import { type Static, Type } from 'typebox'
 
 import { ToolFailure } from '#shared/effect/errors'
 import { createStatusChannel } from '#shared/state/status_bar'

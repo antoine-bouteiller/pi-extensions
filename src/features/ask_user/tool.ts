@@ -1,18 +1,18 @@
 import { type AgentToolResult, type ExtensionAPI, type ExtensionContext, type Theme } from '@earendil-works/pi-coding-agent'
 import {
+  type Component,
   Editor,
+  type EditorTheme,
+  type Focusable,
   Key,
   matchesKey,
   Text,
   truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
-  type Component,
-  type EditorTheme,
-  type Focusable,
 } from '@earendil-works/pi-tui'
 import { Effect, Schema } from 'effect'
-import { Type, type Static } from 'typebox'
+import { type Static, Type } from 'typebox'
 import { Check } from 'typebox/value'
 
 import { ToolFailure } from '#shared/effect/errors'
