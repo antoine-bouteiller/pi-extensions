@@ -1,0 +1,70 @@
+#!/usr/bin/env bun
+// Fake `pi --mode rpc` for sub-agent tests. State lives in $FAKE_PI_DIR/<--name or "default">/:
+// argv.json, cwd, env.json, and stdin.jsonl record the run; config.json (written by the test
+// before spawning) tunes replies; each control/*.json file holds actions run in name order:
+// {"emit": record} writes a stdout record, {"stderr": text} writes stderr, {"exit": code} exits.
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+
+const args = process.argv.slice(2)
+const nameIndex = args.indexOf('--name')
+const name = nameIndex === -1 ? 'default' : args[nameIndex + 1]
+const dir = `${process.env.FAKE_PI_DIR}/${name}`
+mkdirSync(`${dir}/control`, { recursive: true })
+writeFileSync(`${dir}/argv.json`, JSON.stringify(args))
+writeFileSync(`${dir}/cwd`, process.cwd())
+writeFileSync(`${dir}/env.json`, JSON.stringify(process.env))
+writeFileSync(`${dir}/pid`, String(process.pid))
+const config = existsSync(`${dir}/config.json`) ? JSON.parse(readFileSync(`${dir}/config.json`, 'utf8')) : {}
+
+const write = (record) => process.stdout.write(`${JSON.stringify(record)}\n`)
+const respond = (record, data) => write({ command: record.type, id: record.id, success: true, type: 'response', ...(data && { data }) })
+
+const handle = (record) => {
+  appendFileSync(`${dir}/stdin.jsonl`, `${JSON.stringify(record)}\n`)
+  switch (record.type) {
+    case 'get_state':
+      if (!config.ignoreGetState) respond(record, { sessionFile: `${dir}/session.jsonl` })
+      break
+    case 'prompt':
+      if (config.rejectPrompt) write({ command: 'prompt', error: 'rejected', id: record.id, success: false, type: 'response' })
+      else respond(record, { disposition: 'started' })
+      break
+    case 'clear_queue':
+      respond(record, { followUp: [], steering: [] })
+      break
+    case 'abort':
+      respond(record)
+      break
+    default:
+  }
+}
+
+let buffered = ''
+process.stdin.on('data', (chunk) => {
+  buffered += chunk.toString('utf8')
+  const lines = buffered.split('\n')
+  buffered = lines.pop() ?? ''
+  for (const line of lines) handle(JSON.parse(line))
+})
+process.stdin.on('end', () => {
+  writeFileSync(`${dir}/eof`, '')
+  if (!config.ignoreEof) process.exit(0)
+})
+process.on('SIGTERM', () => {
+  writeFileSync(`${dir}/sigterm`, '')
+  if (!config.ignoreSigterm) process.exit(143)
+})
+
+setInterval(() => {
+  for (const file of readdirSync(`${dir}/control`)
+    .filter((entry) => entry.endsWith('.json'))
+    .toSorted()) {
+    const actions = JSON.parse(readFileSync(`${dir}/control/${file}`, 'utf8'))
+    rmSync(`${dir}/control/${file}`)
+    for (const action of actions) {
+      if ('emit' in action) write(action.emit)
+      if ('stderr' in action) process.stderr.write(action.stderr)
+      if ('exit' in action) setTimeout(() => process.exit(action.exit), 20)
+    }
+  }
+}, 5)
