@@ -55,7 +55,7 @@ describe('renderStatusLine', () => {
 describe('renderFooterLine', () => {
   it.effect('puts context on the left and cache hit and throughput on the right', () =>
     Effect.sync(() => {
-      const line = renderFooterLine(model, plain, 60)
+      const line = renderFooterLine(model, [], plain, 60)
       expect(line).toBe(`ctx ■········· 12.5% · 34k / 272k${' '.repeat(7)}cache 87% · 42 tok/s`)
       expect(visibleWidth(line)).toBe(60)
     })
@@ -63,25 +63,42 @@ describe('renderFooterLine', () => {
 
   it.effect('omits missing metrics and marks unknown context usage', () =>
     Effect.sync(() => {
-      expect(renderFooterLine({ ...model, cacheHitPercent: undefined, tokensPerSecond: undefined }, plain, 40)).toBe(
+      expect(renderFooterLine({ ...model, cacheHitPercent: undefined, tokensPerSecond: undefined }, [], plain, 40)).toBe(
         'ctx ■········· 12.5% · 34k / 272k'
       )
-      expect(renderFooterLine({ ...model, cacheHitPercent: undefined }, plain, 40).trimEnd()).toEndWith('42 tok/s')
-      expect(renderFooterLine(emptyModelInfoState(), plain, 40)).toBe('ctx ·········· — / —')
+      expect(renderFooterLine({ ...model, cacheHitPercent: undefined }, [], plain, 40).trimEnd()).toEndWith('42 tok/s')
+      expect(renderFooterLine(emptyModelInfoState(), [], plain, 40)).toBe('ctx ·········· — / —')
     })
   )
 
   it.effect('escalates the context colour as the window fills', () =>
     Effect.sync(() => {
-      expect(renderFooterLine({ ...model, contextPercent: 69 }, tagged, 80)).toStartWith('<muted>ctx')
-      expect(renderFooterLine({ ...model, contextPercent: 70 }, tagged, 80)).toStartWith('<warning>ctx')
-      expect(renderFooterLine({ ...model, contextPercent: 90 }, tagged, 80)).toStartWith('<error>ctx')
+      expect(renderFooterLine({ ...model, contextPercent: 69 }, [], tagged, 80)).toStartWith('<muted>ctx')
+      expect(renderFooterLine({ ...model, contextPercent: 70 }, [], tagged, 80)).toStartWith('<warning>ctx')
+      expect(renderFooterLine({ ...model, contextPercent: 90 }, [], tagged, 80)).toStartWith('<error>ctx')
+    })
+  )
+
+  it.effect('[VC-2] lists shared status entries in tone color before the metrics', () =>
+    Effect.sync(() => {
+      const statuses = [
+        { key: 'feature:x', priority: 10, text: 'x failed', tone: 'error' as const },
+        { key: 'subagents', priority: 30, text: '2 sub-agents', tone: 'muted' as const },
+        { key: 'untoned', text: 'plain' },
+        { key: 'info', text: 'note', tone: 'info' as const },
+      ]
+      expect(renderFooterLine(model, statuses.slice(0, 2), tagged, 200)).toEndWith(
+        '<error>x failed · <muted>2 sub-agents · <muted>cache 87% · 42 tok/s'
+      )
+      expect(renderFooterLine({ ...model, cacheHitPercent: undefined, tokensPerSecond: undefined }, statuses.slice(2), tagged, 200)).toEndWith(
+        '<muted>plain · <accent>note'
+      )
     })
   )
 
   it.effect('stays within narrow widths', () =>
     Effect.sync(() => {
-      expect(visibleWidth(renderFooterLine(model, plain, 24))).toBeLessThanOrEqual(24)
+      expect(visibleWidth(renderFooterLine(model, [], plain, 24))).toBeLessThanOrEqual(24)
     })
   )
 })
