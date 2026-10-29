@@ -21,12 +21,13 @@ src/
 │   ├── background_poll/{index,poll}.ts
 │   ├── claude_code/{index,discovery}.ts
 │   ├── hashline/{index,tools}.ts
-│   ├── herdr/{index,herdr}.ts
 │   ├── meridian_session_affinity/{index,affinity,scrub}.ts
+│   ├── peers/{index,peers,herdr,rex}.ts
 │   ├── prompt_rewind/{index,rewind}.ts
 │   ├── provider_retry/{index,retry}.ts
 │   ├── rules/{index,rules}.ts
 │   ├── status_panel/{index,panel,editor,footer,render,state}.ts
+│   ├── subagents/{index,subagents,rpc}.ts
 │   └── webfetch/{index,fetch}.ts
 └── shared/
     ├── effect/{agent_models,app_services,bun_services,errors,feature,pi_services,runtime}.ts
