@@ -29,7 +29,7 @@ src/
 │   ├── status_panel/{index,panel,editor,footer,render,state}.ts
 │   └── webfetch/{index,fetch}.ts
 └── shared/
-    ├── effect/{app_services,bun_services,errors,feature,pi_services,runtime}.ts
+    ├── effect/{agent_models,app_services,bun_services,errors,feature,pi_services,runtime}.ts
     ├── state/{status_bar,store}.ts
     └── utils/{json,predicates,protected_paths,records,tool_output}.ts
 
@@ -39,7 +39,7 @@ tests/
 ├── registration.spec.ts
 ├── config/{feature_coordinator,runtime}.spec.ts
 ├── features/<feature>/...*.spec.ts   # mirrors src/features
-├── shared/effect/{app_services,runtime}.spec.ts
+├── shared/effect/{agent_models,app_services,runtime}.spec.ts
 ├── shared/state/{status_bar}.spec.ts
 ├── shared/utils/{predicates,protected_paths,tool_output}.spec.ts
 └── utils/{abort_controller,bun_effect,casts,deferred,fake_pi,process_env,runtime}.ts

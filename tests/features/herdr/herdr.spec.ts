@@ -6,7 +6,7 @@ import { Effect } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
 
 import { CLOSED_ENTRY, makeHerdrHandlers, RESULT_MESSAGE, SPAWN_ENTRY } from '@/features/herdr/herdr.js'
-import { HerdrSettingsError } from '@/features/herdr/settings.js'
+import { AgentModelSettingsError } from '@/shared/effect/agent_models.js'
 import { makeEnvironment } from '@/shared/effect/env.js'
 import { jsonText, parseJsonText } from '@/shared/utils/json.js'
 
@@ -374,7 +374,7 @@ describe('Herdr delegation', () => {
         },
       })
       const handlers = makeHerdrHandlers(fake.pi, makeEnvironment({ HERDR_ENV: '1' }), () =>
-        Effect.fail(HerdrSettingsError.make({ message: 'invalid settings' }))
+        Effect.fail(AgentModelSettingsError.make({ message: 'invalid settings' }))
       )
       expect(yield* refusal(handlers.spawn(task, context()))).toContain('invalid settings')
     })

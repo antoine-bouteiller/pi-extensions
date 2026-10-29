@@ -3,6 +3,7 @@ import { Text, truncateToWidth } from '@earendil-works/pi-tui'
 import { Effect } from 'effect'
 import { Type } from 'typebox'
 
+import { type AgentModelSettingsLoader } from '#shared/effect/agent_models'
 import { type AppRuntime } from '#shared/effect/app_services'
 import { processEnvironment } from '#shared/effect/env'
 import { ToolFailure } from '#shared/effect/errors'
@@ -22,7 +23,6 @@ import {
   SendMessageParams,
   SpawnAgentParams,
 } from './herdr.js'
-import { type loadHerdrSettings } from './settings.js'
 
 const result = <Details, Services>(operation: Effect.Effect<Details, HerdrError, Services>) =>
   operation.pipe(
@@ -73,7 +73,7 @@ const renderResult = (
   )
 }
 
-export const feature = ((options: FeatureOptions<typeof loadHerdrSettings> = {}) => {
+export const feature = ((options: FeatureOptions<AgentModelSettingsLoader> = {}) => {
   let handlers: ReturnType<typeof makeHerdrHandlers> | undefined
   return {
     id: 'herdr',
@@ -111,7 +111,7 @@ export const feature = ((options: FeatureOptions<typeof loadHerdrSettings> = {})
                 onSuccess: ({ models, notes }) => {
                   registerSpawn(models, notes)
                   return models.length === 0
-                    ? 'spawn_agent is unavailable: configure herdr.allowedModels in settings.json with available provider/model-id values.'
+                    ? 'spawn_agent is unavailable: configure subagents.allowedModels in settings.json with available provider/model-id values.'
                     : `spawn_agent may only use these allowed, available models: ${models.join(', ')}.`
                 },
               }),
@@ -146,7 +146,7 @@ export const feature = ((options: FeatureOptions<typeof loadHerdrSettings> = {})
             },
             promptGuidelines: [
               'Use spawn_agent for self-contained work. Its initial message must include the goal, necessary context, read-only or allowed-write scope, and expected evidence. Do not duplicate delegated work; parallel writers need disjoint scopes.',
-              'Choose a provider/model-id from the allowed, available Herdr models based on the task and the model’s capabilities; herdr.allowedModels is mandatory. Prefer Azure OpenAI (azure-openai-responses) for implementation, scouting, and research. For review, prefer a different provider from the agent that produced the work for an independent perspective. Model notes in the model argument take precedence over these defaults. These are preferences, not restrictions; use another model when better suited. Honor explicit user model choices only within the allowlist; do not silently substitute disallowed or unavailable models.',
+              'Choose a provider/model-id from the allowed, available Herdr models based on the task and the model’s capabilities; subagents.allowedModels is mandatory. Prefer Azure OpenAI (azure-openai-responses) for implementation, scouting, and research. For review, prefer a different provider from the agent that produced the work for an independent perspective. Model notes in the model argument take precedence over these defaults. These are preferences, not restrictions; use another model when better suited. Honor explicit user model choices only within the allowlist; do not silently substitute disallowed or unavailable models.',
               'Set cwd only when the user asks for an agent in another folder or project; the child then starts in a new Herdr workspace for that folder, reused by later spawns there.',
               'Give each spawn a short name. Pass tools (for example read, grep, find, ls) to enforce read-only scope, and thinking when the task needs a different effort. Delegated agents cannot delegate further.',
               'Each time a child stops, its final response arrives automatically as a herdr-agent-result message at the next parent turn boundary, as do exits without a result and blocked approval prompts. Continue independent work or end your turn while keeping Pi running; do not poll, call list_agents in a loop, or read terminal transcripts for normal results.',
@@ -263,4 +263,4 @@ export const feature = ((options: FeatureOptions<typeof loadHerdrSettings> = {})
     },
     status: { icon: '↗', name: 'herdr' },
   }
-}) satisfies FeaturePlugin<typeof loadHerdrSettings>
+}) satisfies FeaturePlugin<AgentModelSettingsLoader>

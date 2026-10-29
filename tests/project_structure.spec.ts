@@ -67,6 +67,7 @@ describe('project structure', () => {
       expect(yield* namesByKind(SRC)).toEqual({ directories: ['config', 'features', 'shared'], files: ['index.ts'] })
       expect((yield* namesByKind(join(SRC, 'shared'))).directories).toEqual(['effect', 'state', 'utils'])
       expect((yield* namesByKind(join(SRC, 'shared', 'effect'))).files).toEqual([
+        'agent_models.ts',
         'app_services.ts',
         'crypto.ts',
         'env.ts',
