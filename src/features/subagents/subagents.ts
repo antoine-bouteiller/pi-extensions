@@ -21,6 +21,7 @@ import {
   splitAgentModel,
 } from '#shared/effect/agent_models'
 import { type EnvApi } from '#shared/effect/env'
+import { createStatusChannel } from '#shared/state/status_bar'
 import { truncateOutput, truncationNotice } from '#shared/utils/tool_output'
 
 import { type RpcChild, type RpcCommand, startRpc } from './rpc.js'
@@ -95,6 +96,15 @@ interface AgentSummary {
 export interface ListResult {
   readonly agents: readonly AgentSummary[]
 }
+export interface RunningAgentView {
+  readonly agent_id: string
+  readonly model: string
+  readonly name?: string
+  readonly status: AgentStatus
+  readonly cwd: string
+  /** From `get_state`; undefined until the spawn handshake completes. */
+  readonly session_file?: string
+}
 export interface ResultDetails {
   readonly agent_id: string
   readonly model: string
@@ -107,6 +117,8 @@ interface Child {
   readonly owner: string
   readonly model: string
   readonly name?: string
+  readonly cwd: string
+  sessionFile?: string
   readonly scope: Scope.Closeable
   /** The session scope this child was forked from. */
   readonly session: Scope.Scope
@@ -129,6 +141,7 @@ export const SUBAGENT_ENTRY = 'subagent'
 /** @internal */
 export const RESULT_MESSAGE = 'subagent-result'
 const STARTUP_TIMEOUT = '30 seconds'
+const runningStatus = createStatusChannel('subagents', { priority: 30, tone: 'muted' })
 const RESULT_LIMITS = { maxBytes: 50 * 1024, maxLines: 2000 }
 
 const CHILD_PROMPT =
@@ -167,6 +180,23 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
   const owned = (ctx: ExtensionContext, id: string) => {
     const child = children.get(id)
     return child !== undefined && child.owner === (ctx.sessionManager.getSessionFile() ?? '') ? child : undefined
+  }
+
+  const ownedChildren = (ctx: ExtensionContext) =>
+    [...children.values()].filter((child) => child.owner === (ctx.sessionManager.getSessionFile() ?? ''))
+
+  /** Called after every change to `children`. */
+  const publishRunning = () => {
+    const ctx = session?.ctx
+    if (ctx === undefined) {
+      return
+    }
+    const count = ownedChildren(ctx).length
+    if (count === 0) {
+      runningStatus.clear(ctx)
+    } else {
+      runningStatus.set(ctx, { text: count === 1 ? '1 sub-agent' : `${count} sub-agents` })
+    }
   }
 
   const notify = (child: Child, content: string, status: ResultDetails['status']) =>
@@ -296,6 +326,7 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
   const forget = (child: Child) =>
     Effect.gen(function* () {
       children.delete(child.id)
+      publishRunning()
       yield* abortDialogs(child)
       yield* Scope.close(child.scope, Exit.void)
     })
@@ -308,6 +339,7 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
             return
           }
           children.delete(child.id)
+          publishRunning()
           yield* abortDialogs(child)
           if (child.awaiting) {
             const how = code === undefined ? 'was killed by a signal' : `exited with code ${code}`
@@ -344,6 +376,7 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
             }
             if (session?.scope === scope) {
               session = undefined
+              runningStatus.clear(ctx)
             }
           })
         )
@@ -371,17 +404,24 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
       Effect.sync(
         () =>
           ({
-            agents: [...children.values()]
-              .filter((child) => child.owner === (ctx.sessionManager.getSessionFile() ?? ''))
-              .map((child) => ({
-                agent_id: child.id,
-                awaiting_result: child.awaiting,
-                model: child.model,
-                status: child.status,
-                ...(child.name !== undefined && { name: child.name }),
-              })),
+            agents: ownedChildren(ctx).map((child) => ({
+              agent_id: child.id,
+              awaiting_result: child.awaiting,
+              model: child.model,
+              status: child.status,
+              ...(child.name !== undefined && { name: child.name }),
+            })),
           }) satisfies ListResult
       ),
+    running: (ctx: ExtensionContext): readonly RunningAgentView[] =>
+      ownedChildren(ctx).map((child) => ({
+        agent_id: child.id,
+        cwd: child.cwd,
+        model: child.model,
+        status: child.status,
+        ...(child.name !== undefined && { name: child.name }),
+        ...(child.sessionFile !== undefined && { session_file: child.sessionFile }),
+      })),
     send: (params: Static<typeof SendMessageParams>, ctx: ExtensionContext, signal?: AbortSignal) =>
       Effect.gen(function* () {
         const message = yield* checkAgentMessage(params.message)
@@ -418,8 +458,10 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
         }
         const random = yield* SecureRandom
         const id = (yield* random.uuidV4()).replaceAll('-', '').slice(0, 8)
+        const cwd = directory ?? ctx.cwd
         const child: Child = {
           awaiting: true,
+          cwd,
           dialogs: new Set(),
           id,
           model: params.model,
@@ -430,7 +472,6 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
           status: 'starting',
           ...(params.name !== undefined && { name: params.name }),
         }
-        const cwd = directory ?? ctx.cwd
         const args = [
           '--mode',
           'rpc',
@@ -452,6 +493,7 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
           const rpc = yield* startRpc('pi', args, { cwd, env: childEnvironment(environment), onRecord: onRecord(child) })
           child.rpc = rpc
           children.set(id, child)
+          publishRunning()
           const state = yield* rpc.request({ type: 'get_state' })
           const prompt = yield* rpc.request({ message, streamingBehavior: 'steer', type: 'prompt' })
           if (!state.success || !prompt.success) {
@@ -468,6 +510,7 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
             Effect.gen(function* () {
               const stderr = child.rpc?.stderrTail().trim() ?? ''
               children.delete(id)
+              publishRunning()
               yield* Scope.close(child.scope, Exit.void)
               return yield* fail(`Could not start the agent: ${error.message}${stderr === '' ? '' : `\n${stderr}`}`)
             })
@@ -475,6 +518,9 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
         )
         if (child.status === 'starting') {
           child.status = 'working'
+        }
+        if (started.sessionFile !== undefined) {
+          child.sessionFile = started.sessionFile
         }
         yield* watchExit(child, started.rpc).pipe(Effect.forkIn(child.scope))
         pi.appendEntry(SUBAGENT_ENTRY, {
