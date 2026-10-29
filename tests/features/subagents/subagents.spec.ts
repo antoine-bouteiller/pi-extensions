@@ -1,9 +1,13 @@
 import { fileURLToPath } from 'node:url'
+import { stripVTControlCharacters } from 'node:util'
 
+import { type ExtensionCommandContext, type ExtensionContext } from '@earendil-works/pi-coding-agent'
+import { type Component } from '@earendil-works/pi-tui'
 import { BunChildProcessSpawner, BunCrypto, BunFileSystem, BunPath } from '@effect/platform-bun'
 import { describe, expect, it, PromiseEffectError } from '@tests/utils/bun_effect.js'
-import { asExtensionContext, asResult } from '@tests/utils/casts.js'
+import { asExtensionContext, asNarrowed, asResult } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
+import { mouseEvent } from '@tests/utils/mouse.js'
 import { Effect, Exit, Fiber, Layer, Scope } from 'effect'
 import { type SecureRandom } from 'effect/crypto/SecureRandom'
 import { FileSystem } from 'effect/FileSystem'
@@ -12,6 +16,7 @@ import { type ChildProcessSpawner } from 'effect/process/ChildProcessSpawner'
 import { TestClock } from 'effect/testing'
 
 import { makeSubagentHandlers, RESULT_MESSAGE, SUBAGENT_ENTRY } from '@/features/subagents/subagents.js'
+import { openViewer } from '@/features/subagents/viewer.js'
 import { makeEnvironment } from '@/shared/effect/env.js'
 import { statusBar } from '@/shared/state/status_bar.js'
 import { jsonText, parseJsonText } from '@/shared/utils/json.js'
@@ -28,10 +33,20 @@ const Platform = Layer.mergeAll(
 interface DialogCall {
   readonly method: string
   readonly title: string
+  readonly detail?: unknown
   readonly signal?: AbortSignal
   readonly timeout?: number
   readonly resolve: (value: unknown) => void
 }
+
+type OverlayFactory = (tui: unknown, theme: unknown, keybindings: unknown, done: (value: unknown) => void) => Component
+const EXPAND = '\u000F'
+const overlayTheme = { bg: (_color: string, text: string) => text, bold: (text: string) => text, fg: (_color: string, text: string) => text }
+const overlayKeys = {
+  getKeys: (id: string) => (id === 'app.tools.expand' ? ['ctrl+o'] : ['ctrl+end']),
+  matches: (data: string, id: string) => id === 'app.tools.expand' && data === EXPAND,
+}
+const wheelUp = mouseEvent('wheel', 'none', 1, 1, -3)
 
 interface StdinRecord {
   readonly type: string
@@ -78,12 +93,16 @@ const harness = (options: { readonly hasUI?: boolean } = {}) =>
     const dialogs: DialogCall[] = []
     const uiCalls: string[] = []
     const statuses: { key: string; text: string | undefined }[] = []
+    const notifications: string[] = []
+    const overlays: { readonly component: Component; readonly options: unknown }[] = []
+    let toolsExpandedWrites = 0
     const dialog =
       (method: string) =>
-      (title: string, _detail?: unknown, opts?: DialogOptions): Promise<unknown> =>
+      (title: string, detail?: unknown, opts?: DialogOptions): Promise<unknown> =>
         new Promise((resolve) => {
           uiCalls.push(method)
           dialogs.push({
+            detail,
             method,
             resolve,
             title,
@@ -93,11 +112,23 @@ const harness = (options: { readonly hasUI?: boolean } = {}) =>
         })
     const ui = {
       confirm: dialog('confirm'),
+      custom: (factory: OverlayFactory, overlayOptions: unknown) =>
+        new Promise((resolve) => {
+          const tui = { requestRender: () => undefined, terminal: { columns: 100, rows: 10 } }
+          overlays.push({ component: factory(tui, overlayTheme, overlayKeys, resolve), options: overlayOptions })
+        }),
       editor: dialog('editor'),
+      getToolsExpanded: () => false,
       input: dialog('input'),
-      notify: () => uiCalls.push('notify'),
+      notify: (message: string, level: string) => {
+        uiCalls.push('notify')
+        notifications.push(`${level}: ${message}`)
+      },
       select: dialog('select'),
       setStatus: (key: string, text: string | undefined) => statuses.push({ key, text }),
+      setToolsExpanded: () => {
+        toolsExpandedWrites++
+      },
     }
     const environment = makeEnvironment({
       ...process.env,
@@ -117,10 +148,12 @@ const harness = (options: { readonly hasUI?: boolean } = {}) =>
         cwd: project,
         hasUI: options.hasUI ?? true,
         isProjectTrusted: () => false,
+        mode: 'tui',
         modelRegistry: { getAvailable: () => [{ id: 'gpt-6-sol', provider: 'azure-openai-responses' }] },
         sessionManager: { getSessionFile: () => session, getSessionId: () => 'parent-session-id' },
         ui,
       })
+    const command = () => asNarrowed<ExtensionCommandContext, ExtensionContext>(context())
     const scope = yield* Scope.make()
     yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
     yield* handlers.activate(context()).pipe(Scope.provide(scope))
@@ -154,7 +187,28 @@ const harness = (options: { readonly hasUI?: boolean } = {}) =>
           }
         })
       )
-    return { childDir, configure, context, dialogs, emit, exists, fake, fs, handlers, pidAlive, project, root, scope, statuses, stdin, uiCalls }
+    return {
+      childDir,
+      command,
+      configure,
+      context,
+      dialogs,
+      emit,
+      exists,
+      fake,
+      fs,
+      handlers,
+      notifications,
+      overlays,
+      pidAlive,
+      project,
+      root,
+      scope,
+      statuses,
+      stdin,
+      toolsExpandedWrites: () => toolsExpandedWrites,
+      uiCalls,
+    }
   })
 
 const messages = (fixture: Effect.Success<ReturnType<typeof harness>>) =>
@@ -502,6 +556,78 @@ describe('running sub-agents', () => {
         { agent_id: second.agent_id, cwd: other, model: MODEL, session_file: `${fixture.childDir('default')}/session.jsonl`, status: 'working' },
       ])
       expect(fixture.handlers.running(fixture.context('/sessions/none.jsonl'))).toEqual([])
+    })
+  )
+})
+
+const overlayLines = (fixture: Effect.Success<ReturnType<typeof harness>>) =>
+  (fixture.overlays[0]?.component.render(100) ?? []).map((line) => stripVTControlCharacters(line))
+
+describe('sub-agent viewer', () => {
+  live('[VC-3] lists the running children of this session and opens the chosen one in an overlay', () =>
+    Effect.gen(function* () {
+      const fixture = yield* harness()
+      yield* openViewer(fixture.handlers, fixture.command())
+      expect(fixture.notifications).toEqual(['info: No running sub-agents.'])
+
+      yield* fixture.handlers.spawn({ message: 'A', model: MODEL, name: 'Scout' }, fixture.context())
+      const second = yield* fixture.handlers.spawn({ message: 'B', model: MODEL }, fixture.context())
+      yield* fixture.handlers.spawn({ message: 'C', model: MODEL, name: 'Theirs' }, fixture.context('/sessions/other.jsonl'))
+      const viewing = yield* Effect.forkChild(openViewer(fixture.handlers, fixture.command()))
+      yield* waitFor(() => fixture.dialogs.length === 1, 'the selection')
+      expect(fixture.dialogs[0]?.detail).toEqual([`Scout · ${MODEL} · working`, `${second.agent_id} · ${MODEL} · working`])
+      fixture.dialogs[0]?.resolve(`${second.agent_id} · ${MODEL} · working`)
+      yield* waitFor(() => fixture.overlays.length === 1, 'the overlay')
+      expect(fixture.overlays[0]?.options).toMatchObject({ overlay: true })
+      expect(overlayLines(fixture)[0]).toStartWith(`╭─ ${second.agent_id} · ${MODEL} · working `)
+      fixture.overlays[0]?.component.handleInput?.('q')
+      yield* Fiber.join(viewing)
+    })
+  )
+
+  live('[VC-5] sends nothing to the child and leaves tool expansion untouched while viewing', () =>
+    Effect.gen(function* () {
+      const fixture = yield* harness()
+      yield* fixture.handlers.spawn({ message: 'A', model: MODEL, name: 'Scout' }, fixture.context())
+      const viewing = yield* Effect.forkChild(openViewer(fixture.handlers, fixture.command()))
+      yield* waitFor(() => fixture.dialogs.length === 1, 'the selection')
+      fixture.dialogs[0]?.resolve(`Scout · ${MODEL} · working`)
+      yield* waitFor(() => fixture.overlays.length === 1, 'the overlay')
+      const overlay = fixture.overlays[0]?.component
+      overlay?.render(100)
+      overlay?.handleMouse?.(wheelUp)
+      overlay?.handleInput?.('\u001B[A')
+      overlay?.handleInput?.(EXPAND)
+      overlay?.handleInput?.('\u001B')
+      yield* Fiber.join(viewing)
+      yield* Effect.promise(() => Bun.sleep(50))
+      expect((yield* fixture.stdin('Scout')).map((record) => record.type)).toEqual(['get_state', 'prompt'])
+      expect(fixture.toolsExpandedWrites()).toBe(0)
+    })
+  )
+
+  live('[VC-6] keeps the transcript and marks the title exited when the viewed child exits', () =>
+    Effect.gen(function* () {
+      const fixture = yield* harness()
+      yield* fixture.handlers.spawn({ message: 'A', model: MODEL, name: 'Scout' }, fixture.context())
+      const entry = {
+        id: 'u1',
+        message: { content: [{ text: 'Survey the repo', type: 'text' }], role: 'user', timestamp: 1 },
+        parentId: null,
+        timestamp: '2026-01-01T00:00:01.000Z',
+        type: 'message',
+      }
+      yield* fixture.fs.writeFileString(`${fixture.childDir('Scout')}/session.jsonl`, `${jsonText(entry)}\n`)
+      const viewing = yield* Effect.forkChild(openViewer(fixture.handlers, fixture.command()))
+      yield* waitFor(() => fixture.dialogs.length === 1, 'the selection')
+      fixture.dialogs[0]?.resolve(`Scout · ${MODEL} · working`)
+      yield* waitFor(() => fixture.overlays.length === 1, 'the overlay')
+      expect(overlayLines(fixture).join('\n')).toContain('Survey the repo')
+      yield* fixture.emit('Scout', { exit: 0 })
+      yield* waitFor(() => (overlayLines(fixture)[0] ?? '').includes('· exited '), 'the exited title')
+      expect(overlayLines(fixture).join('\n')).toContain('Survey the repo')
+      fixture.overlays[0]?.component.handleInput?.('q')
+      yield* Fiber.join(viewing)
     })
   )
 })

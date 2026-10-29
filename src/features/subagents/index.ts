@@ -15,7 +15,7 @@ import { type AppRuntime } from '#shared/effect/app_services'
 import { processEnvironment } from '#shared/effect/env'
 import { ToolFailure } from '#shared/effect/errors'
 import { type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
-import { makeEventHandler, makeToolExecutor } from '#shared/effect/runtime'
+import { makeCommandHandler, makeEventHandler, makeToolExecutor } from '#shared/effect/runtime'
 import { jsonText } from '#shared/utils/json'
 
 import {
@@ -28,6 +28,7 @@ import {
   SpawnAgentParams,
   type SubagentError,
 } from './subagents.js'
+import { openViewer } from './viewer.js'
 
 export interface SubagentDependencies {
   readonly agentDir?: string
@@ -224,6 +225,10 @@ export const feature = ((options: FeatureOptions<SubagentDependencies> = {}) => 
               0
             )
           },
+        })
+        pi.registerCommand('subagents', {
+          description: 'List the running sub-agents of this session and open one read-only transcript',
+          handler: makeCommandHandler(runtime)((_args, ctx) => openViewer(operations, ctx)),
         })
       },
     },

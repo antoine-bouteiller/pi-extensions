@@ -48,6 +48,11 @@ Whenever a child's run settles, its final response arrives as a `subagent-result
 the parent, as steering at the next turn boundary if it is busy. A child that exits while a result
 is awaited is reported as `exited`, with its exit code and the end of its stderr.
 
+While children run, the status bar shows `N sub-agents`. In the interactive TUI, `/subagents` lists
+the session's running children and opens one in a read-only overlay that follows its persisted
+conversation. The overlay sends nothing to the child. `ctrl+o` toggles its tool output, and `esc` or
+`q` closes it.
+
 A child's `select`, `confirm`, `input`, and `editor` dialogs open in the parent's UI, titled with
 the child's name or model, one at a time. Only the user answers them; the parent agent never sees
 them. Without a UI, they are cancelled at once. `editor` dialogs cannot be dismissed when their child

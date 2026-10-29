@@ -27,7 +27,7 @@ src/
 │   ├── provider_retry/{index,retry}.ts
 │   ├── rules/{index,rules}.ts
 │   ├── status_panel/{index,panel,editor,footer,render,state}.ts
-│   ├── subagents/{index,subagents,rpc}.ts
+│   ├── subagents/{index,subagents,rpc,viewer}.ts
 │   └── webfetch/{index,fetch}.ts
 └── shared/
     ├── effect/{agent_models,app_services,bun_services,errors,feature,pi_services,runtime}.ts
@@ -99,7 +99,7 @@ Source-owned tests mirror `src/` under `tests/`, using `.spec.ts` instead of `.t
 without a mirrored source module. `registration.spec.ts` derives every expectation from the
 feature folders on disk instead of hardcoding an inventory of features, tools, commands, and
 hooks, so it never needs editing when the feature set changes.
-`tests/utils/` holds shared test infrastructure (`bun_effect`, `casts`, `fake_pi`, and a
+`tests/utils/` holds shared test infrastructure (`bun_effect`, `casts`, `fake_pi`, `mouse`, and a
 `runtime` helper that exposes the process `AppRuntime`); it is also an explicit exception to the
 mirroring rule.
 
