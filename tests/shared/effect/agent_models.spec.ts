@@ -3,7 +3,13 @@ import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { Cause, Effect } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
 
-import { loadAgentModelSettings } from '@/shared/effect/agent_models.js'
+import {
+  checkAgentMessage,
+  loadAgentModelSettings,
+  requireAllowedModel,
+  resolveAgentDirectory,
+  splitAgentModel,
+} from '@/shared/effect/agent_models.js'
 import { jsonText } from '@/shared/utils/json.js'
 
 const fixture = Effect.gen(function* () {
@@ -171,6 +177,61 @@ describe('Agent model settings', () => {
 
       yield* fs.makeDirectory(globalPath)
       expect((yield* Effect.exit(loadAgentModelSettings({ ...options, projectTrusted: false })))._tag).toBe('Failure')
+    })
+  )
+})
+
+const failure = <Value, Services>(effect: Effect.Effect<Value, { message: string }, Services>) =>
+  effect.pipe(Effect.match({ onFailure: (error) => error.message, onSuccess: () => 'unexpected success' }))
+
+describe('Agent requests', () => {
+  it.effect('accepts text with newlines and tabs, and refuses empty text and terminal controls', () =>
+    Effect.gen(function* () {
+      expect(yield* checkAgentMessage('/quit\n\t!echo')).toBe('/quit\n\t!echo')
+      for (const message of [' ', '\u001b[31mhello', 'hello\rworld', 'hello\u0000']) {
+        expect(yield* failure(checkAgentMessage(message))).toContain('terminal control')
+      }
+    })
+  )
+
+  it.effect('splits exact provider/model ids and refuses flag-like or malformed ones', () =>
+    Effect.gen(function* () {
+      expect(yield* splitAgentModel('azure-openai-responses/gpt-6-sol')).toEqual({ model: 'gpt-6-sol', provider: 'azure-openai-responses' })
+      expect(yield* splitAgentModel('p/vendor/model:v1')).toEqual({ model: 'vendor/model:v1', provider: 'p' })
+      for (const model of [
+        'gpt-6-sol',
+        '/model',
+        'provider/',
+        'provider/--help',
+        'provider/model with space',
+        'provider/model\u0000',
+        'pro.vider/m',
+      ]) {
+        expect(yield* failure(splitAgentModel(model))).toContain('provider/model-id')
+      }
+    })
+  )
+
+  it.effect('requires an allowed, available model and names the configuration key when none is', () =>
+    Effect.gen(function* () {
+      yield* requireAllowedModel('p/a', ['p/a'])
+      expect(yield* failure(requireAllowedModel('p/b', ['p/a']))).toBe('Model p/b is not allowed or available. Choose one of: p/a.')
+      expect(yield* failure(requireAllowedModel('p/b', []))).toContain('Configure subagents.allowedModels')
+    })
+  )
+
+  it.scoped('resolves ~/ and relative directories, treats the current folder as default, and refuses missing ones', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem
+      const directory = yield* fs.realPath(yield* fs.makeTempDirectoryScoped())
+      yield* fs.makeDirectory(`${directory}/sub`)
+      yield* fs.writeFileString(`${directory}/file`, '')
+      expect(yield* resolveAgentDirectory(directory, '.')).toBeUndefined()
+      expect(yield* resolveAgentDirectory(directory, 'sub')).toBe(`${directory}/sub`)
+      expect(yield* resolveAgentDirectory('/', directory)).toBe(directory)
+      for (const cwd of ['missing', 'file', '~/definitely-missing-agent-folder']) {
+        expect(yield* failure(resolveAgentDirectory(directory, cwd))).toContain('is not an existing directory')
+      }
     })
   )
 })

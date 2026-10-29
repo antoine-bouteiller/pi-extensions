@@ -1,3 +1,5 @@
+import { homedir } from 'node:os'
+
 import { CONFIG_DIR_NAME, type ExtensionContext, getAgentDir } from '@earendil-works/pi-coding-agent'
 import { Effect, Schema } from 'effect'
 import { FileSystem } from 'effect/FileSystem'
@@ -84,4 +86,81 @@ export const availableAgentModels = (ctx: ExtensionContext, load: AgentModelSett
       models,
       notes: models.flatMap((model) => (settings.modelNotes[model] === undefined ? [] : [`${model}: ${settings.modelNotes[model]}`])),
     }
+  })
+
+export class AgentRequestError extends Schema.TaggedError<AgentRequestError, { readonly brand: unique symbol }>()('AgentRequestError', {
+  message: Schema.String,
+}) {}
+
+const requestError = (message: string) => AgentRequestError.make({ message })
+
+export const AgentMessageParam = Type.String({ maxLength: 32_768, minLength: 1 })
+export const AgentModelParam = Type.String({
+  description: 'Exact provider/model-id, for example azure-openai-responses/gpt-6-sol.',
+  maxLength: 256,
+  minLength: 1,
+})
+export const AgentNameParam = (description: string) =>
+  Type.String({ description, maxLength: 64, minLength: 1, pattern: String.raw`^[^\s\x00-\x1f\x7f-\x9f-][^\x00-\x1f\x7f-\x9f]*$` })
+export const AgentThinkingParam = Type.Union(
+  [
+    Type.Literal('off'),
+    Type.Literal('minimal'),
+    Type.Literal('low'),
+    Type.Literal('medium'),
+    Type.Literal('high'),
+    Type.Literal('xhigh'),
+    Type.Literal('max'),
+  ],
+  { description: 'Thinking level for the agent.' }
+)
+export const AgentCwdParam = (description: string) =>
+  Type.String({ description, maxLength: 4096, minLength: 1, pattern: String.raw`^[^\x00-\x1f\x7f-\x9f]+$` })
+
+/** Rejects empty text and terminal control characters other than newline and tab. */
+export const checkAgentMessage = (message: string): Effect.Effect<string, AgentRequestError> => {
+  const controls = message.match(/\p{Cc}/gu)?.some((character) => character !== '\n' && character !== '\t') === true
+  return message.trim().length === 0 || controls
+    ? Effect.fail(requestError('Messages must contain text and no terminal control characters (except newline and tab).'))
+    : Effect.succeed(message)
+}
+
+/** Splits an exact `provider/model-id`, rejecting values Pi's CLI would read as flags or patterns. */
+export const splitAgentModel = (value: string): Effect.Effect<{ readonly provider: string; readonly model: string }, AgentRequestError> => {
+  const slash = value.indexOf('/')
+  const provider = value.slice(0, slash)
+  const model = value.slice(slash + 1)
+  if (slash < 1 || !/^[a-zA-Z0-9_-]+$/.test(provider) || !/^[^-\s][^\s]*$/.test(model) || /\p{Cc}/u.test(model)) {
+    return Effect.fail(requestError('model must be an exact provider/model-id.'))
+  }
+  return Effect.succeed({ model, provider })
+}
+
+/** Fails unless `model` is allowed and available; `models` comes from {@link availableAgentModels}. */
+export const requireAllowedModel = (model: string, models: readonly string[]): Effect.Effect<void, AgentRequestError> => {
+  if (models.includes(model)) {
+    return Effect.void
+  }
+  return Effect.fail(
+    requestError(
+      models.length === 0
+        ? 'No allowed models are available. Configure subagents.allowedModels in settings.json with available provider/model-id values.'
+        : `Model ${model} is not allowed or available. Choose one of: ${models.join(', ')}.`
+    )
+  )
+}
+
+/** Resolves an absolute, `~/`, or relative directory; undefined when it is `cwd` itself. */
+export const resolveAgentDirectory = (cwd: string, requested: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem
+    const path = yield* Path
+    const expanded = requested === '~' || requested.startsWith('~/') ? path.join(homedir(), requested.slice(1)) : requested
+    const missing = () => requestError(`cwd ${requested} is not an existing directory.`)
+    const directory = yield* fs.realPath(path.resolve(cwd, expanded)).pipe(Effect.mapError(missing))
+    const info = yield* fs.stat(directory).pipe(Effect.mapError(missing))
+    if (info.type !== 'Directory') {
+      return yield* missing()
+    }
+    return directory === cwd ? undefined : directory
   })

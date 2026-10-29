@@ -6,8 +6,8 @@ import { feature as askUser } from '#features/ask_user/index'
 import { feature as backgroundPoll } from '#features/background_poll/index'
 import { feature as claudeCode } from '#features/claude_code/index'
 import { feature as hashline } from '#features/hashline/index'
-import { feature as herdr } from '#features/herdr/index'
 import { feature as meridianSessionAffinity } from '#features/meridian_session_affinity/index'
+import { feature as peers } from '#features/peers/index'
 import { feature as promptRewind } from '#features/prompt_rewind/index'
 import { feature as providerRetry } from '#features/provider_retry/index'
 import { feature as rules } from '#features/rules/index'
@@ -21,8 +21,8 @@ export const features = [
   backgroundPoll(),
   claudeCode(),
   hashline(),
-  herdr(),
   meridianSessionAffinity(),
+  peers(),
   promptRewind(),
   providerRetry(),
   rules(),
