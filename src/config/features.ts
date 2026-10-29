@@ -12,6 +12,7 @@ import { feature as promptRewind } from '#features/prompt_rewind/index'
 import { feature as providerRetry } from '#features/provider_retry/index'
 import { feature as rules } from '#features/rules/index'
 import { feature as statusPanel } from '#features/status_panel/index'
+import { feature as subagents } from '#features/subagents/index'
 import { feature as webfetch } from '#features/webfetch/index'
 import { type FeatureDescriptor } from '#shared/effect/feature'
 
@@ -27,6 +28,7 @@ export const features = [
   providerRetry(),
   rules(),
   statusPanel(),
+  subagents(),
   webfetch(),
 ] satisfies readonly FeatureDescriptor[]
 
