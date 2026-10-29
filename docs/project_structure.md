@@ -17,7 +17,7 @@ src/
 │   ├── features.ts                  # explicit ordered FeatureDescriptor registry
 │   └── runtime.ts                   # process-wide shared AppRuntime composition
 ├── features/
-│   ├── ask_user/{index,prompt,tool}.ts
+│   ├── ask_user/{index,program_status,prompt,tool}.ts
 │   ├── background_poll/{index,poll}.ts
 │   ├── claude_code/{index,discovery}.ts
 │   ├── hashline/{index,tools}.ts

@@ -19,6 +19,7 @@ import { ToolFailure } from '#shared/effect/errors'
 import { PiCtx } from '#shared/effect/pi_services'
 import { isEmptyString, isTrue } from '#shared/utils/predicates'
 
+import { type QuestionStatus } from './program_status.js'
 import { ASK_USER_MALFORMED_CALL_MESSAGE, ASK_USER_PARAMETER_DESCRIPTIONS, buildAskUserResultMessage } from './prompt.js'
 
 const MIN_OPTIONS = 2
@@ -327,7 +328,12 @@ const recoverAskUserParams = (params: Static<typeof AskUserParams>): Static<type
   }
 }
 
-export const askUserEffect = (events: ExtensionAPI['events'], rawParams: Static<typeof AskUserParams>, signal: AbortSignal | undefined) =>
+export const askUserEffect = (
+  events: ExtensionAPI['events'],
+  status: QuestionStatus,
+  rawParams: Static<typeof AskUserParams>,
+  signal: AbortSignal | undefined
+) =>
   Effect.gen(function* () {
     const params = recoverAskUserParams(rawParams)
     const { options } = params
@@ -368,9 +374,16 @@ export const askUserEffect = (events: ExtensionAPI['events'], rawParams: Static<
     // Herdr's pi integration (~/.pi/agent/extensions/herdr-agent-state.ts) listens for this event
     // To flag the pane as blocked while the question is waiting for an answer.
     const result = yield* Effect.acquireUseRelease(
-      Effect.sync(() => events.emit('herdr:blocked', { active: true, label: params.question })),
+      Effect.sync(() => {
+        events.emit('herdr:blocked', { active: true, label: params.question })
+        return status.open(ctx.mode, params.question)
+      }),
       () => showQuestion(ctx, params.question, allOptions, signal),
-      () => Effect.sync(() => events.emit('herdr:blocked', { active: false }))
+      (record) =>
+        Effect.sync(() => {
+          status.close(record)
+          events.emit('herdr:blocked', { active: false })
+        })
     )
 
     if (result === undefined) {

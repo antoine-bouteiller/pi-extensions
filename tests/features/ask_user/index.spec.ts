@@ -8,6 +8,7 @@ import { Effect } from 'effect'
 
 import { feature } from '@/features/ask_user/index.js'
 import { ASK_USER_MALFORMED_CALL_MESSAGE } from '@/features/ask_user/prompt.js'
+import { makeEnvironment } from '@/shared/effect/env.js'
 
 interface AskUserResult {
   content: { type: 'text'; text: string }[]
@@ -40,7 +41,8 @@ const params = {
   question: 'When should this ship?',
 }
 
-const setup = (customError?: Error) => {
+const setup = (customError?: Error, environment: Record<string, string> = {}) => {
+  const writes: string[] = []
   let component: PromptComponent | undefined
   let customCalls = 0
   const tui = {
@@ -66,7 +68,12 @@ const setup = (customError?: Error) => {
   }
 
   const fakePi = createFakePi()
-  feature().implementation.register(fakePi.pi, runtime)
+  feature({
+    dependencies: (sequence) => {
+      writes.push(sequence)
+    },
+    environment: makeEnvironment(environment),
+  }).implementation.register(fakePi.pi, runtime)
   const tool = asTool<AskUserTool>(fakePi.state.tools.get('ask_user'))
 
   return {
@@ -85,6 +92,7 @@ const setup = (customError?: Error) => {
     nonTuiContext: { mode: 'rpc', ui },
     tool,
     tuiContext: { mode: 'tui', ui },
+    writes,
   }
 }
 
@@ -207,6 +215,83 @@ describe('ask_user tool behavior', () => {
       )
 
       expect(rejection).toMatchObject({ _tag: 'AskUserUiError', cause, message: 'UI exploded' })
+    })
+  )
+})
+
+const statusOpen = (id: string, message: string) =>
+  `\x1b]7501;state=blocked:id=${id}:kind=question:app=pi:msg=${Buffer.from(message, 'utf8').toString('base64')}\x1b\\`
+const statusClear = (id: string) => `\x1b]7501;state=clear:id=${id}\x1b\\`
+
+describe('ask_user program status', () => {
+  it.effect('[VC-7] reports a blocked question record until the user answers, dismisses, or the call aborts', () =>
+    Effect.gen(function* () {
+      const fixture = setup(undefined, { PI_PROGRAM_STATUS: '1' })
+      const answered = fixture.tool.execute('status-1', params, undefined, undefined, fixture.tuiContext)
+      expect(fixture.writes).toEqual([statusOpen('ask_user/1', params.question)])
+      fixture.component.handleInput?.('1')
+      yield* Effect.promise(() => answered)
+      expect(fixture.writes).toEqual([statusOpen('ask_user/1', params.question), statusClear('ask_user/1')])
+
+      fixture.writes.length = 0
+      const dismissed = fixture.tool.execute('status-2', params, undefined, undefined, fixture.tuiContext)
+      fixture.component.handleInput?.('\x1b')
+      yield* Effect.promise(() => dismissed)
+      expect(fixture.writes).toEqual([statusOpen('ask_user/2', params.question), statusClear('ask_user/2')])
+
+      fixture.writes.length = 0
+      const controller = makeAbortController()
+      const aborted = fixture.tool.execute('status-3', params, controller.signal, undefined, fixture.tuiContext)
+      controller.abort()
+      yield* Effect.promise(() => aborted)
+      expect(fixture.writes).toEqual([statusOpen('ask_user/3', params.question), statusClear('ask_user/3')])
+    })
+  )
+
+  it.effect('[VC-7] clears the record when the dialog fails', () =>
+    Effect.gen(function* () {
+      const fixture = setup(new Error('UI exploded'), { PI_PROGRAM_STATUS: '1' })
+      yield* Effect.promise(() => fixture.tool.execute('status-4', params, undefined, undefined, fixture.tuiContext).catch(() => undefined))
+      expect(fixture.writes).toEqual([statusOpen('ask_user/1', params.question), statusClear('ask_user/1')])
+    })
+  )
+
+  it.effect('[VC-7] sends a multi-line question as one line truncated at 2048 UTF-8 bytes', () =>
+    Effect.gen(function* () {
+      const fixture = setup(undefined, { PI_PROGRAM_STATUS: '1' })
+      const question = `  First line\nsecond ${'界'.repeat(1000)}`
+      const pending = fixture.tool.execute('status-5', { ...params, question }, undefined, undefined, fixture.tuiContext)
+      fixture.component.handleInput?.('\x1b')
+      yield* Effect.promise(() => pending)
+      const message = Buffer.from(/msg=(?<msg>[A-Za-z0-9+/=]+)/.exec(fixture.writes[0] ?? '')?.groups?.msg ?? '', 'base64').toString('utf8')
+      expect(message).toStartWith('First line second 界')
+      expect(Buffer.byteLength(message, 'utf8')).toBe(2046)
+      expect(Buffer.byteLength(`${message}界`, 'utf8')).toBeGreaterThan(2048)
+      expect(fixture.writes[0]).not.toContain('\n')
+    })
+  )
+
+  it.effect('[VC-7] follows the program status gate', () =>
+    Effect.gen(function* () {
+      const cases: [Record<string, string>, boolean][] = [
+        [{ TERM_PROGRAM: 'rex' }, true],
+        [{ PI_PROGRAM_STATUS: '1', TERM_PROGRAM: 'other' }, true],
+        [{ PI_PROGRAM_STATUS: '0', TERM_PROGRAM: 'rex' }, false],
+        [{ TERM_PROGRAM: 'rex', TMUX: '/tmp/tmux' }, false],
+        [{ HERDR_ENV: '1', TERM_PROGRAM: 'rex' }, false],
+        [{ TERM_PROGRAM: 'iTerm.app' }, false],
+        [{}, false],
+      ]
+      for (const [environment, expected] of cases) {
+        const fixture = setup(undefined, environment)
+        const pending = fixture.tool.execute('gate', params, undefined, undefined, fixture.tuiContext)
+        fixture.component.handleInput?.('\x1b')
+        yield* Effect.promise(() => pending)
+        expect(fixture.writes.length > 0).toBe(expected)
+      }
+      const rpc = setup(undefined, { PI_PROGRAM_STATUS: '1' })
+      yield* Effect.promise(() => rpc.tool.execute('gate-rpc', params, undefined, undefined, rpc.nonTuiContext))
+      expect(rpc.writes).toEqual([])
     })
   )
 })
