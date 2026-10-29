@@ -7,6 +7,7 @@ import { Effect } from 'effect'
 
 import { feature } from '@/features/status_panel/index.js'
 import { columns, formatTokens } from '@/features/status_panel/render.js'
+import { publishStatus } from '@/shared/state/status_bar.js'
 
 const runtime = runtimeWithEnvironment(process.env)
 
@@ -38,7 +39,13 @@ const harness = (mode: 'tui' | 'rpc' = 'tui', git: { branch: string; code?: numb
   }
   const descriptor = feature()
   descriptor.implementation.register(fixture.pi, runtime)
-  const tui = { requestRender: () => undefined, terminal: { columns: 80, rows: 30 } }
+  let renders = 0
+  const tui = {
+    requestRender: () => {
+      renders++
+    },
+    terminal: { columns: 80, rows: 30 },
+  }
   const ui = {
     editor: undefined as Factory | undefined,
     footer: undefined as Factory | undefined,
@@ -75,6 +82,7 @@ const harness = (mode: 'tui' | 'rpc' = 'tui', git: { branch: string; code?: numb
     gitCalls,
     makeEditor: () => ui.editor?.(tui, { borderColor: (text: string) => text, selectList: {} }, {}),
     previousEditor,
+    renders: () => renders,
     sessionName: () => sessionName,
     setUsage: (next: typeof usage) => {
       usage = next
@@ -117,6 +125,22 @@ describe('status panel', () => {
       yield* panel.emit('agent_settled')
       expect(panel.topBorder(60)).toStartWith('╭─ ● Ready ')
       expect(panel.footerLine(60)[0]).toMatch(/^ctx ■········· 10\.0% · 20k \/ 200k +cache 90% · \d+ tok\/s$/)
+    })
+  )
+
+  it.effect('[VC-2] shows shared status entries in the footer and re-renders when one is published', () =>
+    Effect.gen(function* () {
+      const panel = harness()
+      yield* panel.activate()
+      expect(panel.footerLine(80)[0]).not.toContain('2 sub-agents')
+      const before = panel.renders()
+      publishStatus('panel-test', { priority: 30, text: '2 sub-agents', tone: 'muted' })
+      expect(panel.renders()).toBe(before + 1)
+      expect(panel.footerLine(80)[0]).toEndWith('2 sub-agents')
+      yield* panel.deactivate()
+      const after = panel.renders()
+      publishStatus('panel-test', undefined)
+      expect(panel.renders()).toBe(after)
     })
   )
 

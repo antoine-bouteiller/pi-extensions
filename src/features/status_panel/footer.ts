@@ -3,6 +3,8 @@ import { stripVTControlCharacters } from 'node:util'
 import { type ThemeColor } from '@earendil-works/pi-coding-agent'
 import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui'
 
+import { type StatusEntry } from '#shared/state/status_bar'
+
 import { columns, formatTokens } from './render.js'
 import { type ModelInfoState } from './state.js'
 
@@ -12,6 +14,14 @@ export interface StatusTheme {
 }
 
 const CONTEXT_BAR_WIDTH = 10
+
+const TONE_COLORS = {
+  error: 'error',
+  info: 'accent',
+  muted: 'muted',
+  success: 'success',
+  warning: 'warning',
+} satisfies Record<NonNullable<StatusEntry['tone']>, ThemeColor>
 
 const contextColor = (percent: number): ThemeColor => {
   if (percent >= 90) {
@@ -40,8 +50,8 @@ export const renderStatusLine = (
   return truncateToWidth(`${head}${tail}`, width)
 }
 
-/** Context usage on the left, last-turn cache hit and throughput on the right. */
-export const renderFooterLine = (model: ModelInfoState, theme: StatusTheme, width: number): string => {
+/** Context usage on the left; shared status entries, then last-turn cache hit and throughput, on the right. */
+export const renderFooterLine = (model: ModelInfoState, statuses: readonly StatusEntry[], theme: StatusTheme, width: number): string => {
   const { cacheHitPercent, contextPercent, contextTokens, contextWindow, tokensPerSecond } = model
   const window = contextWindow > 0 ? formatTokens(contextWindow) : '—'
   const known = contextPercent !== undefined && contextTokens !== undefined
@@ -56,5 +66,9 @@ export const renderFooterLine = (model: ModelInfoState, theme: StatusTheme, widt
   ]
     .filter((value) => value !== undefined)
     .join(' · ')
-  return columns(context, metrics === '' ? '' : theme.fg('muted', metrics), width)
+  const right = [
+    ...statuses.map((entry) => theme.fg(TONE_COLORS[entry.tone ?? 'muted'], entry.text)),
+    ...(metrics === '' ? [] : [theme.fg('muted', metrics)]),
+  ].join(' · ')
+  return columns(context, right, width)
 }
