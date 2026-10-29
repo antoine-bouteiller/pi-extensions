@@ -6,7 +6,7 @@ import { type HttpClient } from 'effect/http'
 import { type Path } from 'effect/Path'
 import { type ChildProcessSpawner } from 'effect/process/ChildProcessSpawner'
 
-import { formatStatusText, publishStatus, statusBar, type StatusEntry, type StatusItem } from '#shared/state/status_bar'
+import { publishStatus, statusBar, type StatusEntry, type StatusItem } from '#shared/state/status_bar'
 
 import { type Env } from './env.js'
 import { Ui } from './pi_services.js'
@@ -44,7 +44,7 @@ const statusChannel = (key: string, defaults: Partial<StatusItem> = {}): StatusC
       const entry = { ...defaults, ...item }
       publishStatus(key, entry)
       if (yield* ui.hasUI) {
-        yield* ui.setStatus(key, formatStatusText(entry))
+        yield* ui.setStatus(key, entry.text)
       }
     }),
 })

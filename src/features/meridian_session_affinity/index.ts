@@ -84,12 +84,12 @@ export const implementation = {
 const makeImplementation = (dependencies: MeridianSessionAffinityDependencies): FeatureImplementation => ({
   activate: () =>
     Effect.gen(function* () {
-      const channel = (yield* StatusBar).channel(HEALTH_STATUS_KEY, { icon: '🧭', tone: 'warning' })
+      const channel = (yield* StatusBar).channel(HEALTH_STATUS_KEY, { tone: 'warning' })
       const publish = healthWarning(dependencies).pipe(
         Effect.flatMap((warning) =>
           warning === undefined
             ? channel.clear
-            : channel.set({ text: `meridian: ${warning}` }).pipe(Effect.andThen(notifyUser(`🧭 meridian: ${warning}`, 'warning')))
+            : channel.set({ text: `meridian: ${warning}` }).pipe(Effect.andThen(notifyUser(`meridian: ${warning}`, 'warning')))
         )
       )
       yield* Effect.forkIn(publish, yield* Scope.Scope)
@@ -112,6 +112,6 @@ export const feature = ((options: FeatureOptions<MeridianSessionAffinityDependen
   return {
     id: 'meridian-session-affinity',
     implementation: isNullOrUndefined((dependencies.which ?? Bun.which)('claude')) ? disabledImplementation : makeImplementation(dependencies),
-    status: { icon: '🧭', name: 'meridian' },
+    status: { name: 'meridian' },
   }
 }) satisfies FeaturePlugin<MeridianSessionAffinityDependencies>

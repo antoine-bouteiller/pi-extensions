@@ -218,6 +218,6 @@ export const feature = ((options: FeatureOptions<PeerDependencies> = {}) => {
         })
       },
     },
-    status: { icon: '↗', name: 'peers' },
+    status: { name: 'peers' },
   }
 }) satisfies FeaturePlugin<PeerDependencies>

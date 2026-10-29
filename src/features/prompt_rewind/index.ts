@@ -28,6 +28,6 @@ export const feature = ((_options: FeatureOptions<undefined> = {}) => {
         })
       },
     },
-    status: { icon: '↩️', name: 'prompt-rewind' },
+    status: { name: 'prompt-rewind' },
   }
 }) satisfies FeaturePlugin<undefined>

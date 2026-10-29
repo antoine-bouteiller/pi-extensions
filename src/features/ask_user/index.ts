@@ -46,5 +46,5 @@ export const feature = ((options: FeatureOptions<StatusWriter> = {}) => ({
       })
     },
   },
-  status: { icon: '❓', name: 'ask-user' },
+  status: { name: 'ask-user' },
 })) satisfies FeaturePlugin<StatusWriter>

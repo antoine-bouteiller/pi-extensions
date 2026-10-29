@@ -9,7 +9,7 @@ describe('FeatureDescriptor', () => {
       const descriptor = {
         id: 'eager',
         implementation: { register: () => undefined },
-        status: { icon: '✓', name: 'eager' },
+        status: { name: 'eager' },
       } satisfies FeatureDescriptor
       const identity: FeatureIdentity = descriptor
       const status: FeatureStatusMetadata = identity.status

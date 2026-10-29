@@ -227,6 +227,6 @@ export const feature = ((options: FeatureOptions<SubagentDependencies> = {}) => 
         })
       },
     },
-    status: { icon: '⇣', name: 'subagents' },
+    status: { name: 'subagents' },
   }
 }) satisfies FeaturePlugin<SubagentDependencies>

@@ -7,7 +7,7 @@ import { createStatusChannel } from '#shared/state/status_bar'
 import { isEmptyString, isTrue } from '#shared/utils/predicates'
 import { truncateOutput, truncationNotice } from '#shared/utils/tool_output'
 
-const status = createStatusChannel('background-poll', { icon: '⏳', priority: 20, tone: 'muted' })
+const status = createStatusChannel('background-poll', { priority: 20, tone: 'muted' })
 
 const DEFAULT_INTERVAL_SECONDS = 10
 const DEFAULT_TIMEOUT_SECONDS = 60 * 60
@@ -220,7 +220,7 @@ const updateStatus = (state: PollStateFields, ctx: ExtensionContext): Effect.Eff
       if (count === 0) {
         status.clear(ctx)
       } else {
-        status.set(ctx, { text: `${count} background poll${count === 1 ? '' : 's'} · ${formatElapsed(now - Math.min(...startTimes))}` })
+        status.set(ctx, { text: `${count} background poll${count === 1 ? '' : 's'} (${formatElapsed(now - Math.min(...startTimes))})` })
       }
     })
   })

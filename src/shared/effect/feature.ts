@@ -13,7 +13,6 @@ export interface FeatureActivationError {
 
 /** @internal */
 export interface FeatureStatusMetadata {
-  readonly icon: string
   readonly name: string
 }
 

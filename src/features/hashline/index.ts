@@ -51,5 +51,5 @@ export const feature = ((_options: FeatureOptions<undefined> = {}) => ({
       })
     },
   },
-  status: { icon: '#️⃣', name: 'hashline' },
+  status: { name: 'hashline' },
 })) satisfies FeaturePlugin<undefined>

@@ -7,7 +7,6 @@ type StatusTone = 'muted' | 'info' | 'success' | 'warning' | 'error'
 export interface StatusItem {
   text: string
   tone?: StatusTone
-  icon?: string
   /** Lower sorts first in the status bar; equal priorities fall back to key order. */
   priority?: number
 }
@@ -29,8 +28,6 @@ export const statusBar = {
       .toSorted((left, right) => (left.priority ?? DEFAULT_PRIORITY) - (right.priority ?? DEFAULT_PRIORITY) || left.key.localeCompare(right.key)),
   subscribe: statuses.subscribe,
 }
-
-export const formatStatusText = (item: StatusItem): string => (item.icon === undefined ? item.text : `${item.icon} ${item.text}`)
 
 /** Store-only write, for callers that mirror into Pi's registry themselves. */
 export const publishStatus = (key: string, item: StatusItem | undefined): void => {
@@ -59,7 +56,7 @@ export const createStatusChannel = (key: string, defaults: Partial<StatusItem> =
     const entry = { ...defaults, ...item }
     statuses.publish(key, entry)
     if (ctx.hasUI) {
-      ctx.ui.setStatus(key, formatStatusText(entry))
+      ctx.ui.setStatus(key, entry.text)
     }
   },
 })

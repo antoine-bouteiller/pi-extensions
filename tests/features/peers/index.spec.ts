@@ -92,7 +92,7 @@ describe('peers registration', () => {
     const fixture = createFakePi()
     const descriptor = feature({ environment: makeEnvironment({}) })
     descriptor.implementation.register(fixture.pi, runtime)
-    expect(descriptor).toMatchObject({ id: 'peers', status: { icon: '↗', name: 'peers' } })
+    expect(descriptor).toMatchObject({ id: 'peers', status: { name: 'peers' } })
     expect([...fixture.state.tools.keys()]).toEqual(['open_agent', 'message_peer', 'discover_agents'])
     expect([...fixture.state.handlers.keys()]).toEqual(['before_agent_start'])
     const open = fixture.state.tools.get('open_agent')

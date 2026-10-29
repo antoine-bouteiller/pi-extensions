@@ -20,7 +20,7 @@ type Manifest = Record<(typeof MANIFEST_KEYS)[number], string[]>
 
 interface DescriptorMetadata {
   id: string
-  status: { icon: string; name: string }
+  status: { name: string }
 }
 
 interface FeatureReport {
@@ -205,7 +205,6 @@ export const features = [
 
       expect(new Set(registry.map(({ id }) => id)).size).toBe(registry.length)
       expect(new Set(registry.map(({ id }) => `feature:${id}`)).size).toBe(registry.length)
-      expect(new Set(registry.map(({ status }) => status.icon)).size).toBe(registry.length)
       expect(new Set(registry.map(({ status }) => status.name)).size).toBe(registry.length)
     })
   )
@@ -232,15 +231,15 @@ export const features = [
       )
 
       expect(descriptors).toEqual({
-        background_poll: { id: 'background-poll', status: { icon: '⏳', name: 'background-poll' } },
-        claude_code: { id: 'claude-code', status: { icon: '🤖', name: 'claude-code' } },
+        background_poll: { id: 'background-poll', status: { name: 'background-poll' } },
+        claude_code: { id: 'claude-code', status: { name: 'claude-code' } },
         meridian_session_affinity: {
           id: 'meridian-session-affinity',
-          status: { icon: '🧭', name: 'meridian' },
+          status: { name: 'meridian' },
         },
-        prompt_rewind: { id: 'prompt-rewind', status: { icon: '↩️', name: 'prompt-rewind' } },
-        rules: { id: 'rules', status: { icon: '📜', name: 'rules' } },
-        status_panel: { id: 'status-panel', status: { icon: '📊', name: 'status-panel' } },
+        prompt_rewind: { id: 'prompt-rewind', status: { name: 'prompt-rewind' } },
+        rules: { id: 'rules', status: { name: 'rules' } },
+        status_panel: { id: 'status-panel', status: { name: 'status-panel' } },
       })
     })
   )

@@ -25,6 +25,6 @@ export const feature = ((_options: FeatureOptions<undefined> = {}) => {
         pi.on('agent_settled', onEvent(handlers.agentSettled))
       },
     },
-    status: { icon: '📊', name: 'status-panel' },
+    status: { name: 'status-panel' },
   }
 }) satisfies FeaturePlugin<undefined>
