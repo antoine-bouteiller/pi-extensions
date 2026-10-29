@@ -1,6 +1,6 @@
 ---
 title: Sub-agent viewer
-status: implementing
+status: implemented
 author: Antoine Bouteiller
 date: 2026-10-29
 module: [src/features, src/shared/state, src/shared/effect, src/config]
@@ -71,16 +71,16 @@ child already persists its transcript to the session file reported by `get_state
 
 ## Contracts
 
-| ID       | Kind      | Contract                                                                                                                          | Anchor |
-| -------- | --------- | --------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| `[CT-1]` | api       | `/subagents` command, no arguments, registered by `src/features/subagents/index.ts` next to the tools                             | null   |
-| `[CT-3]` | config    | Status entry `subagents`: `{ priority: 30, tone: 'muted', text: '1 sub-agent' \| '<N> sub-agents' }`; absent when N is 0          | null   |
-| `[CT-6]` | invariant | The viewer issues no `RpcCommand` to any child and never calls `ctx.ui.setToolsExpanded`                                          | null   |
-| `[CT-8]` | config    | Status entry `background-poll` text: `<N> background poll(s) (<formatElapsed(oldest)>)`, for example `2 background polls (1m05s)` | null   |
+| ID       | Kind      | Contract                                                                                                                          | Anchor                                     |
+| -------- | --------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| `[CT-1]` | api       | `/subagents` command, no arguments, registered by `src/features/subagents/index.ts` next to the tools                             | `src/features/subagents/index.ts:229`      |
+| `[CT-3]` | config    | Status entry `subagents`: `{ priority: 30, tone: 'muted', text: '1 sub-agent' \| '<N> sub-agents' }`; absent when N is 0          | `src/features/subagents/subagents.ts:144`  |
+| `[CT-6]` | invariant | The viewer issues no `RpcCommand` to any child and never calls `ctx.ui.setToolsExpanded`                                          | `src/features/subagents/viewer.ts:370`     |
+| `[CT-8]` | config    | Status entry `background-poll` text: `<N> background poll(s) (<formatElapsed(oldest)>)`, for example `2 background polls (1m05s)` | `src/features/background_poll/poll.ts:223` |
 
 ### [CT-2] Running-agent accessor
 
-Kind: api · Anchor: null
+Kind: api · Anchor: `src/features/subagents/subagents.ts:416`
 
 ```ts
 interface RunningAgentView {
@@ -102,7 +102,7 @@ not exposed to the parent agent.
 
 ### [CT-4] Footer line
 
-Kind: api · Anchor: null
+Kind: api · Anchor: `src/features/status_panel/footer.ts:54`
 
 ```ts
 renderFooterLine(model: ModelInfoState, statuses: readonly StatusEntry[], theme: StatusTheme, width: number): string
@@ -120,7 +120,7 @@ change, and unsubscribes on session shutdown. With no entries, the line equals t
 
 ### [CT-5] Transcript overlay
 
-Kind: boundary · Anchor: null
+Kind: boundary · Anchor: `src/features/subagents/viewer.ts:232`
 
 ```text
 ╭─ Review auth · anthropic/claude-opus-5-5 · working ───────────────╮
@@ -178,7 +178,7 @@ Select options read `<name ?? agent_id> · <model> · <status>`.
 
 ### [CT-7] Icon-free status shapes
 
-Kind: type · Anchor: null
+Kind: type · Anchor: `src/shared/state/status_bar.ts:7`
 
 ```ts
 // src/shared/state/status_bar.ts
