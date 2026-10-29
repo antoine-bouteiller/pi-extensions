@@ -21,7 +21,8 @@ This spec defines one boundary and one independently enabled feature contract.
 - `[G-5]` Existing divergences are enumerated rather than silently becoming precedent.
 - `[G-6]` Features are independent plugins. Their only enablement surface is one explicit
   import and one registry entry in `src/config/features.ts`.
-- `[G-7]` Every enabled feature has a persistent, distinct icon/name health status.
+- `[G-7]` **Amended by `[G-7a]`.** Every enabled feature has a persistent, distinct icon/name health status.
+- `[G-7a]` Every enabled feature has a persistent, distinct name health status, without an icon.
 - `[G-8]` A failed external check registers no callbacks for its feature, reports a persistent
   error, and retries in the next session without delaying `session_start`.
 - `[G-9]` Disabling a feature removes its import, service initialization, and resource acquisition.
@@ -327,9 +328,9 @@ block registration/activation or change health, and retry publication on the nex
 session. Status is never cleared merely because checking ends. The sole health mapping is:
 
 ```text
-checking  muted    <icon> <name>: checking
-healthy   success  <icon> <name>
-error     error    <icon> <name>: <concise reason>
+checking  muted    <name>: checking
+healthy   success  <name>
+error     error    <name>: <concise reason>
 ```
 
 Reasons are fixed/allowlisted summaries or normalized categories. Never include tokens,
@@ -380,7 +381,7 @@ lines; the symbol is durable when a line drifts (`[C-4]`).
 
 1. Export one `feature: FeaturePlugin` factory from its index; it returns one `FeatureDescriptor`
    exposing its implementation.
-2. Give it the unique §8.12 ID, icon, and display name; use safe tagged failures.
+2. Give it the unique §8.12 ID and display name; use safe tagged failures.
 3. Use bridge helpers; migrate lifecycle behavior into `implementation.activate`/`deactivate` and
    do not register lifecycle events from the feature index.
 4. Make values/resources feature-owned; provide captured feature services to callback effects and
@@ -412,19 +413,19 @@ imports matching `#features/*`.
 
 Every enabled descriptor uses exactly this metadata and its `feature:<id>` key:
 
-| ID                          | Icon | Display name      |
-| --------------------------- | ---- | ----------------- |
-| `ask-user`                  | ❓   | `ask-user`        |
-| `background-poll`           | ⏳   | `background-poll` |
-| `claude-code`               | 🤖   | `claude-code`     |
-| `hashline`                  | #️⃣   | `hashline`        |
-| `meridian-session-affinity` | 🧭   | `meridian`        |
-| `peers`                     | ↗    | `peers`           |
-| `prompt-rewind`             | ↩️   | `prompt-rewind`   |
-| `rules`                     | 📜   | `rules`           |
-| `status-panel`              | 📊   | `status-panel`    |
-| `subagents`                 | ⇣    | `subagents`       |
-| `webfetch`                  | 🌐   | `webfetch`        |
+| ID                          | Display name      |
+| --------------------------- | ----------------- |
+| `ask-user`                  | `ask-user`        |
+| `background-poll`           | `background-poll` |
+| `claude-code`               | `claude-code`     |
+| `hashline`                  | `hashline`        |
+| `meridian-session-affinity` | `meridian`        |
+| `peers`                     | `peers`           |
+| `prompt-rewind`             | `prompt-rewind`   |
+| `rules`                     | `rules`           |
+| `status-panel`              | `status-panel`    |
+| `subagents`                 | `subagents`       |
+| `webfetch`                  | `webfetch`        |
 
 ## 9. Open Questions
 
@@ -443,3 +444,4 @@ N/A
 | 2026-09-15 | Remove automatic theme status metadata                                                                                                                             | 8.12                              | The automatic theme feature was removed.                                                                                                                                                                                                                                                                |
 | 2026-09-29 | Remove comment-checker and background bootstrap                                                                                                                    | 3, 5, 7, 8.4–8.6, 8.9, 8.10, 8.12 | comment-checker was the only background descriptor; with it gone every descriptor is eager, so the `bootstrap` discriminant, `prepare`, and preflight health reasons are removed.                                                                                                                       |
 | 2026-10-29 | Replace `herdr` status metadata with `peers` and `subagents`                                                                                                       | 8.12                              | Delegation split into headless sub-agents and multiplexer peers.                                                                                                                                                                                                                                        |
+| 2026-10-29 | Remove status icons from feature metadata                                                                                                                          | 2, 8.7, 8.10, 8.12                | Status entries render as text only (`docs/subagent_viewer.spec.md` `[KD-12]`).                                                                                                                                                                                                                          |

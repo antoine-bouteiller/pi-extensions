@@ -62,7 +62,7 @@ src/index.ts
   health, and the complete session lifecycle. In particular, it alone registers
   `session_start` and `session_shutdown`.
 - Every `src/features/<snake_case_name>/index.ts` exports one `feature: FeaturePlugin` factory.
-  Its descriptor identity has an `id` and `{ icon, name }`.
+  Its descriptor identity has an `id` and `{ name }`.
   The registry is a bare ordered list of factory calls. Each descriptor supplies
   `implementation: { register(pi, runtime), activate?, deactivate? }`; implementations register
   synchronously in registry order at extension load. Feature indexes own their descriptor's tool, command, and non-lifecycle
