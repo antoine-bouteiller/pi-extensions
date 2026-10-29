@@ -37,7 +37,7 @@ const configurationError = (message: string): never => {
   throw new Error(`Invalid feature configuration: ${message}`)
 }
 
-const FeatureStatusInput = Schema.Struct({ icon: Schema.optional(Schema.Unknown), name: Schema.optional(Schema.Unknown) })
+const FeatureStatusInput = Schema.Struct({ name: Schema.optional(Schema.Unknown) })
 const FeatureDescriptorInput = Schema.Struct({
   id: Schema.optional(Schema.Unknown),
   implementation: Schema.optional(Schema.Unknown),
@@ -54,7 +54,7 @@ const decodeFeatureStatus = (input: unknown, id: string) => {
   try {
     return Result.getOrThrow(Schema.decodeUnknownResult(FeatureStatusInput)(input))
   } catch {
-    return configurationError(`${id} status must contain string icon and name`)
+    return configurationError(`${id} status must contain a string name`)
   }
 }
 const requireString = (value: unknown, message: string): string => (typeof value === 'string' ? value : configurationError(message))
@@ -74,9 +74,8 @@ const validateIdentity = (feature: unknown, id: unknown, ids: Set<string>, descr
 
 const validateStatus = (value: unknown, id: string): void => {
   const status = decodeFeatureStatus(value, id)
-  const icon = requireString(status.icon, `${id} status must contain string icon and name`)
-  const name = requireString(status.name, `${id} status must contain string icon and name`)
-  if (icon.trim().length === 0 || name.trim().length === 0) {
+  const name = requireString(status.name, `${id} status must contain a string name`)
+  if (name.trim().length === 0) {
     configurationError(`${id} status metadata must be nonempty`)
   }
 }
@@ -117,8 +116,7 @@ const statusItem = (record: FeatureRecord) => {
   if (record.health._tag !== 'error') {
     return undefined
   }
-  const { icon, name } = record.plugin.status
-  return { icon, text: `${name}: ${record.health.reason}`, tone: 'error' as const }
+  return { text: `${record.plugin.status.name}: ${record.health.reason}`, tone: 'error' as const }
 }
 
 const publish = (record: FeatureRecord): Effect.Effect<void, never, AppServices | HandlerServices> =>
@@ -131,7 +129,7 @@ const publish = (record: FeatureRecord): Effect.Effect<void, never, AppServices 
       return
     }
     yield* channel.set(item)
-    yield* notifyUser(`${item.icon} ${item.text}`, 'error')
+    yield* notifyUser(item.text, 'error')
   }).pipe(Effect.ignoreCause)
 
 /** @internal */

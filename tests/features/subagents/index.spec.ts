@@ -57,7 +57,7 @@ const toolContext = (models: string[]) =>
 describe('subagents registration', () => {
   it('registers the sub-agent tools with headless guidance', () => {
     const fixture = registered()
-    expect(feature()).toMatchObject({ id: 'subagents', status: { icon: '⇣', name: 'subagents' } })
+    expect(feature()).toMatchObject({ id: 'subagents', status: { name: 'subagents' } })
     expect([...fixture.state.tools.keys()]).toEqual(['spawn_agent', 'send_message', 'interrupt_agent', 'close_agent', 'list_agents'])
     expect([...fixture.state.handlers.keys()]).toEqual(['before_agent_start'])
     const spawn = fixture.state.tools.get('spawn_agent')

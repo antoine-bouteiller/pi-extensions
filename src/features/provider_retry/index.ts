@@ -40,5 +40,5 @@ export const feature = (() => ({
       )
     },
   },
-  status: { icon: '↻', name: 'retry' },
+  status: { name: 'retry' },
 })) satisfies FeaturePlugin

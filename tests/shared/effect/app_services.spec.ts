@@ -74,7 +74,7 @@ describe('status channel service', () => {
         runtime.runPromise(
           Effect.gen(function* () {
             const bar = yield* StatusBar
-            const channel = bar.channel('guard', { icon: '🛡️', tone: 'warning' })
+            const channel = bar.channel('guard', { tone: 'warning' })
             yield* channel.set({ text: 'armed' })
             yield* channel.clear
           }).pipe(Effect.provide(perInvocation(ctx)))
@@ -82,7 +82,7 @@ describe('status channel service', () => {
       )
 
       expect(statuses).toEqual([
-        { key: 'guard', text: '🛡️ armed' },
+        { key: 'guard', text: 'armed' },
         { key: 'guard', text: undefined },
       ])
       yield* Effect.promise(() => runtime.dispose())

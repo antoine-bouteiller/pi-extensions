@@ -173,7 +173,7 @@ describe('background poll', () => {
       const expanded = renderText(fixture.tool.renderResult(result, { expanded: true, isPartial: false }, theme, { isError: false }))
       expect(expanded).toContain('Task: poll-call-1')
       expect(expanded).toContain('Stop now')
-      expect(fixture.statuses).toContain('⏳ 1 background poll · 0s')
+      expect(fixture.statuses).toContain('1 background poll (0s)')
 
       yield* Effect.promise(() => fixture.sent)
       expect(commandTimeouts).toHaveLength(1)
@@ -251,7 +251,7 @@ describe('background poll', () => {
     })
   )
 
-  it.live('ticks live status, then suppresses completion and clears status when the session shuts down', () =>
+  it.live('[VC-9] ticks live status in parentheses, then suppresses completion and clears status when the session shuts down', () =>
     Effect.gen(function* () {
       const fixture = setup((_command, _args, options) =>
         promiseFromEffect(
@@ -265,8 +265,9 @@ describe('background poll', () => {
       yield* Effect.promise(() =>
         fixture.tool.execute('call-2', { command: 'check-status', interval_seconds: 60, timeout_seconds: 120 }, undefined, undefined, fixture.ctx)
       )
+      expect(fixture.statuses.at(-1)).toBe('1 background poll (0s)')
       yield* Effect.sleep('1100 millis')
-      expect(fixture.statuses.at(-1)).toBe('⏳ 1 background poll · 1s')
+      expect(fixture.statuses.at(-1)).toBe('1 background poll (1s)')
       yield* Effect.promise(fixture.deactivate)
 
       expect(fixture.messages).toHaveLength(0)

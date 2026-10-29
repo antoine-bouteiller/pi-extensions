@@ -23,6 +23,6 @@ export const feature = ((options: FeatureOptions<RulesEnvironment> = {}) => {
         pi.on('tool_result', onEvent(handlers.toolResult))
       },
     },
-    status: { icon: '📜', name: 'rules' },
+    status: { name: 'rules' },
   }
 }) satisfies FeaturePlugin<RulesEnvironment>

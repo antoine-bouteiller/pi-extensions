@@ -18,6 +18,6 @@ export const feature = ((options: FeatureOptions<ClaudeCodeEnvironment> = {}) =>
         pi.on('resources_discover', makeEventHandler(runtime)(handlers.discover))
       },
     },
-    status: { icon: '🤖', name: 'claude-code' },
+    status: { name: 'claude-code' },
   }
 }) satisfies FeaturePlugin<ClaudeCodeEnvironment>

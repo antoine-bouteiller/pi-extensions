@@ -14,7 +14,7 @@ import { publishStatus, statusBar } from '@/shared/state/status_bar.js'
 const eager = (id: string, implementation: FeatureImplementation): FeatureDescriptor => ({
   id,
   implementation,
-  status: { icon: '✓', name: id },
+  status: { name: id },
 })
 const context = (key: string, hasUI = true, onSetStatus?: (statusKey: string, text: string | undefined) => void, onGetSessionId?: () => void) => {
   const statuses: { key: string; text: string | undefined }[] = []
@@ -64,6 +64,7 @@ describe('feature coordinator', () => {
       'sibling',
       'subset-included',
       'subset-omitted',
+      'x',
     ]) {
       publishStatus(`feature:${id}`, undefined)
     }
@@ -83,10 +84,9 @@ describe('feature coordinator', () => {
         [{ ...descriptor, id: undefined }],
         [{ ...descriptor, id: 1 }],
         [{ ...descriptor, status: undefined }],
-        [{ ...descriptor, status: { icon: 1, name: 'name' } }],
-        [{ ...descriptor, status: { icon: '✓', name: 1 } }],
-        [{ ...descriptor, status: { icon: '', name: 'name' } }],
-        [{ ...descriptor, status: { icon: '✓', name: ' ' } }],
+        [{ ...descriptor, status: {} }],
+        [{ ...descriptor, status: { name: 1 } }],
+        [{ ...descriptor, status: { name: ' ' } }],
         [{ ...descriptor, implementation: undefined }],
         [{ ...descriptor, implementation: {} }],
         [{ ...descriptor, implementation: { register: 1 } }],
@@ -135,7 +135,7 @@ describe('feature coordinator', () => {
       ])
       const ctx = context('poison')
       yield* emit(fixture, 'session_start', ctx.ctx)
-      expect(ctx.statuses.some(({ text }) => text === '✓ bad: registration failed; restart required')).toBeTrue()
+      expect(ctx.statuses.some(({ text }) => text === 'bad: registration failed; restart required')).toBeTrue()
     })
   )
 
@@ -234,12 +234,28 @@ describe('feature coordinator', () => {
       }).install()
       const first = context('fail-one')
       yield* emit(fixture, 'session_start', first.ctx)
-      expect(first.statuses.map(({ text }) => text)).toContain('✓ typed: activation failed')
-      expect(first.statuses.map(({ text }) => text)).toContain('✓ defect: activation defect')
+      expect(first.statuses.map(({ text }) => text)).toContain('typed: activation failed')
+      expect(first.statuses.map(({ text }) => text)).toContain('defect: activation defect')
       expect(first.notifications).toEqual([
-        { level: 'error', message: '✓ typed: activation failed' },
-        { level: 'error', message: '✓ defect: activation defect' },
+        { level: 'error', message: 'typed: activation failed' },
+        { level: 'error', message: 'defect: activation defect' },
       ])
+    })
+  )
+
+  it.effect('[VC-10] registers an icon-free descriptor and reports its failure as plain text', () =>
+    Effect.gen(function* () {
+      const fixture = createFakePi()
+      const descriptor: FeatureDescriptor = {
+        id: 'x',
+        implementation: { activate: () => Effect.fail({ _tag: 'Activation' }), register: () => undefined },
+        status: { name: 'x' },
+      }
+      makeFeatureCoordinator({ features: [descriptor], pi: fixture.pi, runtime }).install()
+      const session = context('icon-free')
+      yield* emit(fixture, 'session_start', session.ctx)
+      expect(session.statuses.at(-1)).toEqual({ key: 'feature:x', text: 'x: activation failed' })
+      expect(session.notifications).toEqual([{ level: 'error', message: 'x: activation failed' }])
     })
   )
 
@@ -320,11 +336,10 @@ describe('feature coordinator', () => {
       const second = context('publisher-two')
       yield* emit(fixture, 'session_start', second.ctx)
       expect(statusBar.list().find(({ key }) => key === 'feature:eager')).toMatchObject({
-        icon: '✓',
         text: 'eager: activation failed',
         tone: 'error',
       })
-      expect(second.statuses.map(({ text }) => text)).toEqual([undefined, '✓ eager: activation failed'])
+      expect(second.statuses.map(({ text }) => text)).toEqual([undefined, 'eager: activation failed'])
     })
   )
 
@@ -350,7 +365,7 @@ describe('feature coordinator', () => {
       yield* Deferred.await(entered)
       yield* Deferred.succeed(release, undefined)
       yield* Fiber.join(shutdown)
-      expect(first.statuses.at(-1)?.text).toBe('✓ eager: deactivation failed')
+      expect(first.statuses.at(-1)?.text).toBe('eager: deactivation failed')
     })
   )
 
@@ -572,7 +587,7 @@ describe('feature coordinator', () => {
       yield* Deferred.await(closed)
       yield* emit(fixture, 'session_start', context('after-interrupted-shutdown').ctx)
       expect(deactivations).toBe(1)
-      expect(current.statuses.map(({ text }) => text)).not.toContain('✓ eager: deactivation defect')
+      expect(current.statuses.map(({ text }) => text)).not.toContain('eager: deactivation defect')
     })
   )
 

@@ -71,7 +71,7 @@ describe('meridian session affinity', () => {
 
       expect(descriptor).toMatchObject({
         id: 'meridian-session-affinity',
-        status: { icon: '🧭', name: 'meridian' },
+        status: { name: 'meridian' },
       })
       expect([...fixture.state.handlers.keys()]).toEqual(['before_agent_start', 'before_provider_headers'])
       expect(fixture.state.commands.size).toBe(0)
@@ -165,13 +165,12 @@ describe('meridian session affinity', () => {
     })
   )
 
-  it.effect('loads regardless of Meridian health and only publishes a warning status while it is down', () =>
+  it.effect('[VC-10] loads regardless of Meridian health and only publishes a warning status while it is down', () =>
     Effect.gen(function* () {
       const notifications: string[] = []
       yield* activateWith('https://meridian.example.test', healthClient(503), () => notifications.length > 0, notifications)
-      expect(notifications).toEqual(['warning: 🧭 meridian: unavailable'])
+      expect(notifications).toEqual(['warning: meridian: unavailable'])
       expect(statusBar.list().find((entry) => entry.key === 'meridian:health')).toMatchObject({
-        icon: '🧭',
         text: 'meridian: unavailable',
         tone: 'warning',
       })

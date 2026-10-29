@@ -2,7 +2,7 @@ import { describe, expect, it } from '@tests/utils/bun_effect.js'
 import { asExtensionContext } from '@tests/utils/casts.js'
 import { Effect } from 'effect'
 
-import { createStatusChannel, formatStatusText, statusBar } from '@/shared/state/status_bar.js'
+import { createStatusChannel, statusBar } from '@/shared/state/status_bar.js'
 
 const createContext = (hasUI = true) => {
   const written: { key: string; value: unknown }[] = []
@@ -20,18 +20,17 @@ const createContext = (hasUI = true) => {
 describe('status bar channel', () => {
   it.effect('publishes structured entries and mirrors plain text into pi', () =>
     Effect.sync(() => {
-      const channel = createStatusChannel('demo-set', { icon: '⏳', tone: 'warning' })
+      const channel = createStatusChannel('demo-set', { tone: 'warning' })
       const { ctx, written } = createContext()
 
       channel.set(ctx, { text: '2 polls' })
 
       expect(statusBar.list()).toContainEqual({
-        icon: '⏳',
         key: 'demo-set',
         text: '2 polls',
         tone: 'warning',
       })
-      expect(written).toEqual([{ key: 'demo-set', value: '⏳ 2 polls' }])
+      expect(written).toEqual([{ key: 'demo-set', value: '2 polls' }])
 
       channel.clear(ctx)
       expect(statusBar.has('demo-set')).toBeFalse()
@@ -98,15 +97,6 @@ describe('status bar channel', () => {
 
       expect(notifications).toBe(2)
       channel.clear(ctx)
-    })
-  )
-})
-
-describe('formatStatusText', () => {
-  it.effect('prefixes the icon only when one is set', () =>
-    Effect.sync(() => {
-      expect(formatStatusText({ text: 'ready' })).toBe('ready')
-      expect(formatStatusText({ icon: '🛡️', text: 'cmd-guard' })).toBe('🛡️ cmd-guard')
     })
   )
 })
