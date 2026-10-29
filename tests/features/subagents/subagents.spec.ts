@@ -13,6 +13,7 @@ import { TestClock } from 'effect/testing'
 
 import { makeSubagentHandlers, RESULT_MESSAGE, SUBAGENT_ENTRY } from '@/features/subagents/subagents.js'
 import { makeEnvironment } from '@/shared/effect/env.js'
+import { statusBar } from '@/shared/state/status_bar.js'
 import { jsonText, parseJsonText } from '@/shared/utils/json.js'
 
 const BIN = fileURLToPath(new URL('fixtures/bin', import.meta.url))
@@ -76,6 +77,7 @@ const harness = (options: { readonly hasUI?: boolean } = {}) =>
     })
     const dialogs: DialogCall[] = []
     const uiCalls: string[] = []
+    const statuses: { key: string; text: string | undefined }[] = []
     const dialog =
       (method: string) =>
       (title: string, _detail?: unknown, opts?: DialogOptions): Promise<unknown> =>
@@ -95,7 +97,7 @@ const harness = (options: { readonly hasUI?: boolean } = {}) =>
       input: dialog('input'),
       notify: () => uiCalls.push('notify'),
       select: dialog('select'),
-      setStatus: () => uiCalls.push('setStatus'),
+      setStatus: (key: string, text: string | undefined) => statuses.push({ key, text }),
     }
     const environment = makeEnvironment({
       ...process.env,
@@ -152,7 +154,7 @@ const harness = (options: { readonly hasUI?: boolean } = {}) =>
           }
         })
       )
-    return { childDir, configure, context, dialogs, emit, exists, fake, fs, handlers, pidAlive, project, root, scope, stdin, uiCalls }
+    return { childDir, configure, context, dialogs, emit, exists, fake, fs, handlers, pidAlive, project, root, scope, statuses, stdin, uiCalls }
   })
 
 const messages = (fixture: Effect.Success<ReturnType<typeof harness>>) =>
@@ -284,6 +286,9 @@ describe('sub-agent startup', () => {
         expect(yield* fixture.handlers.list(fixture.context())).toEqual({
           agents: [{ agent_id: expect.any(String), awaiting_result: true, model: MODEL, name: 'Silent', status: 'starting' }],
         })
+        expect(fixture.handlers.running(fixture.context())).toEqual([
+          { agent_id: expect.any(String), cwd: fixture.project, model: MODEL, name: 'Silent', status: 'starting' },
+        ])
         yield* TestClock.adjust('30 seconds')
         expect(yield* Fiber.join(spawning)).toBe('Could not start the agent: No response within 30 seconds.')
         expect(yield* fixture.exists(`${fixture.childDir('Silent')}/eof`)).toBe(true)
@@ -448,6 +453,55 @@ describe('sub-agent ownership', () => {
       expect(yield* fixture.pidAlive('Mine')).toBe(false)
       expect(yield* fixture.handlers.list(fixture.context())).toEqual({ agents: [] })
       expect(yield* fixture.pidAlive('Theirs')).toBe(true)
+    })
+  )
+})
+
+const countEntry = () => statusBar.list().find((entry) => entry.key === 'subagents')
+
+describe('running sub-agents', () => {
+  live('[VC-1] publishes the running count, and clears it at zero and at session end', () =>
+    Effect.gen(function* () {
+      const fixture = yield* harness()
+      const one = yield* fixture.handlers.spawn({ message: 'One', model: MODEL, name: 'One' }, fixture.context())
+      yield* fixture.handlers.spawn({ message: 'Two', model: MODEL, name: 'Two' }, fixture.context())
+      yield* fixture.handlers.spawn({ message: 'Theirs', model: MODEL, name: 'Theirs' }, fixture.context('/sessions/other.jsonl'))
+      expect(countEntry()).toEqual({ key: 'subagents', priority: 30, text: '2 sub-agents', tone: 'muted' })
+      expect(fixture.statuses.at(-1)).toEqual({ key: 'subagents', text: '2 sub-agents' })
+
+      yield* fixture.handlers.close(one, fixture.context())
+      expect(countEntry()?.text).toBe('1 sub-agent')
+      yield* fixture.emit('Two', { exit: 0 })
+      yield* waitFor(() => countEntry() === undefined, 'the count to clear')
+      expect(fixture.statuses.at(-1)).toEqual({ key: 'subagents', text: undefined })
+
+      yield* fixture.handlers.spawn({ message: 'Three', model: MODEL, name: 'Three' }, fixture.context())
+      expect(countEntry()?.text).toBe('1 sub-agent')
+      yield* Scope.close(fixture.scope, Exit.void)
+      expect(countEntry()).toBeUndefined()
+    })
+  )
+
+  live('[CT-2] lists running children of the calling session in spawn order with their cwd and session file', () =>
+    Effect.gen(function* () {
+      const fixture = yield* harness()
+      const other = `${fixture.root}/other`
+      yield* fixture.fs.makeDirectory(other)
+      const first = yield* fixture.handlers.spawn({ message: 'A', model: MODEL, name: 'Alpha' }, fixture.context())
+      yield* fixture.handlers.spawn({ message: 'T', model: MODEL, name: 'Theirs' }, fixture.context('/sessions/other.jsonl'))
+      const second = yield* fixture.handlers.spawn({ cwd: '../other', message: 'B', model: MODEL }, fixture.context())
+      expect(fixture.handlers.running(fixture.context())).toEqual([
+        {
+          agent_id: first.agent_id,
+          cwd: fixture.project,
+          model: MODEL,
+          name: 'Alpha',
+          session_file: `${fixture.childDir('Alpha')}/session.jsonl`,
+          status: 'working',
+        },
+        { agent_id: second.agent_id, cwd: other, model: MODEL, session_file: `${fixture.childDir('default')}/session.jsonl`, status: 'working' },
+      ])
+      expect(fixture.handlers.running(fixture.context('/sessions/none.jsonl'))).toEqual([])
     })
   )
 })
