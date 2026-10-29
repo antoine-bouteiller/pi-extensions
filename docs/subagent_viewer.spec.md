@@ -59,7 +59,7 @@ child already persists its transcript to the session file reported by `get_state
 - `[SO-3]` `/subagents` lists the current session's running sub-agents and opens one into a
   read-only overlay. — demonstrated by `[VC-3]`
 - `[SO-4]` The overlay shows the child's persisted conversation as it grows, with tool output
-  collapsed by default and expandable in place. — demonstrated by `[VC-4]`, `[VC-6]`
+  collapsed by default and expandable in place. — demonstrated by `[VC-4.1]`, `[VC-6]`
 - `[SO-5]` Opening, scrolling, toggling, and closing the overlay send nothing to the child and leave
   the host's tools-expanded state unchanged. — demonstrated by `[VC-5]`
 - `[SO-6]` In fullscreen mode, the mouse wheel and trackpad scroll the overlay and never the
@@ -215,12 +215,16 @@ tone: 'muted', text: '2 sub-agents' }` and `{ key: 'feature:x', priority: 10, to
   (named `Scout`) and `b` from this session and `c` owned by another parent session file, the select
   receives exactly `Scout · <model> · working` and `b · <model> · working`, and choosing `b` opens
   `ui.custom` with `overlay: true`. — demonstrates `[SO-3]`
-- `[VC-4]` Given a session file with a user message, an assistant message with a thinking block and
+- ~~`[VC-4]` Given a session file with a user message, an assistant message with a thinking block and
   `read` and `ffgrep` tool calls, their 20-line results, and a compaction entry: the rendered overlay
   contains the user text, the thinking text, the compaction marker, the first lines of each result,
   and `more lines`, and does not contain line 20. After the expand key, line 20 of both results is
   visible. After an assistant message is appended to the file and the refresh tick runs, its text is
-  visible and the expansion is kept. — demonstrates `[SO-4]`
+  visible and the expansion is kept.~~
+- `[VC-4.1]` As `[VC-4]`, except that collapsed, the `read` call shows its path and no output, while
+  the `ffgrep` result shows its first lines and `more lines`. Neither result shows line 20 until the
+  expand key. Pi's `read` renderer, required by `[KD-7]`, draws no output while collapsed.
+  — demonstrates `[SO-4]`
 - `[VC-5]` With the overlay open on a fake child, after scrolling, toggling, and closing, the fake
   child's `stdin.jsonl` holds only the spawn handshake records, and `setToolsExpanded` was never
   called. — demonstrates `[SO-5]`
