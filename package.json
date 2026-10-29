@@ -22,9 +22,9 @@
     "test:coverage": "bun test tests/ --coverage --reporter=junit --reporter-outfile=./junit.xml && node --test oxlint/rules/*.test.ts"
   },
   "dependencies": {
-    "@effect/platform-bun": "4.0.6",
+    "@effect/platform-bun": "4.0.7",
     "@oh-my-pi/hashline": "18.1.5",
-    "effect": "4.0.6"
+    "effect": "4.0.7"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "1.4.0",
@@ -46,7 +46,7 @@
     "typebox": "*"
   },
   "overrides": {
-    "@effect/platform-node-shared": "4.0.6"
+    "@effect/platform-node-shared": "4.0.7"
   },
   "packageManager": "bun@1.4.4",
   "pi": {
