@@ -9,7 +9,7 @@ import { Value } from 'typebox/value'
 
 import { type HerdrResult } from '@/features/herdr/herdr.js'
 import { feature } from '@/features/herdr/index.js'
-import { HerdrSettingsError } from '@/features/herdr/settings.js'
+import { AgentModelSettingsError } from '@/shared/effect/agent_models.js'
 import { makeEnvironment } from '@/shared/effect/env.js'
 
 interface DisplayTool {
@@ -125,7 +125,7 @@ describe('Herdr registration', () => {
     expect(Value.Check(spawn.parameters, { message: 'x'.repeat(32_769), model: 'provider/model' })).toBe(false)
     expect(Value.Check(spawn.parameters, { message: 'Review', model: 'other-provider/task-specific-model' })).toBe(true)
     const guidance = spawn.promptGuidelines?.join('\n') ?? ''
-    expect(guidance).toContain('herdr.allowedModels is mandatory')
+    expect(guidance).toContain('subagents.allowedModels is mandatory')
     expect(guidance).toContain('Prefer Azure OpenAI (azure-openai-responses) for implementation, scouting, and research')
     expect(guidance).toContain('For review, prefer a different provider from the agent that produced the work')
     expect(guidance).toContain('preferences, not restrictions')
@@ -157,7 +157,9 @@ describe('Herdr registration', () => {
       let invalid = false
       feature({
         dependencies: () =>
-          invalid ? Effect.fail(HerdrSettingsError.make({ message: 'invalid herdr.allowedModels' })) : Effect.succeed({ allowedModels, modelNotes }),
+          invalid
+            ? Effect.fail(AgentModelSettingsError.make({ message: 'invalid subagents.allowedModels' }))
+            : Effect.succeed({ allowedModels, modelNotes }),
         environment: makeEnvironment({ HERDR_ENV: '1' }),
       }).implementation.register(fixture.pi, runtime)
       const ctx = asExtensionToolContext({
@@ -200,7 +202,7 @@ describe('Herdr registration', () => {
       expect(tool.parameters).toMatchObject({ properties: { model: { enum: ['provider/allowed'] } } })
       allowedModels = []
       yield* Effect.promise(() => fixture.emit('before_agent_start', event, ctx))
-      expect(sections.herdr).toContain('spawn_agent is unavailable: configure herdr.allowedModels')
+      expect(sections.herdr).toContain('spawn_agent is unavailable: configure subagents.allowedModels')
       const disabledParameters = fixture.state.tools.get('spawn_agent')?.parameters
       expect(disabledParameters).toMatchObject({ properties: { model: { description: 'No allowed models are available; spawning is disabled.' } } })
       expect(disabledParameters).not.toHaveProperty('properties.model.enum')
@@ -209,7 +211,7 @@ describe('Herdr registration', () => {
       expect(fixture.state.tools.get('spawn_agent')?.parameters).toMatchObject({ properties: { model: { enum: ['provider/other'] } } })
       invalid = true
       yield* Effect.promise(() => fixture.emit('before_agent_start', event, ctx))
-      expect(sections.herdr).toContain('invalid herdr.allowedModels')
+      expect(sections.herdr).toContain('invalid subagents.allowedModels')
       expect(fixture.state.tools.get('spawn_agent')?.parameters).toEqual(disabledParameters)
       const independent = createFakePi()
       feature().implementation.register(independent.pi, runtime)

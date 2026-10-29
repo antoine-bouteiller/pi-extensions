@@ -1,7 +1,7 @@
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
-import { type ExtensionAPI, type ExtensionContext, getAgentDir } from '@earendil-works/pi-coding-agent'
+import { type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { Effect, Option, Schema, Scope, Semaphore } from 'effect'
 import { Crypto } from 'effect/Crypto'
 import { FileSystem } from 'effect/FileSystem'
@@ -9,11 +9,10 @@ import { Path } from 'effect/Path'
 import { type Static, type TSchema, Type } from 'typebox'
 import { Value } from 'typebox/value'
 
+import { type AgentModelSettingsLoader, availableAgentModels, loadAgentModelSettings } from '#shared/effect/agent_models'
 import { type EnvApi } from '#shared/effect/env'
 import { jsonText, parseJsonText } from '#shared/utils/json'
 import { truncateOutput, truncationNotice } from '#shared/utils/tool_output'
-
-import { loadHerdrSettings } from './settings.js'
 
 const text = Type.String({ maxLength: 32_768, minLength: 1 })
 const paneId = Type.String({ minLength: 1 })
@@ -24,7 +23,7 @@ export const SpawnAgentParams = Type.Object({
         'Directory for the child, only when the user asks to work in another folder or project: absolute, ~/-relative, or relative to the current directory. The child starts in a new Herdr workspace for that folder.',
       maxLength: 4096,
       minLength: 1,
-      pattern: '^[^\\x00-\\x1f\\x7f-\\x9f]+$',
+      pattern: String.raw`^[^\x00-\x1f\x7f-\x9f]+$`,
     })
   ),
   message: text,
@@ -34,7 +33,7 @@ export const SpawnAgentParams = Type.Object({
       description: 'Short pane label shown in Herdr and in result notifications, for example "Review auth".',
       maxLength: 64,
       minLength: 1,
-      pattern: '^[^\\s\\x00-\\x1f\\x7f-\\x9f-][^\\x00-\\x1f\\x7f-\\x9f]*$',
+      pattern: String.raw`^[^\s\x00-\x1f\x7f-\x9f-][^\x00-\x1f\x7f-\x9f]*$`,
     })
   ),
   thinking: Type.Optional(
@@ -262,7 +261,7 @@ const roleOf = (agent: Pane, spawned: boolean): DiscoveredAgent['role'] => {
 const CHILD_PROMPT =
   'You are a delegated agent. Complete only the initial task; you cannot delegate. Whenever you stop, your final response is delivered to the parent agent automatically, and the parent may send follow-up messages. End with a concise conclusion or failure, including evidence/checks and blockers. For detailed reviews or large results, write a temporary handoff file and include its absolute path in your final response; this file is allowed even for a read-only task, but other read-only restrictions still apply.'
 
-export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSettings = loadHerdrSettings) => {
+export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSettings: AgentModelSettingsLoader = loadAgentModelSettings) => {
   const owned = new Map<string, OwnedPane>()
   /** Keyed by parent session and target directory; `workspace_id` is unset until a workspace for another directory exists. */
   const placements = new Map<string, { readonly workspace_id?: string; readonly tabs: readonly string[] }>()
@@ -334,20 +333,7 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
     return record === undefined || record.owner !== session || id === current.pane_id ? undefined : record
   }
 
-  const availableModels = (ctx: ExtensionContext) =>
-    Effect.gen(function* () {
-      const settings = yield* loadSettings({ agentDir: getAgentDir(), cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() }).pipe(
-        Effect.mapError((error) => fail(error.message))
-      )
-      const models = ctx.modelRegistry
-        .getAvailable()
-        .map((model) => `${model.provider}/${model.id}`)
-        .filter((model) => settings.allowedModels.includes(model))
-      return {
-        models,
-        notes: models.flatMap((model) => (settings.modelNotes[model] === undefined ? [] : [`${model}: ${settings.modelNotes[model]}`])),
-      }
-    })
+  const availableModels = (ctx: ExtensionContext) => availableAgentModels(ctx, loadSettings).pipe(Effect.mapError((error) => fail(error.message)))
 
   const prompt = (ctx: ExtensionContext, to: string, header: string, message: string) =>
     request(ctx.cwd, ['agent', 'prompt', to, `${header}\n\n${message}`], Type.Object({ agent: PaneSchema }))
@@ -710,7 +696,7 @@ export const makeHerdrHandlers = (pi: ExtensionAPI, environment: EnvApi, loadSet
         if (!models.includes(params.model)) {
           return yield* fail(
             models.length === 0
-              ? 'No allowed models are available. Configure herdr.allowedModels in settings.json with available provider/model-id values.'
+              ? 'No allowed models are available. Configure subagents.allowedModels in settings.json with available provider/model-id values.'
               : `Model ${params.model} is not allowed or available. Choose one of: ${models.join(', ')}.`
           )
         }
