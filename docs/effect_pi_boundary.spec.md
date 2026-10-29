@@ -418,11 +418,12 @@ Every enabled descriptor uses exactly this metadata and its `feature:<id>` key:
 | `background-poll`           | ⏳   | `background-poll` |
 | `claude-code`               | 🤖   | `claude-code`     |
 | `hashline`                  | #️⃣   | `hashline`        |
-| `herdr`                     | ↗    | `herdr`           |
 | `meridian-session-affinity` | 🧭   | `meridian`        |
+| `peers`                     | ↗    | `peers`           |
 | `prompt-rewind`             | ↩️   | `prompt-rewind`   |
 | `rules`                     | 📜   | `rules`           |
 | `status-panel`              | 📊   | `status-panel`    |
+| `subagents`                 | ⇣    | `subagents`       |
 | `webfetch`                  | 🌐   | `webfetch`        |
 
 ## 9. Open Questions
@@ -441,3 +442,4 @@ N/A
 | 2026-09-11 | Make `meridian-session-affinity` eager                                                                                                                             | 3, 8.4, 8.5, 8.10                 | Sub-agent workers prompt immediately after `session_start`; the forked background registration missed the first `before_agent_start`, so the unscrubbed pi harness line reached Meridian and Anthropic metered it as Extra Usage (`You've hit your individual spend limit`).                            |
 | 2026-09-15 | Remove automatic theme status metadata                                                                                                                             | 8.12                              | The automatic theme feature was removed.                                                                                                                                                                                                                                                                |
 | 2026-09-29 | Remove comment-checker and background bootstrap                                                                                                                    | 3, 5, 7, 8.4–8.6, 8.9, 8.10, 8.12 | comment-checker was the only background descriptor; with it gone every descriptor is eager, so the `bootstrap` discriminant, `prepare`, and preflight health reasons are removed.                                                                                                                       |
+| 2026-10-29 | Replace `herdr` status metadata with `peers` and `subagents`                                                                                                       | 8.12                              | Delegation split into headless sub-agents and multiplexer peers.                                                                                                                                                                                                                                        |

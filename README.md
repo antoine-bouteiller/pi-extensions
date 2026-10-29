@@ -16,73 +16,84 @@ pi install git:github.com/antoine-bouteiller/pi-extensions
 - `background_poll` — Background shell polling with completion notifications.
 - `claude_code` — Load Claude commands as temporary Pi skills.
 - `hashline` — Hash-anchored file reads and writes that reject stale edits.
-- `herdr` — Delegate to Pi agents in Herdr panes, receive their results automatically, and message other running Pi agents.
 - `meridian_session_affinity` — Session affinity and harness fingerprint scrubbing for Meridian requests.
+- `peers` — Open independent Pi agents in new Herdr or Rex tabs, and discover and message other running Pi agents.
 - `prompt_rewind` — Edit your prompt when cancelling before a response.
 - `provider_retry` — Extend retries to server and unknown-status provider failures.
 - `rules` — Load rules from `.claude/rules/` and `.agents/rules/`.
 - `status_panel` — Show activity, model, and thinking in the editor border, and context, cache hit, and throughput in a one-line footer.
+- `subagents` — Delegate to headless Pi sub-agents and receive their results automatically.
 - `webfetch` — Fetch URLs as Markdown, text, or HTML.
 
 ## Delegation
 
-Inside a Herdr-managed pane, the `herdr` feature exposes these Pi tools:
+### Sub-agents
 
-- `spawn_agent({model,message,name?,thinking?,tools?,cwd?})` creates a Pi agent in a separate Herdr
-  **Agents** tab, submits its initial task, and returns the pane ID. Each parent session reuses its
-  Agents tabs, with at most four panes per tab, creating another when full. The current directory
-  and focus are preserved. `name` labels the pane, `thinking` sets the child's thinking level, and
-  `tools` restricts the child to an allowlist (for example `["read","grep","find","ls"]`). `cwd`
-  (absolute, `~/`-relative, or relative to the current directory; meant for when the user asks for
-  another folder or project) starts the child in a new Herdr workspace for that folder instead. Later
-  spawns into the same folder from the same session reuse that workspace's tabs, and a closed workspace
-  is recreated.
-- `send_message({pane_id,message})` sends a follow-up to a spawned agent, or a message to a peer,
-  without waiting for a response.
-- `interrupt_agent({pane_id})` sends Escape to cancel a spawned agent's current turn; the agent stays open.
-- `list_agents()` lists spawned agents with their Herdr status and whether a result is awaited.
-- `discover_agents()` lists every other Pi agent running in Herdr, across all workspaces, with its
-  workspace, cwd, status, and role: `spawned` (by this session), `peer` (another top-level agent),
-  or `delegated` (another session's child).
-- `close_pane({pane_id})` closes a pane spawned by the current Pi session.
+The `subagents` feature runs delegated agents as headless children of the current session, in any
+terminal. Each child is `pi --mode rpc`, started from `PATH` with this package loaded. No pane, tab,
+or workspace is created.
 
-Peers are top-level Pi agents. A peer receives a message framed as coming from another agent's pane,
-not from its user, and replies, if at all, with its own `send_message`. Nothing reports back
-automatically. Agents delegated by another session cannot be messaged, because their responses go to
-their own parent. Delegated agents are recognized by the `pi-<8 hex>` Herdr agent name that
-`spawn_agent` assigns.
+- `spawn_agent({model,message,name?,thinking?,tools?,cwd?})` starts a child, submits its task, and
+  returns its `agent_id`. `name` labels the child in results and dialogs. `thinking` sets its thinking
+  level. `tools` restricts it to an allowlist (for example `["read","grep","find","ls"]`). `cwd`
+  (absolute, `~/`-relative, or relative to the current directory) starts it in another folder.
+- `send_message({agent_id,message})` sends a follow-up. It starts a new run when the child is idle
+  and steers the current run otherwise.
+- `interrupt_agent({agent_id})` clears the child's queued messages and aborts its current run.
+- `close_agent({agent_id})` stops the child.
+- `list_agents()` lists the session's children with their status (`starting`, `working`, `idle`,
+  or `blocked`) and whether a result is awaited.
 
-Each spawned pane carries a display-only Herdr pane token, `subagent`, set to the child's name, or
-its model when unnamed. Herdr's Agent sidebar rows can show it as `$subagent`. For example, in
-Herdr's `config.toml`:
+Whenever a child's run settles, its final response arrives as a `subagent-result` message that wakes
+the parent, as steering at the next turn boundary if it is busy. A child that exits while a result
+is awaited is reported as `exited`, with its exit code and the end of its stderr.
 
-```toml
-[ui.sidebar.agents]
-rows = [["state_icon", "machine", "workspace", "tab"], ["agent", { token = "$subagent", dim = true }]]
-```
+A child's `select`, `confirm`, `input`, and `editor` dialogs open in the parent's UI, titled with
+the child's name or model, one at a time. Only the user answers them; the parent agent never sees
+them. Without a UI, they are cancelled at once. `editor` dialogs cannot be dismissed when their child
+goes away, and their answer is then dropped. `ask_user` in a child returns its no-UI result.
 
-Herdr has no setting to hide an agent from the sidebar. Its rules style or hide one token based
-on that token's own value, so the token marks children but cannot dim or remove their whole entry.
+Children are tied to the parent session. Ending, reloading, or switching the session closes their
+input, sends `SIGTERM` after 5 seconds, and `SIGKILL` 5 seconds later. Each child's transcript is
+written under `<agent dir>/subagents/sessions/<parent session id>/`, outside `/resume`, and is
+never deleted by this package. The parent session records one `subagent` entry per child with its
+transcript path. Children run with `PI_SUBAGENT=1` and without `HERDR_*` or `REX_*` variables, so
+they cannot spawn, open, discover, or message other agents. There is no limit on concurrent
+children.
 
-Delegated agents get none of these tools, so they cannot delegate, discover, or message other panes. Whenever
-a child's run settles, its final response is written atomically to a separate record in
-`<child session>.jsonl.exit.d/`. The parent polls those records and the child's Herdr pane every
-few seconds and delivers a `herdr-agent-result` message that wakes it (as steering at the next
-turn boundary if it is busy) for each result, for a blocked approval prompt, and for an agent that
-exits or loses its pane while a result is awaited.
-The parent can finish its turn while leaving Pi running. Detailed reviews can use a temporary
-handoff file referenced in the child's final response. Spawned panes are recorded in the parent
-session with their original owner and outstanding request, so they survive a Pi reload or restart
-without granting forked sessions control of the original parent's agents. `awaiting_result` clears
-when the latest request's result is queued for delivery; it does not indicate that the parent has
-consumed it. Legacy ownership records without a parent identity are not restored; close those
-panes manually in Herdr before spawning replacements.
+### Peers
 
-Configure an explicit model allowlist in `~/.pi/agent/settings.json` (or your custom Pi agent directory):
+Inside Herdr (`HERDR_ENV=1`) or Rex (`REX_SESSION` and `REX_BLOCK` set), the `peers` feature
+exposes these tools. Herdr wins when both apply. Elsewhere, they fail with a message.
+
+- `open_agent({model,message,name?,thinking?,cwd?})` opens one new tab in the caller's Herdr
+  workspace or Rex session, without moving focus, runs an independent top-level Pi there, and gives
+  it the task. The tab is labelled with `name`, else the model. `cwd` elsewhere opens the tab in a
+  workspace or session named after the folder, reused for later opens and recreated when gone. The
+  opened agent's results are not reported back.
+- `discover_agents()` lists every other top-level Pi agent, across all workspaces or sessions, with
+  its pane ID, workspace or session label, cwd, and status.
+- `message_peer({pane_id,message})` sends a message to one of them without waiting for a response.
+
+A peer receives a message framed as coming from another agent's pane, not from its user, and replies,
+if at all, with its own `message_peer`. An opened agent's first message says it was started at the
+other agent's user's request.
+
+In Rex, each interactive Pi running this package writes a presence record to
+`<agent dir>/peers/rex/presence/<block>.json` with its pid, block, session, cwd, and inbox
+directory, and removes it on exit. A peer is live only while its block exists and its pid runs. Pi
+agents without this package are not discoverable. Messages are written as files into the peer's
+inbox, which it polls every second and deletes after delivery, so nothing is typed into its
+terminal. `rex` is taken from `REX_BIN_DIR`, else `PATH`.
+
+### Models
+
+Configure an explicit model allowlist in `~/.pi/agent/settings.json` (or your custom Pi agent
+directory). Both `spawn_agent` and `open_agent` use it:
 
 ```json
 {
-  "herdr": {
+  "subagents": {
     "allowedModels": ["azure-openai-responses/gpt-6-astra", "azure-openai-responses/gpt-6-sol"],
     "modelNotes": {
       "azure-openai-responses/gpt-6-astra": "highest-reasoning: complex implementation, debugging, design, and deep review of Claude-produced work",
@@ -93,24 +104,23 @@ Configure an explicit model allowlist in `~/.pi/agent/settings.json` (or your cu
 ```
 
 Entries are exact `provider/model-id` values, not patterns. Trusted project `.pi/settings.json`
-can replace the list, including with `[]`; untrusted project settings are ignored. Missing or
-empty lists disable spawning. Malformed settings also block spawning. Only allowlisted models
-currently available in Pi's model registry can be spawned; the usable list is exposed directly as
-choices in `spawn_agent`'s `model` argument and checked again before creating a pane. The argument
-schema refreshes each turn; settings are reread each turn and spawn.
+can replace the list, including with `[]`; untrusted project settings are ignored. Missing or empty
+lists disable spawning and opening, and so do malformed settings, including unknown fields in the
+`subagents` block. A legacy `herdr` block is ignored: rename it to `subagents`. Only allowlisted
+models currently available in Pi's model registry can be used; the usable list is exposed as the
+choices of each tool's `model` argument, refreshed each turn, and checked again on every call.
 
 Within that list, the agent prefers Azure OpenAI (`azure-openai-responses`) for implementation,
 scouting, and research, and a different provider from the agent that produced the work for review.
-These are preferences, not enforced roles; explicit user model choices must also satisfy the allowlist.
-Optional `herdr.modelNotes` maps a model to a one-line hint (at most 500 characters) shown in
-`spawn_agent`'s `model` argument and taking precedence over those defaults. Notes guide selection;
-they do not enforce model roles. Only notes for allowed, available models are shown.
-Trusted project notes override global notes for matching model IDs; other global notes remain.
-Herdr manages the Pi processes. A result written while the parent is not running is delivered
-after it restarts if the child's pane is still open. Read and verify a delegate's result before relying on it.
-Panes are not automatically closed on parent exit.
-Requires `herdr` and `pi` on `PATH` and access to the chosen model. Old `subagents` settings
-are no longer read; saved sessions are left untouched.
+These are preferences, not enforced roles. Optional `subagents.modelNotes` maps a model to a one-line
+hint (at most 500 characters) shown in the `model` argument and taking precedence over those
+defaults. Trusted project notes override global notes for matching model IDs.
+
+### Upgrading from `herdr`
+
+Children started by the previous Herdr-based version keep running in their panes; nothing reads
+their results any more, so close them in Herdr. Their `herdr-agent` session entries are ignored.
+The `$subagent` Herdr pane token is no longer set.
 
 ## Development
 
