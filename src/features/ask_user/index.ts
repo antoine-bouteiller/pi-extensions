@@ -10,16 +10,23 @@
 import { type ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
 import { type AppRuntime } from '#shared/effect/app_services'
+import { processEnvironment } from '#shared/effect/env'
 import { type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 import { makeToolExecutor } from '#shared/effect/runtime'
 
+import { makeQuestionStatus, type StatusWriter } from './program_status.js'
 import { ASK_USER_PROMPT_GUIDELINES, ASK_USER_PROMPT_SNIPPET, ASK_USER_TOOL_DESCRIPTION } from './prompt.js'
 import { askUserEffect, AskUserParams, renderAskUserCall, renderAskUserResult } from './tool.js'
 
-export const feature = ((_options: FeatureOptions<undefined> = {}) => ({
+const writeStdout: StatusWriter = (sequence) => {
+  process.stdout.write(sequence)
+}
+
+export const feature = ((options: FeatureOptions<StatusWriter> = {}) => ({
   id: 'ask-user',
   implementation: {
     register: (pi: ExtensionAPI, runtime: AppRuntime): void => {
+      const status = makeQuestionStatus(options.environment ?? processEnvironment, options.dependencies ?? writeStdout)
       pi.registerTool({
         description: ASK_USER_TOOL_DESCRIPTION,
         /*
@@ -28,7 +35,7 @@ export const feature = ((_options: FeatureOptions<undefined> = {}) => ({
          * "Cancelled" as a normal result; letting `runPromise` interrupt the fiber on the same signal
          * would instead reject the tool call, which is exactly what "neither path may fail" rules out.
          */
-        execute: makeToolExecutor(runtime)(({ params, signal }) => askUserEffect(pi.events, params, signal), { interruptOnAbort: false }),
+        execute: makeToolExecutor(runtime)(({ params, signal }) => askUserEffect(pi.events, status, params, signal), { interruptOnAbort: false }),
         label: 'Ask User',
         name: 'ask_user',
         parameters: AskUserParams,
@@ -40,4 +47,4 @@ export const feature = ((_options: FeatureOptions<undefined> = {}) => ({
     },
   },
   status: { icon: '❓', name: 'ask-user' },
-})) satisfies FeaturePlugin<undefined>
+})) satisfies FeaturePlugin<StatusWriter>
