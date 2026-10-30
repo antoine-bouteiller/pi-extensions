@@ -86,9 +86,6 @@ const setup = (customError?: Error, environment: Record<string, string> = {}) =>
     get customCalls() {
       return customCalls
     },
-    get emittedEvents() {
-      return fakePi.state.emittedEvents
-    },
     nonTuiContext: { mode: 'rpc', ui },
     tool,
     tuiContext: { mode: 'tui', ui },
@@ -129,19 +126,6 @@ describe('ask_user tool behavior', () => {
         cancelled: false,
         wasCustom: false,
       })
-    })
-  )
-
-  it.effect('flags herdr as blocked while the question is open', () =>
-    Effect.gen(function* () {
-      const fixture = setup()
-      const pending = fixture.tool.execute('call-1b', params, undefined, undefined, fixture.tuiContext)
-
-      expect(fixture.emittedEvents).toEqual([{ data: { active: true, label: params.question }, name: 'herdr:blocked' }])
-      fixture.component.handleInput?.('\x1b')
-      yield* Effect.promise(() => pending)
-
-      expect(fixture.emittedEvents.at(-1)).toEqual({ data: { active: false }, name: 'herdr:blocked' })
     })
   )
 
@@ -278,7 +262,6 @@ describe('ask_user program status', () => {
         [{ PI_PROGRAM_STATUS: '1', TERM_PROGRAM: 'other' }, true],
         [{ PI_PROGRAM_STATUS: '0', TERM_PROGRAM: 'rex' }, false],
         [{ TERM_PROGRAM: 'rex', TMUX: '/tmp/tmux' }, false],
-        [{ HERDR_ENV: '1', TERM_PROGRAM: 'rex' }, false],
         [{ TERM_PROGRAM: 'iTerm.app' }, false],
         [{}, false],
       ]

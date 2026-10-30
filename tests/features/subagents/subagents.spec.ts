@@ -133,8 +133,6 @@ const harness = (options: { readonly hasUI?: boolean } = {}) =>
     const environment = makeEnvironment({
       ...process.env,
       FAKE_PI_DIR: root,
-      HERDR_ENV: '1',
-      HERDR_PANE_ID: 'w1:p1',
       PATH: `${BIN}:${process.env.PATH}`,
       REX_BLOCK: 'block:1',
       REX_SESSION: 'session:1',
@@ -259,7 +257,7 @@ describe('sub-agent startup', () => {
       expect(yield* fixture.fs.readFileString(`${fixture.childDir('Review')}/cwd`)).toBe(fixture.project)
       const env = asResult<Record<string, string>>(parseJsonText(yield* fixture.fs.readFileString(`${fixture.childDir('Review')}/env.json`)))
       expect(env.PI_SUBAGENT).toBe('1')
-      expect(Object.keys(env).filter((key) => key.startsWith('HERDR_') || key.startsWith('REX_'))).toEqual([])
+      expect(Object.keys(env).filter((key) => key.startsWith('REX_'))).toEqual([])
       expect(env.FAKE_PI_DIR).toBe(fixture.root)
       expect((yield* fixture.stdin('Review')).slice(0, 2)).toEqual([
         { id: expect.any(String), type: 'get_state' },
@@ -646,7 +644,6 @@ describe('sub-agent dialogs', () => {
       yield* Effect.promise(() => Bun.sleep(50))
       expect(fixture.dialogs.map((call) => call.title)).toEqual(['[Alpha] Proceed?'])
       expect(fixture.dialogs[0]?.timeout).toBe(9000)
-      expect(fixture.fake.state.emittedEvents).toEqual([{ data: { active: true, label: 'Proceed?' }, name: 'herdr:blocked' }])
       fixture.dialogs[0]?.resolve(true)
       yield* waitFor(() => fixture.dialogs.length === 2, 'the second dialog')
       expect(fixture.dialogs[1]?.title).toBe(`[${MODEL}] Proceed?`)
@@ -654,12 +651,6 @@ describe('sub-agent dialogs', () => {
       yield* waitUntil(fixture.stdin('default').pipe(Effect.map((records) => records.length === 3)), 'the second answer')
       expect((yield* fixture.stdin('Alpha')).at(-1)).toEqual({ confirmed: true, id: 'a1', type: 'extension_ui_response' })
       expect((yield* fixture.stdin('default')).at(-1)).toEqual({ confirmed: false, id: 'b1', type: 'extension_ui_response' })
-      expect(fixture.fake.state.emittedEvents.map(({ data }) => data)).toEqual([
-        { active: true, label: 'Proceed?' },
-        { active: false },
-        { active: true, label: 'Proceed?' },
-        { active: false },
-      ])
     })
   )
 
@@ -694,7 +685,6 @@ describe('sub-agent dialogs', () => {
       expect(fixture.dialogs[0]?.signal?.aborted).toBe(false)
       yield* fixture.handlers.close({ agent_id: id }, fixture.context())
       expect(fixture.dialogs[0]?.signal?.aborted).toBe(true)
-      expect(fixture.fake.state.emittedEvents.at(-1)).toEqual({ data: { active: false }, name: 'herdr:blocked' })
     })
   )
 

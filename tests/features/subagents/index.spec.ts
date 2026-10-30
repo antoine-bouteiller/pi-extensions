@@ -67,7 +67,6 @@ describe('subagents registration', () => {
     const guidance = spawn?.promptGuidelines?.join('\n') ?? ''
     expect(guidance).toContain('subagent-result message')
     expect(guidance).toContain('subagents.allowedModels is mandatory')
-    expect(guidance).not.toContain('Herdr')
   })
 
   it('[VC-15] registers no tool and no handler in a sub-agent', () => {
@@ -77,7 +76,7 @@ describe('subagents registration', () => {
     expect(fixture.state.handlers.size).toBe(0)
   })
 
-  it.scoped('[VC-19] offers only subagents.allowedModels to spawn_agent and ignores a legacy herdr block', () =>
+  it.scoped('[VC-19] offers only subagents.allowedModels to spawn_agent', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem
       const agentDir = yield* fs.makeTempDirectoryScoped()
@@ -88,11 +87,11 @@ describe('subagents registration', () => {
       }).implementation.register(fixture.pi, runtime)
       const sections: Record<string, string> = {}
       const event = { systemPromptOptions: { sections } }
-      yield* fs.writeFileString(`${agentDir}/settings.json`, jsonText({ herdr: { allowedModels: ['p/a'] }, subagents: { allowedModels: ['p/b'] } }))
+      yield* fs.writeFileString(`${agentDir}/settings.json`, jsonText({ subagents: { allowedModels: ['p/b'] } }))
       yield* Effect.promise(() => fixture.emit('before_agent_start', event, toolContext(['p/a', 'p/b'])))
       expect(fixture.state.tools.get('spawn_agent')?.parameters).toMatchObject({ properties: { model: { enum: ['p/b'] } } })
       expect(sections.subagents).toBe('spawn_agent may only use these allowed, available models: p/b.')
-      yield* fs.writeFileString(`${agentDir}/settings.json`, jsonText({ herdr: { allowedModels: ['p/a'] } }))
+      yield* fs.writeFileString(`${agentDir}/settings.json`, jsonText({}))
       yield* Effect.promise(() => fixture.emit('before_agent_start', event, toolContext(['p/a', 'p/b'])))
       expect(sections.subagents).toContain('configure subagents.allowedModels')
       expect(fixture.state.tools.get('spawn_agent')?.parameters).not.toHaveProperty('properties.model.enum')

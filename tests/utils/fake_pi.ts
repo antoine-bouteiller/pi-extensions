@@ -31,7 +31,6 @@ interface FakePiState {
   commands: Map<string, CommandDefinition>
   messageRenderers: string[]
   messages: { message: unknown; options: unknown }[]
-  emittedEvents: { name: string; data: unknown }[]
 }
 
 export interface FakePiOptions {
@@ -41,7 +40,6 @@ export interface FakePiOptions {
 export const createFakePi = (options: FakePiOptions = {}): FakePiResult => {
   const state: FakePiState = {
     commands: new Map(),
-    emittedEvents: [],
     entries: [],
     entryRenderers: new Map(),
     handlers: new Map(),
@@ -55,8 +53,8 @@ export const createFakePi = (options: FakePiOptions = {}): FakePiResult => {
       state.entries.push({ customType, data })
     },
     events: {
-      emit(name: string, data: unknown) {
-        state.emittedEvents.push({ data, name })
+      emit() {
+        /* Empty */
       },
       on() {
         /* Empty */

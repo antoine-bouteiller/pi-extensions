@@ -33,7 +33,7 @@ const enabled = (environment: EnvApi, mode: string): boolean => {
   if (override !== undefined) {
     return override === '1'
   }
-  return environment.all.TERM_PROGRAM === 'rex' && environment.all.TMUX === undefined && environment.all.HERDR_ENV !== '1'
+  return environment.all.TERM_PROGRAM === 'rex' && environment.all.TMUX === undefined
 }
 
 /**

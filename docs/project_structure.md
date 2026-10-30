@@ -22,7 +22,7 @@ src/
 │   ├── claude_code/{index,discovery}.ts
 │   ├── hashline/{index,tools}.ts
 │   ├── meridian_session_affinity/{index,affinity,scrub}.ts
-│   ├── peers/{index,peers,herdr,rex}.ts
+│   ├── peers/{index,peers,rex}.ts
 │   ├── prompt_rewind/{index,rewind}.ts
 │   ├── provider_retry/{index,retry}.ts
 │   ├── rules/{index,rules}.ts

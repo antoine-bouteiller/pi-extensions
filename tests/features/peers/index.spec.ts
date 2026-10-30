@@ -124,7 +124,7 @@ describe('peers registration', () => {
     })
   )
 
-  it.scoped('[VC-19] offers only subagents.allowedModels to open_agent and ignores a legacy herdr block', () =>
+  it.scoped('[VC-19] offers only subagents.allowedModels to open_agent', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem
       const agentDir = yield* fs.makeTempDirectoryScoped()
@@ -135,11 +135,11 @@ describe('peers registration', () => {
       }).implementation.register(fixture.pi, runtime)
       const sections: Record<string, string> = {}
       const event = { systemPromptOptions: { sections } }
-      yield* fs.writeFileString(`${agentDir}/settings.json`, jsonText({ herdr: { allowedModels: ['p/a'] }, subagents: { allowedModels: ['p/b'] } }))
+      yield* fs.writeFileString(`${agentDir}/settings.json`, jsonText({ subagents: { allowedModels: ['p/b'] } }))
       yield* Effect.promise(() => fixture.emit('before_agent_start', event, toolContext(['p/a', 'p/b'])))
       expect(fixture.state.tools.get('open_agent')?.parameters).toMatchObject({ properties: { model: { enum: ['p/b'] } } })
       expect(sections.peers).toBe('open_agent may only use these allowed, available models: p/b.')
-      yield* fs.writeFileString(`${agentDir}/settings.json`, jsonText({ herdr: { allowedModels: ['p/a'] } }))
+      yield* fs.writeFileString(`${agentDir}/settings.json`, jsonText({}))
       yield* Effect.promise(() => fixture.emit('before_agent_start', event, toolContext(['p/a', 'p/b'])))
       expect(sections.peers).toContain('configure subagents.allowedModels')
       expect(fixture.state.tools.get('open_agent')?.parameters).not.toHaveProperty('properties.model.enum')
@@ -174,7 +174,7 @@ describe('peers registration', () => {
     })
   )
 
-  it.effect('fails every peer tool outside Herdr and Rex without contacting a CLI', () =>
+  it.effect('fails every peer tool outside Rex without contacting a CLI', () =>
     Effect.gen(function* () {
       const fixture = createFakePi({
         exec: () => {
@@ -186,7 +186,7 @@ describe('peers registration', () => {
         environment: makeEnvironment({ REX_BLOCK: 'block:only' }),
       }).implementation.register(fixture.pi, runtime)
       const ctx = toolContext(['p/m'])
-      const expected = { _tag: 'ToolFailure', message: 'These tools require Pi to run inside Herdr or Rex.' }
+      const expected = { _tag: 'ToolFailure', message: 'These tools require Pi to run inside Rex.' }
       const open = fixture.state.tools.get('open_agent')
       const message = fixture.state.tools.get('message_peer')
       const discover = fixture.state.tools.get('discover_agents')

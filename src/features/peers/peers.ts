@@ -42,10 +42,10 @@ export class PeerError extends Schema.TaggedError<PeerError, { readonly brand: u
 export const peerError = (message: string) => PeerError.make({ message })
 
 export interface Peer {
-  /** Herdr pane_id or Rex block_id. */
+  /** Rex block_id. */
   readonly id: string
   readonly status: string
-  /** Herdr workspace or Rex session label. */
+  /** Rex session label. */
   readonly group: string
   readonly cwd?: string
 }
@@ -64,7 +64,7 @@ export interface OpenRequest {
 type PeerServices = FileSystem | Path | SecureRandom
 
 export interface PeerBackend {
-  readonly name: 'herdr' | 'rex'
+  readonly name: 'rex'
   readonly activate: (ctx: ExtensionContext) => Effect.Effect<void, PeerError, PeerServices | Scope.Scope>
   readonly caller: (ctx: ExtensionContext, signal?: AbortSignal) => Effect.Effect<Peer, PeerError, PeerServices>
   /** None when the target is gone or does not run Pi. */
@@ -103,7 +103,7 @@ export const makePeerHandlers = (backend: PeerBackend | undefined, loadSettings:
     if (cancelled(signal)) {
       return Effect.fail(peerError('Cancelled before contacting the terminal.'))
     }
-    return backend === undefined ? Effect.fail(peerError('These tools require Pi to run inside Herdr or Rex.')) : Effect.succeed(backend)
+    return backend === undefined ? Effect.fail(peerError('These tools require Pi to run inside Rex.')) : Effect.succeed(backend)
   }
 
   const availableModels = (ctx: ExtensionContext) =>

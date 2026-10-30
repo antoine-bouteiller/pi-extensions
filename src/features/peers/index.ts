@@ -18,7 +18,6 @@ import { type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 import { makeEventHandler, makeToolExecutor } from '#shared/effect/runtime'
 import { jsonText } from '#shared/utils/json'
 
-import { makeHerdrBackend } from './herdr.js'
 import {
   DiscoverAgentsParams,
   type DiscoverResult,
@@ -39,11 +38,7 @@ export interface PeerDependencies {
   readonly alive?: (pid: number) => boolean
 }
 
-/** Herdr can run inside a Rex terminal and inherits `REX_*`; the innermost multiplexer owns the pane. */
 const selectBackend = (pi: ExtensionAPI, environment: EnvApi, dependencies: PeerDependencies): PeerBackend | undefined => {
-  if (environment.all.HERDR_ENV === '1') {
-    return makeHerdrBackend(pi)
-  }
   if (environment.all.REX_SESSION !== undefined && environment.all.REX_BLOCK !== undefined) {
     return makeRexBackend(pi, environment, {
       agentDir: dependencies.agentDir ?? getAgentDir(),
@@ -142,7 +137,7 @@ export const feature = ((options: FeatureOptions<PeerDependencies> = {}) => {
         const registerOpen = (models: string[], notes: string[]) =>
           pi.registerTool<typeof OpenAgentParams, OpenResult>({
             description:
-              'Open an independent top-level Pi agent with a task in a new Herdr or Rex tab, without moving focus. Its results are not reported back. Requires Herdr or Rex.',
+              'Open an independent top-level Pi agent with a task in a new Rex tab, without moving focus. Its results are not reported back. Requires Rex.',
             execute: execute(({ params, ctx, signal }) => result(operations.open(params, ctx, signal)), { interruptOnAbort: false }),
             label: 'Open Agent',
             name: 'open_agent',
@@ -164,9 +159,9 @@ export const feature = ((options: FeatureOptions<PeerDependencies> = {}) => {
             promptGuidelines: [
               'Use open_agent only when the user asks for a separate, independent agent they will follow in its own tab. For delegated work whose result you need, use spawn_agent instead.',
               'The opened agent works on its own: nothing it produces is reported back to you, and it is not listed by list_agents. Include everything it needs in the task. Choose a model only from the allowed, available models; subagents.allowedModels is mandatory.',
-              'Set cwd only when the user asks for an agent in another folder or project; the agent then opens in a workspace or session for that folder, reused by later opens there.',
+              'Set cwd only when the user asks for an agent in another folder or project; the agent then opens in a session for that folder, reused by later opens there.',
             ],
-            promptSnippet: 'Open an independent Pi agent in a new Herdr or Rex tab',
+            promptSnippet: 'Open an independent Pi agent in a new Rex tab',
             renderCall: (args, theme, context) =>
               renderCall('open_agent', args.name === undefined ? args.model : `${args.name} · ${args.model}`, args.message, theme, context.expanded),
             renderResult,
@@ -188,8 +183,7 @@ export const feature = ((options: FeatureOptions<PeerDependencies> = {}) => {
           renderResult,
         })
         pi.registerTool<typeof DiscoverAgentsParams, DiscoverResult>({
-          description:
-            'Discover every other top-level Pi agent running in Herdr or Rex, across all workspaces or sessions, with its pane ID, workspace, cwd, and status.',
+          description: 'Discover every other top-level Pi agent running in Rex, across all sessions, with its pane ID, workspace, cwd, and status.',
           execute: execute(({ ctx, signal }) => result(operations.discover(ctx, signal)), { interruptOnAbort: false }),
           label: 'Discover Agents',
           name: 'discover_agents',
@@ -197,7 +191,7 @@ export const feature = ((options: FeatureOptions<PeerDependencies> = {}) => {
           promptGuidelines: [
             'Use discover_agents to find a running agent the user refers to, for example by project or folder, before messaging it with message_peer.',
           ],
-          promptSnippet: 'Discover running Pi agents in Herdr or Rex',
+          promptSnippet: 'Discover running Pi agents in Rex',
           renderCall: (_args, theme) => new Text(theme.fg('toolTitle', theme.bold('discover_agents')), 0, 0),
           renderResult: (output, renderOptions, theme, context) => {
             const { details } = output

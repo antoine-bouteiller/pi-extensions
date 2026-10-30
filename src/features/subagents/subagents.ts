@@ -157,9 +157,9 @@ const textOf = (message: AssistantEnd): string =>
         .join('\n')
         .trim()
 
-/** Herdr's own Pi integration in a child would report to the parent's pane, and Rex variables would put the child into discovery. */
+/** Rex variables would put the child into discovery. */
 const childEnvironment = (environment: EnvApi) => ({
-  ...Object.fromEntries(Object.entries(environment.all).filter(([key]) => !key.startsWith('HERDR_') && !key.startsWith('REX_'))),
+  ...Object.fromEntries(Object.entries(environment.all).filter(([key]) => !key.startsWith('REX_'))),
   PI_SUBAGENT: '1',
 })
 
@@ -269,13 +269,7 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
       child.openDialogs++
       child.status = 'blocked'
       const response = yield* dialogLock
-        .withPermits(1)(
-          Effect.acquireUseRelease(
-            Effect.sync(() => pi.events.emit('herdr:blocked', { active: true, label: dialog.title })),
-            () => answer(ctx, child, dialog),
-            () => Effect.sync(() => pi.events.emit('herdr:blocked', { active: false }))
-          )
-        )
+        .withPermits(1)(answer(ctx, child, dialog))
         .pipe(
           Effect.onInterrupt(() => rpc.send({ cancelled: true, id: dialog.id, type: 'extension_ui_response' })),
           Effect.ensuring(

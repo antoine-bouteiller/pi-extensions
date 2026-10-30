@@ -27,12 +27,12 @@ const fixture = Effect.gen(function* () {
 })
 
 describe('Agent model settings', () => {
-  it.scoped('[VC-19] reads only the subagents block and ignores a legacy herdr block', () =>
+  it.scoped('[VC-19] reads the subagents block', () =>
     Effect.gen(function* () {
       const { fs, globalPath, options } = yield* fixture
-      yield* fs.writeFileString(globalPath, jsonText({ herdr: { allowedModels: ['p/a'] }, subagents: { allowedModels: ['p/b'] } }))
+      yield* fs.writeFileString(globalPath, jsonText({ subagents: { allowedModels: ['p/b'] } }))
       expect(yield* loadAgentModelSettings(options)).toEqual({ allowedModels: ['p/b'], modelNotes: {} })
-      yield* fs.writeFileString(globalPath, jsonText({ herdr: { allowedModels: ['p/a'], profiles: {} } }))
+      yield* fs.writeFileString(globalPath, jsonText({}))
       expect(yield* loadAgentModelSettings(options)).toEqual({ allowedModels: [], modelNotes: {} })
       yield* fs.writeFileString(globalPath, jsonText({ subagents: { allowedModels: ['p/b'], profiles: {} } }))
       expect((yield* Effect.flip(loadAgentModelSettings(options))).message).toContain('subagents.allowedModels')
