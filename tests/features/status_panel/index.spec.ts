@@ -23,8 +23,19 @@ const theme = {
   fg: (_color: string, text: string) => text,
 }
 
-const harness = (mode: 'tui' | 'rpc' = 'tui') => {
-  const fixture = createFakePi()
+const harness = (mode: 'tui' | 'rpc' = 'tui', git: { branch: string; code?: number } = { branch: '' }) => {
+  const gitCalls: (string | undefined)[] = []
+  const fixture = createFakePi({
+    exec: (_command, _args, options) => {
+      gitCalls.push(options?.cwd)
+      return Promise.resolve({ code: git.code ?? 0, stderr: '', stdout: `${git.branch}\n` })
+    },
+  })
+  let sessionName: string | undefined
+  fixture.pi.getSessionName = () => sessionName
+  fixture.pi.setSessionName = (name) => {
+    sessionName = name
+  }
   const descriptor = feature()
   descriptor.implementation.register(fixture.pi, runtime)
   const tui = { requestRender: () => undefined, terminal: { columns: 80, rows: 30 } }
@@ -60,8 +71,11 @@ const harness = (mode: 'tui' | 'rpc' = 'tui') => {
     emit: (name: string, event: unknown = {}) => Effect.promise(() => fixture.emit(name, event, ctx)),
     fixture,
     footerLine: (width: number) => ui.footer?.(tui, theme, {}).render(width) ?? [],
+    git,
+    gitCalls,
     makeEditor: () => ui.editor?.(tui, { borderColor: (text: string) => text, selectList: {} }, {}),
     previousEditor,
+    sessionName: () => sessionName,
     setUsage: (next: typeof usage) => {
       usage = next
     },
@@ -153,12 +167,46 @@ describe('status panel', () => {
     })
   )
 
-  it.effect('installs nothing outside TUI mode', () =>
+  it.effect('installs nothing and names nothing outside TUI mode', () =>
     Effect.gen(function* () {
-      const panel = harness('rpc')
+      const panel = harness('rpc', { branch: 'feat/x' })
       yield* panel.activate()
       expect(panel.ui.footer).toBeUndefined()
       expect(panel.ui.editor).toBeUndefined()
+      expect(panel.sessionName()).toBeUndefined()
+    })
+  )
+
+  it.effect('names the session after the git branch and follows a checkout made during a run', () =>
+    Effect.gen(function* () {
+      const panel = harness('tui', { branch: 'feat/x' })
+      yield* panel.activate()
+      expect(panel.sessionName()).toBe('feat/x')
+      expect(panel.gitCalls).toEqual(['/project'])
+      panel.git.branch = 'feat/y'
+      yield* panel.emit('agent_settled')
+      expect(panel.sessionName()).toBe('feat/y')
+    })
+  )
+
+  it.effect('keeps a session name it did not set', () =>
+    Effect.gen(function* () {
+      const panel = harness('tui', { branch: 'feat/x' })
+      panel.fixture.pi.setSessionName('my name')
+      yield* panel.activate()
+      yield* panel.emit('agent_settled')
+      expect(panel.sessionName()).toBe('my name')
+    })
+  )
+
+  it.effect('leaves the session unnamed on a detached HEAD or outside a repository', () =>
+    Effect.gen(function* () {
+      const detached = harness('tui', { branch: '' })
+      yield* detached.activate()
+      expect(detached.sessionName()).toBeUndefined()
+      const outside = harness('tui', { branch: '', code: 128 })
+      yield* outside.activate()
+      expect(outside.sessionName()).toBeUndefined()
     })
   )
 })

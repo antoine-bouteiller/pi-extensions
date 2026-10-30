@@ -1,12 +1,10 @@
 import { type ExtensionAPI, type ExtensionContext, type ExtensionEvent } from '@earendil-works/pi-coding-agent'
-import { Clock, Effect, MutableRef, Path as PathService } from 'effect'
-import { type Path } from 'effect/Path'
+import { Clock, Effect, MutableRef } from 'effect'
 
 import { isTrue } from '#shared/utils/predicates'
 
 import { StatusEditor } from './editor.js'
 import { renderFooterLine, renderStatusLine } from './footer.js'
-import { formatDirectory } from './render.js'
 import { emptyModelInfoState, type ModelInfoState, turnMetrics } from './state.js'
 
 /*
@@ -19,7 +17,7 @@ type PiEvent<Type extends ExtensionEvent['type']> = Extract<ExtensionEvent, { ty
 type EditorFactory = ReturnType<ExtensionContext['ui']['getEditorComponent']>
 
 export interface PanelHandlers {
-  readonly sessionStart: (event: PiEvent<'session_start'>, ctx: ExtensionContext) => Effect.Effect<void, never, Path>
+  readonly sessionStart: (event: PiEvent<'session_start'>, ctx: ExtensionContext) => Effect.Effect<void>
   readonly modelSelect: (event: PiEvent<'model_select'>, ctx: ExtensionContext) => Effect.Effect<void>
   readonly thinkingLevelSelect: (event: PiEvent<'thinking_level_select'>, ctx: ExtensionContext) => Effect.Effect<void>
   readonly messageEnd: (event: PiEvent<'message_end'>, ctx: ExtensionContext) => Effect.Effect<void>
@@ -33,6 +31,7 @@ export const makePanelController = (pi: ExtensionAPI): PanelHandlers => {
   let requestRender: (() => void) | undefined
   let previousEditor: EditorFactory | undefined
   let installed = false
+  let branchName: string | undefined
 
   const getModel = (): ModelInfoState => MutableRef.get(modelState)
   const updateModel = (updater: (model: ModelInfoState) => ModelInfoState): Effect.Effect<void> =>
@@ -55,7 +54,23 @@ export const makePanelController = (pi: ExtensionAPI): PanelHandlers => {
 
   const refreshModel = (ctx: ExtensionContext): Effect.Effect<void> => updateModel((model) => applyModelInfo(ctx, model))
 
-  const install = (ctx: ExtensionContext, path: Path): void => {
+  // Pi puts the session name in the terminal title, which Rex shows as the pane name.
+  const nameAfterBranch = (ctx: ExtensionContext): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      if (ctx.mode !== 'tui') {
+        return
+      }
+      const result = yield* Effect.tryPromise(() => pi.exec('git', ['branch', '--show-current'], { cwd: ctx.cwd, timeout: 5000 }))
+      const branch = result.stdout.trim()
+      const current = pi.getSessionName()
+      if (result.code !== 0 || branch === '' || branch === current || (current !== undefined && current !== branchName)) {
+        return
+      }
+      pi.setSessionName(branch)
+      branchName = branch
+    }).pipe(Effect.ignore)
+
+  const install = (ctx: ExtensionContext): void => {
     ctx.ui.setFooter((tui, theme) => {
       requestRender = () => tui.requestRender()
       return {
@@ -73,11 +88,10 @@ export const makePanelController = (pi: ExtensionAPI): PanelHandlers => {
         new StatusEditor(tui, theme, keybindings, (width, color, activity) => renderStatusLine(getModel(), ctx.ui.theme, width, color, activity))
     )
     installed = true
-    ctx.ui.setTitle(`pi · ${formatDirectory(ctx.cwd, path)}`)
   }
 
   return {
-    agentSettled: (_event, ctx) => refreshModel(ctx),
+    agentSettled: (_event, ctx) => Effect.andThen(refreshModel(ctx), nameAfterBranch(ctx)),
     messageEnd: (event) =>
       Effect.gen(function* () {
         if (event.message.role !== 'assistant') {
@@ -99,12 +113,13 @@ export const makePanelController = (pi: ExtensionAPI): PanelHandlers => {
       }),
     sessionStart: (_event, ctx) =>
       Effect.gen(function* () {
-        const path = yield* PathService.Path
         MutableRef.set(modelState, emptyModelInfoState())
+        branchName = undefined
         if (ctx.mode === 'tui') {
-          install(ctx, path)
+          install(ctx)
         }
         yield* refreshModel(ctx)
+        yield* nameAfterBranch(ctx)
       }),
     thinkingLevelSelect: (event) => updateModel((model) => ({ ...model, thinking: event.level })),
     turnEnd: (_event, ctx) => refreshModel(ctx),
