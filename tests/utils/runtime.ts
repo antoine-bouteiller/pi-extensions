@@ -1,6 +1,7 @@
 import { BunChildProcessSpawner, BunCrypto, BunFileSystem, BunPath } from '@effect/platform-bun'
 import { Layer, ManagedRuntime } from 'effect'
-import { type Crypto } from 'effect/Crypto'
+import { type Digest } from 'effect/crypto/Digest'
+import { type SecureRandom } from 'effect/crypto/SecureRandom'
 import { type FileSystem } from 'effect/FileSystem'
 import { FetchHttpClient } from 'effect/http'
 import { type Path } from 'effect/Path'
@@ -12,7 +13,7 @@ import { type Env, envLayer, EnvLive } from '@/shared/effect/env.js'
 
 export const runtime: AppRuntime = getOrCreateProcessRuntime()
 
-type PlatformServices = FileSystem | Path | Crypto | ChildProcessSpawner | StatusBar | Env
+type PlatformServices = FileSystem | Path | Digest | SecureRandom | ChildProcessSpawner | StatusBar | Env
 
 const BunPlatformLayer = BunChildProcessSpawner.layer.pipe(Layer.provideMerge(Layer.mergeAll(BunCrypto.layer, BunFileSystem.layer, BunPath.layer)))
 

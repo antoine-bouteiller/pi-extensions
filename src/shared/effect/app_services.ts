@@ -1,5 +1,6 @@
 import { Context, Effect, Layer, type ManagedRuntime } from 'effect'
-import { type Crypto } from 'effect/Crypto'
+import { type Digest } from 'effect/crypto/Digest'
+import { type SecureRandom } from 'effect/crypto/SecureRandom'
 import { type FileSystem } from 'effect/FileSystem'
 import { type HttpClient } from 'effect/http'
 import { type Path } from 'effect/Path'
@@ -61,6 +62,6 @@ export const StatusBarLive: Layer.Layer<StatusBar> = Layer.succeed(StatusBar)({
   subscribe: statusBar.subscribe,
 })
 
-export type AppServices = FileSystem | Path | Crypto | HttpClient.HttpClient | StatusBar | ChildProcessSpawner | Env
+export type AppServices = FileSystem | Path | Digest | SecureRandom | HttpClient.HttpClient | StatusBar | ChildProcessSpawner | Env
 
 export type AppRuntime = ManagedRuntime.ManagedRuntime<AppServices, never>

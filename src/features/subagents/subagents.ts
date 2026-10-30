@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url'
 
 import { type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { Effect, Exit, Fiber, Schema, Scope, Semaphore } from 'effect'
-import { Crypto } from 'effect/Crypto'
+import { SecureRandom } from 'effect/crypto/SecureRandom'
 import { type Static, Type } from 'typebox'
 import { Value } from 'typebox/value'
 
@@ -416,8 +416,8 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
         if (cancelled(signal)) {
           return yield* fail('Cancelled before starting the agent.')
         }
-        const crypto = yield* Crypto
-        const id = (yield* crypto.randomUUIDv4()).replaceAll('-', '').slice(0, 8)
+        const random = yield* SecureRandom
+        const id = (yield* random.uuidV4()).replaceAll('-', '').slice(0, 8)
         const child: Child = {
           awaiting: true,
           dialogs: new Set(),

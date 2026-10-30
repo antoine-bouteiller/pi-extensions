@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url'
 
 import { type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { Clock, Effect, Option, Scope, Semaphore } from 'effect'
-import { Crypto } from 'effect/Crypto'
+import { SecureRandom } from 'effect/crypto/SecureRandom'
 import { FileSystem } from 'effect/FileSystem'
 import { Path } from 'effect/Path'
 import { type Static, type TSchema, Type } from 'typebox'
@@ -76,17 +76,17 @@ const failed = (result: { stderr: string }) => peerError(result.stderr.trim().sl
 const writeAtomically = (file: string, value: unknown) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem
-    const crypto = yield* Crypto
-    const pending = `${file}.${yield* crypto.randomUUIDv4()}.tmp`
+    const random = yield* SecureRandom
+    const pending = `${file}.${yield* random.uuidV4()}.tmp`
     yield* fs.writeFileString(pending, jsonText(value))
     yield* fs.rename(pending, file)
   }).pipe(Effect.mapError((error) => peerError(error.message)))
 
 const writeInbox = (directory: string, text: string) =>
   Effect.gen(function* () {
-    const crypto = yield* Crypto
+    const random = yield* SecureRandom
     const now = yield* Clock.currentTimeMillis
-    yield* writeAtomically(`${directory}/${String(now).padStart(13, '0')}-${yield* crypto.randomUUIDv4()}.json`, { text })
+    yield* writeAtomically(`${directory}/${String(now).padStart(13, '0')}-${yield* random.uuidV4()}.json`, { text })
   }).pipe(Effect.mapError((error) => (error._tag === 'PeerError' ? error : peerError(error.message))))
 
 export interface RexOptions {
@@ -160,11 +160,11 @@ export const makeRexBackend = (pi: ExtensionAPI, environment: EnvApi, options: R
   const drain = (ctx: ExtensionContext, directory: string) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem
-      const crypto = yield* Crypto
+      const random = yield* SecureRandom
       const names = yield* fs.readDirectory(directory)
       for (const name of names.filter((candidate) => candidate.endsWith('.json')).toSorted()) {
         const file = `${directory}/${name}`
-        const claimed = `${file}.${yield* crypto.randomUUIDv4()}.claimed`
+        const claimed = `${file}.${yield* random.uuidV4()}.claimed`
         const renamed = yield* fs.rename(file, claimed).pipe(
           Effect.as(true),
           Effect.catchIf(
@@ -245,8 +245,8 @@ export const makeRexBackend = (pi: ExtensionAPI, environment: EnvApi, options: R
           return
         }
         const fs = yield* FileSystem
-        const crypto = yield* Crypto
-        inbox ??= environment.all.PI_REX_INBOX ?? `${root}/inbox/${process.pid}-${yield* crypto.randomUUIDv4()}`
+        const random = yield* SecureRandom
+        inbox ??= environment.all.PI_REX_INBOX ?? `${root}/inbox/${process.pid}-${yield* random.uuidV4()}`
         const directory = inbox
         yield* fs.makeDirectory(directory, { recursive: true })
         yield* fs.makeDirectory(`${root}/presence`, { recursive: true })
@@ -302,9 +302,9 @@ export const makeRexBackend = (pi: ExtensionAPI, environment: EnvApi, options: R
       Effect.gen(function* () {
         yield* caller()
         const fs = yield* FileSystem
-        const crypto = yield* Crypto
+        const random = yield* SecureRandom
         const label = openRequest.name ?? `${openRequest.provider}/${openRequest.model}`
-        const opened = `${root}/inbox/open-${yield* crypto.randomUUIDv4().pipe(Effect.mapError((error) => peerError(error.message)))}`
+        const opened = `${root}/inbox/open-${yield* random.uuidV4()}`
         yield* fs.makeDirectory(opened, { recursive: true }).pipe(Effect.mapError((error) => peerError(error.message)))
         yield* writeInbox(opened, openRequest.text)
         const command = [

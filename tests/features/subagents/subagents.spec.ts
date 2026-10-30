@@ -5,7 +5,7 @@ import { describe, expect, it, PromiseEffectError } from '@tests/utils/bun_effec
 import { asExtensionContext, asResult } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { Effect, Exit, Fiber, Layer, Scope } from 'effect'
-import { type Crypto } from 'effect/Crypto'
+import { type SecureRandom } from 'effect/crypto/SecureRandom'
 import { FileSystem } from 'effect/FileSystem'
 import { type Path } from 'effect/Path'
 import { type ChildProcessSpawner } from 'effect/process/ChildProcessSpawner'
@@ -166,7 +166,7 @@ const assistant = (text: string, stopReason = 'stop', errorMessage?: string) => 
   },
 })
 const settled = { emit: { aborted: false, type: 'agent_settled' } }
-type TestServices = Scope.Scope | FileSystem | Path | Crypto | ChildProcessSpawner
+type TestServices = Scope.Scope | FileSystem | Path | SecureRandom | ChildProcessSpawner
 const live = <Value, Failure>(name: string, body: () => Effect.Effect<Value, Failure, TestServices>, timeout = 15_000) =>
   it.live(name, () => Effect.scoped(body()).pipe(Effect.provide(Platform)), timeout)
 

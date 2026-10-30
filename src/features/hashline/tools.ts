@@ -18,7 +18,7 @@ import {
   Patcher,
 } from '@oh-my-pi/hashline'
 import { Context, Effect, Path, Schema, type Scope } from 'effect'
-import { type Crypto } from 'effect/Crypto'
+import { type Digest } from 'effect/crypto/Digest'
 import { type FileSystem } from 'effect/FileSystem'
 import { type Static, Type } from 'typebox'
 
@@ -157,7 +157,7 @@ const readHashlineFile = ({
   path,
   signal,
   snapshots,
-}: ReadHashlineFileOptions): Effect.Effect<ToolOutput, HashlineToolError, FileSystem | Path.Path | Crypto> =>
+}: ReadHashlineFileOptions): Effect.Effect<ToolOutput, HashlineToolError, FileSystem | Path.Path | Digest> =>
   Effect.gen(function* () {
     yield* abortCheck(signal)
     const pathService = yield* Path.Path
@@ -215,7 +215,7 @@ const writeHashlinePatch = ({
   patchText,
   signal,
   snapshots,
-}: WriteHashlinePatchOptions): Effect.Effect<ToolOutput, HashlineToolError, FileSystem | Path.Path | Crypto> =>
+}: WriteHashlinePatchOptions): Effect.Effect<ToolOutput, HashlineToolError, FileSystem | Path.Path | Digest> =>
   Effect.gen(function* () {
     yield* abortCheck(signal)
     const pathService = yield* Path.Path
@@ -316,7 +316,7 @@ export const renderHashlineRead = (readResult: RenderableToolOutput, _options: u
   return new Text(theme.fg(isTrue(readResult.isError) ? 'error' : 'toolOutput', text), 0, 0)
 }
 
-type HashlineToolEffect = Effect.Effect<ToolOutput, HashlineToolError, HandlerServices | FileSystem | Path.Path | Crypto>
+type HashlineToolEffect = Effect.Effect<ToolOutput, HashlineToolError, HandlerServices | FileSystem | Path.Path | Digest>
 
 export interface HashlineTools {
   readonly read: (params: Static<typeof readSchema>, signal: AbortSignal | undefined, toolCtx: ExtensionToolContext) => HashlineToolEffect

@@ -1,6 +1,6 @@
 import { type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { Effect, Option, Schema, type Scope } from 'effect'
-import { type Crypto } from 'effect/Crypto'
+import { type SecureRandom } from 'effect/crypto/SecureRandom'
 import { type FileSystem } from 'effect/FileSystem'
 import { type Path } from 'effect/Path'
 import { type Static, Type } from 'typebox'
@@ -61,7 +61,7 @@ export interface OpenRequest {
   readonly text: string
 }
 
-type PeerServices = FileSystem | Path | Crypto
+type PeerServices = FileSystem | Path | SecureRandom
 
 export interface PeerBackend {
   readonly name: 'herdr' | 'rex'
