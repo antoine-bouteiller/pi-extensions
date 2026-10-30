@@ -1,7 +1,9 @@
 import { test } from 'bun:test'
 
 import { BunCrypto, BunFileSystem, BunPath } from '@effect/platform-bun'
-import { type Crypto, Effect, type FileSystem, Layer, type Path, Schema, type Scope } from 'effect'
+import { Effect, type FileSystem, Layer, type Path, Schema, type Scope } from 'effect'
+import { type Digest } from 'effect/crypto/Digest'
+import { type SecureRandom } from 'effect/crypto/SecureRandom'
 import { TestClock } from 'effect/testing'
 
 import { type Env, EnvLive } from '@/shared/effect/env.js'
@@ -12,7 +14,7 @@ type Options = number | { timeout?: number }
 const timeoutOf = (opts?: Options) => (typeof opts === 'number' ? opts : opts?.timeout)
 
 /** Virtual time and the real Bun platform by default. */
-type TestServices = FileSystem.FileSystem | Path.Path | Crypto.Crypto | TestClock.TestClock | Env
+type TestServices = FileSystem.FileSystem | Path.Path | Digest | SecureRandom | TestClock.TestClock | Env
 const testEnv: Layer.Layer<TestServices> = Layer.mergeAll(BunCrypto.layer, BunFileSystem.layer, BunPath.layer, TestClock.layer(), EnvLive)
 
 const run = <Success, Failure>(eff: Effect.Effect<Success, Failure, TestServices>) => Effect.runPromise(Effect.provide(eff, testEnv))

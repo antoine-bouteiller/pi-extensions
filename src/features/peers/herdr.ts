@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url'
 
 import { type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { Effect, Option, Semaphore } from 'effect'
-import { Crypto } from 'effect/Crypto'
+import { SecureRandom } from 'effect/crypto/SecureRandom'
 import { Path } from 'effect/Path'
 import { type Static, type TSchema, Type } from 'typebox'
 import { Value } from 'typebox/value'
@@ -136,8 +136,8 @@ export const makeHerdrBackend = (pi: ExtensionAPI): PeerBackend => {
           if (signal?.aborted === true) {
             return yield* peerError('Cancelled after creating the tab.')
           }
-          const crypto = yield* Crypto
-          const id = yield* crypto.randomUUIDv4().pipe(Effect.mapError((error) => peerError(error.message)))
+          const random = yield* SecureRandom
+          const id = yield* random.uuidV4()
           const { agent } = yield* request(
             ctx.cwd,
             [
