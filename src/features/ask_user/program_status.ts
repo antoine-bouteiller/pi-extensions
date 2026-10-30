@@ -7,7 +7,7 @@ const MAX_MESSAGE_BYTES = 2048
 
 /** Same sanitizing and byte limit as Pi's own OSC 7501 reports, so terminals do not discard the record. */
 const encodeMessage = (text: string): string => {
-  let message = text.replace(CONTROL_CHARACTERS, ' ').trim()
+  let message = text.replaceAll(CONTROL_CHARACTERS, ' ').trim()
   if (Buffer.byteLength(message, 'utf8') > MAX_MESSAGE_BYTES) {
     let bytes = 0
     let end = 0
