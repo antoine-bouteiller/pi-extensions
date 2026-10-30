@@ -1,7 +1,4 @@
-import { homedir } from 'node:os'
-
 import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui'
-import { type Path } from 'effect/Path'
 
 import { isEmptyString } from '#shared/utils/predicates'
 
@@ -13,17 +10,6 @@ export const formatTokens = (tokens: number) => {
     return `${Math.round(tokens / 1000)}k`
   }
   return `${(tokens / 1_000_000).toFixed(1)}M`
-}
-
-export const formatDirectory = (cwd: string, path: Path): string => {
-  const home = homedir()
-  if (cwd === home) {
-    return '~'
-  }
-  if (cwd.startsWith(`${home}/`)) {
-    return `~/${path.relative(home, cwd)}`
-  }
-  return cwd
 }
 
 export const columns = (left: string, right: string, width: number): string => {
