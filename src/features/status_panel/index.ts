@@ -23,6 +23,7 @@ export const feature = ((_options: FeatureOptions<undefined> = {}) => {
         pi.on('message_end', onEvent(handlers.messageEnd))
         pi.on('turn_end', onEvent(handlers.turnEnd))
         pi.on('agent_settled', onEvent(handlers.agentSettled))
+        pi.on('before_agent_start', onEvent(handlers.beforeAgentStart))
       },
     },
     status: { name: 'status-panel' },
