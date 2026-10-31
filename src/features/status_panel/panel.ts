@@ -1,5 +1,5 @@
 import { type ExtensionAPI, type ExtensionContext, type ExtensionEvent } from '@earendil-works/pi-coding-agent'
-import { Clock, Effect, MutableRef } from 'effect'
+import { Clock, Effect, MutableRef, Scope } from 'effect'
 
 import { StatusBar, type StatusBarApi } from '#shared/effect/app_services'
 import { isTrue } from '#shared/utils/predicates'
@@ -15,10 +15,20 @@ import { emptyModelInfoState, type ModelInfoState, turnMetrics } from './state.j
  */
 type PiEvent<Type extends ExtensionEvent['type']> = Extract<ExtensionEvent, { type: Type }>
 
+const TITLE_MODEL_SETTING = 'sessionTitleModel'
+const TITLE_PROMPT = "Write a 3 to 6 word title for a coding session that starts with the user's message. Reply with the title only."
+const FALLBACK_TITLE_LENGTH = 40
+
+const promptTitle = (prompt: string): string => {
+  const line = prompt.trim().split('\n', 1)[0]?.replaceAll(/\s+/g, ' ') ?? ''
+  return line.length > FALLBACK_TITLE_LENGTH ? `${line.slice(0, FALLBACK_TITLE_LENGTH - 1).trimEnd()}…` : line
+}
+
 type EditorFactory = ReturnType<ExtensionContext['ui']['getEditorComponent']>
 
 export interface PanelHandlers {
-  readonly sessionStart: (event: PiEvent<'session_start'>, ctx: ExtensionContext) => Effect.Effect<void, never, StatusBar>
+  readonly sessionStart: (event: PiEvent<'session_start'>, ctx: ExtensionContext) => Effect.Effect<void, never, StatusBar | Scope.Scope>
+  readonly beforeAgentStart: (event: PiEvent<'before_agent_start'>, ctx: ExtensionContext) => Effect.Effect<void>
   readonly modelSelect: (event: PiEvent<'model_select'>, ctx: ExtensionContext) => Effect.Effect<void>
   readonly thinkingLevelSelect: (event: PiEvent<'thinking_level_select'>, ctx: ExtensionContext) => Effect.Effect<void>
   readonly messageEnd: (event: PiEvent<'message_end'>, ctx: ExtensionContext) => Effect.Effect<void>
@@ -32,7 +42,8 @@ export const makePanelController = (pi: ExtensionAPI): PanelHandlers => {
   let requestRender: (() => void) | undefined
   let previousEditor: EditorFactory | undefined
   let installed = false
-  let branchName: string | undefined
+  let sessionScope: Scope.Scope | undefined
+  let titleRequested = false
   let unsubscribeStatuses: (() => void) | undefined
 
   const getModel = (): ModelInfoState => MutableRef.get(modelState)
@@ -57,20 +68,38 @@ export const makePanelController = (pi: ExtensionAPI): PanelHandlers => {
   const refreshModel = (ctx: ExtensionContext): Effect.Effect<void> => updateModel((model) => applyModelInfo(ctx, model))
 
   // Pi puts the session name in the terminal title, which Rex shows as the pane name.
-  const nameAfterBranch = (ctx: ExtensionContext): Effect.Effect<void> =>
+  const nameSession = (title: string | undefined): Effect.Effect<void> =>
+    Effect.sync(() => {
+      if (title !== undefined && title !== '' && pi.getSessionName() === undefined) {
+        pi.setSessionName(title)
+      }
+    })
+
+  const titleModel = (ctx: ExtensionContext) => {
+    const setting: unknown = Reflect.get(pi.getSettings(), TITLE_MODEL_SETTING)
+    const slash = typeof setting === 'string' ? setting.indexOf('/') : -1
+    return typeof setting === 'string' && slash > 0 ? ctx.modelRegistry.find(setting.slice(0, slash), setting.slice(slash + 1)) : undefined
+  }
+
+  const generateTitle = (model: NonNullable<ReturnType<typeof titleModel>>, prompt: string, ctx: ExtensionContext) =>
     Effect.gen(function* () {
-      if (ctx.mode !== 'tui') {
-        return
-      }
-      const result = yield* Effect.tryPromise(() => pi.exec('git', ['branch', '--show-current'], { cwd: ctx.cwd, timeout: 5000 }))
-      const branch = result.stdout.trim()
-      const current = pi.getSessionName()
-      if (result.code !== 0 || branch === '' || branch === current || (current !== undefined && current !== branchName)) {
-        return
-      }
-      pi.setSessionName(branch)
-      branchName = branch
-    }).pipe(Effect.ignore)
+      const reply = yield* Effect.tryPromise(() =>
+        ctx.modelRegistry.complete(
+          model,
+          { messages: [{ content: prompt.slice(0, 4000), role: 'user', timestamp: Date.now() }], systemPrompt: TITLE_PROMPT },
+          { maxTokens: 32 }
+        )
+      )
+      return reply.stopReason === 'error'
+        ? undefined
+        : reply.content
+            .flatMap((part) => (part.type === 'text' ? [part.text] : []))
+            .join('')
+            .split('\n', 1)[0]
+            ?.trim()
+            .replaceAll(/^["'`]+|["'`.]+$/g, '')
+            .slice(0, 60)
+    })
 
   const install = (ctx: ExtensionContext, statusBar: StatusBarApi): void => {
     ctx.ui.setFooter((tui, theme) => {
@@ -95,7 +124,28 @@ export const makePanelController = (pi: ExtensionAPI): PanelHandlers => {
   }
 
   return {
-    agentSettled: (_event, ctx) => Effect.andThen(refreshModel(ctx), nameAfterBranch(ctx)),
+    agentSettled: (_event, ctx) => refreshModel(ctx),
+    beforeAgentStart: (event, ctx) =>
+      Effect.gen(function* () {
+        if (ctx.mode !== 'tui' || event.messageType !== 'user' || titleRequested || sessionScope === undefined || pi.getSessionName() !== undefined) {
+          return
+        }
+        titleRequested = true
+        const fallback = promptTitle(event.prompt)
+        const model = titleModel(ctx)
+        if (model === undefined) {
+          yield* nameSession(fallback)
+          return
+        }
+        yield* Effect.forkIn(
+          generateTitle(model, event.prompt, ctx).pipe(
+            Effect.map((title) => (title === undefined || title === '' ? fallback : title)),
+            Effect.orElseSucceed(() => fallback),
+            Effect.flatMap(nameSession)
+          ),
+          sessionScope
+        )
+      }),
     messageEnd: (event) =>
       Effect.gen(function* () {
         if (event.message.role !== 'assistant') {
@@ -116,17 +166,18 @@ export const makePanelController = (pi: ExtensionAPI): PanelHandlers => {
         }
         installed = false
         previousEditor = undefined
+        sessionScope = undefined
       }),
     sessionStart: (_event, ctx) =>
       Effect.gen(function* () {
         const statusBar = yield* StatusBar
         MutableRef.set(modelState, emptyModelInfoState())
-        branchName = undefined
+        sessionScope = yield* Scope.Scope
+        titleRequested = false
         if (ctx.mode === 'tui') {
           install(ctx, statusBar)
         }
         yield* refreshModel(ctx)
-        yield* nameAfterBranch(ctx)
       }),
     thinkingLevelSelect: (event) => updateModel((model) => ({ ...model, thinking: event.level })),
     turnEnd: (_event, ctx) => refreshModel(ctx),

@@ -21,7 +21,7 @@ pi install git:github.com/antoine-bouteiller/pi-extensions
 - `prompt_rewind` — Edit your prompt when cancelling before a response.
 - `provider_retry` — Extend retries to server and unknown-status provider failures.
 - `rules` — Load rules from `.claude/rules/` and `.agents/rules/`.
-- `status_panel` — Show activity, model, and thinking in the editor border, and context, status entries, cache hit, and throughput in a one-line footer. Name the session after the current git branch, so the terminal title (and the Rex pane name) shows it, unless the session already has a name it did not set.
+- `status_panel` — Show activity, model, and thinking in the editor border, and context, status entries, cache hit, and throughput in a one-line footer. Name an unnamed session from its first prompt, so `/resume` and the terminal title (and the Rex pane name) show it. With `"sessionTitleModel": "<provider>/<model-id>"` in `settings.json`, that model writes a short title in the background. Otherwise, or when the model is unavailable or fails, the name is the prompt's first 40 characters.
 - `subagents` — Delegate to headless Pi sub-agents and receive their results automatically.
 - `webfetch` — Fetch URLs as Markdown, text, or HTML.
 

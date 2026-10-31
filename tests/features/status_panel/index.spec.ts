@@ -1,9 +1,9 @@
 import { visibleWidth } from '@earendil-works/pi-tui'
 import { describe, expect, it } from '@tests/utils/bun_effect.js'
-import { asExtensionContext } from '@tests/utils/casts.js'
+import { asExtensionContext, asResult } from '@tests/utils/casts.js'
 import { createFakePi } from '@tests/utils/fake_pi.js'
 import { runtimeWithEnvironment } from '@tests/utils/runtime.js'
-import { Effect } from 'effect'
+import { Effect, Scope } from 'effect'
 
 import { feature } from '@/features/status_panel/index.js'
 import { columns, formatTokens } from '@/features/status_panel/render.js'
@@ -24,19 +24,25 @@ const theme = {
   fg: (_color: string, text: string) => text,
 }
 
-const harness = (mode: 'tui' | 'rpc' = 'tui', git: { branch: string; code?: number } = { branch: '' }) => {
-  const gitCalls: (string | undefined)[] = []
-  const fixture = createFakePi({
-    exec: (_command, _args, options) => {
-      gitCalls.push(options?.cwd)
-      return Promise.resolve({ code: git.code ?? 0, stderr: '', stdout: `${git.branch}\n` })
-    },
-  })
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+interface TitleModel {
+  readonly setting?: string
+  readonly available?: boolean
+  readonly reply?: string
+}
+
+const harness = (mode: 'tui' | 'rpc' = 'tui', titleModel: TitleModel = {}) => {
+  const titleRequests: { model: string; prompt: unknown }[] = []
+  let replyTitle: (() => void) | undefined
+  const fixture = createFakePi()
+  fixture.pi.getSettings = () => asResult(titleModel.setting === undefined ? {} : { sessionTitleModel: titleModel.setting })
   let sessionName: string | undefined
   fixture.pi.getSessionName = () => sessionName
   fixture.pi.setSessionName = (name) => {
     sessionName = name
   }
+  const scope = Scope.makeUnsafe()
   const descriptor = feature()
   descriptor.implementation.register(fixture.pi, runtime)
   let renders = 0
@@ -56,6 +62,20 @@ const harness = (mode: 'tui' | 'rpc' = 'tui', git: { branch: string; code?: numb
     getContextUsage: () => usage,
     mode,
     model: { contextWindow: 200_000, id: 'gpt-test', provider: 'openai', reasoning: true },
+    modelRegistry: {
+      complete: (model: { provider: string; id: string }, context: { messages: { content: unknown }[] }) => {
+        titleRequests.push({ model: `${model.provider}/${model.id}`, prompt: context.messages[0]?.content })
+        return new Promise((resolve) => {
+          replyTitle = () =>
+            resolve(
+              titleModel.reply === undefined
+                ? { content: [], stopReason: 'error' }
+                : { content: [{ text: titleModel.reply, type: 'text' }], stopReason: 'stop' }
+            )
+        })
+      },
+      find: (provider: string, id: string) => (titleModel.available === false ? undefined : { id, provider }),
+    },
     ui: {
       getEditorComponent: () => previousEditor,
       setEditorComponent: (factory?: Factory) => {
@@ -71,22 +91,32 @@ const harness = (mode: 'tui' | 'rpc' = 'tui', git: { branch: string; code?: numb
   return {
     activate: () =>
       Effect.promise(() =>
-        runtime.runPromise(descriptor.implementation.activate?.({ reason: 'startup', type: 'session_start' }, ctx) ?? Effect.void)
+        runtime.runPromise(
+          (descriptor.implementation.activate?.({ reason: 'startup', type: 'session_start' }, ctx) ?? Effect.void).pipe(
+            Effect.provideService(Scope.Scope, scope)
+          )
+        )
       ),
     ctx,
     deactivate: () => Effect.promise(() => runtime.runPromise(descriptor.implementation.deactivate?.(ctx, 'shutdown') ?? Effect.void)),
     emit: (name: string, event: unknown = {}) => Effect.promise(() => fixture.emit(name, event, ctx)),
     fixture,
     footerLine: (width: number) => ui.footer?.(tui, theme, {}).render(width) ?? [],
-    git,
-    gitCalls,
     makeEditor: () => ui.editor?.(tui, { borderColor: (text: string) => text, selectList: {} }, {}),
     previousEditor,
     renders: () => renders,
+    replyTitle: () =>
+      Effect.promise(async () => {
+        await tick()
+        replyTitle?.()
+        await tick()
+      }),
     sessionName: () => sessionName,
     setUsage: (next: typeof usage) => {
       usage = next
     },
+    titleModel,
+    titleRequests,
     topBorder: (width: number) => ui.editor?.(tui, { borderColor: (text: string) => text, selectList: {} }, {}).render(width)[0],
     ui,
   }
@@ -101,6 +131,7 @@ describe('status panel', () => {
         'message_end',
         'turn_end',
         'agent_settled',
+        'before_agent_start',
       ])
     })
   )
@@ -193,44 +224,72 @@ describe('status panel', () => {
 
   it.effect('installs nothing and names nothing outside TUI mode', () =>
     Effect.gen(function* () {
-      const panel = harness('rpc', { branch: 'feat/x' })
+      const panel = harness('rpc', { reply: 'Fix login', setting: 'anthropic/claude-haiku-4-5' })
       yield* panel.activate()
+      yield* panel.emit('before_agent_start', { messageType: 'user', prompt: 'fix the login bug' })
       expect(panel.ui.footer).toBeUndefined()
       expect(panel.ui.editor).toBeUndefined()
+      expect(panel.titleRequests).toEqual([])
       expect(panel.sessionName()).toBeUndefined()
     })
   )
 
-  it.effect('names the session after the git branch and follows a checkout made during a run', () =>
+  it.effect('names an unnamed session from its first prompt with the configured model without waiting for the title', () =>
     Effect.gen(function* () {
-      const panel = harness('tui', { branch: 'feat/x' })
+      const panel = harness('tui', { reply: '"Fix login redirect."\nextra', setting: 'anthropic/claude-haiku-4-5' })
       yield* panel.activate()
-      expect(panel.sessionName()).toBe('feat/x')
-      expect(panel.gitCalls).toEqual(['/project'])
-      panel.git.branch = 'feat/y'
-      yield* panel.emit('agent_settled')
-      expect(panel.sessionName()).toBe('feat/y')
+      yield* panel.emit('before_agent_start', { messageType: 'user', prompt: 'fix the login bug' })
+      expect(panel.sessionName()).toBeUndefined()
+      yield* panel.replyTitle()
+      expect(panel.sessionName()).toBe('Fix login redirect')
+      expect(panel.titleRequests).toEqual([{ model: 'anthropic/claude-haiku-4-5', prompt: 'fix the login bug' }])
+      panel.fixture.pi.setSessionName = () => undefined
+      yield* panel.emit('before_agent_start', { messageType: 'user', prompt: 'next' })
+      expect(panel.titleRequests).toHaveLength(1)
     })
   )
 
-  it.effect('keeps a session name it did not set', () =>
+  it.effect('keeps a name the session already has or gets while the title is pending', () =>
     Effect.gen(function* () {
-      const panel = harness('tui', { branch: 'feat/x' })
-      panel.fixture.pi.setSessionName('my name')
-      yield* panel.activate()
-      yield* panel.emit('agent_settled')
-      expect(panel.sessionName()).toBe('my name')
+      const named = harness('tui', { reply: 'Generated', setting: 'anthropic/claude-haiku-4-5' })
+      named.fixture.pi.setSessionName('my name')
+      yield* named.activate()
+      yield* named.emit('before_agent_start', { messageType: 'user', prompt: 'hello' })
+      expect(named.titleRequests).toEqual([])
+
+      const renamed = harness('tui', { reply: 'Generated', setting: 'anthropic/claude-haiku-4-5' })
+      yield* renamed.activate()
+      yield* renamed.emit('before_agent_start', { messageType: 'user', prompt: 'hello' })
+      renamed.fixture.pi.setSessionName('my name')
+      yield* renamed.replyTitle()
+      expect(renamed.titleRequests).toHaveLength(1)
+      expect(renamed.sessionName()).toBe('my name')
     })
   )
 
-  it.effect('leaves the session unnamed on a detached HEAD or outside a repository', () =>
+  it.effect('falls back to the start of the prompt without a configured, available, or answering title model', () =>
     Effect.gen(function* () {
-      const detached = harness('tui', { branch: '' })
-      yield* detached.activate()
-      expect(detached.sessionName()).toBeUndefined()
-      const outside = harness('tui', { branch: '', code: 128 })
-      yield* outside.activate()
-      expect(outside.sessionName()).toBeUndefined()
+      const prompt = '  Refactor   the status panel so that it names sessions\nsecond line'
+      const expected = 'Refactor the status panel so that it na…'
+
+      const unconfigured = harness('tui')
+      yield* unconfigured.activate()
+      yield* unconfigured.emit('before_agent_start', { messageType: 'user', prompt })
+      expect(unconfigured.titleRequests).toEqual([])
+      expect(unconfigured.sessionName()).toBe(expected)
+
+      const unavailable = harness('tui', { available: false, setting: 'anthropic/missing' })
+      yield* unavailable.activate()
+      yield* unavailable.emit('before_agent_start', { messageType: 'user', prompt: 'short prompt' })
+      expect(unavailable.titleRequests).toEqual([])
+      expect(unavailable.sessionName()).toBe('short prompt')
+
+      const failing = harness('tui', { setting: 'anthropic/claude-haiku-4-5' })
+      yield* failing.activate()
+      yield* failing.emit('before_agent_start', { messageType: 'user', prompt: 'short prompt' })
+      yield* failing.replyTitle()
+      expect(failing.titleRequests).toHaveLength(1)
+      expect(failing.sessionName()).toBe('short prompt')
     })
   )
 })
