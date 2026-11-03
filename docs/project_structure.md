@@ -18,7 +18,7 @@ src/
 │   └── runtime.ts                   # process-wide shared AppRuntime composition
 ├── features/
 │   ├── ask_user/{index,program_status,prompt,tool}.ts
-│   ├── background_poll/{index,poll}.ts
+│   ├── background_poll/{index,poll,program_status}.ts
 │   ├── claude_code/{index,discovery}.ts
 │   ├── hashline/{index,tools}.ts
 │   ├── meridian_session_affinity/{index,affinity,scrub}.ts
@@ -31,7 +31,7 @@ src/
 │   └── webfetch/{index,fetch}.ts
 └── shared/
     ├── effect/{agent_models,app_services,bun_services,errors,feature,pi_services,runtime}.ts
-    ├── state/{status_bar,store}.ts
+    ├── state/{program_status,status_bar,store}.ts
     └── utils/{json,predicates,protected_paths,records,tool_output}.ts
 
 tests/

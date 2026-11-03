@@ -3,13 +3,21 @@ import { Text, truncateToWidth } from '@earendil-works/pi-tui'
 import { Effect } from 'effect'
 
 import { type AppRuntime } from '#shared/effect/app_services'
+import { processEnvironment } from '#shared/effect/env'
 import { type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 import { makeToolExecutor } from '#shared/effect/runtime'
+import { type StatusWriter, writeStdout } from '#shared/state/program_status'
 
 import { BackgroundPollParams, makePollHandlers, type PollExec, type PollRegistration } from './poll.js'
+import { makePollProgramStatus } from './program_status.js'
 
-export const feature = ((options: FeatureOptions<PollExec> = {}) => {
-  const exec = options.dependencies ?? undefined
+interface PollDependencies {
+  readonly exec?: PollExec
+  readonly write?: StatusWriter
+}
+
+export const feature = ((options: FeatureOptions<PollDependencies> = {}) => {
+  const exec = options.dependencies?.exec
   let handlers: ReturnType<typeof makePollHandlers> | undefined
   return {
     id: 'background-poll',
@@ -17,7 +25,8 @@ export const feature = ((options: FeatureOptions<PollExec> = {}) => {
       activate: (_event, _ctx) => (handlers === undefined ? Effect.die('background-poll is not registered') : handlers.startSession),
       deactivate: (ctx, _reason) => (handlers === undefined ? Effect.die('background-poll is not registered') : handlers.stopSession(ctx)),
       register: (pi: ExtensionAPI, runtime: AppRuntime): void => {
-        const pollHandlers = makePollHandlers(pi, exec)
+        const programStatus = makePollProgramStatus(options.environment ?? processEnvironment, options.dependencies?.write ?? writeStdout)
+        const pollHandlers = makePollHandlers(pi, programStatus, exec)
         handlers = pollHandlers
         pi.registerTool<typeof BackgroundPollParams, PollRegistration['details']>({
           description:
@@ -67,4 +76,4 @@ export const feature = ((options: FeatureOptions<PollExec> = {}) => {
     },
     status: { name: 'background-poll' },
   }
-}) satisfies FeaturePlugin<PollExec>
+}) satisfies FeaturePlugin<PollDependencies>

@@ -7,6 +7,8 @@ import { createStatusChannel } from '#shared/state/status_bar'
 import { isEmptyString, isTrue } from '#shared/utils/predicates'
 import { truncateOutput, truncationNotice } from '#shared/utils/tool_output'
 
+import { type PollProgramStatus } from './program_status.js'
+
 const status = createStatusChannel('background-poll', { priority: 20, tone: 'muted' })
 
 const DEFAULT_INTERVAL_SECONDS = 10
@@ -190,6 +192,7 @@ export const runPollLoop = (options: PollLoopOptions): Effect.Effect<PollLoopRes
 
 interface PollStateFields {
   readonly mutex: Semaphore.Semaphore
+  readonly programStatus: PollProgramStatus
   readonly sessionScope: Ref.Ref<Option.Option<Scope.Closeable>>
   readonly shuttingDown: Ref.Ref<boolean>
   /** Task id → start time (ms), used for the live elapsed time in the status bar. */
@@ -290,6 +293,7 @@ const stopSession = (ctx: ExtensionContext): Effect.Effect<void, never, PollStat
         }
         yield* Ref.set(state.tasks, HashMap.empty())
         yield* updateStatus(state, ctx)
+        yield* Effect.sync(state.programStatus.clearAll)
       })
     )
   })
@@ -318,6 +322,7 @@ const registerPoll = (
         const label = params.label?.trim() || params.command
         const start = yield* Deferred.make<void>()
         const startedAt = yield* Clock.currentTimeMillis
+        const record = yield* Effect.sync(() => state.programStatus.start(ctx.mode, label))
         const loop = Deferred.await(start).pipe(
           // Child ticker keeps the elapsed time live; it is interrupted when this task's fiber ends.
           Effect.andThen(Effect.forkChild(Effect.forever(Effect.sleep(STATUS_TICK).pipe(Effect.andThen(updateStatus(state, ctx)))))),
@@ -337,6 +342,7 @@ const registerPoll = (
             Effect.gen(function* () {
               yield* Ref.update(state.tasks, HashMap.remove(taskId))
               yield* updateStatus(state, ctx)
+              yield* Effect.sync(() => state.programStatus.end(record))
             })
           )
         )
@@ -372,9 +378,10 @@ export interface PollHandlers {
   readonly stopSession: (ctx: ExtensionContext) => Effect.Effect<void>
 }
 
-export const makePollHandlers = (pi: ExtensionAPI, exec: PollExec = makePollExec(pi)): PollHandlers => {
+export const makePollHandlers = (pi: ExtensionAPI, programStatus: PollProgramStatus, exec: PollExec = makePollExec(pi)): PollHandlers => {
   const pollState: PollStateFields = {
     mutex: Semaphore.makeUnsafe(1),
+    programStatus,
     sessionScope: Ref.makeUnsafe<Option.Option<Scope.Closeable>>(Option.none()),
     shuttingDown: Ref.makeUnsafe(false),
     tasks: Ref.makeUnsafe(HashMap.empty<string, number>()),

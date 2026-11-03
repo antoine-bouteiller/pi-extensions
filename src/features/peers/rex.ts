@@ -59,7 +59,8 @@ const processAlive = (pid: number): boolean => {
 }
 
 /**
- * Any blocked record wins, since an open dialog is the state worth surfacing; otherwise Pi's root record; otherwise unknown.
+ * Any blocked record wins, since an open dialog is the state worth surfacing; then any working record, such as a
+ * pending background poll after the run ended; otherwise Pi's root record; otherwise unknown.
  *
  * @internal
  */
@@ -68,7 +69,10 @@ export const rexStatus = (records: Static<typeof StatusSchema>['records']): stri
     return 'blocked'
   }
   const root = records.find((record) => record.id === undefined)
-  return root?.effective_app === 'pi' ? root.state : 'unknown'
+  if (root?.effective_app !== 'pi') {
+    return 'unknown'
+  }
+  return records.some((record) => record.state === 'working') ? 'working' : root.state
 }
 
 const failed = (result: { stderr: string }) => peerError(result.stderr.trim().slice(0, 2000) || 'Rex command failed or timed out.')

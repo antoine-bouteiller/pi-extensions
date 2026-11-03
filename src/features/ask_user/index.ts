@@ -13,14 +13,11 @@ import { type AppRuntime } from '#shared/effect/app_services'
 import { processEnvironment } from '#shared/effect/env'
 import { type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 import { makeToolExecutor } from '#shared/effect/runtime'
+import { type StatusWriter, writeStdout } from '#shared/state/program_status'
 
-import { makeQuestionStatus, type StatusWriter } from './program_status.js'
+import { makeQuestionStatus } from './program_status.js'
 import { ASK_USER_PROMPT_GUIDELINES, ASK_USER_PROMPT_SNIPPET, ASK_USER_TOOL_DESCRIPTION } from './prompt.js'
 import { askUserEffect, AskUserParams, renderAskUserCall, renderAskUserResult } from './tool.js'
-
-const writeStdout: StatusWriter = (sequence) => {
-  process.stdout.write(sequence)
-}
 
 export const feature = ((options: FeatureOptions<StatusWriter> = {}) => ({
   id: 'ask-user',
