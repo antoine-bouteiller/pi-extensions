@@ -21,6 +21,7 @@ import {
   splitAgentModel,
 } from '#shared/effect/agent_models'
 import { type EnvApi } from '#shared/effect/env'
+import { makeWorkingRecords, type StatusWriter, writeStdout } from '#shared/state/program_status'
 import { createStatusChannel } from '#shared/state/status_bar'
 import { truncateOutput, truncationNotice } from '#shared/utils/tool_output'
 
@@ -166,6 +167,7 @@ const childEnvironment = (environment: EnvApi) => ({
 export interface SubagentOptions {
   readonly agentDir: string
   readonly loadSettings?: AgentModelSettingsLoader
+  readonly write?: StatusWriter
 }
 
 export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, options: SubagentOptions) => {
@@ -174,6 +176,9 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
   /** Child dialogs are shown one at a time, in arrival order. */
   const dialogLock = Semaphore.makeUnsafe(1)
   let session: Session | undefined
+  const programStatus = makeWorkingRecords('subagents', environment, options.write ?? writeStdout)
+  /** Child id → its program status record, held while the child is starting or working. */
+  const records = new Map<string, string>()
 
   const availableModels = (ctx: ExtensionContext) => availableAgentModels(ctx, loadSettings).pipe(Effect.mapError((error) => fail(error.message)))
 
@@ -185,8 +190,33 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
   const ownedChildren = (ctx: ExtensionContext) =>
     [...children.values()].filter((child) => child.owner === (ctx.sessionManager.getSessionFile() ?? ''))
 
+  const syncRecords = () => {
+    for (const [id, record] of records) {
+      const child = children.get(id)
+      if (child?.status !== 'starting' && child?.status !== 'working') {
+        programStatus.end(record)
+        records.delete(id)
+      }
+    }
+    const mode = session?.ctx.mode
+    for (const child of children.values()) {
+      if (mode !== undefined && (child.status === 'starting' || child.status === 'working') && !records.has(child.id)) {
+        const record = programStatus.start(mode, labelOf(child))
+        if (record !== undefined) {
+          records.set(child.id, record)
+        }
+      }
+    }
+  }
+
+  const setStatus = (child: Child, status: AgentStatus) => {
+    child.status = status
+    syncRecords()
+  }
+
   /** Called after every change to `children`. */
   const publishRunning = () => {
+    syncRecords()
     const ctx = session?.ctx
     if (ctx === undefined) {
       return
@@ -214,7 +244,7 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
 
   const settle = (child: Child) =>
     Effect.suspend(() => {
-      child.status = child.openDialogs > 0 ? 'blocked' : 'idle'
+      setStatus(child, child.openDialogs > 0 ? 'blocked' : 'idle')
       const message = child.latest
       child.latest = undefined
       if (message === undefined) {
@@ -267,7 +297,7 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
         return
       }
       child.openDialogs++
-      child.status = 'blocked'
+      setStatus(child, 'blocked')
       const response = yield* dialogLock
         .withPermits(1)(answer(ctx, child, dialog))
         .pipe(
@@ -276,7 +306,7 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
             Effect.sync(() => {
               child.openDialogs--
               if (child.status === 'blocked' && child.openDialogs === 0) {
-                child.status = 'working'
+                setStatus(child, 'working')
               }
             })
           )
@@ -293,7 +323,7 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
           return settle(child)
         }
         if (child.status !== 'blocked') {
-          child.status = 'working'
+          setStatus(child, 'working')
         }
       } else if (Value.Check(DialogSchema, record) && child.rpc !== undefined) {
         return forward(child, child.rpc, record).pipe(
@@ -372,6 +402,7 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
               session = undefined
               runningStatus.clear(ctx)
             }
+            syncRecords()
           })
         )
       }),
@@ -429,7 +460,7 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
         }
         child.awaiting = true
         if (child.status === 'idle') {
-          child.status = 'working'
+          setStatus(child, 'working')
         }
         return { agent_id: child.id, status: 'sent' } satisfies AgentResult
       }).pipe(Effect.mapError((error) => fail(error.message))),
@@ -511,7 +542,7 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
           )
         )
         if (child.status === 'starting') {
-          child.status = 'working'
+          setStatus(child, 'working')
         }
         if (started.sessionFile !== undefined) {
           child.sessionFile = started.sessionFile

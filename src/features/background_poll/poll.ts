@@ -3,11 +3,10 @@ import { Clock, Context, Deferred, Effect, Exit, HashMap, Option, Ref, Scope, Se
 import { type Static, Type } from 'typebox'
 
 import { ToolFailure } from '#shared/effect/errors'
+import { type WorkingRecords } from '#shared/state/program_status'
 import { createStatusChannel } from '#shared/state/status_bar'
 import { isEmptyString, isTrue } from '#shared/utils/predicates'
 import { truncateOutput, truncationNotice } from '#shared/utils/tool_output'
-
-import { type PollProgramStatus } from './program_status.js'
 
 const status = createStatusChannel('background-poll', { priority: 20, tone: 'muted' })
 
@@ -192,7 +191,7 @@ export const runPollLoop = (options: PollLoopOptions): Effect.Effect<PollLoopRes
 
 interface PollStateFields {
   readonly mutex: Semaphore.Semaphore
-  readonly programStatus: PollProgramStatus
+  readonly programStatus: WorkingRecords
   readonly sessionScope: Ref.Ref<Option.Option<Scope.Closeable>>
   readonly shuttingDown: Ref.Ref<boolean>
   /** Task id → start time (ms), used for the live elapsed time in the status bar. */
@@ -378,7 +377,7 @@ export interface PollHandlers {
   readonly stopSession: (ctx: ExtensionContext) => Effect.Effect<void>
 }
 
-export const makePollHandlers = (pi: ExtensionAPI, programStatus: PollProgramStatus, exec: PollExec = makePollExec(pi)): PollHandlers => {
+export const makePollHandlers = (pi: ExtensionAPI, programStatus: WorkingRecords, exec: PollExec = makePollExec(pi)): PollHandlers => {
   const pollState: PollStateFields = {
     mutex: Semaphore.makeUnsafe(1),
     programStatus,

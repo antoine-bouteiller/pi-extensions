@@ -18,7 +18,7 @@ src/
 │   └── runtime.ts                   # process-wide shared AppRuntime composition
 ├── features/
 │   ├── ask_user/{index,program_status,prompt,tool}.ts
-│   ├── background_poll/{index,poll,program_status}.ts
+│   ├── background_poll/{index,poll}.ts
 │   ├── claude_code/{index,discovery}.ts
 │   ├── hashline/{index,tools}.ts
 │   ├── meridian_session_affinity/{index,affinity,scrub}.ts
