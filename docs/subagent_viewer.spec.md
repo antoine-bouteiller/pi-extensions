@@ -36,7 +36,7 @@ child already persists its transcript to the session file reported by `get_state
 | Decision                    | Choice                                                                                                                                                                                                                                | Rationale                                                                                                        |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `[KD-1]` Running            | A child is running while it is in the children map and owned by the current parent session file, whatever its status (`starting`, `working`, `idle`, `blocked`). This is exactly the set `list_agents` returns.                       | An idle child still holds a process and can be resumed.                                                          |
-| `[KD-2]` Ambient count      | One shared status-bar entry, key `subagents`, republished whenever the running set changes and cleared at zero and on session end.                                                                                                    | Reuses the status bar other features already publish to instead of adding a widget.                              |
+| `[KD-2]` Ambient count      | One shared status-bar entry, key `subagents`, counting running children that are not `idle`, republished whenever that set changes and cleared at zero and on session end.                                                            | Reuses the status bar other features already publish to instead of adding a widget.                              |
 | `[KD-3]` Footer statuses    | The `status_panel` footer renders every shared status-bar entry, in priority order, in the right column before the turn metrics.                                                                                                      | `status_panel` replaces Pi's footer, which was the only place status entries rendered.                           |
 | `[KD-4]` Command            | `/subagents` opens a `ctx.ui.select` of the running children in spawn order; choosing one opens the transcript overlay.                                                                                                               | Listing and opening are one motion.                                                                              |
 | `[KD-5]` Transcript source  | The overlay reads the child's session file and re-reads it on a 500 ms tick when its size changed.                                                                                                                                    | The file is durable and already written; the RPC stream stays dedicated to results and dialogs.                  |
@@ -51,8 +51,8 @@ child already persists its transcript to the session file reported by `get_state
 
 ## Outcome
 
-- `[SO-1]` While the current session has running sub-agents, the status bar carries one
-  `N sub-agent(s)` entry, and no entry otherwise. — demonstrated by `[VC-1]`
+- `[SO-1]` While the current session has running sub-agents that are not idle, the status bar
+  carries one `N sub-agent(s)` entry, and no entry otherwise. — demonstrated by `[VC-1]`
 - `[SO-2]` The `status_panel` footer shows every shared status entry, so sub-agent counts,
   background polls, and feature-health errors are visible with `status_panel` enabled.
   — demonstrated by `[VC-2]`
@@ -203,7 +203,8 @@ longer reads `icon`. A feature-health error publishes
 ## Acceptance
 
 - `[VC-1]` Given two children spawned through the fake `pi`, the status bar lists `subagents` with
-  text `2 sub-agents`. After `close_agent` on one, it reads `1 sub-agent`. After the other exits, the
+  text `2 sub-agents`. When one settles to `idle`, it reads `1 sub-agent`, and `send_message` to it
+  restores `2 sub-agents`. After `close_agent` on one, it reads `1 sub-agent`. After the other exits, the
   entry is absent. A child spawned and still running at session shutdown leaves no entry.
   — demonstrates `[SO-1]`
 - `[VC-2]` `renderFooterLine` with the tagged theme and entries `{ key: 'subagents', priority: 30,

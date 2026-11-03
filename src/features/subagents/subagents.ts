@@ -211,7 +211,7 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
 
   const setStatus = (child: Child, status: AgentStatus) => {
     child.status = status
-    syncRecords()
+    publishRunning()
   }
 
   /** Called after every change to `children`. */
@@ -221,7 +221,7 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
     if (ctx === undefined) {
       return
     }
-    const count = ownedChildren(ctx).length
+    const count = ownedChildren(ctx).filter((child) => child.status !== 'idle').length
     if (count === 0) {
       runningStatus.clear(ctx)
     } else {

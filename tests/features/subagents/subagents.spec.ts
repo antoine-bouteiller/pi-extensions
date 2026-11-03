@@ -537,10 +537,15 @@ describe('running sub-agents', () => {
     Effect.gen(function* () {
       const fixture = yield* harness()
       const one = yield* fixture.handlers.spawn({ message: 'One', model: MODEL, name: 'One' }, fixture.context())
-      yield* fixture.handlers.spawn({ message: 'Two', model: MODEL, name: 'Two' }, fixture.context())
+      const two = yield* fixture.handlers.spawn({ message: 'Two', model: MODEL, name: 'Two' }, fixture.context())
       yield* fixture.handlers.spawn({ message: 'Theirs', model: MODEL, name: 'Theirs' }, fixture.context('/sessions/other.jsonl'))
       expect(countEntry()).toEqual({ key: 'subagents', priority: 30, text: '2 sub-agents', tone: 'muted' })
       expect(fixture.statuses.at(-1)).toEqual({ key: 'subagents', text: '2 sub-agents' })
+
+      yield* fixture.emit('Two', assistant('Done'), settled)
+      yield* waitFor(() => countEntry()?.text === '1 sub-agent', 'the idle child to leave the count')
+      yield* fixture.handlers.send({ agent_id: two.agent_id, message: 'Again' }, fixture.context())
+      expect(countEntry()?.text).toBe('2 sub-agents')
 
       yield* fixture.handlers.close(one, fixture.context())
       expect(countEntry()?.text).toBe('1 sub-agent')
