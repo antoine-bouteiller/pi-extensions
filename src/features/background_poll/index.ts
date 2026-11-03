@@ -6,13 +6,13 @@ import { type AppRuntime } from '#shared/effect/app_services'
 import { processEnvironment } from '#shared/effect/env'
 import { type FeatureOptions, type FeaturePlugin } from '#shared/effect/feature'
 import { makeToolExecutor } from '#shared/effect/runtime'
-import { makeWorkingRecords, type StatusWriter, writeStdout } from '#shared/state/program_status'
+import { makeWorkingRecords, type StatusOutput, stdoutOutput } from '#shared/state/program_status'
 
 import { BackgroundPollParams, makePollHandlers, type PollExec, type PollRegistration } from './poll.js'
 
 interface PollDependencies {
   readonly exec?: PollExec
-  readonly write?: StatusWriter
+  readonly output?: StatusOutput
 }
 
 export const feature = ((options: FeatureOptions<PollDependencies> = {}) => {
@@ -27,7 +27,7 @@ export const feature = ((options: FeatureOptions<PollDependencies> = {}) => {
         const programStatus = makeWorkingRecords(
           'background_poll',
           options.environment ?? processEnvironment,
-          options.dependencies?.write ?? writeStdout
+          options.dependencies?.output ?? stdoutOutput
         )
         const pollHandlers = makePollHandlers(pi, programStatus, exec)
         handlers = pollHandlers

@@ -41,7 +41,7 @@ tests/
 ├── config/{feature_coordinator,runtime}.spec.ts
 ├── features/<feature>/...*.spec.ts   # mirrors src/features
 ├── shared/effect/{agent_models,app_services,runtime}.spec.ts
-├── shared/state/{status_bar}.spec.ts
+├── shared/state/{program_status,status_bar}.spec.ts
 ├── shared/utils/{predicates,protected_paths,tool_output}.spec.ts
 └── utils/{abort_controller,bun_effect,casts,deferred,fake_pi,process_env,runtime}.ts
     └── process_env.spec.ts           # the one helper with behaviour worth pinning

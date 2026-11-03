@@ -21,7 +21,7 @@ import {
   splitAgentModel,
 } from '#shared/effect/agent_models'
 import { type EnvApi } from '#shared/effect/env'
-import { makeWorkingRecords, type StatusWriter, writeStdout } from '#shared/state/program_status'
+import { makeWorkingRecords, type StatusOutput, stdoutOutput } from '#shared/state/program_status'
 import { createStatusChannel } from '#shared/state/status_bar'
 import { truncateOutput, truncationNotice } from '#shared/utils/tool_output'
 
@@ -167,7 +167,7 @@ const childEnvironment = (environment: EnvApi) => ({
 export interface SubagentOptions {
   readonly agentDir: string
   readonly loadSettings?: AgentModelSettingsLoader
-  readonly write?: StatusWriter
+  readonly output?: StatusOutput
 }
 
 export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, options: SubagentOptions) => {
@@ -176,7 +176,7 @@ export const makeSubagentHandlers = (pi: ExtensionAPI, environment: EnvApi, opti
   /** Child dialogs are shown one at a time, in arrival order. */
   const dialogLock = Semaphore.makeUnsafe(1)
   let session: Session | undefined
-  const programStatus = makeWorkingRecords('subagents', environment, options.write ?? writeStdout)
+  const programStatus = makeWorkingRecords('subagents', environment, options.output ?? stdoutOutput)
   /** Child id → its program status record, held while the child is starting or working. */
   const records = new Map<string, string>()
 
