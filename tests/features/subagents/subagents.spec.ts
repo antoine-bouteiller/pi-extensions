@@ -131,6 +131,7 @@ const harness = (options: { readonly hasUI?: boolean } = {}) =>
       },
     }
     const writes: string[] = []
+    let held = 0
     const environment = makeEnvironment({
       ...process.env,
       FAKE_PI_DIR: root,
@@ -142,8 +143,18 @@ const harness = (options: { readonly hasUI?: boolean } = {}) =>
     const handlers = makeSubagentHandlers(fake.pi, environment, {
       agentDir: `${root}/agent`,
       loadSettings: () => Effect.succeed({ allowedModels: [MODEL], modelNotes: {} }),
-      write: (sequence) => {
-        writes.push(sequence)
+      output: {
+        root: {
+          acquire: () => {
+            held++
+          },
+          release: () => {
+            held--
+          },
+        },
+        write: (sequence) => {
+          writes.push(sequence)
+        },
       },
     })
     const context = (session = '/sessions/parent.jsonl') =>
@@ -201,6 +212,7 @@ const harness = (options: { readonly hasUI?: boolean } = {}) =>
       fake,
       fs,
       handlers,
+      held: () => held,
       notifications,
       overlays,
       pidAlive,
@@ -549,6 +561,7 @@ describe('running sub-agents', () => {
       const { agent_id: id } = yield* fixture.handlers.spawn({ message: 'Review', model: MODEL, name: 'Review' }, fixture.context())
       const label = `"Review" (${id})`
       expect(fixture.writes).toEqual([programStatusWorking('subagents/1', label)])
+      expect(fixture.held()).toBe(1)
 
       yield* fixture.emit('Review', assistant('Done'), settled)
       yield* waitFor(() => fixture.fake.state.messages.length === 1, 'the result')
@@ -562,6 +575,7 @@ describe('running sub-agents', () => {
       yield* fixture.handlers.spawn({ message: 'Other', model: MODEL, name: 'Other' }, fixture.context())
       yield* Scope.close(fixture.scope, Exit.void)
       expect(fixture.writes.at(-1)).toBe(programStatusClear('subagents/3'))
+      expect(fixture.held()).toBe(0)
     })
   )
 

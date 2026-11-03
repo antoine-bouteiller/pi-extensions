@@ -58,13 +58,17 @@ const setup = (exec: Exec, environment: Record<string, string> = {}, mode = 'tui
   const notifications: { message: string; level: string }[] = []
   const statuses: unknown[] = []
   const writes: string[] = []
+  const roots: string[] = []
   const messageSent = deferred<void>()
 
   const descriptor = feature({
     dependencies: {
       exec: asPollExec(exec),
-      write: (sequence) => {
-        writes.push(sequence)
+      output: {
+        root: { acquire: () => roots.push('acquire'), release: () => roots.push('release') },
+        write: (sequence) => {
+          writes.push(sequence)
+        },
       },
     },
     environment: makeEnvironment(environment),
@@ -100,7 +104,7 @@ const setup = (exec: Exec, environment: Record<string, string> = {}, mode = 'tui
   const activate = () =>
     runtime.runPromise(descriptor.implementation.activate?.({ reason: 'startup', type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void)
   const deactivate = () => runtime.runPromise(descriptor.implementation.deactivate?.(asExtensionContext(ctx), 'shutdown') ?? Effect.void)
-  return { activate, ctx, deactivate, handlers, messages, notifications, sent: messageSent.promise, statuses, tool, writes }
+  return { activate, ctx, deactivate, handlers, messages, notifications, roots, sent: messageSent.promise, statuses, tool, writes }
 }
 
 const startSession = (fixture: ReturnType<typeof setup>): Promise<void> => fixture.activate()
@@ -305,6 +309,7 @@ describe('background poll', () => {
       yield* Effect.promise(() => fixture.sent)
 
       expect(fixture.writes).toEqual([programStatusWorking('background_poll/1', 'deployment'), programStatusClear('background_poll/1')])
+      expect(fixture.roots).toEqual(['acquire', 'release'])
     })
   )
 
@@ -326,6 +331,7 @@ describe('background poll', () => {
       yield* Effect.promise(fixture.deactivate)
 
       expect(fixture.writes).toEqual([programStatusWorking('background_poll/1', 'check'), programStatusClear('background_poll')])
+      expect(fixture.roots).toEqual(['acquire', 'release'])
     })
   )
 
