@@ -221,7 +221,7 @@ describe('Rex presence and inbox', () => {
 })
 
 describe('Rex peers', () => {
-  it.effect('reports blocked records first, then the Pi root record', () =>
+  it.effect('reports blocked records first, then working records, then the Pi root record', () =>
     Effect.sync(() => {
       expect(
         rexStatus([
@@ -230,6 +230,12 @@ describe('Rex peers', () => {
         ])
       ).toBe('blocked')
       expect(rexStatus([{ effective_app: 'pi', state: 'idle' }])).toBe('idle')
+      expect(
+        rexStatus([
+          { effective_app: 'pi', state: 'done' },
+          { effective_app: 'pi', id: 'background_poll/1', state: 'working' },
+        ])
+      ).toBe('working')
       expect(rexStatus([{ effective_app: 'zsh', state: 'working' }])).toBe('unknown')
       expect(rexStatus([])).toBe('unknown')
     })

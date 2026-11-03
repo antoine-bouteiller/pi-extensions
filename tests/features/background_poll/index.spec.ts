@@ -9,6 +9,7 @@ import { TestClock } from 'effect/testing'
 
 import { feature } from '@/features/background_poll/index.js'
 import { formatElapsed, formatPollOutput, type PollExec, runPollLoop } from '@/features/background_poll/poll.js'
+import { makeEnvironment } from '@/shared/effect/env.js'
 import { ToolFailure } from '@/shared/effect/errors.js'
 import { type JsonObject } from '@/shared/utils/json.js'
 
@@ -20,6 +21,7 @@ interface ToolResult {
 
 interface TestContext {
   hasUI: boolean
+  mode: string
   ui: {
     notify: (message: string, level: string) => number
     setStatus: (key: string, value: unknown) => number
@@ -49,15 +51,24 @@ const asPollExec =
       try: (signal) => exec('sh', ['-lc', command], { signal, timeout: timeoutMs }),
     })
 
-const setup = (exec: Exec) => {
+const setup = (exec: Exec, environment: Record<string, string> = {}, mode = 'tui') => {
   let tool: Tool | undefined
   const handlers = new Map<string, Handler>()
   const messages: { message: JsonObject; options: JsonObject }[] = []
   const notifications: { message: string; level: string }[] = []
   const statuses: unknown[] = []
+  const writes: string[] = []
   const messageSent = deferred<void>()
 
-  const descriptor = feature({ dependencies: asPollExec(exec) })
+  const descriptor = feature({
+    dependencies: {
+      exec: asPollExec(exec),
+      write: (sequence) => {
+        writes.push(sequence)
+      },
+    },
+    environment: makeEnvironment(environment),
+  })
   descriptor.implementation.register(
     asExtensionApi({
       on: (event: string, handler: Handler) => handlers.set(event, handler),
@@ -74,6 +85,7 @@ const setup = (exec: Exec) => {
 
   const ctx = {
     hasUI: true,
+    mode,
     ui: {
       notify: (message: string, level: string) => notifications.push({ level, message }),
       setStatus: (_key: string, value: unknown) => statuses.push(value),
@@ -88,7 +100,7 @@ const setup = (exec: Exec) => {
   const activate = () =>
     runtime.runPromise(descriptor.implementation.activate?.({ reason: 'startup', type: 'session_start' }, asExtensionContext(ctx)) ?? Effect.void)
   const deactivate = () => runtime.runPromise(descriptor.implementation.deactivate?.(asExtensionContext(ctx), 'shutdown') ?? Effect.void)
-  return { activate, ctx, deactivate, handlers, messages, notifications, sent: messageSent.promise, statuses, tool }
+  return { activate, ctx, deactivate, handlers, messages, notifications, sent: messageSent.promise, statuses, tool, writes }
 }
 
 const startSession = (fixture: ReturnType<typeof setup>): Promise<void> => fixture.activate()
@@ -102,6 +114,10 @@ const rejectionMessage = (promise: Promise<unknown>): Promise<string> =>
       })
     )
   )
+
+const programStatusWorking = (id: string, message: string) =>
+  `\x1b]7501;state=working:id=${id}:app=pi:msg=${Buffer.from(message, 'utf8').toString('base64')}\x1b\\`
+const programStatusClear = (id: string) => `\x1b]7501;state=clear:id=${id}\x1b\\`
 
 initTheme()
 const theme = asTheme({ bold: (text: string) => text, fg: (_color: string, text: string) => text })
@@ -275,6 +291,59 @@ describe('background poll', () => {
       expect(
         yield* Effect.promise(() => rejectionMessage(fixture.tool.execute('late', { command: 'check-status' }, undefined, undefined, fixture.ctx)))
       ).toBe('Cannot register a background poll during shutdown')
+    })
+  )
+
+  it.effect('reports a working program status record per poll until the poll ends', () =>
+    Effect.gen(function* () {
+      const fixture = setup(() => Promise.resolve({ code: 0, stderr: '', stdout: 'ready' }), { PI_PROGRAM_STATUS: '1' })
+      yield* Effect.promise(() => startSession(fixture))
+
+      yield* Effect.promise(() =>
+        fixture.tool.execute('call|with:chars', { command: 'check', label: 'deployment' }, undefined, undefined, fixture.ctx)
+      )
+      yield* Effect.promise(() => fixture.sent)
+
+      expect(fixture.writes).toEqual([programStatusWorking('background_poll/1', 'deployment'), programStatusClear('background_poll/1')])
+    })
+  )
+
+  it.live('clears the program status record when the session shuts down', () =>
+    Effect.gen(function* () {
+      const fixture = setup(
+        (_command, _args, options) =>
+          promiseFromEffect(
+            Effect.callback<{ stdout: string; stderr: string; code: number }>((resume) => {
+              options.signal?.addEventListener('abort', () => resume(Effect.succeed({ code: 1, stderr: 'stopped', stdout: '' })), { once: true })
+            })
+          ),
+        { PI_PROGRAM_STATUS: '1' }
+      )
+      yield* Effect.promise(() => startSession(fixture))
+      yield* Effect.promise(() => fixture.tool.execute('pending', { command: 'check' }, undefined, undefined, fixture.ctx))
+      expect(fixture.writes).toEqual([programStatusWorking('background_poll/1', 'check')])
+
+      yield* Effect.promise(fixture.deactivate)
+
+      expect(fixture.writes).toEqual([programStatusWorking('background_poll/1', 'check'), programStatusClear('background_poll')])
+    })
+  )
+
+  it.effect('follows the program status gate', () =>
+    Effect.gen(function* () {
+      const cases: [Record<string, string>, string, boolean][] = [
+        [{ TERM_PROGRAM: 'rex' }, 'tui', true],
+        [{ PI_PROGRAM_STATUS: '0', TERM_PROGRAM: 'rex' }, 'tui', false],
+        [{}, 'tui', false],
+        [{ PI_PROGRAM_STATUS: '1' }, 'rpc', false],
+      ]
+      for (const [environment, mode, expected] of cases) {
+        const fixture = setup(() => Promise.resolve({ code: 0, stderr: '', stdout: 'ready' }), environment, mode)
+        yield* Effect.promise(() => startSession(fixture))
+        yield* Effect.promise(() => fixture.tool.execute('gate', { command: 'check' }, undefined, undefined, fixture.ctx))
+        yield* Effect.promise(() => fixture.sent)
+        expect(fixture.writes.length > 0).toBe(expected)
+      }
     })
   )
 

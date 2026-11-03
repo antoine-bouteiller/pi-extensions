@@ -13,7 +13,7 @@ pi install git:github.com/antoine-bouteiller/pi-extensions
 ## Features
 
 - `ask_user` — Multiple-choice questions during a turn.
-- `background_poll` — Background shell polling with completion notifications.
+- `background_poll` — Background shell polling with completion notifications. In Rex, the session shows as working while a poll waits.
 - `claude_code` — Load Claude commands as temporary Pi skills.
 - `hashline` — Hash-anchored file reads and writes that reject stale edits.
 - `meridian_session_affinity` — Session affinity and harness fingerprint scrubbing for Meridian requests.
@@ -77,7 +77,7 @@ Elsewhere, they fail with a message.
   after the folder, reused for later opens and recreated when gone. The
   opened agent's results are not reported back.
 - `discover_agents()` lists every other top-level Pi agent, across all sessions, with its pane ID,
-  session label, cwd, and status.
+  session label, cwd, and status. A pending background poll counts as working.
 - `message_peer({pane_id,message})` sends a message to one of them without waiting for a response.
 
 A peer receives a message framed as coming from another agent's pane, not from its user, and replies,
