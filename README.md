@@ -22,7 +22,7 @@ pi install git:github.com/antoine-bouteiller/pi-extensions
 - `provider_retry` — Extend retries to server and unknown-status provider failures.
 - `rules` — Load rules from `.claude/rules/` and `.agents/rules/`.
 - `status_panel` — Show activity, model, and thinking in the editor border, and context, status entries, cache hit, and throughput in a one-line footer. Name an unnamed session from its first prompt, so `/resume` and the terminal title (and the Rex pane name) show it. With `"sessionTitleModel": "<provider>/<model-id>"` in `settings.json`, that model writes a short title in the background. Otherwise, or when the model is unavailable or fails, the name is the prompt's first 40 characters.
-- `subagents` — Delegate to headless Pi sub-agents and receive their results automatically.
+- `subagents` — Delegate to headless Pi sub-agents and receive their results automatically. In Rex, the session shows as working while a sub-agent runs.
 - `webfetch` — Fetch URLs as Markdown, text, or HTML.
 
 ## Delegation
@@ -77,7 +77,7 @@ Elsewhere, they fail with a message.
   after the folder, reused for later opens and recreated when gone. The
   opened agent's results are not reported back.
 - `discover_agents()` lists every other top-level Pi agent, across all sessions, with its pane ID,
-  session label, cwd, and status. A pending background poll counts as working.
+  session label, cwd, and status. A pending background poll or running sub-agent counts as working.
 - `message_peer({pane_id,message})` sends a message to one of them without waiting for a response.
 
 A peer receives a message framed as coming from another agent's pane, not from its user, and replies,

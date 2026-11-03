@@ -130,16 +130,21 @@ const harness = (options: { readonly hasUI?: boolean } = {}) =>
         toolsExpandedWrites++
       },
     }
+    const writes: string[] = []
     const environment = makeEnvironment({
       ...process.env,
       FAKE_PI_DIR: root,
       PATH: `${BIN}:${process.env.PATH}`,
+      PI_PROGRAM_STATUS: '1',
       REX_BLOCK: 'block:1',
       REX_SESSION: 'session:1',
     })
     const handlers = makeSubagentHandlers(fake.pi, environment, {
       agentDir: `${root}/agent`,
       loadSettings: () => Effect.succeed({ allowedModels: [MODEL], modelNotes: {} }),
+      write: (sequence) => {
+        writes.push(sequence)
+      },
     })
     const context = (session = '/sessions/parent.jsonl') =>
       asExtensionContext({
@@ -206,6 +211,7 @@ const harness = (options: { readonly hasUI?: boolean } = {}) =>
       stdin,
       toolsExpandedWrites: () => toolsExpandedWrites,
       uiCalls,
+      writes,
     }
   })
 
@@ -220,6 +226,9 @@ const assistant = (text: string, stopReason = 'stop', errorMessage?: string) => 
   },
 })
 const settled = { emit: { aborted: false, type: 'agent_settled' } }
+const programStatusWorking = (id: string, message: string) =>
+  `\x1b]7501;state=working:id=${id}:app=pi:msg=${Buffer.from(message, 'utf8').toString('base64')}\x1b\\`
+const programStatusClear = (id: string) => `\x1b]7501;state=clear:id=${id}\x1b\\`
 type TestServices = Scope.Scope | FileSystem | Path | SecureRandom | ChildProcessSpawner
 const live = <Value, Failure>(name: string, body: () => Effect.Effect<Value, Failure, TestServices>, timeout = 15_000) =>
   it.live(name, () => Effect.scoped(body()).pipe(Effect.provide(Platform)), timeout)
@@ -531,6 +540,28 @@ describe('running sub-agents', () => {
       expect(countEntry()?.text).toBe('1 sub-agent')
       yield* Scope.close(fixture.scope, Exit.void)
       expect(countEntry()).toBeUndefined()
+    })
+  )
+
+  live('reports a working program status record while each child runs', () =>
+    Effect.gen(function* () {
+      const fixture = yield* harness()
+      const { agent_id: id } = yield* fixture.handlers.spawn({ message: 'Review', model: MODEL, name: 'Review' }, fixture.context())
+      const label = `"Review" (${id})`
+      expect(fixture.writes).toEqual([programStatusWorking('subagents/1', label)])
+
+      yield* fixture.emit('Review', assistant('Done'), settled)
+      yield* waitFor(() => fixture.fake.state.messages.length === 1, 'the result')
+      expect(fixture.writes).toEqual([programStatusWorking('subagents/1', label), programStatusClear('subagents/1')])
+
+      yield* fixture.handlers.send({ agent_id: id, message: 'Again' }, fixture.context())
+      expect(fixture.writes.at(-1)).toBe(programStatusWorking('subagents/2', label))
+      yield* fixture.handlers.close({ agent_id: id }, fixture.context())
+      expect(fixture.writes.at(-1)).toBe(programStatusClear('subagents/2'))
+
+      yield* fixture.handlers.spawn({ message: 'Other', model: MODEL, name: 'Other' }, fixture.context())
+      yield* Scope.close(fixture.scope, Exit.void)
+      expect(fixture.writes.at(-1)).toBe(programStatusClear('subagents/3'))
     })
   )
 

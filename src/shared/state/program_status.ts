@@ -39,3 +39,38 @@ export const programStatusEnabled = (environment: EnvApi, mode: string): boolean
   }
   return environment.all.TERM_PROGRAM === 'rex' && environment.all.TMUX === undefined
 }
+
+/**
+ * OSC 7501 `working` child records under one parent id. Once a run ends Pi's root record says `done`,
+ * so these keep Rex showing the session as working while work the run started continues.
+ * Ids come from a counter because caller ids can break the record id grammar.
+ */
+export const makeWorkingRecords = (parent: string, environment: EnvApi, write: StatusWriter) => {
+  let next = 0
+  const open = new Set<string>()
+  return {
+    /** Clearing the parent removes every child record, including ones whose owners have not ended them yet. */
+    clearAll: () => {
+      if (open.size > 0) {
+        open.clear()
+        write(`\u001B]7501;state=clear:id=${parent}\u001B\\`)
+      }
+    },
+    end: (id: string | undefined) => {
+      if (id !== undefined && open.delete(id)) {
+        write(`\u001B]7501;state=clear:id=${id}\u001B\\`)
+      }
+    },
+    start: (mode: string, message: string): string | undefined => {
+      if (!programStatusEnabled(environment, mode)) {
+        return undefined
+      }
+      const id = `${parent}/${++next}`
+      open.add(id)
+      write(`\u001B]7501;state=working:id=${id}:app=pi:msg=${encodeMessage(message)}\u001B\\`)
+      return id
+    },
+  }
+}
+
+export type WorkingRecords = ReturnType<typeof makeWorkingRecords>
