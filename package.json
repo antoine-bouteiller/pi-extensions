@@ -37,7 +37,7 @@
     "lefthook": "^2.1.10",
     "oxlint": "1.89.0",
     "oxlint-tsgolint": "7.0.2004",
-    "typebox": "1.4.3"
+    "typebox": "1.4.4"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
