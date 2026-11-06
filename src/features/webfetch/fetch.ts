@@ -29,9 +29,11 @@ const PREVIEW_LINES = 20
 
 export const WebfetchParams = Type.Object({
   format: Type.Optional(
-    StringEnum(['markdown', 'text', 'html'] as const, {
-      description: 'Output format for HTML responses. Defaults to markdown.',
-    })
+    Type.Unsafe<WebfetchFormat>(
+      StringEnum(['markdown', 'text', 'html'] as const, {
+        description: 'Output format for HTML responses. Defaults to markdown.',
+      })
+    )
   ),
   timeout: Type.Optional(
     Type.Number({
