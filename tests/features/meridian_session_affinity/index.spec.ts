@@ -73,7 +73,7 @@ describe('meridian session affinity', () => {
         id: 'meridian-session-affinity',
         status: { name: 'meridian' },
       })
-      expect([...fixture.state.handlers.keys()]).toEqual(['before_agent_start', 'before_provider_headers'])
+      expect([...fixture.state.handlers.keys()]).toEqual(['before_agent_start', 'before_provider_headers', 'message_end', 'agent_settled'])
       expect(fixture.state.commands.size).toBe(0)
     })
   )

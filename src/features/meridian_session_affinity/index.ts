@@ -10,6 +10,7 @@ import { makeEventHandler } from '#shared/effect/runtime'
 import { isNullOrUndefined } from '#shared/utils/predicates'
 
 import { applySessionAffinity, scrubbedSystemPrompt } from './affinity.js'
+import { makeLoginRetry } from './login.js'
 
 const DEFAULT_MERIDIAN_BASE_URL = 'http://127.0.0.1:3456'
 const HEALTH_STATUS_KEY = 'meridian:health'
@@ -77,6 +78,9 @@ export const implementation = {
   register: (pi: ExtensionAPI, runtime: AppRuntime): void => {
     pi.on('before_agent_start', (event, ctx) => scrubbedSystemPrompt({ ctx, event }))
     pi.on('before_provider_headers', makeEventHandler(runtime)(applySessionAffinity))
+    const loginRetry = makeLoginRetry(pi)
+    pi.on('message_end', makeEventHandler(runtime)(loginRetry.onMessageEnd))
+    pi.on('agent_settled', loginRetry.reset)
   },
 }
 
