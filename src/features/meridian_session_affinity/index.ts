@@ -96,7 +96,8 @@ const makeImplementation = (dependencies: MeridianSessionAffinityDependencies): 
             : channel.set({ text: `meridian: ${warning}` }).pipe(Effect.andThen(notifyUser(`meridian: ${warning}`, 'warning')))
         )
       )
-      yield* Effect.forkIn(publish, yield* Scope.Scope)
+      const scope = yield* Scope.Scope
+      yield* Effect.forkIn(publish, scope)
     }),
   register: implementation.register,
 })

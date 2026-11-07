@@ -50,8 +50,10 @@ const selectBackend = (pi: ExtensionAPI, environment: EnvApi, dependencies: Peer
 
 const result = <Details, Services>(operation: Effect.Effect<Details, PeerError, Services>) =>
   operation.pipe(
-    Effect.map((details) => ({ content: [{ text: jsonText(details), type: 'text' as const }], details })),
-    Effect.mapError((error) => ToolFailure.make({ message: error.message }))
+    Effect.mapBoth({
+      onFailure: (error) => ToolFailure.make({ message: error.message }),
+      onSuccess: (details) => ({ content: [{ text: jsonText(details), type: 'text' as const }], details }),
+    })
   )
 
 const renderCall = (name: string, target: string | undefined, message: string | undefined, theme: Theme, expanded: boolean): Text => {

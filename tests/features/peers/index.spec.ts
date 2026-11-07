@@ -46,7 +46,12 @@ const toolContext = (models: string[]) =>
     },
   })
 const failureOf = (promise: () => Promise<unknown>) =>
-  Effect.tryPromise(promise).pipe(Effect.match({ onFailure: (error) => error.cause, onSuccess: () => undefined }))
+  Effect.promise(() =>
+    promise().then(
+      () => undefined,
+      (error: unknown) => error
+    )
+  )
 
 describe('peers display', () => {
   it('shows model or pane headers and handles incomplete calls', () => {

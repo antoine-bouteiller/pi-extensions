@@ -96,9 +96,12 @@ describe('subagents registration', () => {
       expect(sections.subagents).toContain('configure subagents.allowedModels')
       expect(fixture.state.tools.get('spawn_agent')?.parameters).not.toHaveProperty('properties.model.enum')
       const spawn = asTool<SpawnTool>(fixture.state.tools.get('spawn_agent'))
-      const failure = yield* Effect.tryPromise(() =>
-        spawn.execute('1', { message: 'Go', model: 'p/a' }, undefined, undefined, toolContext(['p/a']))
-      ).pipe(Effect.match({ onFailure: (error) => error.cause, onSuccess: () => undefined }))
+      const failure = yield* Effect.promise(() =>
+        spawn.execute('1', { message: 'Go', model: 'p/a' }, undefined, undefined, toolContext(['p/a'])).then(
+          () => undefined,
+          (error: unknown) => error
+        )
+      )
       expect(failure).toMatchObject({ _tag: 'ToolFailure', message: expect.stringContaining('Configure subagents.allowedModels') })
     })
   )

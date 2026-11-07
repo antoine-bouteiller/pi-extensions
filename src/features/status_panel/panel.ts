@@ -1,5 +1,5 @@
 import { type ExtensionAPI, type ExtensionContext, type ExtensionEvent } from '@earendil-works/pi-coding-agent'
-import { Clock, Effect, MutableRef, Scope } from 'effect'
+import { Cause, Clock, Effect, MutableRef, Scope } from 'effect'
 
 import { StatusBar, type StatusBarApi } from '#shared/effect/app_services'
 import { isTrue } from '#shared/utils/predicates'
@@ -83,13 +83,15 @@ export const makePanelController = (pi: ExtensionAPI): PanelHandlers => {
 
   const generateTitle = (model: NonNullable<ReturnType<typeof titleModel>>, prompt: string, ctx: ExtensionContext) =>
     Effect.gen(function* () {
-      const reply = yield* Effect.tryPromise(() =>
-        ctx.modelRegistry.complete(
-          model,
-          { messages: [{ content: prompt.slice(0, 4000), role: 'user', timestamp: Date.now() }], systemPrompt: TITLE_PROMPT },
-          { maxTokens: 32 }
-        )
-      )
+      const reply = yield* Effect.tryPromise({
+        catch: (cause) => new Cause.UnknownError(cause),
+        try: () =>
+          ctx.modelRegistry.complete(
+            model,
+            { messages: [{ content: prompt.slice(0, 4000), role: 'user', timestamp: Date.now() }], systemPrompt: TITLE_PROMPT },
+            { maxTokens: 32 }
+          ),
+      })
       return reply.stopReason === 'error'
         ? undefined
         : reply.content
@@ -151,7 +153,8 @@ export const makePanelController = (pi: ExtensionAPI): PanelHandlers => {
         if (event.message.role !== 'assistant') {
           return
         }
-        const metrics = turnMetrics(event.message, yield* Clock.currentTimeMillis)
+        const now = yield* Clock.currentTimeMillis
+        const metrics = turnMetrics(event.message, now)
         yield* updateModel((model) => ({ ...model, ...metrics }))
       }),
     modelSelect: (_event, ctx) => refreshModel(ctx),

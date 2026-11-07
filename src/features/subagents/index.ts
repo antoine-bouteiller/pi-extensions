@@ -37,8 +37,10 @@ export interface SubagentDependencies {
 
 const result = <Details, Services>(operation: Effect.Effect<Details, SubagentError, Services>) =>
   operation.pipe(
-    Effect.map((details) => ({ content: [{ text: jsonText(details), type: 'text' as const }], details })),
-    Effect.mapError((error) => ToolFailure.make({ message: error.message }))
+    Effect.mapBoth({
+      onFailure: (error) => ToolFailure.make({ message: error.message }),
+      onSuccess: (details) => ({ content: [{ text: jsonText(details), type: 'text' as const }], details }),
+    })
   )
 
 const renderCall = (name: string, target: string | undefined, message: string | undefined, theme: Theme, expanded: boolean): Text => {

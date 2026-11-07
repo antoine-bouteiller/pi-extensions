@@ -4,7 +4,7 @@ import {
   type ExtensionContext,
   type ExtensionToolContext,
 } from '@earendil-works/pi-coding-agent'
-import { type Cause, Context, Effect, type ManagedRuntime } from 'effect'
+import { Cause, Context, Effect, type ManagedRuntime } from 'effect'
 
 import { makeUi, PiCtx, Ui } from './pi_services.js'
 
@@ -95,4 +95,4 @@ export const makeEventHandler =
  * @internal
  */
 export const withAbortSignal = <Value>(run: (signal: AbortSignal) => Promise<Value>): Effect.Effect<Value, Cause.UnknownError> =>
-  Effect.tryPromise(run)
+  Effect.tryPromise({ catch: (cause) => new Cause.UnknownError(cause), try: run })

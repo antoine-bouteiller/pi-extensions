@@ -101,8 +101,10 @@ describe('tool executor boundary', () => {
             })
           )
         ).pipe(
-          Effect.map(() => 'unreachable'),
-          Effect.mapError((error) => ToolFailure.make({ message: `fetch failed: ${asError(error.cause).message}` }))
+          Effect.mapBoth({
+            onFailure: (error) => ToolFailure.make({ message: `fetch failed: ${asError(error.cause).message}` }),
+            onSuccess: () => 'unreachable',
+          })
         )
       )
 
@@ -180,7 +182,7 @@ describe('tool executor boundary', () => {
     Effect.gen(function* () {
       const runtime = yield* scopedEmptyRuntime
       const controller = makeAbortController()
-      const execute = makeToolExecutor(runtime)(() => Effect.sleep('30 seconds').pipe(Effect.map(() => 'never')))
+      const execute = makeToolExecutor(runtime)(() => Effect.sleep('30 seconds').pipe(Effect.as('never')))
 
       const pending = execute('call-3', {}, controller.signal, undefined, fakeContext().ctx).then(
         () => 'resolved',

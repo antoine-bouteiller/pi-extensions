@@ -415,11 +415,13 @@ const discoverRulesEffect = (cwd: string, trusted: boolean, homeDirectory: strin
     // Global guidance comes first so the shared prompt budget cannot starve it;
     // Project guidance remains later in the prompt and can refine it.
     for (const directory of RULE_DIRECTORIES) {
-      groups.push(yield* readRulesEffect(path.join(homeDirectory, directory), `~/${directory}`))
+      const group = yield* readRulesEffect(path.join(homeDirectory, directory), `~/${directory}`)
+      groups.push(group)
     }
     if (trusted) {
       for (const directory of RULE_DIRECTORIES) {
-        groups.push(yield* readRulesEffect(path.join(cwd, directory), directory, cwd))
+        const group = yield* readRulesEffect(path.join(cwd, directory), directory, cwd)
+        groups.push(group)
       }
     }
 

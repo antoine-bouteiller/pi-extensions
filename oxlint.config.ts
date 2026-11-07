@@ -75,6 +75,8 @@ export default defineConfig({
         'effecttsgo/process-env': 'off',
         // Tests are application entry points: each spec provides its own layer, so scope lifetimes don't apply.
         'effecttsgo/strict-effect-provide': 'off',
+        // `expect(yield* effect)` keeps an assertion on one line; hoisting each into a const only adds noise.
+        'effecttsgo/yield-in-call-argument': 'off',
         // Specs must write `null` literals to exercise the nullish predicates and the Pi payloads that use them.
         'unicorn/no-null': 'off',
       },

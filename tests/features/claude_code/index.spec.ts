@@ -82,7 +82,7 @@ const generatedSkills = (skillDirectory: string) =>
     return new Map(entries)
   })
 
-const pathExists = (path: string) => stat(path).pipe(Effect.match({ onFailure: () => false, onSuccess: () => true }))
+const pathExists = (path: string) => Effect.isSuccess(stat(path))
 
 describe('Claude Code compatibility', () => {
   it.effect('converts command metadata and derives a fallback description', () =>

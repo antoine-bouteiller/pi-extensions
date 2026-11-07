@@ -215,7 +215,8 @@ export const formatElapsed = (ms: number): string => {
 
 const updateStatus = (state: PollStateFields, ctx: ExtensionContext): Effect.Effect<void> =>
   Effect.gen(function* () {
-    const startTimes = [...HashMap.values(yield* Ref.get(state.tasks))]
+    const tasks = yield* Ref.get(state.tasks)
+    const startTimes = [...HashMap.values(tasks)]
     const now = yield* Clock.currentTimeMillis
     yield* Effect.sync(() => {
       const count = startTimes.length
