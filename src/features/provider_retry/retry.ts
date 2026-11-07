@@ -2,6 +2,8 @@ import { type AssistantMessage } from '@earendil-works/pi-ai'
 import { type MessageEndEvent } from '@earendil-works/pi-coding-agent'
 
 const RETRY_PREFIX = 'server error: '
+// Keep in sync with meridian_session_affinity: that feature retries this error itself after a successful login.
+const CLAUDE_AUTH_ERROR = /Failed to authenticate|OAuth session expired/i
 // SDKs often throw before after_provider_response, retaining the HTTP status only in their error text.
 const HTTP_ERROR = /^(?:Error:\s*)?(?:HTTP\s+)?(?<status>[345]\d{2})(?=[:\s]|$)|^(?:Error:\s*)?[\w -]*API error \((?<prefixedStatus>[345]\d{2})\):/i
 
@@ -10,7 +12,7 @@ export const classifyProviderError = ({ message }: MessageEndEvent, responseStat
     return undefined
   }
   const errorMessage = message.errorMessage ?? 'Unknown provider error'
-  if (errorMessage.startsWith(RETRY_PREFIX)) {
+  if (errorMessage.startsWith(RETRY_PREFIX) || CLAUDE_AUTH_ERROR.test(errorMessage)) {
     return undefined
   }
 
