@@ -16,7 +16,7 @@ pi install git:github.com/antoine-bouteiller/pi-extensions
 - `background_poll` — Background shell polling with completion notifications. In Rex, the session shows as working while a poll waits.
 - `claude_code` — Load Claude commands as temporary Pi skills.
 - `hashline` — Hash-anchored file reads and writes that reject stale edits.
-- `meridian_session_affinity` — Session affinity and harness fingerprint scrubbing for Meridian requests.
+- `meridian_session_affinity` — Session affinity and harness fingerprint scrubbing for Meridian requests. In Rex, when Meridian reports an expired Claude Code login, it opens `claude auth login` in a floating pane over Pi and retries the request once the login succeeds. It offers the login at most once per agent run.
 - `peers` — Open independent Pi agents in new Rex tabs, and discover and message other running Pi agents.
 - `prompt_rewind` — Edit your prompt when cancelling before a response.
 - `provider_retry` — Extend retries to server and unknown-status provider failures.

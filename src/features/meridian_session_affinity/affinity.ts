@@ -27,7 +27,7 @@ const normalizedUrl = (value: string | undefined): string | undefined => {
 const hasHeader = (headers: BeforeProviderHeadersEvent['headers'], expectedName: string): boolean =>
   Object.entries(headers).some(([name, value]) => name.toLowerCase() === expectedName && typeof value === 'string')
 
-const isMeridianModel = (ctx: ExtensionContext, env: EnvApi = processEnvironment): boolean => {
+export const isMeridianModel = (ctx: ExtensionContext, env: EnvApi = processEnvironment): boolean => {
   if (!isNullOrUndefined(ctx.model) && hasHeader(ctx.model.headers ?? {}, MERIDIAN_AGENT_HEADER)) {
     return true
   }
