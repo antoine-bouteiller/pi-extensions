@@ -19,7 +19,7 @@ pi install git:github.com/antoine-bouteiller/pi-extensions
 - `meridian_session_affinity` — Session affinity and harness fingerprint scrubbing for Meridian requests. In Rex, when Meridian reports an expired Claude Code login, it opens `claude auth login` in a floating pane over Pi and retries the request once the login succeeds. It offers the login at most once per agent run.
 - `peers` — Open independent Pi agents in new Rex tabs, and discover and message other running Pi agents.
 - `prompt_rewind` — Edit your prompt when cancelling before a response.
-- `provider_retry` — Extend retries to server and unknown-status provider failures.
+- `provider_retry` — Extend retries to server and unknown-status provider failures, except an expired Claude Code login.
 - `rules` — Load rules from `.claude/rules/` and `.agents/rules/`.
 - `status_panel` — Show activity, model, and thinking in the editor border, and context, status entries, cache hit, and throughput in a one-line footer. Name an unnamed session from its first prompt, so `/resume` and the terminal title (and the Rex pane name) show it. With `"sessionTitleModel": "<provider>/<model-id>"` in `settings.json`, that model writes a short title in the background. Otherwise, or when the model is unavailable or fails, the name is the prompt's first 40 characters.
 - `subagents` — Delegate to headless Pi sub-agents and receive their results automatically. In Rex, the session shows as working while a sub-agent runs.

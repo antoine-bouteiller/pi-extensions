@@ -9,6 +9,7 @@ import { jsonText, parseJsonText } from '#shared/utils/json'
 
 import { isMeridianModel } from './affinity.js'
 
+// Keep in sync with provider_retry, which leaves this error unretried.
 const AUTH_ERROR = /Failed to authenticate|OAuth session expired/i
 // Keep in sync with provider_retry: Pi retries this prefix, and provider_retry leaves it untouched.
 const RETRY_PREFIX = 'server error: '

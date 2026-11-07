@@ -57,6 +57,13 @@ describe('provider error classification', () => {
     }
   })
 
+  it('does not retry an expired Claude Code login, even with a 5xx status', () => {
+    const text =
+      '500 {"type":"error","error":{"type":"api_error","message":"Claude Code returned an error result: Failed to authenticate: OAuth session expired and could not be refreshed"}}'
+    expect(classify(assistant(text))).toBeUndefined()
+    expect(classify(assistant('Failed to authenticate'), 500)).toBeUndefined()
+  })
+
   it('uses failure response status ahead of text, but treats a failed HTTP 200 stream as unknown', () => {
     expect(classify(assistant('501 failed'), 401)).toBeUndefined()
     expect(classify(assistant('401 failed'), 501)).toBeDefined()
