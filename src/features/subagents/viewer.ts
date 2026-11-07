@@ -409,7 +409,8 @@ export const openViewer = (
         const next = yield* sizeOf(running.session_file)
         if (next !== size) {
           size = next
-          overlay?.setText(yield* readText(running.session_file))
+          const text = yield* readText(running.session_file)
+          overlay?.setText(text)
         }
       }
     })

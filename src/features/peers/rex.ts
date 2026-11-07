@@ -179,7 +179,8 @@ export const makeRexBackend = (pi: ExtensionAPI, environment: EnvApi, options: R
         if (!renamed) {
           continue
         }
-        const message = parseOrUndefined(yield* fs.readFileString(claimed))
+        const raw = yield* fs.readFileString(claimed)
+        const message = parseOrUndefined(raw)
         if (Value.Check(InboxMessageSchema, message)) {
           if (ctx.isIdle()) {
             pi.sendUserMessage(message.text)

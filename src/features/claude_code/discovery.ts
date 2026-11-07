@@ -201,7 +201,8 @@ const writeCommandSkills = (
         Effect.gen(function* () {
           const destination = path.join(skillDirectory, name)
           yield* fs.makeDirectory(destination, { recursive: true })
-          const parsed = parseCommandFrontmatter(yield* fs.readFileString(command.path))
+          const content = yield* fs.readFileString(command.path)
+          const parsed = parseCommandFrontmatter(content)
           yield* fs.writeFileString(path.join(destination, 'SKILL.md'), formatCommandSkill(name, parsed))
         }),
       { concurrency: WRITE_CONCURRENCY }
